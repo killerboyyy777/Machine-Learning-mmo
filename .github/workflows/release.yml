@@ -1,0 +1,28 @@
+name: Release
+
+# Cutting a release is one step: `git tag vX.Y && git push origin vX.Y`.
+# Paste the matching CHANGELOG section into the release notes on GitHub
+# afterwards (or use the auto-generated notes and link the changelog).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish GitHub release for tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install websockets==17.1
+      - run: python tests/test_server_unit.py
+      - run: python tests/test_quest_grind.py
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

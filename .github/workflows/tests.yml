@@ -33,3 +33,15 @@ jobs:
       - run: sleep 5
       - run: python tests/test_live.py
       - run: python tests/test_env.py
+
+  persistence:
+    name: Checkpoint save/load round-trip (needs torch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install websockets==17.1
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python tests/test_persistence.py
