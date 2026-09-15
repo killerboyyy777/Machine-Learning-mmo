@@ -12,9 +12,12 @@ Reward is simply the change in the server's own `score` between steps --
 including any assist payouts from other players' kills that land on you
 asynchronously. This means an RL agent trained against this env is directly
 optimizing the same score an anti-hardcoding curve already governs (see
-README.md "Scoring"): the agent inherits that pressure for free. There's no
-separate "reward shaping" to design here on top of what the game already
-tracks.
+README.md "Scoring"): the agent inherits that pressure for free. On top of
+that, two small group-play shaping terms (reward only -- no behavior is
+scripted): a per-ally bonus while grouped and a one-time bonus on
+joining/forming a party (cooldown-gated so leave/rejoin cycling can't farm
+it). Both scale with `diminish_factor`, mirroring the server's difficulty
+curve, so they track the score signal instead of dwarfing it late in a run.
 
 The observation covers everything a fixed-size vector can reasonably carry
 about the 0.5 systems (instanced party dungeons, the player market, parties,
@@ -56,8 +59,8 @@ Actions added on top of the old (move/attack/take/rest/look) set:
   - market_post / market_buy / market_cancel / market_list / market_expand
     (stall slots are capped per seller; market_expand buys +1 for gold)
   - party_invite / party_accept / party_leave / party_info
-  - drop / give / say                  (item management + social)
-  - quest_accept / quest_turn_in        (Town Guard repeatable quests;
+  - heal                               (full heal, only on Sister Maren's tile)
+  - quest_accept / quest_turn_in / quest_list   (Town Guard repeatable quests;
     both quests share the giver/room and the accept -> objective -> turn-in
     pattern. quest_accept/quest_turn_in default to "guard_charm": craft the
     charm from 1x Treant Bark + 1x Troll Hide + 1x Ectoplasm, turn in by the
@@ -258,14 +261,27 @@ DIRECTIONS = sorted(set(DIRECTIONS) | {srv.DUNGEON_ENTRANCE_DIR, "up", "down"})
 # parameterize "attack THIS specific one of N targets" without a more complex
 # action head, so this is the practical MVP. Extend ACTION_TO_CMD below if
 # you want to add targeted actions, multi-discrete spaces, etc.
+#
+# Client-verifiable gating: actions whose prerequisites are visibly missing
+# (wrong room, no gold, no mats) map to None instead of a guaranteed-error
+# command. Agents read valid_action_mask() and only ever pick valid actions,
+# so training steps are never wasted on sure rejections. Anything the client
+# can't verify (merchant stock, party timing) still goes through and errors
+# as a learning signal.
+
+# Cost/location rules mirrored from the server (getattr fallbacks keep this
+# importable even if the server module ever drops the constants).
+REST_COST = getattr(srv, "REST_COST", 2)
+HEAL_COST = getattr(srv, "HEAL_COST", 5)
+HEALER_NAME = "Sister Maren"
 ACTIONS = (
     [f"move_{d}" for d in DIRECTIONS]
-    + ["attack", "take", "drop", "give", "say", "rest", "look",
+    + ["attack", "take", "rest", "look",
        "buy", "sell", "equip", "use", "craft",
        "market_post", "market_buy", "market_cancel", "market_list",
        "party_invite", "party_accept", "party_leave", "party_info",
         # Quest + gear-craft actions appended last so existing indices never shift.
-        "quest_accept", "quest_turn_in", "craft_charm",
+        "quest_accept", "quest_turn_in", "quest_list", "craft_charm",
         "quest2_accept", "quest2_turn_in", "craft_iron", "buy_arrows",
         "craft_arrows",
         # New crafting actions for buffs and ammo.
@@ -278,7 +294,9 @@ ACTIONS = (
         # Healer visit (full heal, but only on Sister Maren's tile).
         "heal",
         # Endgame craft: Warden's Trophy + mats -> fixed-damage blade.
-        "craft_wardens_blade"]
+        "craft_wardens_blade",
+        # Ammo variant crafts (feed the ammo family) + mid-tier blade.
+        "craft_iron_arrow", "craft_steel_arrow", "craft_serpentbrand"]
 )
 N_ACTIONS = len(ACTIONS)
 
@@ -308,6 +326,7 @@ def flatten_obs(obs):
         + [obs["quest2_active"], obs["quest2_ready"], obs["quest2_giver_here"]]
         + [obs["arrows_norm"]]
         + [obs["buff_attack"], obs["buff_dr"]]
+        + [obs["ammo_best_norm"], obs["defense_norm"]]
     )
 
 
@@ -322,8 +341,9 @@ OBS_SIZE = (
                                            # own_net_norm)
     + 7                                    # quest block (active/ready/has_charm/3 mats/giver_here)
     + 3                                    # delver quest block (active/ready/giver_here)
-    + 1                                    # arrows_norm (ammo count; bows eat one per shot)
+    + 1                                    # arrows_norm (ammo-family count; bows eat one per shot)
     + 2                                    # buff block (attack active, damage-reduction active)
+    + 2                                    # gear block (best ammo bonus, worn defense)
 )
 
 
@@ -347,7 +367,8 @@ class TextMMOEnv:
             "party_size": 1,
             "hp": 0, "max_hp": 1, "gold": 0, "score": 0.0, "variety": 1.0,
             "level": 1, "xp": 0.0, "xp_to_next": 100.0,
-            "equipped": None, "inv_names": [],
+            "equipped": None, "armor": None, "offhand": None, "defense": 0,
+            "inv_names": [],
             "market_orders": 0, "market_state": None,
             "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
             "other_players": 0,
@@ -388,6 +409,9 @@ class TextMMOEnv:
                     self._state["party_size"] = event.get("party_size", self._state["party_size"])
                     self._state["inv_names"] = event.get("inv", [])
                     self._state["equipped"] = event.get("equipped")
+                    self._state["armor"] = event.get("armor")
+                    self._state["offhand"] = event.get("offhand")
+                    self._state["defense"] = event.get("defense", 0)
                     self._state["market_orders"] = event.get("market_orders", 0)
                     # Quest flags ride along on every stats event (server's
                     # stats_view always includes them now).
@@ -598,10 +622,29 @@ class TextMMOEnv:
     def _first_ground_item(self):
         return (self._state["item_names"] or [None])[0]
 
+    def valid_action_mask(self):
+        """1/0 per action in ACTIONS order: 1 when the action maps to a real
+        command in the current state (never a guaranteed-error pick)."""
+        return [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
+
     def _action_to_cmd(self, action):
         s = self._state
         if action.startswith("move_"):
-            return {"cmd": "move", "dir": action[len("move_"):]}
+            # Only exits that actually exist here; walking into walls would
+            # just bounce off a server error.
+            if action[len("move_"):] in (s.get("exits") or []):
+                return {"cmd": "move", "dir": action[len("move_"):]}
+            return None
+        if action == "rest":
+            # Rest areas only, and only if we can pay the fee.
+            if srv.ROOMS.get(s.get("room_id"), {}).get("rest_area") and s.get("gold", 0) >= REST_COST:
+                return {"cmd": "rest"}
+            return None
+        if action == "heal":
+            # Sister Maren's tile only, and only if we can pay her fee.
+            if HEALER_NAME in (s.get("npc_names") or []) and s.get("gold", 0) >= HEAL_COST:
+                return {"cmd": "heal"}
+            return None
         if action == "attack":
             if s["npc_names"]:
                 # Dungeon guards and static world NPCs are both reported by
@@ -613,13 +656,6 @@ class TextMMOEnv:
             if item:
                 return {"cmd": "take", "item": item}
             return None
-        if action == "rest":
-            return {"cmd": "rest"}
-        if action == "heal":
-            # Full heal from Sister Maren. The server requires standing on
-            # her tile (Healing Spring); anywhere else this errors, which is
-            # itself the learning signal for *where* healing lives.
-            return {"cmd": "heal"}
         if action == "look":
             return {"cmd": "look"}
         if action == "buy":
@@ -636,9 +672,21 @@ class TextMMOEnv:
                 return {"cmd": "sell", "item": name}
             return None
         if action == "equip":
-            name = self._first_inv_typed("weapon")
-            if name:
-                return {"cmd": "equip", "item": name}
+            # One action fills all three gear slots over successive steps:
+            # weapon first, then armor, then offhand. The server routes each
+            # piece by type, so a single generic command covers the full kit.
+            if not s.get("equipped"):
+                name = self._first_inv_typed("weapon")
+                if name:
+                    return {"cmd": "equip", "item": name}
+            if not s.get("armor"):
+                name = self._first_inv_typed("armor")
+                if name:
+                    return {"cmd": "equip", "item": name}
+            if not s.get("offhand"):
+                name = self._first_inv_typed("offhand")
+                if name:
+                    return {"cmd": "equip", "item": name}
             return None
         if action == "use":
             name = self._first_inv_typed("consumable")
@@ -664,9 +712,9 @@ class TextMMOEnv:
                 return {"cmd": "craft", "recipe": "ancient_guardian_charm"}
             return None
         if action == "craft_iron":
-            # Builds Iron Plate Armor (2x Iron Ore + 1x Wolf Pelt), the best
-            # static-world weapon. Same mat gating as craft_charm; reads the
-            # live recipe so world.json stays the single source of truth.
+            # Builds Iron Plate Armor (now an armor-slot piece: defense 3).
+            # Same mat gating as craft_charm; reads the live recipe so
+            # world.json stays the single source of truth.
             have = {}
             for name in s["inv_names"] or []:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
@@ -739,6 +787,39 @@ class TextMMOEnv:
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "wardens_blade"}
             return None
+        if action == "craft_iron_arrow":
+            # 1x Iron Ore -> 1 Iron Arrow (+1 bow damage). Same gating pattern.
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("iron_arrows", {}).get("inputs", {"iron_ore": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "iron_arrows"}
+            return None
+        if action == "craft_steel_arrow":
+            # 2x Iron Ore + 1x Serpent Scale + 1x Heron Feather -> Steel Arrow (+2).
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("steel_arrows", {}).get("inputs", {"iron_ore": 2, "serpent_scale": 1, "heron_feather": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "steel_arrows"}
+            return None
+        if action == "craft_serpentbrand":
+            # 2x Serpent Scale + 2x Iron Ore + 1x Resin -> Serpentbrand (10 dmg).
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("serpentbrand", {}).get("inputs", {"serpent_scale": 2, "iron_ore": 2, "resin": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "serpentbrand"}
+            return None
         if action == "gather":
             # Gather from available nodes in the current room
             return {"cmd": "gather"}
@@ -758,17 +839,20 @@ class TextMMOEnv:
             # Accept the Town Guard's guard_charm quest. The server requires
             # standing in the guard's room; sending it elsewhere just yields
             # an error (and a look-resync), which is itself a learning signal.
-            return {"cmd": "quest_accept", "quest": "guard_charm"}
+            return {"cmd": "quest", "action": "accept", "quest": "guard_charm"}
         if action == "quest_turn_in":
             # Turn in the crafted charm for the fixed XP + gold + score.
             # Likewise requires the guard's room; the server validates.
-            return {"cmd": "quest_turn_in", "quest": "guard_charm"}
+            return {"cmd": "quest", "action": "turn_in", "quest": "guard_charm"}
         if action == "quest2_accept":
             # Accept the Depth Delver quest (clear dungeon floors).
-            return {"cmd": "quest_accept", "quest": "delver"}
+            return {"cmd": "quest", "action": "accept", "quest": "delver"}
         if action == "quest2_turn_in":
             # Turn in cleared floors for the fixed XP + gold + score.
-            return {"cmd": "quest_turn_in", "quest": "delver"}
+            return {"cmd": "quest", "action": "turn_in", "quest": "delver"}
+        if action == "quest_list":
+            # Read the unified quest catalog (what/where/state).
+            return {"cmd": "quest", "action": "list"}
         if action == "market_post":
             name = self._first_inv_typed("junk") or self._first_inv_typed("weapon")
             if name:
@@ -802,24 +886,6 @@ class TextMMOEnv:
             return {"cmd": "party_leave"}
         if action == "party_info":
             return {"cmd": "party_info"}
-        if action == "drop":
-            item = self._first_ground_item()
-            # Actually drop first inventory item, not ground item
-            if s["inv_names"]:
-                return {"cmd": "drop", "item": s["inv_names"][0]}
-            return None
-        if action == "give":
-            # Give first inventory item to first other player in room
-            target = None
-            for pname in s.get("player_names") or []:
-                if pname != self.name:
-                    target = pname
-                    break
-            if target and s["inv_names"]:
-                return {"cmd": "give", "item": s["inv_names"][0], "to": target}
-            return None
-        if action == "say":
-            return {"cmd": "say", "text": "hello"}
         return None
 
     def _build_obs(self):
@@ -871,10 +937,15 @@ class TextMMOEnv:
         quest2_giver_here = quest_giver_here
         # Arrow count matters (bows eat one per shot), unlike other items
         # where binary presence suffices -- hence a scalar, not just the
-        # inv_presence flag.
-        arrow_count = sum(1 for n in (s["inv_names"] or [])
-                          if srv.find_item_by_name(list(srv.ITEM_DEFS), n) == "arrow")
-        arrows_norm = min(arrow_count, 20) / 20.0
+        # inv_presence flag. Counts the whole ammo family (any variant
+        # fires); ammo_best tracks the best loaded bonus (+0/+1/+2).
+        ammo_bonus = getattr(srv, "AMMO_BONUS", {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2})
+        held_bonus = [ammo_bonus.get(srv.find_item_by_name(list(srv.ITEM_DEFS), n), -1)
+                      for n in (s["inv_names"] or [])]
+        held_bonus = [b for b in held_bonus if b >= 0]
+        arrows_norm = min(len(held_bonus), 20) / 20.0
+        ammo_best_norm = (max(held_bonus) / 2.0) if held_bonus else 0.0
+        defense_norm = min(float(s.get("defense", 0) or 0), 10.0) / 10.0
 
         return {
             "room_onehot": room_onehot,
@@ -914,6 +985,8 @@ class TextMMOEnv:
             # Buff features
             "buff_attack": 1.0 if s.get("buff_attack_amount", 0) > 0 else 0.0,
             "buff_dr": 1.0 if s.get("buff_damage_reduction_amount", 0) > 0 else 0.0,
+            "ammo_best_norm": ammo_best_norm,
+            "defense_norm": defense_norm,
             # Not part of flatten_obs() -- handy for debugging/logging only:
             "room_id": s["room_id"],
             "score_raw": s["score"],

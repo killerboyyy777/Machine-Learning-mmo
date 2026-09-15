@@ -68,13 +68,18 @@ class LinearQAgent:
             for a in range(self.n_actions)
         ]
 
-    def act(self, features, epsilon):
-        """Epsilon-greedy: explore randomly with probability epsilon,
-        otherwise take the currently-best-looking action."""
+    def act(self, features, epsilon, mask=None):
+        """Epsilon-greedy over valid actions only: explore randomly among
+        valid actions with probability epsilon, otherwise take the best
+        valid action. Invalid actions (mask 0) are never picked, so agents
+        stop wasting steps on guaranteed-error commands."""
+        valid = [a for a in range(self.n_actions) if mask is None or mask[a]]
+        if not valid:
+            valid = list(range(self.n_actions))
         if random.random() < epsilon:
-            return random.randrange(self.n_actions)
+            return random.choice(valid)
         qs = self.q_values(features)
-        return max(range(self.n_actions), key=lambda a: qs[a])
+        return max(valid, key=lambda a: qs[a])
 
     def update(self, features, action, reward, next_features, done):
         next_q = 0.0 if done else max(self.q_values(next_features))
@@ -135,7 +140,7 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
         progress = min(1.0, agent.training_steps / epsilon_decay_steps)
         epsilon = epsilon_start + (epsilon_end - epsilon_start) * progress
 
-        action = agent.act(features, epsilon)
+        action = agent.act(features, epsilon, env.valid_action_mask())
         action_counts[action] += 1
         next_obs, reward, done, info = await env.step(action)
         next_features = flatten_obs(next_obs)

@@ -106,7 +106,7 @@ class Runner:
         try:
             while not self.farm.should_stop():
                 epsilon = self.farm.agent._epsilon()
-                action_index = self.farm.agent.act(self.features, epsilon)
+                action_index = self.farm.agent.act(self.features, epsilon, self.env.valid_action_mask())
                 action_name = ACTIONS[action_index]
                 next_obs, reward, done, info = await self.env.step(action_index)
                 next_features = flatten_obs(next_obs)

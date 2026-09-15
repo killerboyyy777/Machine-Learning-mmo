@@ -74,7 +74,7 @@ async def main():
     print("RECIPE_OUTPUT_QTY_OK")
 
     # Crafted buff items consume normally and apply category-scoped effects.
-    crafter.inventory.extend(["iron_ore", "wolf_pelt"])
+    crafter.inventory.extend(["iron_ore", "wolf_pelt", "resin"])
     await srv.cmd_craft(crafter, {"recipe": "sharpening_oil"})
     assert "sharpening_oil" in crafter.inventory
     base_attack = crafter.attack
@@ -83,6 +83,83 @@ async def main():
     assert crafter.active_buffs["attack"]["remaining"] == 10
     assert "sharpening_oil" not in crafter.inventory
     print("CRAFTED_BUFF_OK")
+
+    # --- Equipment slots: weapon / armor / offhand coexist, defense stacks ---
+    knight = srv.Player(ws=FakeWS(), id=10002, name="SlotTester", logged_in=True)
+    knight.inventory = ["rusty_sword", "reinforced_leather", "old_shield", "rat_tail"]
+    srv.add_member(knight)
+    await srv.cmd_equip(knight, {"item": "reinforced leather"})
+    await srv.cmd_equip(knight, {"item": "old shield"})
+    assert knight.armor == "reinforced_leather" and knight.offhand == "old_shield"
+    assert knight.equipped is None
+    assert srv._player_defense(knight) == 3  # leather 2 + shield 1
+    no_sword_attack = knight.attack
+    await srv.cmd_equip(knight, {"item": "rusty sword"})
+    assert knight.equipped == "rusty_sword" and knight.armor == "reinforced_leather"
+    assert knight.attack == no_sword_attack + 4  # sword adds attack; armor never does
+    await srv.cmd_equip(knight, {"item": "rat tail"})
+    assert inbox[-1]["type"] == "error"  # junk is not wearable
+    print("EQUIP_SLOTS_OK")
+
+    # --- Ammo families: best variant fires first with its flat bonus ---
+    archer = srv.Player(ws=FakeWS(), id=10003, name="AmmoTester", logged_in=True)
+    archer.inventory = ["oak_longbow", "arrow", "iron_arrow", "steel_arrow"]
+    srv.add_member(archer)
+    await srv.cmd_equip(archer, {"item": "oak longbow"})
+    assert archer.equipped == "oak_longbow"
+    srv.npcs["ammo_dummy"] = {
+        "id": "ammo_dummy", "name": "Ammo Test Dummy", "room": archer.room,
+        "hp": 1000, "max_hp": 1000, "attack": 0, "hostile": True, "behavior": "idle",
+        "loot": [], "gold": 0, "respawn_seconds": 60,
+        "alive": True, "respawn_at": None, "contributors": {},
+    }
+    await srv.cmd_attack(archer, {"target": "ammo test"})
+    assert "steel_arrow" not in archer.inventory  # best-first consumption
+    assert "iron_arrow" in archer.inventory and "arrow" in archer.inventory
+    hp_after_shot = srv.npcs["ammo_dummy"]["hp"]
+    assert hp_after_shot < 1000  # steel +2 bonus damage applied
+    archer.inventory = ["oak_longbow"]
+    await srv.cmd_attack(archer, {"target": "ammo test"})
+    assert inbox[-1]["type"] == "error"  # empty quiver refuses to fire
+    assert srv.npcs["ammo_dummy"]["hp"] == hp_after_shot  # no shot fired
+    del srv.npcs["ammo_dummy"]
+    print("AMMO_FAMILY_OK")
+
+    # --- Gatherer progression: harvest, cooldown, respawn, repeat ---
+    gatherer = srv.Player(ws=FakeWS(), id=10004, name="GatherTester", logged_in=True)
+    gatherer.room = "lumber_camp"
+    srv.add_member(gatherer)
+    node = srv.gather_nodes["pine_timber_node"]
+    node["available"] = True
+    node["respawn_at"] = None
+    n0 = len(gatherer.inventory)
+    await srv.cmd_gather(gatherer, {})
+    assert "pine_timber" in gatherer.inventory and len(gatherer.inventory) > n0
+    assert node["available"] is False and node["respawn_at"] is not None
+    await srv.cmd_gather(gatherer, {})  # node on cooldown
+    assert inbox[-1]["type"] == "error"
+    node["available"] = True  # respawn tick
+    node["respawn_at"] = None
+    await srv.cmd_gather(gatherer, {"node": "pine timber"})
+    assert gatherer.inventory.count("pine_timber") >= 2  # second harvest lands
+    print("GATHER_OK")
+
+    # --- Buff duration, replacement (no stacking), and expiry ---
+    juicer = srv.Player(ws=FakeWS(), id=10005, name="BuffTester", logged_in=True)
+    srv.add_member(juicer)
+    juicer.inventory = ["sharpening_oil", "greater_sharpening_oil"]
+    await srv.cmd_use(juicer, {"item": "sharpening oil"})
+    assert juicer.active_buffs["attack"]["amount"] == 2
+    await srv.cmd_use(juicer, {"item": "greater sharpening oil"})
+    assert juicer.active_buffs["attack"]["amount"] == 4  # replaces, never stacks
+    assert juicer.active_buffs["attack"]["remaining"] == 20
+    for _ in range(19):
+        srv._tick_player_buffs(juicer)
+    assert juicer.active_buffs["attack"]["remaining"] == 1
+    srv._tick_player_buffs(juicer)
+    assert "attack" not in juicer.active_buffs  # expired and removed
+    assert srv._player_buff_amount(juicer, "attack") == 0
+    print("BUFF_STACK_OK")
 
     # --- Dungeon instance ---
     d = srv.Dungeon(party_id=1)
@@ -122,6 +199,38 @@ async def main():
     assert srv.ITEM_DEFS["wardens_blade"]["damage"] == 13
     assert srv.RECIPES["wardens_blade"]["inputs"]["warden_trophy"] == 1
     print("WARDEN_OK")
+
+    # --- Scripted Warden kill: trophy drops, floor clears + reseals, blade crafts ---
+    slayer = srv.Player(ws=FakeWS(), id=10006, name="WardenSlayer", logged_in=True)
+    slayer.base_attack = 25
+    slayer.max_hp = 500
+    slayer.hp = 500
+    slayer.inventory = ["iron_plate", "old_shield"]
+    srv.add_member(slayer)
+    await srv.cmd_equip(slayer, {"item": "iron plate"})
+    await srv.cmd_equip(slayer, {"item": "old shield"})
+    assert srv._player_defense(slayer) == 4
+    wroom = d.room_id(srv.DUNGEON_MAX_FLOOR)
+    srv.remove_member(slayer)
+    slayer.room = wroom
+    srv.add_member(slayer)
+    for _ in range(60):
+        if not boss["alive"]:
+            break
+        await srv.cmd_attack(slayer, {"target": "warden"})
+    assert not boss["alive"], "geared slayer must drop the Warden"
+    assert "warden_trophy" in d.floor(srv.DUNGEON_MAX_FLOOR).items
+    assert d.floor(srv.DUNGEON_MAX_FLOOR).cleared is True
+    assert slayer.hp > 0  # armor + HP pool outlast the boss
+    srv.respawn_npc(boss)
+    assert boss["alive"] and d.floor(srv.DUNGEON_MAX_FLOOR).cleared is False
+    boss["alive"] = False  # leave the floor clear for the loot step
+    await srv.cmd_take(slayer, {"item": "warden's trophy"})
+    assert "warden_trophy" in slayer.inventory
+    slayer.inventory.extend(["iron_ore", "iron_ore", "serpent_scale"])
+    await srv.cmd_craft(slayer, {"recipe": "wardens_blade"})
+    assert "wardens_blade" in slayer.inventory
+    print("WARDEN_KILL_OK")
 
     # --- Market tax ---
     srv.tax_treasury = 0.0; srv.tax_collected_lifetime = 0.0

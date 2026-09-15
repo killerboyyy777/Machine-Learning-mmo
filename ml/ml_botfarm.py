@@ -156,7 +156,7 @@ class BotRunner:
             if self.farm.args.steps and self.farm.steps >= self.farm.args.steps:
                 self.farm.stop.set()
                 break
-            action = self.farm.agent.act(self.features, self.farm.epsilon_now())
+            action = self.farm.agent.act(self.features, self.farm.epsilon_now(), self.env.valid_action_mask())
             next_obs, reward, done, info = await self.env.step(action)
             next_features = flatten_obs(next_obs)
             self.farm.agent.update(self.features, action, reward, next_features, done)

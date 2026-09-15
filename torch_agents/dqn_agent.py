@@ -230,15 +230,19 @@ class TorchDQNAgent:
 
     # ---- action selection ---------------------------------------------------
 
-    def act(self, features: list[float], epsilon: float | None = None) -> int:
+    def act(self, features: list[float], epsilon: float | None = None, mask: list[int] | None = None) -> int:
         if epsilon is None:
             epsilon = self._epsilon()
+        valid = [a for a in range(N_ACTIONS) if mask is None or mask[a]]
+        if not valid:
+            valid = list(range(N_ACTIONS))
         if random.random() < epsilon:
-            return random.randrange(N_ACTIONS)
+            return random.choice(valid)
         with torch.no_grad():
             x = torch.tensor([features], dtype=torch.float32, device=self.device)
-            q_vals = self.q.get_q(x)
-        return int(torch.argmax(q_vals).item())
+            q_vals = self.q.get_q(x).squeeze(0)
+            best = max(valid, key=lambda a: float(q_vals[a].item()))
+        return int(best)
 
     # ---- storage ------------------------------------------------------------
 
@@ -461,7 +465,7 @@ class TorchDQNAgent:
         for offset in range(total_steps):
             self.t_step = start_step + offset + 1
             epsilon = self._epsilon()
-            action = self.act(features, epsilon)
+            action = self.act(features, epsilon, env.valid_action_mask())
             action_counts[action] += 1
             next_obs, reward, done, info = await env.step(action)
             next_features = flatten_obs(next_obs)

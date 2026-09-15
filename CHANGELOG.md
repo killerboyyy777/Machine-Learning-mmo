@@ -3,6 +3,37 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Rest is now location-gated and paid: +5 HP only in rest areas (Town Square,
+  Market, Healing Spring, Lake Shrine) for 2 gold. Sister Maren's `heal`
+  (full restore, her tile only) now costs 5 gold.
+- `commission_cancel` is poster-only: anyone could previously cancel anyone's
+  open bounty and force the poster to forfeit half their escrow.
+- Quests unified on one command: `quest` with `list` / `accept` / `turn_in`
+  (the `quest_accept` / `quest_turn_in` aliases are gone); `quest list`
+  shows every quest with giver, room, reward, and live state.
+- Removed `say`, `drop`, and `give`: `say` had no mechanical effect, `drop`
+  overlapped sell/market/craft sinks with no inventory cap to manage, and
+  direct transfers run through the market now.
+- Action masking for both agents: the env exposes `valid_action_mask()`
+  (room exits, rest/heal location + gold, mat gating) and all four trainers
+  (linear, botfarm, torch solo, torch farm) mask exploration and exploitation
+  to it — no step is wasted on a guaranteed-error command. Net 48 actions.
+- Equipment slots: separate weapon (attack), armor (damage reduction), and
+  offhand/shield (small reduction) slots with strict item typing.
+  Reinforced Leather (DR 2), Iron Plate (DR 3), and Old Shield (offhand DR 1)
+  were converted from attack gear; worn defense stacks with buff reduction
+  everywhere damage lands. `equip` routes by type, shops/drops/posts unequip,
+  and `stats`/`inventory`/dashboard snapshots expose all three slots.
+- Ammo families: the longbow fires any variant best-first with a flat ladder
+  (arrow +0, iron +1, steel +2), reviving 2 items and 2 recipes; agents get
+  `craft_iron_arrow` / `craft_steel_arrow` plus family-count/best-bonus
+  observations.
+- Gather materials sunk into recipes by difficulty: reed fiber → bandage,
+  salt + springwater → rations, resin → oils, mountain herb → tonic, scrap
+  iron → plate, heron feather → steel arrows. New pinnacle crafts needing
+  intermediates + dungeon parts: Relic Aegis, Bulwark of the Deep, Warden's
+  Elixir, and the Serpentbrand blade (mid-tier weapon filling the 4→13 gap
+  left by the armor conversion). Obs 173 / actions 50; retraining needed.
 - Commission fills now verify work: kills are logged per NPC name with
   timestamps (`kills_by_npc` in the score entry), and filling requires the
   filler's kills of the target since the bounty was posted. Posting 0g +
@@ -16,12 +47,16 @@ All notable changes to the text MMO engine are recorded here.
   boss (350 HP / 28 attack, 10-minute respawn) dropping a `Warden's Trophy`
   plus 150 gold. The trophy crafts into the **`Warden's Blade`** (fixed 13
   damage, best weapon in the game: trophy + 2 Iron Ore + Serpent Scale,
-  tier 4). ML agents get a matching `craft_wardens_blade` action
-  (47 total). New NPC + items also grow the vocabularies (23 NPCs, 35 items),
-  so OBS_SIZE is now 163; checkpoints need retraining.
+  tier 4). ML agents get a matching `craft_wardens_blade` action.
+  New NPC + items also grow the vocabularies; see below for current totals
+  (checkpoints need retraining).
 - Fixed farm staggered start running only the last bot: the loop variable
   was late-bound, so all N tasks shared one connection. Now each task binds
   its own bot (`bot=b`); verified live with 8 bots stepping 206-295 each.
+- Bot farm operations: staggered bot starts (2s per index, so bots meet
+  different initial states) and exit-code restart loop in `ml_botfarm.bat`
+  (restarts only on clean exit 0; Ctrl+C exits 1 and stops); the farm prints
+  a summary and exits 1 on interrupt, 0 on steps exhausted.
 - Connection resilience widened to `websockets.ConnectionClosed` (was
   `ConnectionClosedError` only): clean server-side closes no longer crash
   the whole farm; the episode just ends.

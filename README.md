@@ -175,13 +175,10 @@ Available commands:
 {"cmd": "buy", "item": "healing herb"}
 {"cmd": "buy", "item": "arrow"}
 {"cmd": "sell", "item": "wolf pelt"}
-{"cmd": "give", "item": "sword", "to": "Bob"}
-{"cmd": "give", "gold": 10, "to": "Bob"}
 {"cmd": "inventory"}
 {"cmd": "stats"}
-{"cmd": "say", "text": "hello"}
 {"cmd": "who"}
-{"cmd": "quest_accept"}
+{"cmd": "quest", "action": "list"}
 {"cmd": "craft", "recipe": "ancient_guardian_charm"}
 {"cmd": "craft", "recipe": "sharpening_oil"}
 {"cmd": "commission_post", "target": "rat", "required_kills": 5, "reward_gold": 25, "reward_xp": 50}
@@ -232,20 +229,16 @@ Every message is JSON. Client → server messages have a `cmd` field:
 {"cmd": "move", "dir": "enter"}          # enter the party dungeon from graveyard
 {"cmd": "move", "dir": "up"}             # retreat from dungeon floor 1 / sealed floors
 {"cmd": "move", "dir": "down"}           # descend (only once the floor is cleared)
-{"cmd": "say", "text": "hello"}
 {"cmd": "attack", "target": "goblin"}
 {"cmd": "take", "item": "sword"}
-{"cmd": "drop", "item": "sword"}
 {"cmd": "equip", "item": "sword"}
 {"cmd": "use", "item": "healing herb"}
-{"cmd": "rest"}
-{"cmd": "heal"}
+{"cmd": "rest"}                            # +5 HP, rest areas only, 2 gold
+{"cmd": "heal"}                            # full heal, Sister Maren's tile only, 5 gold
 {"cmd": "buy", "item": "healing herb"}
 {"cmd": "buy", "item": "arrow"}              # ammunition for bows (2 gold)
 {"cmd": "sell", "item": "wolf pelt"}
 {"cmd": "craft", "recipe": "reinforced leather"}
-{"cmd": "give", "item": "sword", "to": "Bob"}
-{"cmd": "give", "gold": 10, "to": "Bob"}
 {"cmd": "inventory"}
 {"cmd": "stats"}
 {"cmd": "who"}
@@ -267,22 +260,34 @@ Every message is JSON. Client → server messages have a `cmd` field:
 {"cmd": "commission_list"}
 {"cmd": "commission_fill", "commission_id": 42}   # pays only with verified kills of the target since posting (no self-fills)
 {"cmd": "commission_cancel", "commission_id": 42}
-{"cmd": "quest", "action": "accept"}       # Town Guard quest (alias: quest_accept)
-{"cmd": "quest", "action": "turn_in"}      # (alias: quest_turn_in)
-{"cmd": "quest_accept", "quest": "delver"} # Depth Delver quest (clear floors)
-{"cmd": "quest_turn_in", "quest": "delver"}
+{"cmd": "quest", "action": "list"}         # what quests exist, where, and their state
+{"cmd": "quest", "action": "accept"}       # Town Guard quest (default: guard_charm)
+{"cmd": "quest", "action": "turn_in"}
+{"cmd": "quest", "action": "accept", "quest": "delver"} # Depth Delver quest (clear floors)
+{"cmd": "quest", "action": "turn_in", "quest": "delver"}
 ```
+
+### Equipment slots
+
+Three slots coexist: **weapon** (attack), **armor** (damage reduction), and
+**offhand** (shields; small damage reduction). `equip` routes each piece by
+its `type` (`weapon` / `armor` / `offhand`); selling, dropping, or posting a
+worn piece unequips it. Incoming damage is reduced by worn defense plus any
+active damage-reduction buff. Former attack armors are now real armor:
+Reinforced Leather (DR 2), Iron Plate (DR 3), Old Shield (offhand, DR 1).
 
 ### Ammunition
 
-Ranged weapons declare their ammo in `world.json` (currently the Oak
-Longbow needs `"ammo": "arrow"`). Every attack with such a weapon equipped
-consumes 1 unit from inventory; firing empty-handed is rejected with an
-error and costs nothing. Arrows are ordinary junk otherwise (sellable,
-marketable, droppable): buy them from the merchant (2 gold), loot them
-from Cave Bandits, or pick them up at the Lumber Camp. ML agents get a
-`buy_arrows` action and an `arrows_norm` observation scalar so quiver
-management is learnable.
+Ranged weapons declare their ammo family root in `world.json` (currently the
+Oak Longbow needs `"ammo": "arrow"`). Any family member fires, best variant
+first, adding its flat bonus: arrow +0, iron arrow +1, steel arrow +2.
+Every attack with such a weapon equipped consumes 1 unit from inventory;
+firing empty-handed is rejected with an error and costs nothing. Arrows are
+ordinary junk otherwise (sellable, marketable, droppable): buy them from the
+merchant (2 gold), loot them from Cave Bandits, pick them up at the Lumber
+Camp, or craft all three variants. ML agents get `buy_arrows` /
+`craft_iron_arrow` / `craft_steel_arrow` actions plus `arrows_norm`
+(family count) and `ammo_best_norm` (best loaded bonus) scalars.
 
 GM commands (only accepted on the dedicated loopback GM stream
 `ws://127.0.0.1:8767`, i.e. the dashboard's GM tab — no login required,
@@ -332,7 +337,16 @@ Everything lives in `world.json`:
 - **Recipes** for crafting go in the `recipes` section. Each recipe has
   `inputs` and a `result`; optional `output_qty` creates a bundle (default 1),
   while optional `tier` and `category` fields classify recipes for the
-  expanding crafting economy.
+  expanding crafting economy. Gather materials are sunk into recipes by
+  difficulty: easy nodes feed tier-1 (reed fiber → bandage, salt + springwater
+  → rations), medium nodes feed tier-2 (resin → oils, mountain herb → tonic,
+  scrap iron → plate), heron feathers fletch steel arrows (tier 3).
+
+  Multi-step pinnacles need crafted intermediates plus dungeon parts: Relic
+  Aegis (floor-10 shard + Iron Plate + ectoplasm), Bulwark of the Deep
+  (Warden's Trophy + troll hides + timber), Warden's Elixir (frost crystals +
+  Ironhide Draught + ectoplasm), and the mid-tier Serpentbrand blade
+  (serpent scales + iron + resin).
 
 Consumable items may define a `buff` object with a `category`, `amount`,
 `duration_actions`, and optional `description`. Using one consumes the item and
@@ -445,7 +459,8 @@ through the dashboard's GM stream".
 Quests are repeatable objectives from specific NPCs. All live quests share
 the same pattern — accept by the NPC, complete the objective, turn in by the
 NPC — and take a `quest` field (`guard_charm` default) to select which one.
-The aliases `quest_accept` / `quest_turn_in` work the same way. New quest
+Send `{"cmd": "quest", "action": "list"}` any time to see every quest, its
+giver and room, and whether you hold it or it is ready to turn in. New quest
 givers only need a `QUEST_GIVERS` entry; killing one pays almost nothing
 (0.1 pts/XP, no gold), so farming givers is never worth it.
 
@@ -564,8 +579,12 @@ Options include `--bots N` (how many bots play concurrently; default 4),
 `--name-prefix P` (character names become P0, P1, ...  — reuse a prefix to
 keep training the same persistent characters), `--steps N` (default 0 =
 until stopped), `--reward-window`/`--eval-every` (how fitness is judged),
-and the same epsilon knobs as `ml_client.py`. Each run logs a rolling
+and the same epsilon knobs as `ml_client.py`. Bots start staggered (2s per
+index) so they meet different initial states. Each run logs a rolling
 status line (`[farm] steps=... eps=... best=... bots: ...`) and a summary.
+`ml_botfarm.bat` restarts the farm only on clean exit (code 0); Ctrl+C exits
+1 and stops. For large populations with churn, see the conductor plan in
+`TODO.md`.
 
 ## PyTorch DQN agent (`torch_agents/`)
 
@@ -576,12 +595,12 @@ the agent learns the same resistance to hardcoded loops that governs all players
 
 ### Observation space
 
-Same as `flatten_obs()` in `ml_env.py` — a 163-dimensional vector covering:
+Same as `flatten_obs()` in `ml_env.py` — a 173-dimensional vector covering:
 
 - Room one-hot (32 static rooms)
 - Exit mask across all directions (including `up`/`down`/`enter`)
 - NPC presence (23 static NPCs + unknown-count)
-- Item presence (35 ground items + 35 inventory items + flags)
+- Item presence (39 ground items + 39 inventory items + flags)
 - Scalars: `hp_frac`, `gold_norm`, `score_norm`, `variety`, `allies_norm`,
   `party_norm`, `level_norm`, `xp_progress`, `market_norm`, `market_any`,
   plus market-tax terms: live `tax_rate`, `tax_min_norm`, and `own_net_norm`
@@ -591,26 +610,33 @@ Same as `flatten_obs()` in `ml_env.py` — a 163-dimensional vector covering:
   `quest_mat_bark`, `quest_mat_hide`, `quest_mat_ecto`, `quest_giver_here`
 - Delver block (3 dims): `quest2_active`, `quest2_ready`, `quest2_giver_here`
   (same guard/room; readiness = enough new dungeon-floor clears)
-- Ammo (1 dim): `arrows_norm` (arrow count — bows eat one per shot, so the
-  count itself is observed, not just presence)
+- Ammo (1 dim): `arrows_norm` (whole-family arrow count — any variant fires,
+  so the count itself is observed, not just presence)
 - Buffs (2 dims): `buff_attack`, `buff_dr` (whether an attack or
   damage-reduction consumable effect is currently active)
+- Gear (2 dims): `ammo_best_norm` (best loaded arrow bonus), `defense_norm`
+  (worn armor + offhand damage reduction)
 
-### Action space (47 actions — covers all game mechanics)
+### Action space (48 actions — covers all game mechanics)
+
+Agents only ever pick valid actions: the env exposes `valid_action_mask()`
+(1 per action whose prerequisites are visibly met — right room, enough gold,
+mats held) and both trainers mask exploration and exploitation to it, so no
+step is wasted on a guaranteed-error command. Anything the client can't
+verify still goes through and errors as a learning signal.
 
 | Category | Actions |
 |---|---|
 | Movement | `move_north`, `move_south`, `move_east`, `move_west`, `move_enter`, `move_up`, `move_down` |
 | Combat | `attack` |
-| Items | `take`, `drop`, `give` |
-| Social | `say` |
+| Items | `take` |
 | Survival | `rest`, `heal` |
 | Information | `look` |
-| Market | `buy`, `buy_arrows`, `sell`, `equip`, `use`, `craft`, `craft_charm`, `craft_iron`, `craft_arrows`, `craft_sharpening_oil`, `craft_fortitude_tonic`, `craft_greater_sharpening_oil`, `craft_ironhide_draught`, `craft_wardens_blade`, `market_post`, `market_buy`, `market_cancel`, `market_list`, `market_expand` |
+| Market | `buy`, `buy_arrows`, `sell`, `equip`, `use`, `craft`, `craft_charm`, `craft_iron`, `craft_arrows`, `craft_sharpening_oil`, `craft_fortitude_tonic`, `craft_greater_sharpening_oil`, `craft_ironhide_draught`, `craft_wardens_blade`, `craft_iron_arrow`, `craft_steel_arrow`, `craft_serpentbrand`, `market_post`, `market_buy`, `market_cancel`, `market_list`, `market_expand` |
 | Gathering | `gather` |
 | Commissions | `commission_post`, `commission_list`, `commission_fill`, `commission_cancel` |
 | Parties | `party_invite`, `party_accept`, `party_leave`, `party_info` |
-| Quests | `quest_accept`, `quest_turn_in`, `craft_charm`, `quest2_accept`, `quest2_turn_in` |
+| Quests | `quest_accept`, `quest_turn_in`, `quest_list`, `craft_charm`, `quest2_accept`, `quest2_turn_in` |
 
 ### Quests (Town Guard repeatable quest)
 
@@ -630,8 +656,8 @@ learn the quest loop directly. Models see it three ways:
   `crafted_charm` transitions; the torch agent regresses a quest head toward
   the turn-in value as auxiliary shaping.
 
-Commands: `{"cmd": "quest_accept"}`, `{"cmd": "quest_turn_in"}` (aliases
-`{"cmd": "quest", "action": "accept" | "turn_in"}` also work). The delver
+Commands: `{"cmd": "quest", "action": "accept" | "turn_in" | "list"}` (a
+`quest_list` env action reads the catalog). The delver
 quest reuses the same commands with `"quest": "delver"`
 (`quest2_accept` / `quest2_turn_in` in the env); its readiness is new
 dungeon-floor clears since accept, tracked in `info["quest"]` the same way
@@ -640,7 +666,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
 ### Key design
 
 - **Architecture:** 3-layer MLP (input → 128 → 128) with 5 heads:
-  47 Q-values + gold + loot + market + quest predictors
+  48 Q-values + gold + loot + market + quest predictors
 - **Connection resilience:** `ml_env.step()` now catches `websockets.exceptions.ConnectionClosedError`, sets `done=True`, and returns a terminal observation so the farm/bot continues rather than crashing.
 - **Exploration:** epsilon-greedy with linear decay
 - **Learning:** online TD update with Huber loss + experience replay (10000 transitions)
@@ -662,7 +688,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
   dungeon floors, turn in for 30 XP + 15 gold + 10 score, repeatable.
 - **Persistence:** weights to `ml_weights.json` (shared with `ml_client.py`);
   best model to `ml_best.json`. Note: the quest and world expansions changed
-  OBS_SIZE (now 163) and N_ACTIONS (now 47), so older checkpoints need retraining.
+  OBS_SIZE (now 173) and N_ACTIONS (now 50), so older checkpoints need retraining.
 - **Training:** call `agent.train(total_steps=N)` from Python, or run
   `torch_agents\torch_batch_loop.bat` after starting the server
 

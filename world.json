@@ -3,13 +3,15 @@
   "rooms": {
     "town_square": {
       "name": "Town Square",
-      "description": "A worn stone square at the heart of town. A notice board creaks in the wind.",
-      "exits": {"north": "forest_edge", "east": "old_shop", "south": "graveyard", "west": "market"}
+      "description": "A worn stone square at the heart of town. A notice board creaks in the wind. Benches invite weary travelers to rest (2 gold).",
+      "exits": {"north": "forest_edge", "east": "old_shop", "south": "graveyard", "west": "market"},
+      "rest_area": true
     },
     "market": {
       "name": "Market",
-      "description": "A small market stall run by a wandering merchant. Prices are chalked on a board.",
-      "exits": {"east": "town_square", "west": "artisan_row"}
+      "description": "A small market stall run by a wandering merchant. Prices are chalked on a board. A corner bunkhouse rents rest (2 gold).",
+      "exits": {"east": "town_square", "west": "artisan_row"},
+      "rest_area": true
     },
     "old_shop": {
       "name": "Old Shop",
@@ -23,8 +25,9 @@
     },
     "healing_spring": {
       "name": "Healing Spring",
-      "description": "A clear spring bubbles up between mossy stones. The water looks restorative.",
-      "exits": {"west": "forest_edge", "east": "stillwater_lake"}
+      "description": "A clear spring bubbles up between mossy stones. The water looks restorative. Pilgrims rest here (2 gold).",
+      "exits": {"west": "forest_edge", "east": "stillwater_lake"},
+      "rest_area": true
     },
     "deep_forest": {
       "name": "Deep Forest",
@@ -93,8 +96,9 @@
     },
     "lake_shrine": {
       "name": "Lake Shrine",
-      "description": "A weathered stone shrine overlooks the water. Offerings of shells have piled for years.",
-      "exits": {"south": "stillwater_lake"}
+      "description": "A weathered stone shrine overlooks the water. Offerings of shells have piled for years. The quiet invites rest (2 gold).",
+      "exits": {"south": "stillwater_lake"},
+      "rest_area": true
     },
     "heron_nest": {
       "name": "Heron Nest",
@@ -443,10 +447,16 @@
   },
   "items": {
     "rusty_sword": {"name": "Rusty Sword", "type": "weapon", "damage": 4},
-    "old_shield": {"name": "Old Shield", "type": "weapon", "damage": 1},
-    "reinforced_leather": {"name": "Reinforced Leather Armor", "type": "weapon", "damage": 6},
+    "old_shield": {"name": "Old Shield", "type": "offhand", "defense": 1, "value": 8},
+    "reinforced_leather": {"name": "Reinforced Leather Armor", "type": "armor", "defense": 2, "value": 14},
     "oak_longbow": {"name": "Oak Longbow", "type": "weapon", "damage": 5, "ammo": "arrow"},
-    "iron_plate": {"name": "Iron Plate Armor", "type": "weapon", "damage": 8},
+    "iron_plate": {"name": "Iron Plate Armor", "type": "armor", "defense": 3, "value": 24},
+    "serpentbrand": {"name": "Serpentbrand Blade", "type": "weapon", "damage": 10, "value": 40},
+    "relic_aegis": {"name": "Relic Aegis", "type": "armor", "defense": 4, "value": 70},
+    "deep_bulwark": {"name": "Bulwark of the Deep", "type": "offhand", "defense": 2, "value": 55},
+    "wardens_elixir": {"name": "Warden's Elixir", "type": "consumable", "value": 80,
+      "buff": {"category": "attack", "amount": 5, "duration_actions": 15,
+        "description": "+5 attack"}},
     "warden_trophy": {"name": "Warden's Trophy", "type": "junk", "value": 30},
     "wardens_blade": {"name": "Warden's Blade", "type": "weapon", "damage": 13, "value": 60},
     "rat_tail": {"name": "Rat Tail", "type": "junk", "value": 1},
@@ -500,7 +510,7 @@
       "category": "quest"
     },
     "iron_plate": {
-      "inputs": {"iron_ore": 2, "wolf_pelt": 1},
+      "inputs": {"iron_ore": 2, "wolf_pelt": 1, "scrap_iron": 1},
       "result": "iron_plate",
       "tier": 2,
       "category": "equipment"
@@ -520,35 +530,41 @@
       "category": "ammo"
     },
     "steel_arrows": {
-      "inputs": {"iron_ore": 2, "serpent_scale": 1},
+      "inputs": {"iron_ore": 2, "serpent_scale": 1, "heron_feather": 1},
       "result": "steel_arrow",
       "output_qty": 1,
       "tier": 3,
       "category": "ammo"
     },
     "field_ration": {
-      "inputs": {"mountain_berry": 2},
+      "inputs": {"mountain_berry": 2, "salt_crystal": 1, "springwater": 1},
       "result": "field_ration",
       "tier": 1,
       "category": "consumable"
     },
     "bandage": {
-      "inputs": {"rat_tail": 2, "healing_herb": 1},
+      "inputs": {"rat_tail": 2, "healing_herb": 1, "reed_fiber": 1},
       "result": "bandage",
       "tier": 1,
       "category": "consumable"
     },
     "sharpening_oil": {
-      "inputs": {"iron_ore": 1, "wolf_pelt": 1},
+      "inputs": {"iron_ore": 1, "wolf_pelt": 1, "resin": 1},
       "result": "sharpening_oil",
       "tier": 2,
       "category": "buff"
     },
     "fortitude_tonic": {
-      "inputs": {"iron_ore": 1, "mountain_berry": 1},
+      "inputs": {"iron_ore": 1, "mountain_berry": 1, "mountain_herb": 1},
       "result": "fortitude_tonic",
       "tier": 2,
       "category": "buff"
+    },
+    "serpentbrand": {
+      "inputs": {"serpent_scale": 2, "iron_ore": 2, "resin": 1},
+      "result": "serpentbrand",
+      "tier": 3,
+      "category": "equipment"
     },
     "greater_sharpening_oil": {
       "inputs": {"iron_ore": 2, "serpent_scale": 1},
@@ -567,6 +583,24 @@
       "result": "wardens_blade",
       "tier": 4,
       "category": "equipment"
+    },
+    "relic_aegis": {
+      "inputs": {"dungeon_shard_10": 1, "iron_plate": 1, "ectoplasm": 2},
+      "result": "relic_aegis",
+      "tier": 5,
+      "category": "equipment"
+    },
+    "deep_bulwark": {
+      "inputs": {"warden_trophy": 1, "troll_hide": 2, "pine_timber": 2},
+      "result": "deep_bulwark",
+      "tier": 5,
+      "category": "equipment"
+    },
+    "wardens_elixir": {
+      "inputs": {"frost_crystal": 2, "ironhide_draught": 1, "ectoplasm": 1},
+      "result": "wardens_elixir",
+      "tier": 5,
+      "category": "buff"
     }
   },
   "room_items": {

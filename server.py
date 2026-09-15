@@ -365,9 +365,12 @@ def load_scores():
 
 
 def save_scores():
+    # Atomic write: a kill mid-flush must never leave a truncated scores.json.
+    tmp = SCORES_FILE + ".tmp"
     try:
-        with open(SCORES_FILE, "w") as f:
+        with open(tmp, "w") as f:
             json.dump(SCORES, f)
+        os.replace(tmp, SCORES_FILE)
     except OSError:
         pass
 
@@ -656,6 +659,25 @@ def _tick_player_buffs(player):
         del player.active_buffs[category]
 
 
+# Arrow families: a bow declaring "arrow" accepts any member, best first.
+# Bonus damage per shot for the fancier variants (flat ladder).
+AMMO_BONUS = {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2}
+
+
+def _player_defense(player):
+    """Damage reduction from worn gear (armor + offhand slots)."""
+    total = 0
+    for slot in (player.armor, player.offhand):
+        if slot and slot in ITEM_DEFS:
+            total += int(ITEM_DEFS[slot].get("defense", 0))
+    return total
+
+
+def _player_damage_reduction(player):
+    """Total incoming-damage reduction: worn gear plus active buffs."""
+    return _player_defense(player) + _player_buff_amount(player, "damage_reduction")
+
+
 @dataclass
 class Player:
     ws: object = None
@@ -667,7 +689,9 @@ class Player:
     base_attack: int = 3
     gold: int = 0
     inventory: list = field(default_factory=list)
-    equipped: object = None
+    equipped: object = None   # weapon slot
+    armor: object = None      # armor slot (damage reduction)
+    offhand: object = None    # offhand slot (shields; small damage reduction)
     room: str = START_ROOM
     party_id: int = None
     active_buffs: dict = field(default_factory=dict)
@@ -956,6 +980,9 @@ def stats_view(player):
         "attack": player.attack,
         "gold": player.gold,
         "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
+        "armor": ITEM_DEFS[player.armor]["name"] if player.armor else None,
+        "offhand": ITEM_DEFS[player.offhand]["name"] if player.offhand else None,
+        "defense": _player_defense(player),
         "score": round(entry["score"], 2) if entry else 0,
         "variety": round(compute_variety(entry), 2) if entry else 1.0,
         "level": entry["level"] if entry else 1,
@@ -1229,25 +1256,26 @@ async def cmd_move(player, msg):
     await broadcast_room(player.room, {"type": "message", "text": f"{player.name} arrives."}, exclude=player)
 
 
-async def cmd_say(player, msg):
-    text = msg.get("text", "")
-    await broadcast_room(player.room, {"type": "message", "text": f"{player.name} says: {text}"})
-
-
 async def cmd_attack(player, msg):
     target_name = msg.get("target", "")
     npc = find_npc_in_room(player.room, target_name)
     if not npc:
         await send(player, {"type": "error", "text": f"No '{target_name}' here to attack."})
         return
-    # Ranged weapons declare their ammo (e.g. Oak Longbow needs "arrow").
+    # Ranged weapons declare their ammo family root (e.g. Oak Longbow
+    # needs "arrow"). Any family member fires, best variant first, adding
+    # its flat bonus damage to the shot.
     ammo_id = ITEM_DEFS.get(player.equipped, {}).get("ammo") if player.equipped else None
+    ammo_bonus = 0
     if ammo_id:
-        if ammo_id not in player.inventory:
+        family = [iid for iid in AMMO_BONUS if iid in player.inventory] if ammo_id in AMMO_BONUS else ([ammo_id] if ammo_id in player.inventory else [])
+        if not family:
             await send(player, {"type": "error", "text": f"You need {ITEM_DEFS[ammo_id]['name']}s to fire the {ITEM_DEFS[player.equipped]['name']}."})
             return
-        player.inventory.remove(ammo_id)
-    dmg = random.randint(1, player.attack)
+        best = max(family, key=lambda iid: AMMO_BONUS.get(iid, 0))
+        player.inventory.remove(best)
+        ammo_bonus = AMMO_BONUS.get(best, 0)
+    dmg = random.randint(1, player.attack) + ammo_bonus
     npc["hp"] -= dmg
     npc["contributors"][player.name] = npc["contributors"].get(player.name, 0) + dmg
     await send(player, {"type": "combat", "text": f"You hit {npc['name']} for {dmg}."})
@@ -1320,7 +1348,7 @@ async def cmd_attack(player, msg):
     else:
         if npc["attack"] > 0:
             retaliation = random.randint(1, npc["attack"])
-            retaliation = max(0, retaliation - _player_buff_amount(player, "damage_reduction"))
+            retaliation = max(0, retaliation - _player_damage_reduction(player))
             player.hp -= retaliation
             await send(player, {"type": "combat", "text": f"{npc['name']} hits you for {retaliation}."})
             if player.hp <= 0:
@@ -1390,29 +1418,21 @@ async def cmd_gather(player, msg):
     await sync_room(player.room)
 
 
-async def cmd_drop(player, msg):
-    iid = find_item_by_name(player.inventory, msg.get("item", ""))
-    if not iid:
-        await send(player, {"type": "error", "text": "You don't have that."})
-        return
-    player.inventory.remove(iid)
-    if player.equipped == iid:
-        player.equipped = None
-    _add_ground(player.room, iid)
-    await send(player, {"type": "message", "text": f"You drop {ITEM_DEFS[iid]['name']}."})
-    await send(player, stats_view(player))
-    await sync_room(player.room)
-
-
 async def cmd_equip(player, msg):
     iid = find_item_by_name(player.inventory, msg.get("item", ""))
     if not iid:
         await send(player, {"type": "error", "text": "You don't have that."})
         return
-    if ITEM_DEFS[iid].get("type") != "weapon":
+    itype = ITEM_DEFS[iid].get("type")
+    if itype == "weapon":
+        player.equipped = iid
+    elif itype == "armor":
+        player.armor = iid
+    elif itype == "offhand":
+        player.offhand = iid
+    else:
         await send(player, {"type": "error", "text": f"You can't equip '{ITEM_DEFS[iid]['name']}'."})
         return
-    player.equipped = iid
     await send(player, {"type": "message", "text": f"You equip {ITEM_DEFS[iid]['name']}."})
     await send(player, stats_view(player))
 
@@ -1448,14 +1468,29 @@ async def cmd_use(player, msg):
     await send(player, stats_view(player))
 
 
+REST_COST = 2
+
 async def cmd_rest(player, msg):
+    """Recover 5 HP, but only in rooms designed for it, for a small fee."""
+    if not ROOMS.get(player.room, {}).get("rest_area"):
+        await send(player, {"type": "error", "text": "You can't rest here. Find a rest area (Town Square, Market, Healing Spring, Lake Shrine)."})
+        return
+    if player.hp >= player.max_hp:
+        await send(player, {"type": "message", "text": "You are already fully rested."})
+        return
+    if player.gold < REST_COST:
+        await send(player, {"type": "error", "text": f"Resting costs {REST_COST} gold."})
+        return
+    player.gold -= REST_COST
     player.hp = min(player.max_hp, player.hp + 5)
-    await send(player, {"type": "message", "text": "You rest and recover 5 HP."})
+    await send(player, {"type": "message", "text": f"You rest and recover 5 HP ({REST_COST} gold)."})
     await send(player, stats_view(player))
 
 
+HEAL_COST = 5
+
 async def cmd_heal(player, msg):
-    """Full heal, but only on the same tile as Sister Maren the healer."""
+    """Full heal for a fee, but only on the same tile as Sister Maren."""
     healer = find_npc_in_room(player.room, "healer")
     if not healer:
         await send(player, {"type": "error", "text": "No healer here. Sister Maren tends the wounded at the Healing Spring."})
@@ -1463,8 +1498,12 @@ async def cmd_heal(player, msg):
     if player.hp >= player.max_hp:
         await send(player, {"type": "message", "text": "Sister Maren smiles: you are already whole."})
         return
+    if player.gold < HEAL_COST:
+        await send(player, {"type": "error", "text": f"Sister Maren's healing costs {HEAL_COST} gold."})
+        return
+    player.gold -= HEAL_COST
     player.hp = player.max_hp
-    await send(player, {"type": "message", "text": "Sister Maren lays hands on you. You feel fully healed."})
+    await send(player, {"type": "message", "text": f"Sister Maren lays hands on you. You feel fully healed ({HEAL_COST} gold)."})
     await send(player, stats_view(player))
 
 
@@ -1502,6 +1541,10 @@ async def cmd_sell(player, msg):
     player.inventory.remove(iid)
     if player.equipped == iid:
         player.equipped = None
+    if player.armor == iid:
+        player.armor = None
+    if player.offhand == iid:
+        player.offhand = None
     player.gold += value
     await send(player, {"type": "message", "text": f"You sell {ITEM_DEFS[iid]['name']} for {value} gold."})
     await send(player, stats_view(player))
@@ -1660,6 +1703,11 @@ async def cmd_commission_cancel(player, msg):
     if commission["status"] != "open":
         await send(player, {"type": "error", "text": f"Commission #{cid} is already {commission['status']} and cannot be cancelled."})
         return
+    # Only the poster may cancel: otherwise anyone could grief bounties and
+    # force the poster to forfeit half their escrow for nothing.
+    if commission["poster"] != player.name:
+        await send(player, {"type": "error", "text": f"Only {commission['poster']} can cancel commission #{cid}."})
+        return
     commission["status"] = "cancelled"
     # Refund half of the actually-escrowed gold (credit_gold pays live
     # characters directly and banks it for offline ones).
@@ -1671,44 +1719,13 @@ async def cmd_commission_cancel(player, msg):
     await send(player, stats_view(player))
 
 
-async def cmd_give(player, msg):
-    target = find_player_in_room(player.room, msg.get("to", ""))
-    if not target or target is player:
-        await send(player, {"type": "error", "text": "No one here by that name."})
-        return
-    if "gold" in msg:
-        try:
-            amount = int(msg.get("gold", 0))
-        except (TypeError, ValueError):
-            amount = 0
-        if amount <= 0 or player.gold < amount:
-            await send(player, {"type": "error", "text": "You don't have that much gold to give."})
-            return
-        player.gold -= amount
-        target.gold += amount
-        await send(player, {"type": "message", "text": f"You give {amount} gold to {target.name}."})
-        await send(target, {"type": "message", "text": f"{player.name} gives you {amount} gold."})
-        await send(player, stats_view(player))
-        await send(target, stats_view(target))
-        return
-    if "item" in msg:
-        iid = find_item_by_name(player.inventory, msg.get("item", ""))
-        if not iid:
-            await send(player, {"type": "error", "text": "You don't have that."})
-            return
-        player.inventory.remove(iid)
-        target.inventory.append(iid)
-        await send(player, {"type": "message", "text": f"You give {ITEM_DEFS[iid]['name']} to {target.name}."})
-        await send(target, {"type": "message", "text": f"{player.name} gives you {ITEM_DEFS[iid]['name']}."})
-        return
-    await send(player, {"type": "error", "text": "Specify an 'item' or 'gold' amount to give."})
-
-
 async def cmd_inventory(player, msg):
     await send(player, {
         "type": "inventory",
         "items": [ITEM_DEFS[i]["name"] for i in player.inventory],
         "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
+        "armor": ITEM_DEFS[player.armor]["name"] if player.armor else None,
+        "offhand": ITEM_DEFS[player.offhand]["name"] if player.offhand else None,
     })
 
 
@@ -1731,10 +1748,10 @@ async def cmd_leaderboard(player, msg):
 
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
-        "Commands: login look move say attack take gather drop equip use rest heal buy sell craft "
+        "Commands: login look move attack take gather equip use rest heal buy sell craft "
         "commission_post commission_list commission_fill commission_cancel "
-        "give inventory stats who leaderboard help party_invite party_accept party_leave party_info "
-        "market_post market_list market_cancel market_buy market_expand quest quest_accept quest_turn_in"
+        "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
+        "market_post market_list market_cancel market_buy market_expand quest"
     )})
 
 # ---------------------------------------------------------------------------
@@ -1815,6 +1832,7 @@ QUESTS = {
         "result": QUEST_CHARM_RESULT,
         "result_name": "Ancient Guardian Charm",
         "objective": "craft",
+        "brief": "craft an Ancient Guardian Charm (Treant Bark + Troll Hide + Ectoplasm)",
         "reward_xp": QUEST_GUARD_XP,
         "reward_gold": QUEST_GUARD_GOLD,
         "reward_points": QUEST_GUARD_POINTS,
@@ -1828,6 +1846,7 @@ QUESTS = {
         "result": None,
         "result_name": None,
         "objective": "clear_dungeon_floors",
+        "brief": "clear dungeon floors in your party's instance",
         "floors_required": QUEST_DELVER_FLOORS,
         "reward_xp": QUEST_DELVER_XP,
         "reward_gold": QUEST_DELVER_GOLD,
@@ -1842,6 +1861,7 @@ QUESTS = {
         "result": None,
         "result_name": None,
         "objective": "gather",
+        "brief": "bring 3 Healing Herbs",
         "reward_xp": QUEST_REMEDY_XP,
         "reward_gold": QUEST_REMEDY_GOLD,
         "reward_points": QUEST_REMEDY_POINTS,
@@ -1855,6 +1875,7 @@ QUESTS = {
         "result": None,
         "result_name": None,
         "objective": "craft",
+        "brief": "brew 1 Fortitude Tonic (Iron Ore + Mountain Berry) and bring it",
         "reward_xp": QUEST_TONIC_XP,
         "reward_gold": QUEST_TONIC_GOLD,
         "reward_points": QUEST_TONIC_POINTS,
@@ -1874,20 +1895,43 @@ def _quest_has_inputs(player, inputs):
     return all(player.inventory.count(iid) >= qty for iid, qty in (inputs or {}).items())
 
 
+def _quest_ready(entry, player, qid):
+    """True when an active quest's objective is complete and turn-inable."""
+    if not _quest_active(entry, qid):
+        return False
+    if qid == "guard_charm":
+        return bool(entry.get("guard_charm_crafted"))
+    if qid == "delver":
+        return quest_delver_ready(entry)
+    return _quest_has_inputs(player, QUESTS[qid].get("inputs", {}))
+
+
 async def cmd_quest(player, msg):
-    """Handle quest acceptance and turn-in."""
-    cmd = msg.get("cmd", "")
+    """Single quest command: list what's available, accept one, turn one in."""
     action = msg.get("action", "")
-    if cmd == "quest_accept":
-        action = "accept"
-    elif cmd == "quest_turn_in":
-        action = "turn_in"
+    entry = get_score_entry(player.name)
+
+    if action == "list":
+        lines = []
+        for qid, q in QUESTS.items():
+            if _quest_active(entry, qid):
+                state = "ready to turn in" if _quest_ready(entry, player, qid) else "active"
+            else:
+                state = "available"
+            lines.append(
+                f"{qid}: {q['giver_name']} in {ROOMS[q['room']]['name']} — "
+                f"{q.get('brief', q['objective'])} "
+                f"(reward {q['reward_xp']} XP + {q['reward_gold']} gold) [{state}]"
+            )
+        await send(player, {"type": "message", "text": "Quests:\n" + "\n".join(lines)})
+        await send(player, stats_view(player))
+        return
+
     qid = str(msg.get("quest", "guard_charm") or "guard_charm").lower()
     if qid not in QUESTS:
         await send(player, {"type": "error", "text": f"Unknown quest '{qid}'. Known: {', '.join(sorted(QUESTS))}."})
         return
     quest = QUESTS[qid]
-    entry = get_score_entry(player.name)
 
     def _giver_present():
         return find_npc_in_room(player.room, quest["giver_npc"]) is not None
@@ -1970,7 +2014,7 @@ async def cmd_quest(player, msg):
         await credit_gold(player.name, quest["reward_gold"])
         await send(player, stats_view(player))
     else:
-        await send(player, {"type": "error", "text": "Unknown quest action. Use 'quest_accept' or 'quest_turn_in'."})
+        await send(player, {"type": "error", "text": "Unknown quest action. Use 'list', 'accept', or 'turn_in'."})
 
 
 def qid_key(entry, qid, kind):
@@ -2114,6 +2158,10 @@ async def cmd_market_post(player, msg):
     player.inventory.remove(iid)
     if player.equipped == iid:
         player.equipped = None
+    if player.armor == iid:
+        player.armor = None
+    if player.offhand == iid:
+        player.offhand = None
     oid = next(_id_counter)
     market_orders.append({"id": oid, "seller": player.name, "item": iid, "price": price, "ts": time.time()})
     mark_scores_dirty()
@@ -2523,11 +2571,9 @@ HANDLERS = {
     "login": cmd_login,
     "look": cmd_look,
     "move": cmd_move,
-    "say": cmd_say,
     "attack": cmd_attack,
     "take": cmd_take,
     "gather": cmd_gather,
-    "drop": cmd_drop,
     "equip": cmd_equip,
     "use": cmd_use,
     "rest": cmd_rest,
@@ -2535,7 +2581,6 @@ HANDLERS = {
     "buy": cmd_buy,
     "sell": cmd_sell,
     "craft": cmd_craft,
-    "give": cmd_give,
     "inventory": cmd_inventory,
     "stats": cmd_stats,
     "who": cmd_who,
@@ -2551,8 +2596,6 @@ HANDLERS = {
     "market_buy": cmd_market_buy,
     "market_expand": cmd_market_expand,
     "quest": cmd_quest,
-    "quest_accept": cmd_quest,
-    "quest_turn_in": cmd_quest,
     "commission_post": cmd_commission_post,
     "commission_list": cmd_commission_list,
     "commission_fill": cmd_commission_fill,
@@ -2567,14 +2610,11 @@ SCORE_ARG_EXTRACTORS = {
     "craft": lambda msg: str(msg.get("recipe", "")).lower(),
     "buy": lambda msg: str(msg.get("item", "")).lower(),
     "sell": lambda msg: str(msg.get("item", "")).lower(),
-    "give": lambda msg: str(msg.get("item") or f"gold:{msg.get('gold', '')}").lower(),
     "rest": lambda msg: "rest",
     "heal": lambda msg: "heal",
     "market_post": lambda msg: str(msg.get("item", "")).lower(),
     "market_buy": lambda msg: str(msg.get("id", "")).lower(),
     "quest": lambda msg: str(msg.get("action", "")).lower(),
-    "quest_accept": lambda msg: "accept",
-    "quest_turn_in": lambda msg: "turn_in",
     "commission_post": lambda msg: str(msg.get("target") or msg.get("required_kills", "")).lower(),
     "commission_fill": lambda msg: str(msg.get("commission_id", "")).lower(),
     "commission_cancel": lambda msg: str(msg.get("commission_id", "")).lower(),
@@ -2610,11 +2650,7 @@ def log_command(name, cmd, msg):
     if cmd == "login":
         name = name or str(msg.get("name", ""))
         detail = name
-    elif cmd == "say":
-        detail = str(msg.get("text", ""))
-    elif cmd == "give":
-        detail = msg.get("item") or f"gold:{msg.get('gold', '')}"
-    elif cmd in ("move", "attack", "take", "drop", "equip", "use", "buy", "sell", "craft"):
+    elif cmd in ("move", "attack", "take", "equip", "use", "buy", "sell", "craft"):
         detail = str(msg.get("dir") or msg.get("target") or msg.get("item") or msg.get("recipe") or "")
     elif cmd.startswith("market_"):
         detail = str(msg.get("item") or msg.get("id") or "")
@@ -2691,7 +2727,7 @@ def world_snapshot():
             "name": p.name, "level": e["level"], "score": round(e["score"], 2),
             "score_history": [s for _, s in _score_history.get(p.name.lower(), [])],
             "kills": e.get("kills", 0), "deaths": e.get("deaths", 0),
-            "gold": p.gold, "hp": p.hp, "max_hp": p.max_hp,
+            "gold": p.gold, "hp": p.hp, "max_hp": p.max_hp, "defense": _player_defense(p),
             "variety": round(compute_variety(e), 2), "room": p.room,
             "last_action": (track_log.get(p.name, [{}])[-1].get("cmd", "") if track_log.get(p.name) else ""),
             "recent_actions": list(track_log.get(p.name, [])),
@@ -2824,7 +2860,7 @@ async def npc_ai_loop():
             if npc["hostile"] and targets:
                 victim = random.choice(targets)
                 dmg = random.randint(1, npc["attack"])
-                dmg = max(0, dmg - _player_buff_amount(victim, "damage_reduction"))
+                dmg = max(0, dmg - _player_damage_reduction(victim))
                 victim.hp -= dmg
                 await send(victim, {"type": "combat", "text": f"{npc['name']} attacks you for {dmg}."})
                 await broadcast_room(room_id, {"type": "combat", "text": f"{npc['name']} attacks {victim.name} for {dmg}."}, exclude=victim)
