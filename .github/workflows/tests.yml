@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  offline:
+    name: Unit, grind (no server needed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install websockets==17.1
+      - run: python tests/test_server_unit.py
+      - run: python tests/test_quest_grind.py
+
+  live:
+    name: Live protocol + ML env (fresh server, seed 700)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install websockets==17.1
+      - run: echo '{}' > scores.json
+      - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.ci.log 2>&1 &
+      - run: sleep 5
+      - run: python tests/test_live.py
+      - run: python tests/test_env.py

@@ -1,0 +1,7 @@
+# Normalize line endings (kills the LF/CRLF warnings on Windows checkouts).
+* text=auto
+*.bat text eol=crlf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.html text eol=lf

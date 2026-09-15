@@ -98,6 +98,10 @@ days, `[M]` two–five days, `[L]` several days–weeks.
 ## P2 — depth
 
 - [ ] [XS] Update protocol help/README whenever new recipes or item types land
+- [ ] [XS] Seed the GitHub wiki (Home, Protocol, World/Quests, Crafting/Economy,
+  Dungeons/Parties, Agents, Operations) — BLOCKED: the wiki backend repo
+  (`...-mmo.wiki.git`) returns "Repository not found" while the repository is
+  private; revisit if it goes public (Home.md draft staged, wiki flag enabled)
 - [ ] [S] Expose active buffs and complete ammo counts consistently in `stats`,
   dashboard player rows, and dashboard player tracking
 - [ ] [S] Add a dashboard quest panel using the existing `/api/state.quests` data
