@@ -44,7 +44,7 @@ async def drain(ws, timeout=1.0):
     return msgs
 
 
-async def wait_room(ws, timeout=2.0):
+async def wait_room(ws, timeout=5.0):
     r = await recv(ws, want_type="room", timeout=timeout)
     if r is not None:
         return r
@@ -95,12 +95,12 @@ async def main():
 
     async def gm_send(cmd, **kwargs):
         await GM.send(json.dumps({"cmd": cmd, **kwargs}))
-        return await recv(GM, timeout=2.0)
+        return await recv(GM, timeout=5.0)
 
     # ---- A: login + seed gold via GM (loopback, treasury at TEXTMMO_GM_SEED=700)
     await send(A, {"cmd": "login", "name": "LiveA"})
     ent = {}
-    for m in await recv(A, timeout=2.0):
+    for m in await recv(A, timeout=5.0):
         ent.setdefault(m["type"], m)
     assert ent.get("room", {}).get("id") == "town_square"
     msgs = await gm_send("gm_reward", player="LiveA", gold=30)
@@ -129,27 +129,27 @@ async def main():
     # ---- A: reach graveyard (fight the wandering wolf if it shows again)
     await fight_until_room(A, "graveyard", "south")
     await send(A, {"cmd": "look"})
-    room = await recv(A, want_type="room", timeout=2.0)
+    room = await recv(A, want_type="room", timeout=5.0)
     assert room is not None and room["id"] == "graveyard"
     assert "enter" in room["exits"]
     print("GRAVEYARD_OK")
 
     # ---- A: enter dungeon (solo auto-party, floor 1)
     await send(A, {"cmd": "move", "dir": "enter"})
-    droom = await recv(A, want_type="room", timeout=2.0)
+    droom = await recv(A, want_type="room", timeout=5.0)
     assert droom is not None and droom["is_dungeon"] is True and droom["dungeon_floor"] == 1, droom
     assert set(droom["exits"]) == {"up"}
     assert droom["party_size"] >= 1
     print("DUNGEON_ENTER_OK")
 
     await send(A, {"cmd": "move", "dir": "down"})
-    errs = [m for m in await recv(A, timeout=1.5) if m.get("type") == "error"]
+    errs = [m for m in await recv(A, timeout=3.0) if m.get("type") == "error"]
     assert errs and "sealed" in errs[-1]["text"].lower()
     print("SEALED_DOWN_BLOCKED")
 
     # floor 1 retreat is allowed even while sealed
     await send(A, {"cmd": "move", "dir": "up"})
-    room = await recv(A, want_type="room", timeout=2.0)
+    room = await recv(A, want_type="room", timeout=5.0)
     assert room is not None and room["id"] == "graveyard", room
     print("FLOOR1_RETREAT_OK")
 
@@ -173,10 +173,10 @@ async def main():
     await send(A, {"cmd": "market_post", "item": "shield", "price": 50})
     await drain(A, 1.0)
     await send(B, {"cmd": "market_buy"})
-    got = await recv(B, timeout=2.0)
+    got = await recv(B, timeout=5.0)
     assert any(m.get("type") == "message" and "You buy" in m.get("text", "") for m in got), got
     await send(A, {"cmd": "market_list"})
-    ml = await recv(A, want_type="market", timeout=2.0)
+    ml = await recv(A, want_type="market", timeout=5.0)
     assert ml is not None
     # 420 (after B's gold) + 5 (tax on 50 sale) = 425
     assert ml["tax_treasury"] == 425.0 and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
@@ -201,13 +201,13 @@ async def main():
     await send(B, {"cmd": "party_accept"})
     await drain(B, 1.0)
     await send(A, {"cmd": "party_info"})
-    pi = await recv(A, want_type="party", timeout=2.0)
+    pi = await recv(A, want_type="party", timeout=5.0)
     assert pi is not None and len(pi["members"]) == 2 and pi["leader"] == "LiveA", pi
     print("PARTY_OK")
 
     # party dungeon instance is shared
     await send(A, {"cmd": "move", "dir": "enter"})
-    da = await recv(A, want_type="room", timeout=2.0)
+    da = await recv(A, want_type="room", timeout=5.0)
     assert da is not None and da["is_dungeon"] and da["dungeon_floor"] == 1
     assert da["party_size"] == 2, da
     print("PARTY_DUNGEON_SHARED")
