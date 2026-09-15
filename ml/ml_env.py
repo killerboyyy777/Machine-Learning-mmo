@@ -1,0 +1,910 @@
+"""
+A thin, Gym-style wrapper around the text MMO's WebSocket protocol, for
+plugging in a machine-learning agent instead of a hand-written bot.
+
+An ML client is NOT special-cased by the server -- it's just another
+WebSocket connection speaking the same JSON protocol as any client. This
+file only exists to turn that protocol into fixed-size numeric observations
+and a small discrete action space, which is the part an RL agent actually
+needs and a hand-written bot doesn't.
+
+Reward is simply the change in the server's own `score` between steps --
+including any assist payouts from other players' kills that land on you
+asynchronously. This means an RL agent trained against this env is directly
+optimizing the same score an anti-hardcoding curve already governs (see
+README.md "Scoring"): the agent inherits that pressure for free. There's no
+separate "reward shaping" to design here on top of what the game already
+tracks.
+
+The observation covers everything a fixed-size vector can reasonably carry
+about the 0.5 systems (instanced party dungeons, the player market, parties,
+and leveling), plus the Town Guard repeatable quest:
+  - room one-hot over the static surface world + is_dungeon / floor number
+  - exit mask across ALL directions including "up"/"down"/"enter"
+  - static NPC + ground-item presence, plus a count of unknown NPCs (dungeon
+    guards are spawned dynamically and aren't part of the startup vocab)
+  - inventory presence over the known item catalog + unknown-inv flag
+  - scalars: hp/gold/score/variety, allies, party size, level + XP progress,
+    market order count + presence, equipped-flag,
+  - market-tax terms: the server's tax rate, the minimum-tax floor, and the
+    exact after-tax net value of our own standing sell orders.
+  - quest terms: whether each quest is active, whether its objective is
+    ready, which charm mats we hold / whether we hold the charm, and whether
+    the quest giver is standing in our room (accept/turn-in both require him).
+  - ammo terms: arrow count as a scalar (bows consume 1 arrow per shot, so
+    unlike other items the count -- not just presence -- drives decisions).
+
+Market tax (10% with a 1-gold minimum, see server.py TAX_RATE/TAX_MINIMUM)
+is first-class here, not an ignored detail:
+  - `market_tax(price)` / `market_net(price)` reproduce the server formula
+    exactly, so any importer can price the tax into decisions;
+  - the observation carries the live tax terms plus our listings' net worth;
+  - `step()` returns an info dict with per-step `gold_delta`, the live tax
+    terms, any detected buy fill (`market_fill`), and our standing orders
+    with nets (`own_orders`) so trainers can attribute tax-aware P&L.
+
+Actions added on top of the old (move/attack/take/rest/look) set:
+  - move_up / move_down / move_enter   (dungeon travel; "enter" opens the
+    party's private instance from the graveyard)
+  - buy / sell / equip / use / craft   (basic gear + consumption loop;
+    "craft" builds reinforced_leather, "craft_charm" builds the
+    Ancient Guardian Charm for the Town Guard quest, "craft_iron" builds
+    Iron Plate Armor from 2x Iron Ore + Wolf Pelt, and "craft_arrows"
+    converts 1x Iron Ore into 1 Arrow; "buy" stocks healing
+    herbs while "buy_arrows" stocks arrows -- bows like the Oak Longbow
+    consume 1 arrow per shot and refuse to fire empty)
+  - market_post / market_buy / market_cancel / market_list
+  - party_invite / party_accept / party_leave / party_info
+  - drop / give / say                  (item management + social)
+  - quest_accept / quest_turn_in        (Town Guard repeatable quests;
+    both quests share the giver/room and the accept -> objective -> turn-in
+    pattern. quest_accept/quest_turn_in default to "guard_charm": craft the
+    charm from 1x Treant Bark + 1x Troll Hide + 1x Ectoplasm, turn in by the
+    guard for fixed XP + gold + score, repeatable. quest2_accept/quest2_turn_in
+    drive the "delver" quest instead: clear dungeon floors, report back.)
+
+Two ways to use this:
+  - Fresh name every reset() -> standard episodic RL (clean score=0 start
+    each episode, matches most RL library assumptions).
+  - Same name every reset() -> continual learning against a persistent
+    character whose score never resets, which arguably fits this game's
+    philosophy (no permanent solution, always more to learn) better than
+    artificial episode boundaries. Pick whichever your training setup wants.
+
+Usage (see the __main__ block at the bottom for a full random-agent demo):
+
+    import asyncio
+    from ml_env import TextMMOEnv, ACTIONS, N_ACTIONS
+
+    async def main():
+        env = TextMMOEnv("MLBot1")
+        obs = await env.reset()
+        for _ in range(200):
+            action = my_policy(obs)          # returns an int in range(N_ACTIONS)
+            obs, reward, done, info = await env.step(action)
+            if done:
+                obs = await env.reset()
+        await env.close()
+
+    asyncio.run(main())
+"""
+
+import asyncio
+import json
+import os
+import random
+import sys
+
+# ml_env.py lives in the ml/ subfolder but reuses the engine's already-loaded
+# world data for the observation vocab. Make the repo root importable.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import websockets
+import server as srv  # reuses the already-loaded world data for vocab
+
+DEFAULT_URL = "ws://localhost:8765"
+
+# --- Fixed vocab, built once from world.json --------------------------------
+# Room ids come straight from room events, but NPCs/items are reported by
+# display name over the protocol, so we need name -> id lookups to turn
+# them into stable indices for a fixed-size observation vector.
+ITEM_ID_TO_NAME = {k: v["name"] for k, v in srv.WORLD["items"].items()}
+NPC_ID_TO_NAME = {k: v["name"] for k, v in srv.WORLD["npcs"].items()}
+NPC_LIST = sorted(NPC_ID_TO_NAME.keys())
+ITEM_LIST = sorted(ITEM_ID_TO_NAME.keys())
+ROOM_LIST = sorted(srv.ROOMS.keys())
+
+# Market tax terms, mirroring server.py so the env (and any importer) can
+# compute exactly what a trade nets. The getattr fallbacks keep this file
+# importable even if the server module ever drops the constants.
+TAX_RATE = getattr(srv, "TAX_RATE", 0.10)
+TAX_MINIMUM = getattr(srv, "TAX_MINIMUM", 1)
+
+# Server difficulty curve (server.py compute_diminish): marginal score gains
+# shrink as total score grows, so the social bonus below is scaled by the
+# same factor -- otherwise a constant bonus would dominate the (diminishing)
+# score signal late in a run and reward idling in a party over playing well.
+DIFFICULTY_K = getattr(srv, "DIFFICULTY_K", 50.0)
+
+
+def diminish_factor(score):
+    """Server's difficulty multiplier at a given total score."""
+    return DIFFICULTY_K / (DIFFICULTY_K + max(0.0, score))
+
+
+def market_tax(price):
+    """Gold taken by the treasury on a sale at `price` (server formula:
+    10% with a minimum of 1 gold)."""
+    return max(TAX_MINIMUM, round(price * TAX_RATE))
+
+
+def market_net(price):
+    """Gold the seller actually receives for a sale at `price`."""
+    return price - market_tax(price)
+
+# --- Quest catalog (mirrors server.py QUESTS) --------------------------------
+# What the Town Guard quest IS, in one place, so models (and their trainers)
+# don't have to reverse-engineer it from reward traces:
+#   giver:      Town Guard ("guard") in town_square -- accept AND turn-in both
+#               require standing in his room;
+#   goal:       craft 1x Ancient Guardian Charm from 1x Treant Bark +
+#               1x Troll Hide + 1x Ectoplasm (craft_charm action);
+#   reward:     fixed every completion (repeatable): XP + gold + score;
+#   flow:       quest_accept -> collect mats -> craft_charm -> quest_turn_in.
+# Values below prefer the live server constants (getattr fallbacks keep this
+# importable even if the server module ever drops them).
+QUEST_GIVER_ID = getattr(srv, "QUEST_GUARD_NPC", "guard")
+QUEST_GIVER_NAME = "Town Guard"
+QUEST_GIVER_ROOM = "town_square"
+QUEST_RESULT_ID = getattr(srv, "QUEST_CHARM_RESULT", "ancient_guardian_charm")
+QUEST_INPUT_IDS = list(getattr(srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1}).keys())
+QUEST_REWARD_XP = getattr(srv, "QUEST_GUARD_XP", 50)
+QUEST_REWARD_GOLD = getattr(srv, "QUEST_GUARD_GOLD", 25)
+QUEST_REWARD_POINTS = getattr(srv, "QUEST_GUARD_POINTS", 15)
+
+QUESTS = {
+    "guard_charm": {
+        "giver_id": QUEST_GIVER_ID,
+        "giver_name": QUEST_GIVER_NAME,
+        "room": QUEST_GIVER_ROOM,
+        "inputs": list(QUEST_INPUT_IDS),
+        "result": QUEST_RESULT_ID,
+        "reward_xp": QUEST_REWARD_XP,
+        "reward_gold": QUEST_REWARD_GOLD,
+        "reward_points": QUEST_REWARD_POINTS,
+        "repeatable": True,
+    },
+    "delver": {
+        "giver_id": QUEST_GIVER_ID,
+        "giver_name": QUEST_GIVER_NAME,
+        "room": QUEST_GIVER_ROOM,
+        "inputs": [],
+        "result": None,
+        "reward_xp": getattr(srv, "QUEST_DELVER_XP", 30),
+        "reward_gold": getattr(srv, "QUEST_DELVER_GOLD", 15),
+        "reward_points": getattr(srv, "QUEST_DELVER_POINTS", 10),
+        "repeatable": True,
+    },
+}
+
+QUEST_DELVER_REWARD_XP = QUESTS["delver"]["reward_xp"]
+QUEST_DELVER_REWARD_GOLD = QUESTS["delver"]["reward_gold"]
+QUEST_DELVER_REWARD_POINTS = QUESTS["delver"]["reward_points"]
+
+
+def quest_charm_cost():
+    """Merchant value of the charm mats (what selling them would pay).
+
+    Treant Bark 10 + Troll Hide 18 + Ectoplasm 6 = 34 base. Used to teach
+    profitability: the charm turn-in pays QUEST_REWARD_GOLD gold, so the
+    gold-terms trade is reward minus cost (currently negative -- the quest
+    pays in XP/score instead, which is exactly the tradeoff to learn)."""
+    need = getattr(srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1})
+    total = 0
+    for iid, qty in need.items():
+        total += srv.ITEM_DEFS.get(iid, {}).get("value", 0) * qty
+    return total
+
+
+def quest_charm_net():
+    """Gold-terms P&L of one charm cycle: turn-in gold minus mat value."""
+    return QUEST_REWARD_GOLD - quest_charm_cost()
+
+
+def quest_stage(obs, quest="guard_charm"):
+    """Human-readable quest stage for a structured obs dict (debug/logs).
+
+    guard_charm stages: "no_quest", "collect" (active, mats missing),
+    "ready_turn_in" (active + charm crafted), "charm_no_quest" (holding a
+    charm but no active quest -- accept first, then craft counts).
+    delver stages: "no_quest", "collect" (active, floors missing),
+    "ready_turn_in" (active + floors cleared).
+    """
+    if quest == "delver":
+        active = bool(obs.get("quest2_active"))
+        ready = bool(obs.get("quest2_ready"))
+        if active and ready:
+            return "ready_turn_in"
+        if active:
+            return "collect"
+        return "no_quest"
+    active = bool(obs.get("quest_active"))
+    ready = bool(obs.get("quest_ready"))
+    has_charm = bool(obs.get("quest_has_charm"))
+    if active and ready:
+        return "ready_turn_in"
+    if active:
+        return "collect"
+    if has_charm:
+        return "charm_no_quest"
+    return "no_quest"
+
+# Every direction used anywhere in world.json -- including the dungeon
+# travel spellings "up"/"down" and the graveyard dungeon doorway "enter".
+DIRECTIONS = sorted({d for room in srv.ROOMS.values() for d in room["exits"]})
+DIRECTIONS = sorted(set(DIRECTIONS) | {srv.DUNGEON_ENTRANCE_DIR, "up", "down"})
+
+# Discrete action space. "attack"/"take"/"buy"/... act on whichever npc/item
+# is first in the room's list -- a fixed-size discrete space can't easily
+# parameterize "attack THIS specific one of N targets" without a more complex
+# action head, so this is the practical MVP. Extend ACTION_TO_CMD below if
+# you want to add targeted actions, multi-discrete spaces, etc.
+ACTIONS = (
+    [f"move_{d}" for d in DIRECTIONS]
+    + ["attack", "take", "drop", "give", "say", "rest", "look",
+       "buy", "sell", "equip", "use", "craft",
+       "market_post", "market_buy", "market_cancel", "market_list",
+       "party_invite", "party_accept", "party_leave", "party_info",
+        # Quest + gear-craft actions appended last so existing indices never shift.
+        "quest_accept", "quest_turn_in", "craft_charm",
+        "quest2_accept", "quest2_turn_in", "craft_iron", "buy_arrows",
+        "craft_arrows",
+        # New crafting actions for buffs and ammo.
+        "craft_sharpening_oil", "craft_fortitude_tonic", "craft_greater_sharpening_oil",
+        "craft_ironhide_draught",
+        # Gathering and commission actions.
+        "gather", "commission_post", "commission_list", "commission_fill", "commission_cancel"]
+)
+N_ACTIONS = len(ACTIONS)
+
+
+def flatten_obs(obs):
+    """Turn the structured observation dict into one flat list of floats,
+    e.g. for np.array(flatten_obs(obs)) or torch.tensor(...). Kept as a
+    plain list (no numpy dependency in this file) so it's usable regardless
+    of what ML framework you're using."""
+    return (
+        obs["room_onehot"]
+        + [obs["is_dungeon"], obs["floor_norm"]]
+        + obs["exits_mask"]
+        + obs["npc_presence"]
+        + [obs["npc_unknown_count"]]
+        + obs["item_presence"]
+        + obs["inv_presence"]
+        + [obs["equipped_flag"], obs["inv_unknown_flag"]]
+        + [obs["hp_frac"], obs["gold_norm"], obs["score_norm"], obs["variety"],
+           obs["allies_norm"], obs["party_norm"], obs["level_norm"],
+           obs["xp_progress"], obs["market_norm"], obs["market_any"],
+           obs["tax_rate"], obs["tax_min_norm"], obs["own_net_norm"]]
+        # Quest block appended last so earlier indices never shift.
+        + [obs["quest_active"], obs["quest_ready"], obs["quest_has_charm"],
+           obs["quest_mat_bark"], obs["quest_mat_hide"], obs["quest_mat_ecto"],
+           obs["quest_giver_here"]]
+        + [obs["quest2_active"], obs["quest2_ready"], obs["quest2_giver_here"]]
+        + [obs["arrows_norm"]]
+        + [obs["buff_attack"], obs["buff_dr"]]
+    )
+
+
+OBS_SIZE = (
+    len(ROOM_LIST) + 2                     # room one-hot + is_dungeon + floor
+    + len(DIRECTIONS)                      # exit mask
+    + len(NPC_LIST) + 1                    # npc presence + unknown-npc count
+    + len(ITEM_LIST) + len(ITEM_LIST) + 2  # ground + inventory presence + flags
+    + 13                                   # scalars (hp_frac, gold_norm, score_norm, variety,
+                                           # allies_norm, party_norm, level_norm, xp_progress,
+                                           # market_norm, market_any, tax_rate, tax_min_norm,
+                                           # own_net_norm)
+    + 7                                    # quest block (active/ready/has_charm/3 mats/giver_here)
+    + 3                                    # delver quest block (active/ready/giver_here)
+    + 1                                    # arrows_norm (ammo count; bows eat one per shot)
+    + 2                                    # buff block (attack active, damage-reduction active)
+)
+
+
+class TextMMOEnv:
+    """One instance = one connected character. Create several instances
+    (different names) for multi-agent training; they're independent
+    WebSocket connections into the same shared, persistent world, so
+    multiple ML agents (and/or bots, and/or humans) can occupy it together
+    -- including sharing party dungeons and trading on the same market."""
+
+    def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None):
+        self.name = name
+        self.url = url
+        self.step_delay = step_delay
+        self.max_steps = max_steps
+        self.ws = None
+        self._reader_task = None
+        self._state = {
+            "room_id": None, "exits": [], "npc_names": [], "item_names": [],
+            "player_names": [], "is_dungeon": False, "dungeon_floor": 0,
+            "party_size": 1,
+            "hp": 0, "max_hp": 1, "gold": 0, "score": 0.0, "variety": 1.0,
+            "level": 1, "xp": 0.0, "xp_to_next": 100.0,
+            "equipped": None, "inv_names": [],
+            "market_orders": 0, "market_state": None,
+            "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
+            "other_players": 0,
+            # Quest state, mirrored from the server's stats event. Until the
+            # first stats lands these stay False (no quest assumed).
+            "quest_guard_active": False, "guard_charm_crafted": False,
+            "quest_delver_active": False, "quest_delver_ready": False,
+            "buff_attack_amount": 0, "buff_damage_reduction_amount": 0,
+        }
+        self._pending_reward = 0.0
+        self._step_count = 0
+
+    async def _reader(self):
+        try:
+            async for raw in self.ws:
+                event = json.loads(raw)
+                t = event.get("type")
+                if t == "room":
+                    self._state["room_id"] = event["id"]
+                    self._state["exits"] = event["exits"]
+                    self._state["npc_names"] = event["npcs"]
+                    self._state["item_names"] = event["items"]
+                    self._state["player_names"] = event["players"]
+                    self._state["is_dungeon"] = event.get("is_dungeon", False)
+                    self._state["dungeon_floor"] = event.get("dungeon_floor") or 0
+                    self._state["party_size"] = event.get("party_size", 1)
+                    self._state["other_players"] = max(0, len(event["players"]) - 1)
+                elif t == "stats":
+                    self._state["hp"] = event["hp"]
+                    self._state["max_hp"] = event["max_hp"]
+                    self._state["gold"] = event["gold"]
+                    self._state["score"] = event["score"]
+                    self._state["variety"] = event.get("variety", 1.0) or 1.0
+                    self._state["level"] = event.get("level", 1)
+                    self._state["xp"] = event.get("xp", 0.0)
+                    self._state["xp_to_next"] = event.get("xp_to_next", 100.0)
+                    self._state["party_size"] = event.get("party_size", self._state["party_size"])
+                    self._state["inv_names"] = event.get("inv", [])
+                    self._state["equipped"] = event.get("equipped")
+                    self._state["market_orders"] = event.get("market_orders", 0)
+                    # Quest flags ride along on every stats event (server's
+                    # stats_view always includes them now).
+                    if "quest_guard_active" in event:
+                        self._state["quest_guard_active"] = bool(event["quest_guard_active"])
+                    if "guard_charm_crafted" in event:
+                        self._state["guard_charm_crafted"] = bool(event["guard_charm_crafted"])
+                    if "quest_delver_active" in event:
+                        self._state["quest_delver_active"] = bool(event["quest_delver_active"])
+                    if "quest_delver_ready" in event:
+                        self._state["quest_delver_ready"] = bool(event["quest_delver_ready"])
+                    # Crafted buffs ride along on every stats event as a
+                    # {category: {amount, remaining}} dict (server's
+                    # stats_view always includes it now).
+                    buffs = event.get("buffs") or {}
+                    atk = buffs.get("attack") or {}
+                    dr = buffs.get("damage_reduction") or {}
+                    self._state["buff_attack_amount"] = int(atk.get("amount", 0)) if atk.get("remaining", 0) > 0 else 0
+                    self._state["buff_damage_reduction_amount"] = int(dr.get("amount", 0)) if dr.get("remaining", 0) > 0 else 0
+                elif t == "score":
+                    # Covers assist payouts from other players' kills too --
+                    # those can arrive at any time, not just right after our
+                    # own action, which is why reward is accumulated here
+                    # rather than only diffed inside step().
+                    self._pending_reward += event["gained"]
+                    self._state["score"] = event["total"]
+                elif t == "market":
+                    self._state["market_state"] = event
+                    self._state["tax_rate"] = event.get("tax_rate", self._state["tax_rate"])
+                    self._state["tax_min"] = event.get("tax_min", self._state["tax_min"])
+                elif t == "party":
+                    self._state["party_info"] = event
+                elif t == "xp":
+                    self._state["level"] = event.get("level", self._state["level"])
+                    self._state["xp"] = event.get("total", self._state["xp"])
+                    self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
+                elif t == "level_up":
+                    self._state["level"] = event.get("level", self._state["level"])
+                elif t == "death":
+                    self._state["hp"] = self._state["max_hp"]
+                elif t == "error":
+                    # Could log or track error rate
+                    pass
+        except websockets.ConnectionClosed:
+            pass
+
+    async def _send(self, cmd, **kwargs):
+        await self.ws.send(json.dumps({"cmd": cmd, **kwargs}))
+
+    async def reset(self):
+        if self.ws is not None:
+            if self._reader_task:
+                self._reader_task.cancel()
+            await self.ws.close()
+
+        self.ws = await websockets.connect(self.url)
+        self._reader_task = asyncio.create_task(self._reader())
+        await self._send("login", name=self.name)
+        await self._send("stats")
+        await self._send("market_list")
+        await asyncio.sleep(self.step_delay * 2)  # let the initial snapshot land
+
+        self._pending_reward = 0.0
+        self._step_count = 0
+        return self._build_obs()
+
+    async def step(self, action_idx):
+        action = ACTIONS[action_idx]
+        cmd = self._action_to_cmd(action)
+        gold_before = self._state["gold"]
+        inv_before = list(self._state["inv_names"] or [])
+        quest_active_before = bool(self._state.get("quest_guard_active"))
+        quest_crafted_before = bool(self._state.get("guard_charm_crafted"))
+        delver_active_before = bool(self._state.get("quest_delver_active"))
+        delver_ready_before = bool(self._state.get("quest_delver_ready"))
+        episode_done = False
+        if cmd:
+            try:
+                await self._send(**cmd)
+            except websockets.exceptions.ConnectionClosedError:
+                episode_done = True
+        await asyncio.sleep(self.step_delay)
+
+        reward = self._pending_reward
+        # Social reward: only when the agent is in a party with other connected players
+        # (party members are physically close by design, and other_players > 0 means
+        # there are other bots/agents in the world). Scaled by the server's
+        # difficulty curve so it tracks the score signal instead of dwarfing it:
+        # full 0.1 at score 0, ~0.01 at 450, ~0.001 at 4950.
+        if self._state.get("other_players", 0) > 0 and self._state.get("party_size", 1) > 1:
+            reward += 0.1 * diminish_factor(self._state.get("score", 0.0))
+        self._pending_reward = 0.0
+        self._step_count += 1
+        if episode_done:
+            done = True
+            obs = self._build_obs()
+        else:
+            done = self.max_steps is not None and self._step_count >= self.max_steps
+            obs = self._build_obs()
+        quest_active_after = bool(self._state.get("quest_guard_active"))
+        quest_crafted_after = bool(self._state.get("guard_charm_crafted"))
+        delver_active_after = bool(self._state.get("quest_delver_active"))
+        delver_ready_after = bool(self._state.get("quest_delver_ready"))
+        guard_accepted = (not quest_active_before) and quest_active_after
+        guard_turned = quest_active_before and (not quest_active_after)
+        guard_crafted = (not quest_crafted_before) and quest_crafted_after
+        delver_accepted = (not delver_active_before) and delver_active_after
+        delver_turned = delver_active_before and (not delver_active_after)
+        delver_became_ready = (not delver_ready_before) and delver_ready_after
+        next_obs = self._build_obs()
+        info = {
+            "action": action,
+            "gold_delta": self._state["gold"] - gold_before,
+            "tax_rate": self._state["tax_rate"],
+            "tax_min": self._state["tax_min"],
+            # Buy fill detected this step (or None): {"side": "buy", "cost": N}.
+            "market_fill": self._detect_fill(action, gold_before, inv_before),
+            # Our standing sell orders with exact after-tax net. Snapshot may
+            # be stale until the next market_list; trainers should diff ids
+            # across steps to spot completed sales.
+            "own_orders": self._own_orders(),
+            # Quest transitions this step, for reward shaping / logging.
+            # accepted: False->True on quest_accept; turned_in: True->False
+            # on quest_turn_in (reward lands via score/xp/gold events);
+            # crafted_charm: charm flag flipped (or charm newly in inv).
+            # Top-level keys are any-quest (backward compatible); by_quest
+            # breaks them out per quest id for multi-quest shaping.
+            "quest": {
+                "accepted": guard_accepted or delver_accepted,
+                "turned_in": guard_turned or delver_turned,
+                "crafted_charm": guard_crafted,
+                "delver_became_ready": delver_became_ready,
+                "active": quest_active_after or delver_active_after,
+                "ready": quest_crafted_after or delver_ready_after,
+                "stage": quest_stage(next_obs),
+                "stage2": quest_stage(next_obs, "delver"),
+                "by_quest": {
+                    "guard_charm": {
+                        "accepted": guard_accepted,
+                        "turned_in": guard_turned,
+                        "crafted_charm": guard_crafted,
+                    },
+                    "delver": {
+                        "accepted": delver_accepted,
+                        "turned_in": delver_turned,
+                        "became_ready": delver_became_ready,
+                    },
+                },
+            },
+        }
+        done = episode_done or (self.max_steps is not None and self._step_count >= self.max_steps)
+        info["action_mask"] = 1 if cmd is not None else 0
+        return next_obs, reward, done, info
+
+    def _own_orders(self):
+        """Our standing sell orders with exact after-tax net, from the latest
+        `market` snapshot."""
+        ms = self._state.get("market_state") or {}
+        out = []
+        for o in ms.get("orders") or []:
+            if o.get("seller") == self.name:
+                price = o.get("price", 0)
+                out.append({"id": o.get("id"), "price": price, "net": market_net(price)})
+        return out
+
+    def _detect_fill(self, action, gold_before, inv_before):
+        """Heuristic fill detection for our own market_buy: inventory grew and
+        gold dropped => we bought at gold_before - gold_after."""
+        if action != "market_buy":
+            return None
+        after = self._state["inv_names"] or []
+        if len(after) > len(inv_before):
+            return {"side": "buy", "cost": max(0.0, gold_before - self._state["gold"])}
+        return None
+
+    async def close(self):
+        if self._reader_task:
+            self._reader_task.cancel()
+        if self.ws is not None:
+            await self.ws.close()
+
+    def _first_inv_typed(self, item_type, exclude_equipped=True):
+        """First inventory display name of a given item type (or None)."""
+        for name in self._state["inv_names"] or []:
+            iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+            if not iid:
+                continue
+            if srv.ITEM_DEFS[iid].get("type") != item_type:
+                continue
+            if exclude_equipped and iid == self._state["equipped"]:
+                continue
+            return name
+        return None
+
+    def _first_ground_item(self):
+        return (self._state["item_names"] or [None])[0]
+
+    def _action_to_cmd(self, action):
+        s = self._state
+        if action.startswith("move_"):
+            return {"cmd": "move", "dir": action[len("move_"):]}
+        if action == "attack":
+            if s["npc_names"]:
+                # Dungeon guards and static world NPCs are both reported by
+                # name, so this generic "attack the first thing" covers both.
+                return {"cmd": "attack", "target": s["npc_names"][0]}
+            return None
+        if action == "take":
+            item = self._first_ground_item()
+            if item:
+                return {"cmd": "take", "item": item}
+            return None
+        if action == "rest":
+            return {"cmd": "rest"}
+        if action == "look":
+            return {"cmd": "look"}
+        if action == "buy":
+            # Buy the merchant's cheapest consumable (healing herb) to stay alive.
+            return {"cmd": "buy", "item": "healing"}
+        if action == "buy_arrows":
+            # Stock ammunition for bows (Oak Longbow consumes 1 arrow per
+            # shot; attacking empty-handed errors). Ungated like "buy": the
+            # server validates merchant presence and gold.
+            return {"cmd": "buy", "item": "arrow"}
+        if action == "sell":
+            name = self._first_inv_typed("junk")
+            if name:
+                return {"cmd": "sell", "item": name}
+            return None
+        if action == "equip":
+            name = self._first_inv_typed("weapon")
+            if name:
+                return {"cmd": "equip", "item": name}
+            return None
+        if action == "use":
+            name = self._first_inv_typed("consumable")
+            if name:
+                return {"cmd": "use", "item": name}
+            return None
+        if action == "craft":
+            # Builds reinforced_leather (wolf_pelt + rat tails). The check
+            # above makes sure we only try when we actually have the mats.
+            return {"cmd": "craft", "recipe": "reinforced_leather"}
+        if action == "craft_charm":
+            # Builds the Ancient Guardian Charm for the Town Guard quest
+            # (1x Treant Bark + 1x Troll Hide + 1x Ectoplasm). Gate on mats
+            # so the model doesn't waste steps on guaranteed-error crafts;
+            # a missing-mat step becomes a no-op like other gated actions.
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = getattr(srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "ancient_guardian_charm"}
+            return None
+        if action == "craft_iron":
+            # Builds Iron Plate Armor (2x Iron Ore + 1x Wolf Pelt), the best
+            # static-world weapon. Same mat gating as craft_charm; reads the
+            # live recipe so world.json stays the single source of truth.
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("iron_plate", {}).get("inputs", {"iron_ore": 2, "wolf_pelt": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "iron_plate"}
+            return None
+        if action == "craft_arrows":
+            # One Iron Ore produces one Arrow through the server's generic
+            # recipe system. Gate on ore so the agent avoids guaranteed errors.
+            if any(srv.find_item_by_name(list(srv.ITEM_DEFS), name) == "iron_ore"
+                   for name in (s["inv_names"] or [])):
+                return {"cmd": "craft", "recipe": "arrows"}
+            return None
+        if action == "craft_sharpening_oil":
+            # 1x Iron Ore + 1x Wolf Pelt -> 1 Sharpening Oil (tier 2, attack +2)
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("sharpening_oil", {}).get("inputs", {"iron_ore": 1, "wolf_pelt": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "sharpening_oil"}
+            return None
+        if action == "craft_fortitude_tonic":
+            # 1x Iron Ore + 1x Mountain Berry -> 1 Fortitude Tonic (tier 2, damage reduction +1)
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("fortitude_tonic", {}).get("inputs", {"iron_ore": 1, "mountain_berry": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "fortitude_tonic"}
+            return None
+        if action == "craft_greater_sharpening_oil":
+            # 2x Iron Ore + 1x Serpent Scale -> 1 Greater Sharpening Oil (tier 3, attack +4)
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("greater_sharpening_oil", {}).get("inputs", {"iron_ore": 2, "serpent_scale": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "greater_sharpening_oil"}
+            return None
+        if action == "craft_ironhide_draught":
+            # 1x Troll Hide + 1x Iron Ore + 1x Ectoplasm -> 1 Ironhide Draught (tier 3, damage reduction +2)
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("ironhide_draught", {}).get("inputs", {"troll_hide": 1, "iron_ore": 1, "ectoplasm": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "ironhide_draught"}
+            return None
+        if action == "gather":
+            # Gather from available nodes in the current room
+            return {"cmd": "gather"}
+        if action == "commission_post":
+            # Post a new escrowed bounty
+            return {"cmd": "commission_post"}
+        if action == "commission_list":
+            # List open commissions
+            return {"cmd": "commission_list"}
+        if action == "commission_fill":
+            # Fill/accept an open commission
+            return {"cmd": "commission_fill"}
+        if action == "commission_cancel":
+            # Cancel a posted commission
+            return {"cmd": "commission_cancel"}
+        if action == "quest_accept":
+            # Accept the Town Guard's guard_charm quest. The server requires
+            # standing in the guard's room; sending it elsewhere just yields
+            # an error (and a look-resync), which is itself a learning signal.
+            return {"cmd": "quest_accept", "quest": "guard_charm"}
+        if action == "quest_turn_in":
+            # Turn in the crafted charm for the fixed XP + gold + score.
+            # Likewise requires the guard's room; the server validates.
+            return {"cmd": "quest_turn_in", "quest": "guard_charm"}
+        if action == "quest2_accept":
+            # Accept the Depth Delver quest (clear dungeon floors).
+            return {"cmd": "quest_accept", "quest": "delver"}
+        if action == "quest2_turn_in":
+            # Turn in cleared floors for the fixed XP + gold + score.
+            return {"cmd": "quest_turn_in", "quest": "delver"}
+        if action == "market_post":
+            name = self._first_inv_typed("junk") or self._first_inv_typed("weapon")
+            if name:
+                return {"cmd": "market_post", "item": name, "price": 0}
+            return None
+        if action == "market_buy":
+            return {"cmd": "market_buy"}
+        if action == "market_cancel":
+            # Cancel our own cheapest standing order if we have any.
+            ms = s.get("market_state")
+            if ms and ms.get("orders"):
+                mine = [o for o in ms["orders"] if o["seller"] == self.name]
+                if mine:
+                    return {"cmd": "market_cancel", "id": mine[0]["id"]}
+            return None
+        if action == "market_list":
+            return {"cmd": "market_list"}
+        if action == "party_invite":
+            # Invite the first other player visible in the room.
+            for pname in s.get("player_names") or []:
+                if pname != self.name:
+                    return {"cmd": "party_invite", "target": pname}
+            return None
+        if action == "party_accept":
+            return {"cmd": "party_accept"}
+        if action == "party_leave":
+            return {"cmd": "party_leave"}
+        if action == "party_info":
+            return {"cmd": "party_info"}
+        if action == "drop":
+            item = self._first_ground_item()
+            # Actually drop first inventory item, not ground item
+            if s["inv_names"]:
+                return {"cmd": "drop", "item": s["inv_names"][0]}
+            return None
+        if action == "give":
+            # Give first inventory item to first other player in room
+            target = None
+            for pname in s.get("player_names") or []:
+                if pname != self.name:
+                    target = pname
+                    break
+            if target and s["inv_names"]:
+                return {"cmd": "give", "item": s["inv_names"][0], "to": target}
+            return None
+        if action == "say":
+            return {"cmd": "say", "text": "hello"}
+        return None
+
+    def _build_obs(self):
+        s = self._state
+        room_onehot = [1.0 if rid == s["room_id"] else 0.0 for rid in ROOM_LIST]
+        is_dungeon = 1.0 if s["is_dungeon"] else 0.0
+        floor_norm = min(s["dungeon_floor"], 20) / 20.0
+
+        exits_mask = [1.0 if d in s["exits"] else 0.0 for d in DIRECTIONS]
+        static_names = set(NPC_ID_TO_NAME.values())
+        unknown_npcs = [n for n in s["npc_names"] if n not in static_names]
+        npc_presence = [1.0 if NPC_ID_TO_NAME[nid] in s["npc_names"] else 0.0 for nid in NPC_LIST]
+        item_ids = {v: k for k, v in ITEM_ID_TO_NAME.items()}
+        item_presence = [1.0 if item_ids.get(i, None) in s["item_names"] else 0.0 for i in ITEM_LIST]
+
+        inv_presence = [1.0 if item_ids.get(i, None) in (s["inv_names"] or []) else 0.0 for i in ITEM_LIST]
+        equipped_flag = 1.0 if s["equipped"] else 0.0
+        inv_unknown = 1.0 if any(n not in ITEM_ID_TO_NAME.values() for n in (s["inv_names"] or [])) else 0.0
+
+        ms = s.get("market_state")
+        market_norm = min(s["market_orders"], 20) / 20.0
+        market_any = 1.0 if (ms and ms.get("orders")) else 0.0
+        orders = (ms or {}).get("orders") or []
+        own_net = sum(
+            market_net(o.get("price", 0))
+            for o in orders
+            if o.get("seller") == self.name
+        )
+
+        # --- Quest features: what the quest is + where we stand in it ---
+        # Active/ready come straight from the server's stats event; the rest
+        # are derived locally so the model sees *why* it can/can't progress.
+        quest_active = 1.0 if s.get("quest_guard_active") else 0.0
+        quest_ready = 1.0 if s.get("guard_charm_crafted") else 0.0
+        inv_ids = set()
+        for n in (s["inv_names"] or []):
+            iid = srv.find_item_by_name(list(srv.ITEM_DEFS), n)
+            if iid:
+                inv_ids.add(iid)
+        quest_has_charm = 1.0 if QUEST_RESULT_ID in inv_ids else 0.0
+        quest_mat_bark = 1.0 if "treant_bark" in inv_ids else 0.0
+        quest_mat_hide = 1.0 if "troll_hide" in inv_ids else 0.0
+        quest_mat_ecto = 1.0 if "ectoplasm" in inv_ids else 0.0
+        quest_giver_here = 1.0 if QUEST_GIVER_NAME in (s["npc_names"] or []) else 0.0
+        # Delver quest shares the giver/room, so its giver flag mirrors the
+        # same presence check through its own key (same pattern, per quest).
+        quest2_active = 1.0 if s.get("quest_delver_active") else 0.0
+        quest2_ready = 1.0 if s.get("quest_delver_ready") else 0.0
+        quest2_giver_here = quest_giver_here
+        # Arrow count matters (bows eat one per shot), unlike other items
+        # where binary presence suffices -- hence a scalar, not just the
+        # inv_presence flag.
+        arrow_count = sum(1 for n in (s["inv_names"] or [])
+                          if srv.find_item_by_name(list(srv.ITEM_DEFS), n) == "arrow")
+        arrows_norm = min(arrow_count, 20) / 20.0
+
+        return {
+            "room_onehot": room_onehot,
+            "is_dungeon": is_dungeon,
+            "floor_norm": floor_norm,
+            "exits_mask": exits_mask,
+            "npc_presence": npc_presence,
+            "npc_unknown_count": min(len(unknown_npcs), 5) / 5.0,
+            "item_presence": item_presence,
+            "inv_presence": inv_presence,
+            "equipped_flag": equipped_flag,
+            "inv_unknown_flag": inv_unknown,
+            "hp_frac": s["hp"] / max(1, s["max_hp"]),
+            "gold_norm": s["gold"] / 200.0,       # arbitrary scale, tune to taste
+            "score_norm": s["score"] / 100.0,     # arbitrary scale, tune to taste
+            "variety": s["variety"],
+            "allies_norm": min(s["other_players"], 5) / 5.0,
+            "party_norm": min(s["party_size"], srv.PARTY_MAX_MEMBERS) / srv.PARTY_MAX_MEMBERS,
+            "level_norm": min(s["level"], 20) / 20.0,
+            "xp_progress": min(1.0, s["xp"] / max(1.0, s["xp_to_next"])),
+            "market_norm": market_norm,
+            "market_any": market_any,
+            "tax_rate": s["tax_rate"],
+            "tax_min_norm": s["tax_min"] / 10.0,
+            "own_net_norm": own_net / 200.0,   # after-tax value of our listings
+            "quest_active": quest_active,
+            "quest_ready": quest_ready,
+            "quest_has_charm": quest_has_charm,
+            "quest_mat_bark": quest_mat_bark,
+            "quest_mat_hide": quest_mat_hide,
+            "quest_mat_ecto": quest_mat_ecto,
+            "quest_giver_here": quest_giver_here,
+            "quest2_active": quest2_active,
+            "quest2_ready": quest2_ready,
+            "quest2_giver_here": quest2_giver_here,
+            "arrows_norm": arrows_norm,
+            # Buff features
+            "buff_attack": 1.0 if s.get("buff_attack_amount", 0) > 0 else 0.0,
+            "buff_dr": 1.0 if s.get("buff_damage_reduction_amount", 0) > 0 else 0.0,
+            # Not part of flatten_obs() -- handy for debugging/logging only:
+            "room_id": s["room_id"],
+            "score_raw": s["score"],
+            "level": s["level"],
+            "gold_raw": s["gold"],
+            "inv_names": list(s["inv_names"] or []),
+            "quest_stage": quest_stage({
+                "quest_active": quest_active,
+                "quest_ready": quest_ready,
+                "quest_has_charm": quest_has_charm,
+            }),
+            "quest2_stage": quest_stage({
+                "quest2_active": quest2_active,
+                "quest2_ready": quest2_ready,
+            }, "delver"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Smoke-test / demo: a random agent, to prove the env works end to end and
+# to show the minimum viable training loop shape.
+# ---------------------------------------------------------------------------
+
+async def _demo():
+    env = TextMMOEnv(f"MLDemo{random.randint(1000,9999)}", max_steps=40)
+    obs = await env.reset()
+    print(f"Observation size: {len(flatten_obs(obs))} floats, {N_ACTIONS} actions: {ACTIONS}")
+
+    total_reward = 0.0
+    done = False
+    while not done:
+        action = random.randrange(N_ACTIONS)
+        obs, reward, done, info = await env.step(action)
+        total_reward += reward
+        if reward:
+            print(f"  action={ACTIONS[action]:<16} reward={reward:+.3f}  room={obs['room_id']}  hp_frac={obs['hp_frac']:.2f}")
+
+    print(f"\nTotal reward over {env._step_count} random steps: {total_reward:.2f}")
+    print(f"Final score: {obs['score_raw']:.2f}")
+    await env.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(_demo())

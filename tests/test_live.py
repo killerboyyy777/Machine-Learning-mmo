@@ -1,0 +1,237 @@
+"""Live end-to-end protocol test (needs a live server).
+
+Prerequisites: fresh `scores.json` (`{}`), server started with
+`TEXTMMO_GM_SEED=700`, then run from the repo root:
+    python tests/test_live.py
+Covers: GM-seeded treasury math, gear-up, graveyard + instanced dungeon
+entry, sealed-floor rules, floor-1 retreat, market trade + tax, GM spends,
+party invite/accept/shared dungeon, and the dashboard snapshot.
+
+Note: the raw protocol requires FULL direction names (north/south/...,
+up/down/enter) -- shorthand like `w` is rejected by the server.
+"""
+import asyncio, json, time
+import websockets
+
+URI = "ws://127.0.0.1:8765"
+GM_URI = "ws://127.0.0.1:8767"
+
+async def recv(ws, timeout=3.0, want_type=None):
+    deadline = time.time() + timeout
+    out = []
+    while time.time() < deadline:
+        try:
+            msg = json.loads(await asyncio.wait_for(ws.recv(), max(0.05, deadline - time.time())))
+        except asyncio.TimeoutError:
+            break
+        out.append(msg)
+        if want_type and msg.get("type") == want_type:
+            return msg
+    return out if not want_type else None
+
+
+async def send(ws, obj):
+    await ws.send(json.dumps(obj))
+
+
+async def drain(ws, timeout=1.0):
+    msgs = []
+    while True:
+        m = await recv(ws, timeout=0.1)
+        if not m:
+            break
+        msgs.extend(m if isinstance(m, list) else [m])
+    return msgs
+
+
+async def wait_room(ws, timeout=2.0):
+    r = await recv(ws, want_type="room", timeout=timeout)
+    if r is not None:
+        return r
+    await drain(ws, 1.0)
+    return None
+
+
+async def fight_until_room(ws, target_room, dir_to_target, max_rounds=40):
+    """Navigate to a room, attacking hostile NPCs (wolf/ghost/rat) that block
+    the way. Dies are OK: death respawns you in town_square and this loops."""
+    for _ in range(max_rounds):
+        await send(ws, {"cmd": "look"})
+        room = await wait_room(ws)
+        if room is None:
+            continue
+        print(f"  [{target_room}] at {room['id']} npcs={room.get('npcs')}")
+        if room["id"] == target_room:
+            return room
+        for npc in list(room.get("npcs", [])):
+            for _ in range(20):
+                await send(ws, {"cmd": "attack", "target": npc})
+                await drain(ws, 0.3)
+                await send(ws, {"cmd": "look"})
+                r2 = await wait_room(ws)
+                if r2 is None:
+                    break
+                room = r2
+                if npc not in room.get("npcs", []):
+                    break
+            if room["id"] == target_room:
+                return room
+            if any("healing" in i.lower() for i in room.get("items", [])):
+                await send(ws, {"cmd": "take", "item": "healing"})
+                await drain(ws, 0.5)
+        await send(ws, {"cmd": "move", "dir": dir_to_target})
+        moved = await drain(ws, 1.0)
+        for m in moved[:6]:
+            print(f"    move-> {m.get('type')} {str(m.get('text', m.get('id', '')))[:50]}")
+        await drain(ws, 0.3)
+    raise RuntimeError(f"Could not reach {target_room}")
+
+
+async def main():
+    A = await websockets.connect(URI)
+    B = await websockets.connect(URI)
+    # GM commands go through the dedicated loopback GM stream, never the game port
+    GM = await websockets.connect(GM_URI)
+
+    async def gm_send(cmd, **kwargs):
+        await GM.send(json.dumps({"cmd": cmd, **kwargs}))
+        return await recv(GM, timeout=2.0)
+
+    # ---- A: login + seed gold via GM (loopback, treasury at TEXTMMO_GM_SEED=700)
+    await send(A, {"cmd": "login", "name": "LiveA"})
+    ent = {}
+    for m in await recv(A, timeout=2.0):
+        ent.setdefault(m["type"], m)
+    assert ent.get("room", {}).get("id") == "town_square"
+    msgs = await gm_send("gm_reward", player="LiveA", gold=30)
+    assert any("Treasury now 670.0" in m.get("text", "") for m in msgs), msgs
+    print("LOGIN_GM_SEED_OK")
+
+    # ---- A: buy a sword (attack 7) so fights are quick
+    await send(A, {"cmd": "move", "dir": "west"})
+    await wait_room(A)
+    await send(A, {"cmd": "buy", "item": "rusty"})
+    await drain(A, 0.8)
+    await send(A, {"cmd": "equip", "item": "rusty"})
+    await drain(A, 0.5)
+    print("GEAR_UP_OK")
+
+    # ---- A: grab the free shield from the shop for later market sale
+    await send(A, {"cmd": "move", "dir": "east"})     # back to town_square
+    await wait_room(A)
+    await send(A, {"cmd": "move", "dir": "east"})     # old_shop
+    await wait_room(A)
+    await send(A, {"cmd": "take", "item": "shield"})
+    await drain(A, 1.0)
+    await send(A, {"cmd": "move", "dir": "west"})     # back to town_square
+    await wait_room(A)
+
+    # ---- A: reach graveyard (fight the wandering wolf if it shows again)
+    await fight_until_room(A, "graveyard", "south")
+    await send(A, {"cmd": "look"})
+    room = await recv(A, want_type="room", timeout=2.0)
+    assert room is not None and room["id"] == "graveyard"
+    assert "enter" in room["exits"]
+    print("GRAVEYARD_OK")
+
+    # ---- A: enter dungeon (solo auto-party, floor 1)
+    await send(A, {"cmd": "move", "dir": "enter"})
+    droom = await recv(A, want_type="room", timeout=2.0)
+    assert droom is not None and droom["is_dungeon"] is True and droom["dungeon_floor"] == 1, droom
+    assert set(droom["exits"]) == {"up"}
+    assert droom["party_size"] >= 1
+    print("DUNGEON_ENTER_OK")
+
+    await send(A, {"cmd": "move", "dir": "down"})
+    errs = [m for m in await recv(A, timeout=1.5) if m.get("type") == "error"]
+    assert errs and "sealed" in errs[-1]["text"].lower()
+    print("SEALED_DOWN_BLOCKED")
+
+    # floor 1 retreat is allowed even while sealed
+    await send(A, {"cmd": "move", "dir": "up"})
+    room = await recv(A, want_type="room", timeout=2.0)
+    assert room is not None and room["id"] == "graveyard", room
+    print("FLOOR1_RETREAT_OK")
+
+    # ---- B: login + seed gold, gear up, meet A at graveyard
+    await send(B, {"cmd": "login", "name": "LiveB"})
+    await drain(B, 1.5)
+    msgs = await gm_send("gm_reward", player="LiveB", gold=250)
+    assert any("Treasury now 420.0" in m.get("text", "") for m in msgs), msgs
+    await send(B, {"cmd": "move", "dir": "west"})
+    await wait_room(B)
+    await send(B, {"cmd": "buy", "item": "rusty"})
+    await drain(B, 0.8)
+    await send(B, {"cmd": "equip", "item": "rusty"})
+    await drain(B, 0.5)
+    await send(B, {"cmd": "move", "dir": "east"})
+    await wait_room(B)
+    await fight_until_room(B, "graveyard", "south")
+    print("B_GRAVEYARD_OK")
+
+    # ---- Market: A posts the shield from ANYWHERE, B buys (market works anywhere)
+    await send(A, {"cmd": "market_post", "item": "shield", "price": 50})
+    await drain(A, 1.0)
+    await send(B, {"cmd": "market_buy"})
+    got = await recv(B, timeout=2.0)
+    assert any(m.get("type") == "message" and "You buy" in m.get("text", "") for m in got), got
+    await send(A, {"cmd": "market_list"})
+    ml = await recv(A, want_type="market", timeout=2.0)
+    assert ml is not None
+    # 420 (after B's gold) + 5 (tax on 50 sale) = 425
+    assert ml["tax_treasury"] == 425.0 and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
+    assert len(ml["orders"]) == 0
+    print("MARKET_TRADE_TAX_OK")
+
+    # ---- GM spends tax treasury
+    got = await gm_send("gm_boss", room="deep_forest", strength=1)
+    assert any("spawned" in m.get("text", "") for m in got), got      # 425-100 = 325
+    got = await gm_send("gm_buff", type="xp", minutes=1)
+    assert any("Treasury now 275.0" in m.get("text", "") for m in got), got
+    print("GM_SPEND_OK")
+
+    # ---- Party: invite + accept in graveyard
+    # Either character may have died (respawning in town_square) while
+    # idling in the hostile graveyard during B's setup + market + GM steps,
+    # so make sure both are actually standing there before inviting.
+    await fight_until_room(A, "graveyard", "south")
+    await fight_until_room(B, "graveyard", "south")
+    await send(A, {"cmd": "party_invite", "target": "LiveB"})
+    await drain(A, 1.0)
+    await send(B, {"cmd": "party_accept"})
+    await drain(B, 1.0)
+    await send(A, {"cmd": "party_info"})
+    pi = await recv(A, want_type="party", timeout=2.0)
+    assert pi is not None and len(pi["members"]) == 2 and pi["leader"] == "LiveA", pi
+    print("PARTY_OK")
+
+    # party dungeon instance is shared
+    await send(A, {"cmd": "move", "dir": "enter"})
+    da = await recv(A, want_type="room", timeout=2.0)
+    assert da is not None and da["is_dungeon"] and da["dungeon_floor"] == 1
+    assert da["party_size"] == 2, da
+    print("PARTY_DUNGEON_SHARED")
+
+    # ---- Dashboard snapshot has the new sections
+    import urllib.request
+    state = json.loads(urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=3).read())
+    assert isinstance(state["dungeons"], list) and len(state["dungeons"]) >= 1
+    assert state["market"]["treasury"] == 275.0, state["market"]
+    assert state["market"]["collected_lifetime"] == 5.0, state["market"]
+    assert "buffs" in state and "bosses" in state
+    assert state["server"]["ws_port"] == 8765
+    town = next(r for r in state["rooms"] if r["id"] == "town_square")
+    assert {e["dir"] for e in town["exits"]} == {"north", "east", "south", "west"}
+    assert any(e["to"] == "market" and e["to_name"] == "Market" for e in town["exits"])
+    pl = {pp["name"]: pp for pp in state["players"]}
+    assert pl["LiveA"]["level"] == 1
+    assert any(b["name"].startswith("Elite") for b in state["bosses"]), state["bosses"]
+    print("DASHBOARD_SNAPSHOT_OK")
+
+    print("LIVE_ALL_OK")
+    await GM.close()
+    await A.close()
+    await B.close()
+
+
+asyncio.run(main())

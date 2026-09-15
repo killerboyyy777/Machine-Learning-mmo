@@ -1,0 +1,17 @@
+# Text MMO Engine dependencies.
+#
+# Install everything the engine itself needs with:
+#     pip install -r requirements.txt
+#
+# Only `websockets` is required to run the game server, the dashboard,
+# the ML env (`ml/`) and the verification suite (`tests/`).
+
+websockets==17.1
+
+# NumPy — required by PyTorch (tensor conversion) and used by tooling.
+numpy==2.5.3
+
+# PyTorch (CPU) — only needed for the deep-learning agent
+# (`torch_agents/dqn_agent.py`). Install separately with:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+# (torch 2.14.0+cpu verified on Python 3.14)

@@ -1,0 +1,576 @@
+{
+  "start_room": "town_square",
+  "rooms": {
+    "town_square": {
+      "name": "Town Square",
+      "description": "A worn stone square at the heart of town. A notice board creaks in the wind.",
+      "exits": {"north": "forest_edge", "east": "old_shop", "south": "graveyard", "west": "market"}
+    },
+    "market": {
+      "name": "Market",
+      "description": "A small market stall run by a wandering merchant. Prices are chalked on a board.",
+      "exits": {"east": "town_square", "west": "artisan_row"}
+    },
+    "old_shop": {
+      "name": "Old Shop",
+      "description": "Dusty shelves line the walls of this abandoned shop. Something might still be worth grabbing.",
+      "exits": {"west": "town_square", "east": "harbor_lane"}
+    },
+    "forest_edge": {
+      "name": "Forest Edge",
+      "description": "Tall pines mark the border of a dark forest. You hear rustling nearby.",
+      "exits": {"south": "town_square", "north": "deep_forest", "east": "healing_spring"}
+    },
+    "healing_spring": {
+      "name": "Healing Spring",
+      "description": "A clear spring bubbles up between mossy stones. The water looks restorative.",
+      "exits": {"west": "forest_edge", "east": "stillwater_lake"}
+    },
+    "deep_forest": {
+      "name": "Deep Forest",
+      "description": "Sunlight barely reaches the forest floor here. Something is watching you.",
+      "exits": {"south": "forest_edge", "east": "mountain_pass", "north": "pinewood_thicket"}
+    },
+    "mountain_pass": {
+      "name": "Mountain Pass",
+      "description": "A narrow, windswept pass. It's a dangerous shortcut, but a shortcut all the same.",
+      "exits": {"west": "deep_forest", "down": "graveyard", "east": "highland_trail"}
+    },
+    "graveyard": {
+      "name": "Old Graveyard",
+      "description": "Crooked headstones lean at odd angles. The air is cold.",
+      "exits": {"north": "town_square", "up": "mountain_pass", "enter": "dungeon_1", "down": "crypt_hall"}
+    },
+    "harbor_lane": {
+      "name": "Harbor Lane",
+      "description": "A cobbled lane sloping down to the water. Gulls cry overhead and ropes creak.",
+      "exits": {"west": "old_shop", "east": "salt_docks", "north": "chandlery"}
+    },
+    "salt_docks": {
+      "name": "Salt Docks",
+      "description": "Barnacled piers jut into grey water. Rough folk load and unload cargo day and night.",
+      "exits": {"west": "harbor_lane", "south": "tide_pools"}
+    },
+    "chandlery": {
+      "name": "Chandlery",
+      "description": "A cramped supply shop smelling of tar and lamp oil. Sailors' remedies line the shelves.",
+      "exits": {"south": "harbor_lane"}
+    },
+    "tide_pools": {
+      "name": "Tide Pools",
+      "description": "Shallow pools left by the tide, full of crabs and glinting shells.",
+      "exits": {"north": "salt_docks"}
+    },
+    "artisan_row": {
+      "name": "Artisan Row",
+      "description": "Workshops hum along this narrow street. Hammers ring and leather stretches.",
+      "exits": {"east": "market", "west": "tannery", "north": "smithy"}
+    },
+    "tannery": {
+      "name": "Tannery",
+      "description": "The sharp smell of curing hides hangs thick. Pelts stretch on wooden frames.",
+      "exits": {"east": "artisan_row"}
+    },
+    "smithy": {
+      "name": "Smithy",
+      "description": "A soot-stained forge. Half-finished blades cool in a trough of hissing water.",
+      "exits": {"south": "artisan_row", "east": "forge"}
+    },
+    "forge": {
+      "name": "Deep Forge",
+      "description": "The inner forge burns unnaturally hot. Something small and angry tends the coals.",
+      "exits": {"west": "smithy"}
+    },
+    "stillwater_lake": {
+      "name": "Stillwater Lake",
+      "description": "A glassy lake fed by the spring. Ripples move against the wind sometimes.",
+      "exits": {"west": "healing_spring", "east": "reed_beds", "north": "lake_shrine"}
+    },
+    "reed_beds": {
+      "name": "Reed Beds",
+      "description": "Tall reeds whisper around muddy channels. Herbs grow thick between the roots.",
+      "exits": {"west": "stillwater_lake", "north": "heron_nest"}
+    },
+    "lake_shrine": {
+      "name": "Lake Shrine",
+      "description": "A weathered stone shrine overlooks the water. Offerings of shells have piled for years.",
+      "exits": {"south": "stillwater_lake"}
+    },
+    "heron_nest": {
+      "name": "Heron Nest",
+      "description": "A massive nest of driftwood crowns the reeds. Huge feathers drift on the breeze.",
+      "exits": {"south": "reed_beds"}
+    },
+    "pinewood_thicket": {
+      "name": "Pinewood Thicket",
+      "description": "Dense pinewood north of the deep forest. Axe-marks scar the oldest trunks.",
+      "exits": {"south": "deep_forest", "north": "frozen_pass", "east": "lumber_camp"}
+    },
+    "frozen_pass": {
+      "name": "Frozen Pass",
+      "description": "A high pass where snow lingers year-round. The wind cuts like a blade.",
+      "exits": {"south": "pinewood_thicket", "north": "storm_summit"}
+    },
+    "lumber_camp": {
+      "name": "Lumber Camp",
+      "description": "An abandoned logging camp. Felled trunks rot beside a collapsed bunkhouse.",
+      "exits": {"west": "pinewood_thicket"}
+    },
+    "storm_summit": {
+      "name": "Storm Summit",
+      "description": "The highest peak for miles. Lightning scars the black rock between snowdrifts.",
+      "exits": {"south": "frozen_pass"}
+    },
+    "highland_trail": {
+      "name": "Highland Trail",
+      "description": "A rocky trail winding through high meadows dotted with sweet mountain berries.",
+      "exits": {"west": "mountain_pass", "east": "eagle_roost", "north": "stone_circle"}
+    },
+    "eagle_roost": {
+      "name": "Eagle Roost",
+      "description": "Sheer cliffs pocked with nests. A dizzying shaft of air rises to a higher ledge.",
+      "exits": {"west": "highland_trail", "up": "sky_nest"}
+    },
+    "stone_circle": {
+      "name": "Stone Circle",
+      "description": "Ancient standing stones hum faintly. Moss and mountain berries grow between them.",
+      "exits": {"south": "highland_trail"}
+    },
+    "sky_nest": {
+      "name": "Sky Nest",
+      "description": "A vast aerie above the clouds. Frost crystals glitter in a giant's nest of bones.",
+      "exits": {"down": "eagle_roost"}
+    },
+    "crypt_hall": {
+      "name": "Crypt Hall",
+      "description": "A torch-lit hall beneath the graveyard. Stone sarcophagi line the damp walls.",
+      "exits": {"up": "graveyard", "south": "burial_chamber", "east": "bone_pit"}
+    },
+    "burial_chamber": {
+      "name": "Burial Chamber",
+      "description": "A sealed chamber of old kings. Grave goods glint in the dark.",
+      "exits": {"north": "crypt_hall"}
+    },
+    "bone_pit": {
+      "name": "Bone Pit",
+      "description": "A pit of ancient bones that shift and clatter on their own. Something down here is wrong.",
+      "exits": {"west": "crypt_hall", "down": "deep_catacombs"}
+    },
+    "deep_catacombs": {
+      "name": "Deep Catacombs",
+      "description": "The lowest dark, where even the dead seem afraid to go. A lost blade gleams ahead.",
+      "exits": {"up": "bone_pit"}
+    }
+  },
+  "npcs": {
+    "guard": {
+      "name": "Town Guard",
+      "room": "town_square",
+      "hp": 40,
+      "max_hp": 40,
+      "attack": 2,
+      "hostile": false,
+      "behavior": "idle",
+      "loot": [],
+      "gold": 0,
+      "respawn_seconds": 30
+    },
+    "merchant": {
+      "name": "Wandering Merchant",
+      "room": "market",
+      "hp": 999,
+      "max_hp": 999,
+      "attack": 0,
+      "hostile": false,
+      "behavior": "idle",
+      "loot": [],
+      "gold": 0,
+      "respawn_seconds": 5,
+      "shop": {"healing_herb": 5, "rusty_sword": 15, "old_shield": 8, "arrow": 2}
+    },
+    "rat": {
+      "name": "Giant Rat",
+      "room": "old_shop",
+      "hp": 8,
+      "max_hp": 8,
+      "attack": 2,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["rat_tail"],
+      "gold": 2,
+      "respawn_seconds": 20
+    },
+    "wolf": {
+      "name": "Grey Wolf",
+      "room": "forest_edge",
+      "hp": 18,
+      "max_hp": 18,
+      "attack": 4,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["wolf_pelt"],
+      "gold": 5,
+      "respawn_seconds": 40
+    },
+    "treant": {
+      "name": "Ancient Treant",
+      "room": "deep_forest",
+      "hp": 60,
+      "max_hp": 60,
+      "attack": 8,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["treant_bark", "rusty_sword"],
+      "gold": 20,
+      "respawn_seconds": 90
+    },
+    "troll": {
+      "name": "Rock Troll",
+      "room": "mountain_pass",
+      "hp": 90,
+      "max_hp": 90,
+      "attack": 12,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["troll_hide", "healing_herb"],
+      "gold": 35,
+      "respawn_seconds": 120
+    },
+    "ghost": {
+      "name": "Restless Ghost",
+      "room": "graveyard",
+      "hp": 25,
+      "max_hp": 25,
+      "attack": 5,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["ectoplasm"],
+      "gold": 10,
+      "respawn_seconds": 50
+    },
+    "mud_crab": {
+      "name": "Mud Crab",
+      "room": "tide_pools",
+      "hp": 14,
+      "max_hp": 14,
+      "attack": 3,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["rat_tail"],
+      "gold": 4,
+      "respawn_seconds": 25
+    },
+    "dock_thug": {
+      "name": "Dock Thug",
+      "room": "salt_docks",
+      "hp": 22,
+      "max_hp": 22,
+      "attack": 5,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["old_shield"],
+      "gold": 8,
+      "respawn_seconds": 45
+    },
+    "stray_dog": {
+      "name": "Stray Dog",
+      "room": "artisan_row",
+      "hp": 12,
+      "max_hp": 12,
+      "attack": 3,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["rat_tail"],
+      "gold": 3,
+      "respawn_seconds": 25
+    },
+    "soot_imp": {
+      "name": "Soot Imp",
+      "room": "forge",
+      "hp": 30,
+      "max_hp": 30,
+      "attack": 8,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["iron_ore"],
+      "gold": 8,
+      "respawn_seconds": 60
+    },
+    "lake_serpent": {
+      "name": "Lake Serpent",
+      "room": "stillwater_lake",
+      "hp": 50,
+      "max_hp": 50,
+      "attack": 7,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["serpent_scale"],
+      "gold": 14,
+      "respawn_seconds": 80
+    },
+    "giant_heron": {
+      "name": "Giant Heron",
+      "room": "heron_nest",
+      "hp": 40,
+      "max_hp": 40,
+      "attack": 6,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["serpent_scale"],
+      "gold": 12,
+      "respawn_seconds": 70
+    },
+    "timber_wolf": {
+      "name": "Timber Wolf",
+      "room": "pinewood_thicket",
+      "hp": 30,
+      "max_hp": 30,
+      "attack": 6,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["wolf_pelt"],
+      "gold": 8,
+      "respawn_seconds": 50
+    },
+    "bandit": {
+      "name": "Cave Bandit",
+      "room": "lumber_camp",
+      "hp": 35,
+      "max_hp": 35,
+      "attack": 6,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["oak_longbow", "arrow"],
+      "gold": 10,
+      "respawn_seconds": 60
+    },
+    "ice_wraith": {
+      "name": "Ice Wraith",
+      "room": "storm_summit",
+      "hp": 70,
+      "max_hp": 70,
+      "attack": 10,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["frost_crystal", "ectoplasm"],
+      "gold": 25,
+      "respawn_seconds": 110
+    },
+    "mountain_lion": {
+      "name": "Mountain Lion",
+      "room": "highland_trail",
+      "hp": 40,
+      "max_hp": 40,
+      "attack": 7,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["wolf_pelt"],
+      "gold": 12,
+      "respawn_seconds": 65
+    },
+    "stone_golem": {
+      "name": "Stone Golem",
+      "room": "stone_circle",
+      "hp": 75,
+      "max_hp": 75,
+      "attack": 10,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["iron_ore"],
+      "gold": 22,
+      "respawn_seconds": 110
+    },
+    "storm_eagle": {
+      "name": "Storm Eagle",
+      "room": "sky_nest",
+      "hp": 70,
+      "max_hp": 70,
+      "attack": 11,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["frost_crystal", "healing_herb"],
+      "gold": 28,
+      "respawn_seconds": 120
+    },
+    "cave_bat": {
+      "name": "Cave Bat",
+      "room": "crypt_hall",
+      "hp": 10,
+      "max_hp": 10,
+      "attack": 3,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["rat_tail"],
+      "gold": 3,
+      "respawn_seconds": 25
+    },
+    "crypt_wight": {
+      "name": "Crypt Wight",
+      "room": "burial_chamber",
+      "hp": 45,
+      "max_hp": 45,
+      "attack": 7,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["ectoplasm"],
+      "gold": 14,
+      "respawn_seconds": 75
+    },
+    "bone_construct": {
+      "name": "Bone Construct",
+      "room": "bone_pit",
+      "hp": 55,
+      "max_hp": 55,
+      "attack": 9,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["ectoplasm", "healing_herb"],
+      "gold": 18,
+      "respawn_seconds": 90
+    }
+  },
+  "items": {
+    "rusty_sword": {"name": "Rusty Sword", "type": "weapon", "damage": 4},
+    "old_shield": {"name": "Old Shield", "type": "weapon", "damage": 1},
+    "reinforced_leather": {"name": "Reinforced Leather Armor", "type": "weapon", "damage": 6},
+    "oak_longbow": {"name": "Oak Longbow", "type": "weapon", "damage": 5, "ammo": "arrow"},
+    "iron_plate": {"name": "Iron Plate Armor", "type": "weapon", "damage": 8},
+    "rat_tail": {"name": "Rat Tail", "type": "junk", "value": 1},
+    "wolf_pelt": {"name": "Wolf Pelt", "type": "junk", "value": 4},
+    "treant_bark": {"name": "Treant Bark", "type": "junk", "value": 10},
+    "troll_hide": {"name": "Troll Hide", "type": "junk", "value": 18},
+    "ectoplasm": {"name": "Ectoplasm", "type": "junk", "value": 6},
+    "serpent_scale": {"name": "Serpent Scale", "type": "junk", "value": 8},
+    "frost_crystal": {"name": "Frost Crystal", "type": "junk", "value": 12},
+    "iron_ore": {"name": "Iron Ore", "type": "junk", "value": 8},
+    "healing_herb": {"name": "Healing Herb", "type": "consumable", "heal_amount": 10},
+    "mountain_berry": {"name": "Mountain Berry", "type": "consumable", "heal_amount": 6},
+    "arrow": {"name": "Arrow", "type": "junk", "value": 1},
+    "iron_arrow": {"name": "Iron Arrow", "type": "junk", "value": 2},
+    "steel_arrow": {"name": "Steel Arrow", "type": "junk", "value": 5},
+    "ancient_guardian_charm": {"name": "Ancient Guardian Charm", "type": "junk", "value": 0},
+    "field_ration": {"name": "Field Ration", "type": "consumable", "heal_amount": 12, "value": 12},
+    "bandage": {"name": "Field Bandage", "type": "consumable", "heal_amount": 15, "value": 15},
+    "sharpening_oil": {"name": "Sharpening Oil", "type": "consumable", "value": 24,
+      "buff": {"category": "attack", "amount": 2, "duration_actions": 10,
+        "description": "+2 attack"}},
+    "fortitude_tonic": {"name": "Fortitude Tonic", "type": "consumable", "value": 24,
+      "buff": {"category": "damage_reduction", "amount": 1, "duration_actions": 15,
+        "description": "reduce incoming damage by 1"}},
+    "greater_sharpening_oil": {"name": "Greater Sharpening Oil", "type": "consumable", "value": 45,
+      "buff": {"category": "attack", "amount": 4, "duration_actions": 20,
+        "description": "+4 attack"}},
+    "ironhide_draught": {"name": "Ironhide Draught", "type": "consumable", "value": 50,
+      "buff": {"category": "damage_reduction", "amount": 2, "duration_actions": 20,
+        "description": "reduce incoming damage by 2"}},
+    "pine_timber": {"name": "Pine Timber", "type": "junk", "value": 3},
+    "heron_feather": {"name": "Heron Feather", "type": "junk", "value": 3},
+    "reed_fiber": {"name": "Reed Fiber", "type": "junk", "value": 2},
+    "springwater": {"name": "Springwater", "type": "junk", "value": 2},
+    "mountain_herb": {"name": "Mountain Herb", "type": "junk", "value": 4},
+    "resin": {"name": "Pine Resin", "type": "junk", "value": 4},
+    "scrap_iron": {"name": "Scrap Iron", "type": "junk", "value": 4},
+    "salt_crystal": {"name": "Salt Crystal", "type": "junk", "value": 3}
+  },
+  "recipes": {
+    "reinforced_leather": {
+      "inputs": {"wolf_pelt": 1, "rat_tail": 2},
+      "result": "reinforced_leather",
+      "tier": 1,
+      "category": "equipment"
+    },
+    "ancient_guardian_charm": {
+      "inputs": {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1},
+      "result": "ancient_guardian_charm",
+      "tier": 2,
+      "category": "quest"
+    },
+    "iron_plate": {
+      "inputs": {"iron_ore": 2, "wolf_pelt": 1},
+      "result": "iron_plate",
+      "tier": 2,
+      "category": "equipment"
+    },
+    "arrows": {
+      "inputs": {"iron_ore": 1},
+      "result": "arrow",
+      "output_qty": 5,
+      "tier": 1,
+      "category": "ammo"
+    },
+    "iron_arrows": {
+      "inputs": {"iron_ore": 1},
+      "result": "iron_arrow",
+      "output_qty": 1,
+      "tier": 2,
+      "category": "ammo"
+    },
+    "steel_arrows": {
+      "inputs": {"iron_ore": 2, "serpent_scale": 1},
+      "result": "steel_arrow",
+      "output_qty": 1,
+      "tier": 3,
+      "category": "ammo"
+    },
+    "field_ration": {
+      "inputs": {"mountain_berry": 2},
+      "result": "field_ration",
+      "tier": 1,
+      "category": "consumable"
+    },
+    "bandage": {
+      "inputs": {"rat_tail": 2, "healing_herb": 1},
+      "result": "bandage",
+      "tier": 1,
+      "category": "consumable"
+    },
+    "sharpening_oil": {
+      "inputs": {"iron_ore": 1, "wolf_pelt": 1},
+      "result": "sharpening_oil",
+      "tier": 2,
+      "category": "buff"
+    },
+    "fortitude_tonic": {
+      "inputs": {"iron_ore": 1, "mountain_berry": 1},
+      "result": "fortitude_tonic",
+      "tier": 2,
+      "category": "buff"
+    },
+    "greater_sharpening_oil": {
+      "inputs": {"iron_ore": 2, "serpent_scale": 1},
+      "result": "greater_sharpening_oil",
+      "tier": 3,
+      "category": "buff"
+    },
+    "ironhide_draught": {
+      "inputs": {"troll_hide": 1, "iron_ore": 1, "ectoplasm": 1},
+      "result": "ironhide_draught",
+      "tier": 3,
+      "category": "buff"
+    }
+  },
+  "room_items": {
+    "old_shop": ["old_shield"],
+    "chandlery": ["healing_herb"],
+    "tide_pools": ["healing_herb"],
+    "tannery": ["wolf_pelt"],
+    "smithy": ["iron_ore"],
+    "reed_beds": ["healing_herb"],
+    "lumber_camp": ["oak_longbow", "arrow", "arrow", "arrow"],
+    "highland_trail": ["mountain_berry"],
+    "stone_circle": ["mountain_berry"],
+    "sky_nest": ["frost_crystal"],
+    "burial_chamber": ["healing_herb"],
+    "deep_catacombs": ["rusty_sword"]
+  },
+  "gather_nodes": {
+    "pine_timber_node": {"room": "lumber_camp", "item": "pine_timber", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 2, "score": 2},
+    "heron_feather_node": {"room": "heron_nest", "item": "heron_feather", "min_yield": 1, "max_yield": 2, "respawn_seconds": 45, "xp": 3, "score": 2},
+    "reed_fiber_node": {"room": "reed_beds", "item": "reed_fiber", "min_yield": 1, "max_yield": 3, "respawn_seconds": 20, "xp": 2, "score": 2},
+    "springwater_node": {"room": "healing_spring", "item": "springwater", "min_yield": 1, "max_yield": 2, "respawn_seconds": 25, "xp": 2, "score": 2},
+    "mountain_herb_node": {"room": "highland_trail", "item": "mountain_herb", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 3, "score": 2},
+    "resin_node": {"room": "pinewood_thicket", "item": "resin", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 2},
+    "scrap_iron_node": {"room": "smithy", "item": "scrap_iron", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 2},
+    "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 2}
+  }
+}

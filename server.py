@@ -1,0 +1,2714 @@
+"""Small Text MMO Engine 0.5 — instanced party dungeons, parties, player
+market with GM treasury, leveling, repeatable quests, gathering nodes,
+crafted buffs, ammo variants, and escrowed player commissions.
+
+Protocol is plain JSON over WebSocket. See README.md for the full list.
+"""
+import asyncio
+import json
+import os
+import random
+import time
+import itertools
+from collections import deque
+from dataclasses import dataclass, field
+
+import websockets
+from os import path
+from os.path import join, dirname, abspath
+
+WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
+SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
+
+NPC_TICK_SECONDS = 3
+HOST = "0.0.0.0"
+PORT = 8765
+GM_HOST = "127.0.0.1"
+GM_PORT = 8767
+
+# Scoring anti-grind tuning
+ACTION_WINDOW = 20
+MIN_HISTORY_FOR_VARIETY = 5
+MIN_VARIETY = 0.2
+DIFFICULTY_K = 50.0
+DEATH_PENALTY = 5.0
+ALLY_ATTACK_BONUS_PER_PLAYER = 1
+ALLY_ATTACK_BONUS_CAP = 3
+TEAMWORK_BONUS_PER_EXTRA_CONTRIBUTOR = 0.2
+TEAMWORK_BONUS_CAP_CONTRIBUTORS = 3
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_TOTAL_CONNECTIONS = _env_int("TEXTMMO_MAX_CONNECTIONS", 1000)
+MAX_PLAYERS_PER_ROOM = _env_int("TEXTMMO_MAX_ROOM_PLAYERS", 12)
+OUTBOUND_QUEUE_MAX = _env_int("TEXTMMO_OUTBOUND_QUEUE", 64)
+AUTH_TOKEN_REQUIRED = str(os.environ.get("TEXTMMO_REQUIRE_TOKEN", "")).strip().lower() in ("1", "true", "yes", "on")
+SNAPSHOT_REFRESH_SECONDS = 1.0
+TASK_RESTART_DELAY = 2.0
+
+DUNGEON_ENTRANCE_ROOM = "graveyard"
+DUNGEON_ENTRANCE_DIR = "enter"
+DUNGEON_BASE_HP = 20
+DUNGEON_BASE_ATK = 4
+DUNGEON_HP_GROWTH = 0.35
+DUNGEON_ATK_GROWTH = 0.5
+# Long-term bound: one deep-diving party must not accumulate floor objects
+# (plus per-floor ITEM_DEFS registrations) without limit. At the cap the
+# stairs simply crumble; guards already outscale players well before it.
+DUNGEON_MAX_FLOOR = 50
+PARTY_MAX_MEMBERS = 4
+
+TAX_RATE = 0.10
+TAX_MINIMUM = 1
+
+XP_BASE = 100
+XP_GROWTH = 1.5
+LEVEL_HP_PER_LEVEL = 5
+LEVEL_ATK_PER_LEVEL = 1
+
+GM_BUFF_COST_PER_MINUTE = 50
+GM_BOSS_COST_PER_STRENGTH = 100
+GM_BUFF_MULT = 2.0
+GM_ANNOUNCE_COST = 25
+GM_HEAL_COST_PER_HP = 2
+GM_TELEPORT_COST = 50
+GM_SLAY_COST_PER_HP = 1
+GM_SLAY_MIN_COST = 10
+
+
+def xp_to_next(level):
+    return round(XP_BASE * XP_GROWTH ** (level - 1))
+
+
+# ---------------------------------------------------------------------------
+# World data
+# ---------------------------------------------------------------------------
+
+with open(WORLD_FILE) as f:
+    WORLD = json.load(f)
+
+ROOMS = WORLD["rooms"]
+ITEM_DEFS = WORLD["items"]
+START_ROOM = WORLD["start_room"]
+
+# The dungeon entrance is a dynamic exit on the graveyard (the ML env rebuilds
+# its action space from these rooms on import, so it sees "enter" too).
+ROOMS[DUNGEON_ENTRANCE_ROOM].setdefault("exits", {}).setdefault(DUNGEON_ENTRANCE_DIR, "dungeon_entrance")
+
+# room_id -> list of item ids currently lying on the ground (static rooms)
+room_items = {rid: list(WORLD.get("room_items", {}).get(rid, [])) for rid in ROOMS}
+
+# Gathering nodes have their own respawn timers and do not share ground loot
+# state. This keeps safe harvesting independent from NPC respawns. They tick
+# on the same npc_ai_loop as NPC enemies (NPC_TICK_SECONDS), so nodes respawn
+# about as fast as npc enemies.
+gather_nodes = {
+    node_id: {**node, "id": node_id, "available": True, "respawn_at": None}
+    for node_id, node in WORLD.get("gather_nodes", {}).items()
+}
+
+# npc_id -> live npc state (mutable copy of the template)
+npcs = {}
+for nid, tmpl in WORLD["npcs"].items():
+    npcs[nid] = {**tmpl, "id": nid, "alive": True, "respawn_at": None, "contributors": {}}
+
+RECIPES = WORLD.get("recipes", {})
+
+_id_counter = itertools.count(1)
+
+# ---------------------------------------------------------------------------
+# Parties + instanced dungeons + commissions
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DungeonFloor:
+    guards: list = field(default_factory=list)
+    items: list = field(default_factory=list)
+    cleared: bool = False
+
+
+class Dungeon:
+    """One private, infinitely-deep staircase owned by a party. Floors are
+    built lazily the first time anyone walks onto them."""
+
+    def __init__(self, party_id):
+        self.id = next(_id_counter)
+        self.party_id = party_id
+        self.floors = {}
+
+    def room_id(self, floor_no):
+        return f"d_{self.id}_f{floor_no}"
+
+    def floor(self, floor_no):
+        floor_no = min(floor_no, DUNGEON_MAX_FLOOR)
+        if floor_no not in self.floors:
+            self.floors[floor_no] = self._build_floor(floor_no)
+        return self.floors[floor_no]
+
+    def _build_floor(self, floor_no):
+        f = DungeonFloor()
+        n = floor_no
+        hp = round(DUNGEON_BASE_HP * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
+        atk = round(DUNGEON_BASE_ATK * (1 + DUNGEON_ATK_GROWTH) ** (n - 1))
+        count = min(1 + (n - 1) // 2, 4)          # more guards as you descend
+        gold = round(3 * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
+        shard = f"dungeon_shard_{n}"
+        blade = f"dungeon_blade_{n}"
+        # Unique items are registered on demand so loot scales with depth
+        # without pre-generating thousands of floors at startup.
+        ITEM_DEFS.setdefault(shard, {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 2 + n * 4})
+        ITEM_DEFS.setdefault(blade, {"name": f"Dungeon Blade +{2 + n * 2}", "type": "weapon", "damage": 2 + n * 2})
+        room_id = self.room_id(n)
+        for k in range(count):
+            f.guards.append({
+                "id": f"dg_{self.id}_{n}_{k}",
+                "name": f"Dungeon Guard {n}-{k}",
+                "room": room_id,
+                "hp": hp, "max_hp": hp, "attack": atk,
+                "hostile": True, "behavior": "idle",
+                "loot": [shard],
+                "gold": gold,
+                "respawn_seconds": 20 + n * 10,   # deeper floors take longer to recover
+                "alive": True, "respawn_at": None, "contributors": {},
+                "dungeon_id": self.id,
+            })
+        return f
+
+
+@dataclass
+class Commission:
+    """Escrowed bounty posted by a player."""
+    id: int
+    poster: str
+    target: str
+    required_kills: int
+    reward_gold: int
+    reward_xp: int
+    status: str = "open"
+    created_ts: float = field(default_factory=time.time)
+
+
+@dataclass
+class Party:
+    id: int
+    leader_id: int
+    member_ids: set = field(default_factory=set)
+    dungeon_id: int = None
+
+
+parties = {}      # party_id -> Party
+dungeons = {}     # dungeon_id -> Dungeon
+_commissions = {}  # commission_id -> Commission data
+_party_counter = itertools.count(1)
+_pending_party_invites = {}   # invitee player.id -> Party (invitation)
+_commission_counter = itertools.count(1)
+
+# Terminal (completed/cancelled) commissions older than this are pruned.
+# Open bounties hold real escrow and are never pruned.
+COMMISSION_TTL_SECONDS = 3600
+_last_commission_prune = 0.0
+
+
+def prune_commissions(now=None):
+    """Drop old terminal commissions so the table can't grow forever."""
+    global _last_commission_prune
+    now = now if now is not None else time.time()
+    if now - _last_commission_prune < 60:
+        return 0
+    _last_commission_prune = now
+    pruned = 0
+    for cid, c in list(_commissions.items()):
+        if c.get("status") not in ("completed", "cancelled"):
+            continue
+        latest = max(c.get("created_ts", now), c.get("filled_ts", 0) or 0)
+        if now - latest > COMMISSION_TTL_SECONDS:
+            del _commissions[cid]
+            pruned += 1
+    return pruned
+
+# Live NPC indexes (static world NPCs live in `npcs`; dungeon guards live in
+# per-instance floor objects). This helper is how command/AI code sees every
+# NPC in a room regardless of where it lives.
+DUNGEON_ROOMS = frozenset()   # kept for ml_env compatibility (no static wings)
+
+
+def dungeon_for_room(room_id):
+    if isinstance(room_id, str) and room_id.startswith("d_"):
+        parts = room_id.split("_")
+        if len(parts) >= 3 and parts[2].startswith("f"):
+            try:
+                return dungeons.get(int(parts[1]))
+            except ValueError:
+                return None
+    return None
+
+
+def floor_from_room(room_id):
+    if isinstance(room_id, str) and room_id.startswith("d_"):
+        parts = room_id.split("_")
+        if len(parts) >= 3 and parts[2].startswith("f"):
+            try:
+                return int(parts[2][1:])
+            except ValueError:
+                return None
+    return None
+
+
+def all_npcs():
+    for npc in npcs.values():
+        yield npc
+    for d in dungeons.values():
+        for f in d.floors.values():
+            for g in f.guards:
+                yield g
+
+
+def npcs_in_room(room_id):
+    d = dungeon_for_room(room_id)
+    if d:
+        f = d.floors.get(floor_from_room(room_id))
+        return [g for g in (f.guards if f else []) if g["alive"]]
+    return [n for n in npcs.values() if n["room"] == room_id and n["alive"]]
+
+
+def _party_size_in_room(room_id):
+    for p in players_in_room(room_id):
+        if p.party_id and p.party_id in parties:
+            return len(parties[p.party_id].member_ids)
+    return 1
+
+
+def _ground_items(room_id):
+    d = dungeon_for_room(room_id)
+    if d:
+        f = d.floors.get(floor_from_room(room_id))
+        return f.items if f else []
+    return room_items[room_id]
+
+
+def _add_ground(room_id, iid):
+    d = dungeon_for_room(room_id)
+    if d:
+        d.floor(floor_from_room(room_id)).items.append(iid)
+    else:
+        room_items[room_id].append(iid)
+
+
+def _remove_ground(room_id, iid):
+    ground = _ground_items(room_id)
+    if iid in ground:
+        ground.remove(iid)
+
+
+def gather_nodes_in_room(room_id):
+    return [n for n in gather_nodes.values() if n["room"] == room_id and n["available"]]
+
+
+# ---------------------------------------------------------------------------
+# Scoring system
+# ---------------------------------------------------------------------------
+
+def load_scores():
+    try:
+        with open(SCORES_FILE) as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def save_scores():
+    try:
+        with open(SCORES_FILE, "w") as f:
+            json.dump(SCORES, f)
+    except OSError:
+        pass
+
+
+SCORES = load_scores()
+SCORES_SAVE_SECONDS = 5.0
+_scores_dirty = False
+
+# Long-term bounds: fresh-name bot farming must not grow SCORES (and
+# scores.json) without limit. Entries untouched for TTL_SECONDS are evicted;
+# if the table still exceeds ENTRY_MAX, the stalest go first. Online players
+# and entries owed banked gold are never evicted.
+SCORE_ENTRY_MAX = 2000
+SCORE_ENTRY_TTL_SECONDS = 7 * 24 * 3600
+_last_score_prune = 0.0
+
+
+def mark_scores_dirty():
+    global _scores_dirty
+    _scores_dirty = True
+
+
+def prune_score_entries(now=None):
+    """Evict stale score entries plus their track/score history."""
+    global _last_score_prune
+    now = now if now is not None else time.time()
+    if now - _last_score_prune < 60:
+        return 0
+    _last_score_prune = now
+    online = {p.name.lower() for p in players.values() if p.logged_in and p.name}
+    evicted = 0
+    for key in sorted(SCORES.keys(), key=lambda k: SCORES[k].get("last_seen", 0)):
+        if len(SCORES) <= SCORE_ENTRY_MAX:
+            entry = SCORES[key]
+            if (now - entry.get("last_seen", now)) <= SCORE_ENTRY_TTL_SECONDS:
+                continue
+        else:
+            entry = SCORES[key]
+        if key in online:
+            continue
+        if entry.get("gold_bank", 0):
+            continue
+        del SCORES[key]
+        for tk in [k for k in track_log if k.lower() == key]:
+            del track_log[tk]
+        _score_history.pop(key, None)
+        evicted += 1
+        mark_scores_dirty()
+    return evicted
+
+
+async def scores_save_loop():
+    global _scores_dirty
+    while True:
+        await asyncio.sleep(SCORES_SAVE_SECONDS)
+        prune_score_entries()
+        if _scores_dirty:
+            save_scores()
+            _scores_dirty = False
+
+
+def get_score_entry(name):
+    key = name.lower()
+    if key not in SCORES:
+        SCORES[key] = {}
+    entry = SCORES[key]
+    entry["last_seen"] = time.time()
+    entry.setdefault("display_name", name)
+    entry.setdefault("score", 0.0)
+    entry.setdefault("history", [])          # recent (cmd, arg) signatures, most-recent last
+    entry.setdefault("rooms_visited", [])
+    entry.setdefault("kills", 0)
+    entry.setdefault("deaths", 0)
+    entry.setdefault("level", 1)
+    entry.setdefault("xp", 0.0)
+    entry.setdefault("xp_to_next", xp_to_next(1))
+    entry.setdefault("gold_bank", 0)         # coin earned while offline
+    entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
+    entry.setdefault("tax_paid", 0.0)        # market tax they bore (seller side)
+    entry.setdefault("dungeon_floors_cleared", 0)
+    entry.setdefault("quest_guard_active", False)
+    entry.setdefault("guard_charm_crafted", False)
+    entry.setdefault("quest_delver_active", False)
+    entry.setdefault("quest_delver_baseline", 0)
+    entry.setdefault("quest_guard_completions", 0)
+    entry.setdefault("quest_delver_completions", 0)
+    entry.setdefault("crafts_tier", {})
+    entry.setdefault("craft_profitability", {})
+    return entry
+
+
+def record_action(name, signature):
+    """Log one performance-relevant action for variety tracking."""
+    entry = get_score_entry(name)
+    hist = entry["history"]
+    hist.append(list(signature))
+    if len(hist) > ACTION_WINDOW:
+        del hist[0]
+
+
+def compute_variety(entry):
+    hist = entry["history"]
+    if len(hist) < MIN_HISTORY_FOR_VARIETY:
+        return 1.0
+    unique = len({tuple(a) for a in hist})
+    variety = unique / len(hist)
+    return max(MIN_VARIETY, variety)
+
+
+def compute_diminish(entry):
+    return DIFFICULTY_K / (DIFFICULTY_K + entry["score"])
+
+
+async def award_points_to_name(name, base_points, reason):
+    """Core scoring function, keyed by character name."""
+    entry = get_score_entry(name)
+    variety = compute_variety(entry)
+    diminish = compute_diminish(entry)
+    gained = base_points * variety * diminish
+    entry["score"] += gained
+    record_score_point(name, entry["score"])
+    mark_scores_dirty()
+    for p in players_by_name.get(name.lower(), ()):
+        if p.logged_in:
+            await send(p, {
+                "type": "score",
+                "gained": round(gained, 2),
+                "total": round(entry["score"], 2),
+                "variety": round(variety, 2),
+                "reason": reason,
+            })
+    return gained
+
+
+async def award_points(player, base_points, reason):
+    """Convenience wrapper for the common case."""
+    return await award_points_to_name(player.name, base_points, reason)
+
+
+async def apply_death_penalty(player):
+    entry = get_score_entry(player.name)
+    entry["deaths"] += 1
+    entry["score"] = max(0.0, entry["score"] - DEATH_PENALTY)
+    record_score_point(player.name, entry["score"])
+    mark_scores_dirty()
+    await send(player, {
+        "type": "score",
+        "gained": -DEATH_PENALTY,
+        "total": round(entry["score"], 2),
+        "variety": None,
+        "reason": "died",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Buffs (GM-triggered world events)
+# ---------------------------------------------------------------------------
+
+buffs = {"xp": 0.0, "gold": 0.0}
+
+
+def _buff_active(kind):
+    return time.time() < buffs.get(kind, 0.0)
+
+
+def _buff_mult(kind):
+    return GM_BUFF_MULT if _buff_active(kind) else 1.0
+
+
+def sync_player_level(player):
+    """Bring a freshly-logged-in player's stats in line with persisted level."""
+    if not player.name:
+        return
+    entry = get_score_entry(player.name)
+    player.max_hp = 20 + LEVEL_HP_PER_LEVEL * (entry["level"] - 1)
+    player.base_attack = 3 + LEVEL_ATK_PER_LEVEL * (entry["level"] - 1)
+    player.hp = player.max_hp
+
+
+async def _apply_level_up(entry, levels):
+    total = sum(levels)
+    for p in players_by_name.get(entry["display_name"].lower(), ()):
+        if not p.logged_in:
+            continue
+        for new_level in levels:
+            p.max_hp += LEVEL_HP_PER_LEVEL
+            p.base_attack += LEVEL_ATK_PER_LEVEL
+        p.hp = p.max_hp
+        await send(p, {
+            "type": "level_up",
+            "level": entry["level"],
+            "max_hp": p.max_hp,
+            "attack": p.base_attack,
+            "text": f"You reach level {entry['level']}! +{LEVEL_HP_PER_LEVEL} max HP, "
+                    f"+{LEVEL_ATK_PER_LEVEL} attack, and you feel fully healed."
+        })
+        await broadcast_room(p.room, {
+            "type": "message",
+            "text": f"{p.name} reaches level {entry['level']}!"
+        }, exclude=p)
+        vlog(f"{p.name} reached level {entry['level']}")
+
+
+async def award_xp(name, amount, reason):
+    """Award XP (works offline). Runs the closed-form level curve."""
+    if amount <= 0:
+        return []
+    amount *= _buff_mult("xp")
+    entry = get_score_entry(name)
+    entry["xp"] += amount
+    leveled = []
+    while entry["xp"] >= entry["xp_to_next"]:
+        entry["xp"] -= entry["xp_to_next"]
+        entry["level"] += 1
+        entry["xp_to_next"] = xp_to_next(entry["level"])
+        leveled.append(entry["level"])
+    mark_scores_dirty()
+    if leveled:
+        await _apply_level_up(entry, leveled)
+    for p in players_by_name.get(name.lower(), ()):
+        if p.logged_in:
+            await send(p, {
+                "type": "xp",
+                "gained": round(amount, 2),
+                "total": round(entry["xp"], 2),
+                "level": entry["level"],
+                "xp_to_next": entry["xp_to_next"],
+                "reason": reason,
+            })
+    return leveled
+
+
+# ---------------------------------------------------------------------------
+# Player state
+# ---------------------------------------------------------------------------
+
+def _player_buff_amount(player, category):
+    value = player.active_buffs.get(category, {})
+    return int(value.get("amount", 0)) if value.get("remaining", 0) > 0 else 0
+
+
+def _tick_player_buffs(player):
+    """Advance action-based crafted buffs once for an accepted command."""
+    expired = []
+    for category, value in player.active_buffs.items():
+        value["remaining"] = max(0, int(value.get("remaining", 0)) - 1)
+        if value["remaining"] == 0:
+            expired.append(category)
+    for category in expired:
+        del player.active_buffs[category]
+
+
+@dataclass
+class Player:
+    ws: object = None
+    id: int = 0
+    name: str = ""
+    logged_in: bool = False
+    hp: int = 20
+    max_hp: int = 20
+    base_attack: int = 3
+    gold: int = 0
+    inventory: list = field(default_factory=list)
+    equipped: object = None
+    room: str = START_ROOM
+    party_id: int = None
+    active_buffs: dict = field(default_factory=dict)
+    outbound: deque = field(default_factory=lambda: deque(maxlen=OUTBOUND_QUEUE_MAX))
+    outbound_event: object = None
+
+    def __post_init__(self):
+        if self.outbound_event is None:
+            try:
+                self.outbound_event = asyncio.Event()
+            except RuntimeError:
+                self.outbound_event = None
+
+    @property
+    def attack(self):
+        bonus = 0
+        if self.equipped and self.equipped in ITEM_DEFS:
+            bonus += ITEM_DEFS[self.equipped].get("damage", 0)
+        allies = len([p for p in players_in_room(self.room) if p is not self])
+        bonus += min(allies, ALLY_ATTACK_BONUS_CAP) * ALLY_ATTACK_BONUS_PER_PLAYER
+        bonus += _player_buff_amount(self, "attack")
+        return self.base_attack + bonus
+
+
+players = {}          # pid -> Player
+name_owners = {}      # lower name -> pid
+room_members = {}     # room_id -> set of pid
+players_by_name = {}  # lower name -> list of Player
+
+
+def add_member(player):
+    room_members.setdefault(player.room, set()).add(player.id)
+    if player.name:
+        players_by_name.setdefault(player.name.lower(), [])
+        if player not in players_by_name[player.name.lower()]:
+            players_by_name[player.name.lower()].append(player)
+
+
+def remove_member(player):
+    if player.room in room_members:
+        room_members[player.room].discard(player.id)
+    if player.name:
+        lst = players_by_name.get(player.name.lower(), [])
+        if player in lst:
+            lst.remove(player)
+
+# ---------------------------------------------------------------------------
+# Market state
+# ---------------------------------------------------------------------------
+
+market_orders = []
+MARKET_HISTORY_SIZE = 50
+market_history = []
+tax_treasury = float(os.environ.get("TEXTMMO_GM_SEED", 0) or 0)
+tax_collected_lifetime = 0.0
+
+
+def item_suggested_price(iid):
+    return ITEM_DEFS.get(iid, {}).get("value", 1) or 1
+
+
+def _market_order_dict(order):
+    iid = order["item"]
+    return {
+        "id": order["id"], "seller": order["seller"],
+        "item": ITEM_DEFS.get(iid, {}).get("name", iid),
+        "price": order["price"], "ts": order.get("ts", 0),
+    }
+
+
+def _market_trade_dict(trade):
+    return dict(trade)
+
+
+async def send(player, payload):
+    if isinstance(payload, dict):
+        payload = json.dumps(payload)
+    if hasattr(player, "outbound") and player.outbound is not None:
+        try:
+            if len(player.outbound) >= player.outbound.maxlen:
+                player.outbound.popleft()
+            player.outbound.append(payload)
+            ev = getattr(player, "outbound_event", None)
+            if ev is not None:
+                ev.set()
+            return
+        except Exception:
+            pass
+    try:
+        await player.ws.send(payload)
+    except Exception:
+        pass
+
+
+async def _outbound_writer(player):
+    while True:
+        try:
+            ev = player.outbound_event
+            if ev is None:
+                return
+            if not player.outbound:
+                ev.clear()
+                await ev.wait()
+                continue
+            ev.clear()
+            while player.outbound:
+                msg = player.outbound.popleft()
+                try:
+                    await player.ws.send(msg)
+                except Exception:
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await asyncio.sleep(0.1)
+
+
+async def broadcast_room(room_id, payload, exclude=None):
+    for p in players_in_room(room_id):
+        if exclude is not None and p is exclude:
+            continue
+        await send(p, payload)
+
+
+def players_in_room(room_id):
+    out = []
+    for pid in list(room_members.get(room_id, ())):
+        p = players.get(pid)
+        if p and p.logged_in:
+            out.append(p)
+    return out
+
+
+def find_npc_in_room(room_id, name_fragment):
+    frag = (name_fragment or "").lower()
+    if not frag:
+        return None
+    for n in npcs_in_room(room_id):
+        if frag in n["name"].lower() or frag in n["id"].lower():
+            return n
+    return None
+
+
+def find_item_by_name(item_ids, name_fragment):
+    frag = (name_fragment or "").lower()
+    if not frag:
+        return None
+    for iid in item_ids:
+        name = ITEM_DEFS.get(iid, {}).get("name", iid)
+        if frag in name.lower() or frag in iid.lower():
+            return iid
+    return None
+
+
+def find_merchant_in_room(room_id):
+    for n in npcs_in_room(room_id):
+        if "shop" in n:
+            return n
+    return None
+
+
+def find_shop_item(shop, name_fragment):
+    frag = (name_fragment or "").lower()
+    if not frag:
+        return None
+    for iid in shop:
+        name = ITEM_DEFS.get(iid, {}).get("name", iid)
+        if frag in name.lower() or frag in iid.lower():
+            return iid
+    return None
+
+
+def find_recipe(name_fragment):
+    frag = (name_fragment or "").lower().replace(" ", "_")
+    if not frag:
+        return None, None
+    for rid, recipe in RECIPES.items():
+        result_name = ITEM_DEFS.get(recipe["result"], {}).get("name", recipe["result"])
+        if frag in rid.lower() or frag in result_name.lower() or frag in recipe["result"].lower():
+            return rid, recipe
+    return None, None
+
+
+def find_player_in_room(room_id, name_fragment):
+    frag = (name_fragment or "").lower()
+    if not frag:
+        return None
+    for p in players_in_room(room_id):
+        if frag in p.name.lower():
+            return p
+    return None
+
+
+def find_player_anywhere(name_fragment):
+    frag = (name_fragment or "").lower()
+    if not frag:
+        return None
+    for p in players.values():
+        if p.logged_in and frag in p.name.lower():
+            return p
+    return None
+
+
+def dungeon_room_view(room_id, dungeon):
+    floor_no = floor_from_room(room_id)
+    f = dungeon.floors.get(floor_no) if floor_no else None
+    guards = [g["name"] for g in (f.guards if f else []) if g["alive"]]
+    items = [ITEM_DEFS[i]["name"] for i in (f.items if f else [])]
+    exits = {}
+    if f and f.cleared:
+        exits["up"] = "up"
+        exits["down"] = "down"
+    elif floor_no == 1:
+        exits["up"] = "up"
+    return {
+        "type": "room",
+        "id": room_id,
+        "name": f"Dungeon Floor {floor_no}",
+        "description": "A damp stone hall. Torchlight flickers.",
+        "exits": exits,
+        "npcs": guards,
+        "items": items,
+        "players": [p.name for p in players_in_room(room_id)],
+        "is_dungeon": True,
+        "dungeon_floor": floor_no,
+        "party_size": _party_size_in_room(room_id),
+    }
+
+
+def room_view(room_id):
+    d = dungeon_for_room(room_id)
+    if d:
+        return dungeon_room_view(room_id, d)
+    room = ROOMS[room_id]
+    return {
+        "type": "room",
+        "id": room_id,
+        "name": room["name"],
+        "description": room.get("description", ""),
+        "exits": dict(room.get("exits", {})),
+        "npcs": [n["name"] for n in npcs_in_room(room_id)],
+        "items": [ITEM_DEFS[i]["name"] for i in room_items[room_id]],
+        "players": [p.name for p in players_in_room(room_id)],
+        "is_dungeon": False,
+        "dungeon_floor": 0,
+        "party_size": _party_size_in_room(room_id),
+        "gatherables": [
+            {"id": n["id"], "item": ITEM_DEFS[n["item"]]["name"],
+             "min_yield": n.get("min_yield", 1), "max_yield": n.get("max_yield", 1)}
+            for n in gather_nodes_in_room(room_id)
+        ],
+    }
+
+
+def check_dungeon_clear(room_id):
+    d = dungeon_for_room(room_id)
+    if not d:
+        return False
+    floor_no = floor_from_room(room_id)
+    f = d.floors.get(floor_no)
+    if not f or f.cleared:
+        return False
+    if any(g["alive"] for g in f.guards):
+        return False
+    f.cleared = True
+    f.items.append(f"dungeon_blade_{floor_no}")
+    return True
+
+
+def stats_view(player):
+    entry = get_score_entry(player.name) if player.name else None
+    party = None
+    if player.party_id and player.party_id in parties:
+        party = parties[player.party_id]
+    return {
+        "type": "stats",
+        "hp": player.hp,
+        "max_hp": player.max_hp,
+        "attack": player.attack,
+        "gold": player.gold,
+        "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
+        "score": round(entry["score"], 2) if entry else 0,
+        "variety": round(compute_variety(entry), 2) if entry else 1.0,
+        "level": entry["level"] if entry else 1,
+        "xp": round(entry["xp"], 2) if entry else 0,
+        "xp_to_next": entry["xp_to_next"] if entry else xp_to_next(1),
+        "party_size": len(party.member_ids) if party else 1,
+        "inv": [ITEM_DEFS[i]["name"] for i in player.inventory][:20],
+        "market_orders": len(market_orders),
+        "quest_guard_active": bool(entry.get("quest_guard_active", False)) if entry else False,
+        "guard_charm_crafted": bool(entry.get("guard_charm_crafted", False)) if entry else False,
+        "quest_delver_active": bool(entry.get("quest_delver_active", False)) if entry else False,
+        "quest_delver_ready": bool(quest_delver_ready(entry)) if entry else False,
+        "buffs": {
+            category: {"amount": value["amount"], "remaining": value["remaining"]}
+            for category, value in player.active_buffs.items()
+            if value.get("remaining", 0) > 0
+        },
+    }
+
+
+async def sync_room(room_id):
+    view = room_view(room_id)
+    for p in players_in_room(room_id):
+        await send(p, view)
+
+
+async def respawn_player(player):
+    await apply_death_penalty(player)
+    player.hp = player.max_hp
+    remove_member(player)
+    player.room = START_ROOM
+    add_member(player)
+    await send(player, {"type": "death", "text": "You died and wake up back in Town Square."})
+    await send(player, room_view(player.room))
+    await send(player, stats_view(player))
+
+
+def respawn_npc(npc):
+    """Bring an NPC back to life. Dungeon guard respawn re-seals the floor."""
+    npc["alive"] = True
+    npc["hp"] = npc["max_hp"]
+    npc["respawn_at"] = None
+    npc["contributors"] = {}
+    rid = npc["room"]
+    d = dungeon_for_room(rid)
+    if d:
+        floor_no = floor_from_room(rid)
+        f = d.floors.get(floor_no)
+        if f and f.cleared:
+            f.cleared = False
+            blade = f"dungeon_blade_{floor_no}"
+            while blade in f.items:
+                f.items.remove(blade)
+
+
+async def credit_gold(name, amount):
+    entry = get_score_entry(name)
+    found = False
+    for p in players_by_name.get(name.lower(), ()):
+        if p.logged_in:
+            p.gold += amount
+            await send(p, stats_view(p))
+            found = True
+    if not found:
+        entry["gold_bank"] = entry.get("gold_bank", 0) + amount
+    mark_scores_dirty()
+
+
+def _auto_create_party(player):
+    if player.party_id and player.party_id in parties:
+        return parties[player.party_id]
+    pid = next(_party_counter)
+    party = Party(id=pid, leader_id=player.id, member_ids={player.id})
+    parties[pid] = party
+    player.party_id = pid
+    return party
+
+
+def _delete_party(party):
+    if party.dungeon_id and party.dungeon_id in dungeons:
+        del dungeons[party.dungeon_id]
+    for mid in list(party.member_ids):
+        p = players.get(mid)
+        if p and p.party_id == party.id:
+            p.party_id = None
+    if party.id in parties:
+        del parties[party.id]
+
+
+def _relocate_from_dungeon(player):
+    if dungeon_for_room(player.room):
+        remove_member(player)
+        player.room = DUNGEON_ENTRANCE_ROOM
+        add_member(player)
+
+
+def _dungeon_move(player, dungeon, floor_no):
+    remove_member(player)
+    player.room = dungeon.room_id(floor_no)
+    dungeon.floor(floor_no)
+    add_member(player)
+
+
+async def _enter_dungeon(player):
+    party = _auto_create_party(player)
+    if party.dungeon_id not in dungeons:
+        d = Dungeon(party_id=party.id)
+        dungeons[d.id] = d
+        party.dungeon_id = d.id
+    else:
+        d = dungeons[party.dungeon_id]
+    # Party members enter together: bring everyone already in the party who
+    # is standing at the entrance.
+    for mid in list(party.member_ids):
+        m = players.get(mid)
+        if m and m.room == DUNGEON_ENTRANCE_ROOM and m is not player:
+            remove_member(m)
+            m.room = d.room_id(1)
+            d.floor(1)
+            add_member(m)
+            await send(m, room_view(m.room))
+            await send(m, stats_view(m))
+    _dungeon_move(player, d, 1)
+    await send(player, room_view(player.room))
+    await send(player, stats_view(player))
+
+
+async def _dungeon_move_or_fail(player, d, direction):
+    floor_no = floor_from_room(player.room)
+    f = d.floors.get(floor_no)
+    if direction == "up":
+        if floor_no == 1 or (f and f.cleared):
+            if floor_no == 1:
+                remove_member(player)
+                player.room = DUNGEON_ENTRANCE_ROOM
+                add_member(player)
+            else:
+                _dungeon_move(player, d, floor_no - 1)
+            await send(player, room_view(player.room))
+            await send(player, stats_view(player))
+        else:
+            await send(player, {"type": "error", "text": "The exit is sealed. Clear every guard on this floor first."})
+        return
+    if direction == "down":
+        if f and f.cleared:
+            if floor_no + 1 > DUNGEON_MAX_FLOOR:
+                await send(player, {"type": "error", "text": "The stairs below have crumbled into darkness. This is as deep as anyone can go."})
+            else:
+                _dungeon_move(player, d, floor_no + 1)
+                await send(player, room_view(player.room))
+                await send(player, stats_view(player))
+        else:
+            await send(player, {"type": "error", "text": "The exit is sealed. Clear every guard on this floor first."})
+        return
+    await send(player, {"type": "error", "text": f"You can't go '{direction}' from here."})
+
+
+def _party_member_players(party):
+    out = []
+    for mid in party.member_ids:
+        p = players.get(mid)
+        if p:
+            out.append(p)
+    return out
+
+
+async def _notify_party(party, text):
+    for p in _party_member_players(party):
+        if p.logged_in:
+            await send(p, {"type": "message", "text": text})
+
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
+
+async def cmd_login(player, msg):
+    name = (msg.get("name") or "").strip()
+    if not name:
+        await send(player, {"type": "error", "text": "login requires a 'name'"})
+        return
+    if player.logged_in:
+        await send(player, {"type": "error", "text": f"Already logged in as {player.name}. Use a fresh connection to switch."})
+        return
+    token = msg.get("token")
+    if name_owners.get(name.lower()) not in (None, player.id):
+        await send(player, {"type": "error", "text": f"The name '{name}' is already in use right now."})
+        return
+    entry = get_score_entry(name)
+    stored = entry.get("auth_token")
+    if stored:
+        if token != stored:
+            await send(player, {"type": "error", "text": f"The name '{name}' is protected by a token. Login rejected."})
+            return
+    else:
+        if AUTH_TOKEN_REQUIRED and not token:
+            await send(player, {"type": "error", "text": "This server requires a login token."})
+            return
+        if token:
+            entry["auth_token"] = token
+            mark_scores_dirty()
+    if entry.get("gold_bank", 0):
+        player.gold += entry["gold_bank"]
+        entry["gold_bank"] = 0
+        mark_scores_dirty()
+    player.name = name
+    player.logged_in = True
+    player.room = START_ROOM if dungeon_for_room(player.room) else player.room
+    if player.room not in entry["rooms_visited"]:
+        entry["rooms_visited"].append(player.room)
+    sync_player_level(player)
+    name_owners[name.lower()] = player.id
+    add_member(player)
+    lvl = entry["level"]
+    await send(player, {"type": "welcome", "text": f"Welcome, {name} (level {lvl})."})
+    await send(player, room_view(player.room))
+    await send(player, stats_view(player))
+    await broadcast_room(player.room, {"type": "message", "text": f"{name} appears."}, exclude=player)
+
+
+async def cmd_look(player, msg):
+    await send(player, room_view(player.room))
+
+
+async def cmd_move(player, msg):
+    direction = (msg.get("dir") or "").lower()
+    if direction == DUNGEON_ENTRANCE_DIR and player.room == DUNGEON_ENTRANCE_ROOM:
+        await _enter_dungeon(player)
+        return
+    d = dungeon_for_room(player.room)
+    if d:
+        await _dungeon_move_or_fail(player, d, direction)
+        return
+    exits = ROOMS[player.room]["exits"]
+    if direction not in exits:
+        await send(player, {"type": "error", "text": f"You can't go '{direction}' from here."})
+        return
+    dest = exits[direction]
+    if dest not in ROOMS:
+        await send(player, {"type": "error", "text": f"You can't go '{direction}' from here."})
+        return
+    # Room capacity
+    if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
+        await send(player, {"type": "error", "text": f"{ROOMS[dest]['name']} is too crowded."})
+        return
+    remove_member(player)
+    await broadcast_room(player.room, {"type": "message", "text": f"{player.name} leaves."}, exclude=player)
+    player.room = dest
+    add_member(player)
+    entry = get_score_entry(player.name)
+    if player.room not in entry["rooms_visited"]:
+        entry["rooms_visited"].append(player.room)
+        await award_points(player, 5, f"discovered {ROOMS[player.room]['name']}")
+        await award_xp(player.name, 5, f"discovered {ROOMS[player.room]['name']}")
+    await send(player, room_view(player.room))
+    await send(player, stats_view(player))
+    await broadcast_room(player.room, {"type": "message", "text": f"{player.name} arrives."}, exclude=player)
+
+
+async def cmd_say(player, msg):
+    text = msg.get("text", "")
+    await broadcast_room(player.room, {"type": "message", "text": f"{player.name} says: {text}"})
+
+
+async def cmd_attack(player, msg):
+    target_name = msg.get("target", "")
+    npc = find_npc_in_room(player.room, target_name)
+    if not npc:
+        await send(player, {"type": "error", "text": f"No '{target_name}' here to attack."})
+        return
+    # Ranged weapons declare their ammo (e.g. Oak Longbow needs "arrow").
+    ammo_id = ITEM_DEFS.get(player.equipped, {}).get("ammo") if player.equipped else None
+    if ammo_id:
+        if ammo_id not in player.inventory:
+            await send(player, {"type": "error", "text": f"You need {ITEM_DEFS[ammo_id]['name']}s to fire the {ITEM_DEFS[player.equipped]['name']}."})
+            return
+        player.inventory.remove(ammo_id)
+    dmg = random.randint(1, player.attack)
+    npc["hp"] -= dmg
+    npc["contributors"][player.name] = npc["contributors"].get(player.name, 0) + dmg
+    await send(player, {"type": "combat", "text": f"You hit {npc['name']} for {dmg}."})
+    await broadcast_room(player.room, {"type": "combat", "text": f"{player.name} hits {npc['name']} for {dmg}."}, exclude=player)
+    if npc["hp"] <= 0:
+        npc["alive"] = False
+        respawn_secs = npc.get("respawn_seconds", 30)
+        npc["respawn_at"] = time.time() + respawn_secs if respawn_secs else None
+        for loot_id in npc.get("loot", []):
+            _add_ground(player.room, loot_id)
+        contributors = npc["contributors"]
+        total_dmg = sum(contributors.values()) or 1
+        num_contributors = len(contributors)
+        teamwork_multiplier = 1.0 + TEAMWORK_BONUS_PER_EXTRA_CONTRIBUTOR * min(
+            num_contributors - 1, TEAMWORK_BONUS_CAP_CONTRIBUTORS
+        )
+        pool = (npc["max_hp"] * 0.5 + npc["attack"] * 3) * teamwork_multiplier
+        gold_share = round(npc.get("gold", 0) * _buff_mult("gold") / max(1, num_contributors))
+        for cname, dmg_dealt in contributors.items():
+            share = dmg_dealt / total_dmg
+            pts = pool * share
+            xp = pts
+            # Registered quest-giving NPCs give essentially nothing — killing
+            # them is never worth it compared to real objectives.
+            is_quest_npc = is_quest_giver(npc["id"])
+            if is_quest_npc:
+                pts = 0.1
+                xp = 0.1
+                gold_share = 0
+                reason = f"defeated {npc['name']} (quest NPC - minimal reward)"
+            elif cname == player.name:
+                reason = f"defeated {npc['name']}"
+                get_score_entry(cname)["kills"] += 1
+                if player.hp <= player.max_hp * 0.3:
+                    pts *= 1.5
+                    xp *= 1.5
+                    reason += " (narrow victory)"
+            else:
+                reason = f"helped defeat {npc['name']}"
+            await award_points_to_name(cname, pts, reason)
+            await award_xp(cname, xp, reason)
+        team_note = "" if num_contributors <= 1 else f" ({num_contributors} contributors share the credit)"
+        await broadcast_room(player.room, {
+            "type": "combat",
+            "text": f"{npc['name']} dies! Loot drops on the ground.{team_note}"
+        })
+        for cname in contributors:
+            for p in players_by_name.get(cname.lower(), ()):
+                if p.logged_in:
+                    p.gold += gold_share
+                    await send(p, stats_view(p))
+        if str(npc["id"]).startswith("boss_"):
+            npcs.pop(npc["id"], None)
+        npc["contributors"] = {}
+        await sync_room(player.room)
+        if check_dungeon_clear(player.room):
+            floor_no = floor_from_room(player.room)
+            clear_pts = 15 + 5 * floor_no
+            clear_xp = 20 + 15 * floor_no
+            for p in players_in_room(player.room):
+                get_score_entry(p.name)["dungeon_floors_cleared"] += 1
+                await award_points(p, clear_pts, f"cleared Dungeon Floor {floor_no}")
+                await award_xp(p.name, clear_xp, f"cleared Dungeon Floor {floor_no}")
+            await broadcast_room(player.room, {
+                "type": "message",
+                "text": "The hall falls silent. The sealed exits grind open, revealing the way onward and a gleaming blade."
+            })
+            await sync_room(player.room)
+    else:
+        if npc["attack"] > 0:
+            retaliation = random.randint(1, npc["attack"])
+            retaliation = max(0, retaliation - _player_buff_amount(player, "damage_reduction"))
+            player.hp -= retaliation
+            await send(player, {"type": "combat", "text": f"{npc['name']} hits you for {retaliation}."})
+            if player.hp <= 0:
+                await respawn_player(player)
+            else:
+                await send(player, stats_view(player))
+
+
+async def cmd_take(player, msg):
+    item_name = msg.get("item", "")
+    iid = find_item_by_name(_ground_items(player.room), item_name)
+    if not iid:
+        await send(player, {"type": "error", "text": f"No '{item_name}' here to take."})
+        return
+    _remove_ground(player.room, iid)
+    player.inventory.append(iid)
+    await send(player, {"type": "message", "text": f"You take {ITEM_DEFS[iid]['name']}."})
+    await send(player, stats_view(player))
+    await sync_room(player.room)
+
+
+async def cmd_gather(player, msg):
+    """Harvest one available non-combat node in the current surface room."""
+    requested = str(msg.get("node") or msg.get("item") or "").strip().lower()
+    cands = gather_nodes_in_room(player.room)
+    node = None
+    if requested:
+        node = next((n for n in cands
+                     if requested in (n["id"].lower(), n["item"].lower(),
+                                      ITEM_DEFS[n["item"]]["name"].lower())), None)
+    else:
+        node = cands[0] if cands else None
+    if not node:
+        await send(player, {"type": "error", "text": "No available gathering node matches that here."})
+        return
+    node["available"] = False
+    node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
+    quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+    player.inventory.extend([node["item"]] * quantity)
+    item_name = ITEM_DEFS[node["item"]]["name"]
+    await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
+    await award_points(player, float(node.get("score", 2)), f"gathered {item_name}")
+    await award_xp(player.name, float(node.get("xp", 2)), f"gathered {item_name}")
+    await send(player, stats_view(player))
+    await sync_room(player.room)
+
+
+async def cmd_drop(player, msg):
+    iid = find_item_by_name(player.inventory, msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    player.inventory.remove(iid)
+    if player.equipped == iid:
+        player.equipped = None
+    _add_ground(player.room, iid)
+    await send(player, {"type": "message", "text": f"You drop {ITEM_DEFS[iid]['name']}."})
+    await send(player, stats_view(player))
+    await sync_room(player.room)
+
+
+async def cmd_equip(player, msg):
+    iid = find_item_by_name(player.inventory, msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    if ITEM_DEFS[iid].get("type") != "weapon":
+        await send(player, {"type": "error", "text": f"You can't equip '{ITEM_DEFS[iid]['name']}'."})
+        return
+    player.equipped = iid
+    await send(player, {"type": "message", "text": f"You equip {ITEM_DEFS[iid]['name']}."})
+    await send(player, stats_view(player))
+
+
+async def cmd_use(player, msg):
+    iid = find_item_by_name(player.inventory, msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    if not iid or ITEM_DEFS[iid].get("type") != "consumable":
+        await send(player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."})
+        return
+    player.inventory.remove(iid)
+    definition = ITEM_DEFS[iid]
+    effect = definition.get("buff")
+    if effect:
+        category = effect["category"]
+        player.active_buffs[category] = {
+            "amount": int(effect.get("amount", 0)),
+            "remaining": int(effect.get("duration_actions", 1)),
+        }
+        await send(player, {
+            "type": "message",
+            "text": f"You use {definition['name']}: {effect.get('description', 'a temporary effect')} "
+                    f"({player.active_buffs[category]['remaining']} actions).",
+        })
+        await send(player, stats_view(player))
+        return
+    heal = definition.get("heal_amount", 0)
+    before = player.hp
+    player.hp = min(player.max_hp, player.hp + heal)
+    await send(player, {"type": "message", "text": f"You use {definition['name']} and recover {player.hp - before} HP."})
+    await send(player, stats_view(player))
+
+
+async def cmd_rest(player, msg):
+    player.hp = min(player.max_hp, player.hp + 5)
+    await send(player, {"type": "message", "text": "You rest and recover 5 HP."})
+    await send(player, stats_view(player))
+
+
+async def cmd_buy(player, msg):
+    merchant = find_merchant_in_room(player.room)
+    if not merchant:
+        # ML env buys from anywhere in tests? No — but allow market-room-less?
+        # Keep strict: must be by a merchant.
+        await send(player, {"type": "error", "text": "No merchant here."})
+        return
+    iid = find_shop_item(merchant["shop"], msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "The merchant doesn't sell that."})
+        return
+    price = merchant["shop"][iid]
+    if player.gold < price:
+        await send(player, {"type": "error", "text": f"You need {price} gold."})
+        return
+    player.gold -= price
+    player.inventory.append(iid)
+    await send(player, {"type": "message", "text": f"You buy {ITEM_DEFS[iid]['name']} for {price} gold."})
+    await send(player, stats_view(player))
+
+
+async def cmd_sell(player, msg):
+    iid = find_item_by_name(player.inventory, msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    merchant = find_merchant_in_room(player.room)
+    if not merchant:
+        await send(player, {"type": "error", "text": "No merchant here."})
+        return
+    value = ITEM_DEFS.get(iid, {}).get("value", 1)
+    player.inventory.remove(iid)
+    if player.equipped == iid:
+        player.equipped = None
+    player.gold += value
+    await send(player, {"type": "message", "text": f"You sell {ITEM_DEFS[iid]['name']} for {value} gold."})
+    await send(player, stats_view(player))
+
+
+async def cmd_craft(player, msg):
+    rid, recipe = find_recipe(msg.get("recipe", ""))
+    if not recipe:
+        await send(player, {"type": "error", "text": "No such recipe."})
+        return
+    have = {iid: player.inventory.count(iid) for iid in set(player.inventory)}
+    for iid, qty in recipe["inputs"].items():
+        if have.get(iid, 0) < qty:
+            await send(player, {"type": "error", "text": f"You need {qty}x {ITEM_DEFS[iid]['name']} to craft that."})
+            return
+    for iid, qty in recipe["inputs"].items():
+        for _ in range(qty):
+            player.inventory.remove(iid)
+    result = recipe["result"]
+    try:
+        output_qty = max(1, int(recipe.get("output_qty", 1)))
+    except (TypeError, ValueError):
+        output_qty = 1
+    player.inventory.extend([result] * output_qty)
+    output_text = f"{output_qty}x {ITEM_DEFS[result]['name']}" if output_qty > 1 else ITEM_DEFS[result]["name"]
+    await send(player, {"type": "message", "text": f"You craft {output_text}!"})
+    entry = get_score_entry(player.name)
+    input_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) * qty for iid, qty in recipe["inputs"].items())
+    output_value = ITEM_DEFS.get(result, {}).get("value", 0) * output_qty
+    net_profit = output_value - input_value
+    entry.setdefault("craft_profitability", {})[recipe["result"]] = entry["craft_profitability"].get(recipe["result"], 0) + net_profit
+    entry.setdefault("crafts_tier", {}).setdefault(recipe.get("tier", 0), 0)
+    entry["crafts_tier"][recipe.get("tier", 0)] += 1
+    mark_scores_dirty()
+    await award_points(player, 8, f"crafted {ITEM_DEFS[result]['name']}")
+    await award_xp(player.name, 8, f"crafted {ITEM_DEFS[result]['name']}")
+    if entry["quest_guard_active"] and result == "ancient_guardian_charm":
+        entry["guard_charm_crafted"] = True
+        mark_scores_dirty()
+        await send(player, {"type": "message", "text": "The Ancient Guardian Charm feels warm in your hands... "
+              "perhaps the Town Guard will find it useful?"})
+    await send(player, stats_view(player))
+
+
+async def cmd_commission_post(player, msg):
+    target = (msg.get("target") or "").strip().lower()
+    try:
+        required_kills = int(msg.get("required_kills") or 0)
+    except (TypeError, ValueError):
+        required_kills = 0
+    try:
+        reward_gold = int(msg.get("reward_gold") or 0)
+    except (TypeError, ValueError):
+        reward_gold = 0
+    try:
+        reward_xp = int(msg.get("reward_xp") or 0)
+    except (TypeError, ValueError):
+        reward_xp = 0
+    if not target:
+        # ML env posts with no args; default to a simple rat bounty.
+        target = "rat"
+        required_kills = required_kills or 1
+    if required_kills <= 0:
+        required_kills = 1
+    if reward_gold < 0 or reward_xp < 0:
+        await send(player, {"type": "error", "text": "Rewards cannot be negative."})
+        return
+    # True escrow: the poster locks the gold up front. Posting what you
+    # cannot cover is rejected instead of minting gold at fill time.
+    if player.gold < reward_gold:
+        await send(player, {"type": "error", "text": f"You need {reward_gold} gold to escrow that bounty (you have {player.gold})."})
+        return
+    player.gold -= reward_gold
+    cid = next(_commission_counter)
+    commission = {
+        "id": cid, "poster": player.name, "target": target,
+        "required_kills": required_kills, "reward_gold": reward_gold,
+        "reward_xp": reward_xp, "escrow": reward_gold,
+        "status": "open", "created_ts": time.time(),
+    }
+    _commissions[cid] = commission
+    mark_scores_dirty()
+    await send(player, {"type": "message", "text": f"Commission #{cid} posted: slay {required_kills}x {target} for {reward_gold}g + {reward_xp}xp ({reward_gold}g held in escrow)."})
+    await broadcast_room(player.room, {"type": "message", "text": f"{player.name} posted commission #{cid}."}, exclude=player)
+    await send(player, stats_view(player))
+
+
+async def cmd_commission_list(player, msg):
+    open_cmds = [c for c in _commissions.values() if c["status"] == "open"]
+    if not open_cmds:
+        await send(player, {"type": "message", "text": "No open commissions right now."})
+        await send(player, stats_view(player))
+        return
+    lines = [f"#{c['id']}: slay {c['required_kills']}x {c['target']} — reward {c['reward_gold']}g + {c['reward_xp']}xp (posted by {c['poster']})" for c in open_cmds]
+    await send(player, {"type": "message", "text": "Open commissions:\n" + "\n".join(lines)})
+    await send(player, stats_view(player))
+
+
+async def cmd_commission_fill(player, msg):
+    cid_raw = msg.get("commission_id", msg.get("id", ""))
+    try:
+        cid = int(str(cid_raw).strip())
+    except (TypeError, ValueError):
+        # ML env fills with no args: take the first open commission.
+        open_cmds = [c for c in _commissions.values() if c["status"] == "open"]
+        if not open_cmds:
+            await send(player, {"type": "error", "text": "No open commissions to fill."})
+            return
+        cid = open_cmds[0]["id"]
+    commission = _commissions.get(cid)
+    if not commission:
+        await send(player, {"type": "error", "text": f"Commission #{cid} not found."})
+        return
+    if commission["status"] != "open":
+        await send(player, {"type": "error", "text": f"Commission #{cid} is already {commission['status']}."})
+        return
+    # No self-dealing: filling your own bounty would mint score for nothing.
+    if commission["poster"] == player.name:
+        await send(player, {"type": "error", "text": f"You cannot fill your own commission #{cid}."})
+        return
+    commission["status"] = "filled"
+    commission["filled_by"] = player.name
+    commission["filled_ts"] = time.time()
+    mark_scores_dirty()
+    # Single score award (previously the XP and gold amounts were each
+    # awarded as score, double-paying). XP goes through award_xp so
+    # level-ups and xp events fire; gold goes straight to the live
+    # character instead of the offline bank.
+    await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{commission['reward_gold']}g, +{commission['reward_xp']}xp."})
+    await award_points(player, commission["reward_xp"] + commission["reward_gold"], f"completed commission #{cid}")
+    await award_xp(player.name, commission["reward_xp"], f"completed commission #{cid}")
+    player.gold += commission.get("escrow", commission["reward_gold"])
+    commission["escrow"] = 0
+    commission["status"] = "completed"
+    mark_scores_dirty()
+    await send(player, stats_view(player))
+
+
+async def cmd_commission_cancel(player, msg):
+    cid_raw = msg.get("commission_id", msg.get("id", ""))
+    try:
+        cid = int(str(cid_raw).strip())
+    except (TypeError, ValueError):
+        await send(player, {"type": "error", "text": "commission_cancel needs a 'commission_id'."})
+        return
+    commission = _commissions.get(cid)
+    if not commission:
+        await send(player, {"type": "error", "text": f"Commission #{cid} not found."})
+        return
+    if commission["status"] != "open":
+        await send(player, {"type": "error", "text": f"Commission #{cid} is already {commission['status']} and cannot be cancelled."})
+        return
+    commission["status"] = "cancelled"
+    # Refund half of the actually-escrowed gold (credit_gold pays live
+    # characters directly and banks it for offline ones).
+    refund = commission.get("escrow", commission["reward_gold"]) // 2
+    commission["escrow"] = commission.get("escrow", commission["reward_gold"]) - refund
+    await credit_gold(commission["poster"], refund)
+    mark_scores_dirty()
+    await send(player, {"type": "message", "text": f"Commission #{cid} cancelled. Half the escrow ({refund}g) returned to poster."})
+    await send(player, stats_view(player))
+
+
+async def cmd_give(player, msg):
+    target = find_player_in_room(player.room, msg.get("to", ""))
+    if not target or target is player:
+        await send(player, {"type": "error", "text": "No one here by that name."})
+        return
+    if "gold" in msg:
+        try:
+            amount = int(msg.get("gold", 0))
+        except (TypeError, ValueError):
+            amount = 0
+        if amount <= 0 or player.gold < amount:
+            await send(player, {"type": "error", "text": "You don't have that much gold to give."})
+            return
+        player.gold -= amount
+        target.gold += amount
+        await send(player, {"type": "message", "text": f"You give {amount} gold to {target.name}."})
+        await send(target, {"type": "message", "text": f"{player.name} gives you {amount} gold."})
+        await send(player, stats_view(player))
+        await send(target, stats_view(target))
+        return
+    if "item" in msg:
+        iid = find_item_by_name(player.inventory, msg.get("item", ""))
+        if not iid:
+            await send(player, {"type": "error", "text": "You don't have that."})
+            return
+        player.inventory.remove(iid)
+        target.inventory.append(iid)
+        await send(player, {"type": "message", "text": f"You give {ITEM_DEFS[iid]['name']} to {target.name}."})
+        await send(target, {"type": "message", "text": f"{player.name} gives you {ITEM_DEFS[iid]['name']}."})
+        return
+    await send(player, {"type": "error", "text": "Specify an 'item' or 'gold' amount to give."})
+
+
+async def cmd_inventory(player, msg):
+    await send(player, {
+        "type": "inventory",
+        "items": [ITEM_DEFS[i]["name"] for i in player.inventory],
+        "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
+    })
+
+
+async def cmd_stats(player, msg):
+    await send(player, stats_view(player))
+
+
+async def cmd_who(player, msg):
+    online = sorted([p.name for p in players.values() if p.logged_in])
+    await send(player, {"type": "who", "players": online})
+
+
+async def cmd_leaderboard(player, msg):
+    scored = sorted(SCORES.values(), key=lambda e: e.get("score", 0), reverse=True)[:10]
+    await send(player, {"type": "leaderboard", "entries": [
+        {"name": e.get("display_name"), "score": round(e.get("score", 0), 2), "level": e.get("level", 1)}
+        for e in scored
+    ]})
+
+
+async def cmd_help(player, msg):
+    await send(player, {"type": "help", "text": (
+        "Commands: login look move say attack take gather drop equip use rest buy sell craft "
+        "commission_post commission_list commission_fill commission_cancel "
+        "give inventory stats who leaderboard help party_invite party_accept party_leave party_info "
+        "market_post market_list market_cancel market_buy quest quest_accept quest_turn_in"
+    )})
+
+# ---------------------------------------------------------------------------
+# Quests
+# ---------------------------------------------------------------------------
+
+QUEST_GUARD_NPC = "guard"
+QUEST_CHARM_RESULT = "ancient_guardian_charm"
+QUEST_CHARM_INPUTS = {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1}
+QUEST_GUARD_XP = 50
+QUEST_GUARD_GOLD = 25
+QUEST_GUARD_POINTS = 15
+QUEST_DELVER_XP = 30
+QUEST_DELVER_GOLD = 15
+QUEST_DELVER_POINTS = 10
+QUEST_DELVER_FLOORS = 1
+
+quest_turnin_times = []
+
+# Quest giver category system - makes it easy to add/change quest NPCs.
+# Add new entries here to create new quest givers; kill penalties,
+# quest lookups, and dashboard catalogs all read from this one table.
+QUEST_GIVERS = {
+    "guard": {
+        "name": "Town Guard",
+        "room": "town_square",
+        "description": "A stalwart guard who needs help protecting the town.",
+    },
+    # Easy to add new quest givers:
+    # "old_wizard": {
+    #     "name": "Old Wizard",
+    #     "room": "wizard_tower",
+    #     "description": "A mysterious wizard seeking rare components.",
+    # },
+}
+
+
+def is_quest_giver(npc_id: str) -> bool:
+    """Check if an NPC is a registered quest giver."""
+    return npc_id in QUEST_GIVERS
+
+
+def get_quest_giver(npc_id: str) -> dict | None:
+    """Get quest giver info by NPC ID."""
+    return QUEST_GIVERS.get(npc_id)
+
+
+def get_quest_givers_in_room(room_id: str) -> list[dict]:
+    """Get all quest givers present in a room."""
+    givers = []
+    for npc_id, info in QUEST_GIVERS.items():
+        if info.get("room") == room_id:
+            givers.append({"npc_id": npc_id, **info})
+    return givers
+
+
+QUESTS = {
+    "guard_charm": {
+        "giver_npc": "guard",
+        "giver_name": QUEST_GIVERS["guard"]["name"],
+        "room": QUEST_GIVERS["guard"]["room"],
+        "inputs": dict(QUEST_CHARM_INPUTS),
+        "result": QUEST_CHARM_RESULT,
+        "result_name": "Ancient Guardian Charm",
+        "objective": "craft",
+        "reward_xp": QUEST_GUARD_XP,
+        "reward_gold": QUEST_GUARD_GOLD,
+        "reward_points": QUEST_GUARD_POINTS,
+        "repeatable": True,
+    },
+    "delver": {
+        "giver_npc": "guard",
+        "giver_name": QUEST_GIVERS["guard"]["name"],
+        "room": QUEST_GIVERS["guard"]["room"],
+        "inputs": {},
+        "result": None,
+        "result_name": None,
+        "objective": "clear_dungeon_floors",
+        "floors_required": QUEST_DELVER_FLOORS,
+        "reward_xp": QUEST_DELVER_XP,
+        "reward_gold": QUEST_DELVER_GOLD,
+        "reward_points": QUEST_DELVER_POINTS,
+        "repeatable": True,
+    },
+}
+
+
+def quest_delver_ready(entry):
+    """True when an accepted Depth Delver quest has enough new clears."""
+    return (entry.get("dungeon_floors_cleared", 0)
+            - entry.get("quest_delver_baseline", 0) >= QUEST_DELVER_FLOORS)
+
+
+async def cmd_quest(player, msg):
+    """Handle quest acceptance and turn-in."""
+    cmd = msg.get("cmd", "")
+    action = msg.get("action", "")
+    if cmd == "quest_accept":
+        action = "accept"
+    elif cmd == "quest_turn_in":
+        action = "turn_in"
+    qid = str(msg.get("quest", "guard_charm") or "guard_charm").lower()
+    if qid not in QUESTS:
+        await send(player, {"type": "error", "text": f"Unknown quest '{qid}'. Known: {', '.join(sorted(QUESTS))}."})
+        return
+    quest = QUESTS[qid]
+    entry = get_score_entry(player.name)
+
+    def _giver_present():
+        return find_npc_in_room(player.room, quest["giver_npc"]) is not None
+
+    def _record_turnin():
+        entry[qid_key(entry, qid, "completions")] = entry.get(qid_key(entry, qid, "completions"), 0) + 1
+        quest_turnin_times.append(time.time())
+        mark_scores_dirty()
+
+    if action == "accept":
+        if _quest_active(entry, qid):
+            await send(player, {"type": "message", "text": f"You already have an active {quest['giver_name']} quest ({qid})."})
+            return
+        if not _giver_present():
+            await send(player, {"type": "error", "text": f"The {quest['giver_name']} isn't here. Find them in {ROOMS[quest['room']]['name']} to accept this quest."})
+            return
+        _set_quest_active(entry, qid, True)
+        mark_scores_dirty()
+        if qid == "guard_charm":
+            await send(player, {"type": "message", "text": "Town Guard: Ah, adventurer! We need protectors for our walls. "
+                  "Bring me an Ancient Guardian Charm, crafted from Treant Bark, Troll Hide, and Ectoplasm. "
+                  f"Return it to me for a reward of {QUEST_GUARD_XP} XP and {QUEST_GUARD_GOLD} gold. This quest can be repeated."})
+        else:
+            await send(player, {"type": "message", "text": "Town Guard: The deeps stir below the graveyard. "
+                  f"Clear {QUEST_DELVER_FLOORS} dungeon floor{'s' if QUEST_DELVER_FLOORS != 1 else ''} in your party's instance, "
+                  f"then report back for {QUEST_DELVER_XP} XP and {QUEST_DELVER_GOLD} gold. Repeatable."})
+        await send(player, stats_view(player))
+    elif action == "turn_in":
+        if not _quest_active(entry, qid):
+            await send(player, {"type": "message", "text": "You don't have that quest active."})
+            return
+        if qid == "guard_charm":
+            if not entry.get("guard_charm_crafted"):
+                await send(player, {"type": "message", "text": "You haven't crafted the Ancient Guardian Charm yet. "
+                      "Gather 1 Treant Bark, 1 Troll Hide, and 1 Ectoplasm, then craft it."})
+                return
+        else:
+            if not quest_delver_ready(entry):
+                have = entry.get("dungeon_floors_cleared", 0) - entry.get("quest_delver_baseline", 0)
+                await send(player, {"type": "message", "text": f"The deeps are not yet quiet ({have}/{QUEST_DELVER_FLOORS} floors cleared). "
+                      "Descend through the graveyard archway and clear a floor."})
+                return
+        if not _giver_present():
+            await send(player, {"type": "error", "text": f"The {quest['giver_name']} isn't here. Return to {ROOMS[quest['room']]['name']} to turn in."})
+            return
+        if qid == "guard_charm":
+            if QUEST_CHARM_RESULT in player.inventory:
+                player.inventory.remove(QUEST_CHARM_RESULT)
+            entry["guard_charm_crafted"] = False
+            entry["quest_guard_active"] = False
+        else:
+            entry["quest_delver_active"] = False
+            entry["quest_delver_baseline"] = entry.get("dungeon_floors_cleared", 0)
+        _record_turnin()
+        await send(player, {"type": "message", "text": f"{quest['giver_name']}: Excellent work! Here's your reward: "
+              f"{quest['reward_xp']} XP and {quest['reward_gold']} gold. "
+              "Return whenever you'd like to repeat the quest."})
+        await award_points(player, quest["reward_points"], f"completed quest {qid}")
+        await award_xp(player.name, quest["reward_xp"], f"completed quest {qid}")
+        await credit_gold(player.name, quest["reward_gold"])
+        await send(player, stats_view(player))
+    else:
+        await send(player, {"type": "error", "text": "Unknown quest action. Use 'quest_accept' or 'quest_turn_in'."})
+
+
+def qid_key(entry, qid, kind):
+    if qid == "guard_charm":
+        return {"completions": "quest_guard_completions"}[kind]
+    return {"completions": "quest_delver_completions"}[kind]
+
+
+def _quest_active(entry, qid):
+    if qid == "guard_charm":
+        return bool(entry.get("quest_guard_active"))
+    return bool(entry.get("quest_delver_active"))
+
+
+def _set_quest_active(entry, qid, active):
+    if qid == "guard_charm":
+        entry["quest_guard_active"] = bool(active)
+        if active:
+            entry["guard_charm_crafted"] = False
+    else:
+        entry["quest_delver_active"] = bool(active)
+        if active:
+            entry["quest_delver_baseline"] = entry.get("dungeon_floors_cleared", 0)
+    mark_scores_dirty()
+
+
+async def cmd_party_invite(player, msg):
+    target = find_player_in_room(player.room, msg.get("target", ""))
+    if not target or target is player:
+        await send(player, {"type": "error", "text": "No one here by that name."})
+        return
+    party = _auto_create_party(player)
+    if len(party.member_ids) >= PARTY_MAX_MEMBERS:
+        await send(player, {"type": "error", "text": "Your party is full."})
+        return
+    _pending_party_invites[target.id] = party
+    await send(target, {"type": "message", "text": f"{player.name} invites you to a party. Send party_accept to join."})
+    await send(player, {"type": "message", "text": f"Invitation sent to {target.name}."})
+
+
+async def cmd_party_accept(player, msg):
+    party = _pending_party_invites.pop(player.id, None)
+    if not party or party.id not in parties:
+        await send(player, {"type": "error", "text": "No pending party invitation."})
+        return
+    if len(party.member_ids) >= PARTY_MAX_MEMBERS:
+        await send(player, {"type": "error", "text": "That party is full."})
+        return
+    if player.party_id and player.party_id in parties:
+        old = parties[player.party_id]
+        old.member_ids.discard(player.id)
+        if not old.member_ids:
+            _delete_party(old)
+    party.member_ids.add(player.id)
+    player.party_id = party.id
+    leader = players.get(party.leader_id)
+    if leader and leader.logged_in:
+        await send(leader, {"type": "message", "text": "You are now the party leader."})
+    await _notify_party(party, f"{player.name} joins the party.")
+    await send(player, stats_view(player))
+
+
+async def cmd_party_leave(player, msg):
+    party = parties.get(player.party_id) if player.party_id else None
+    if not party:
+        await send(player, {"type": "error", "text": "You are not in a party."})
+        return
+    party.member_ids.discard(player.id)
+    player.party_id = None
+    _relocate_from_dungeon(player)
+    await send(player, {"type": "message", "text": "You leave the party."})
+    if not party.member_ids:
+        _delete_party(party)
+    elif party.leader_id == player.id:
+        party.leader_id = next(iter(party.member_ids))
+    await send(player, room_view(player.room))
+    await send(player, stats_view(player))
+
+
+async def cmd_party_info(player, msg):
+    party = parties.get(player.party_id) if player.party_id else None
+    if not party:
+        await send(player, {"type": "error", "text": "You are not in a party."})
+        return
+    members = []
+    for mid in party.member_ids:
+        m = players.get(mid)
+        members.append({"name": m.name if m else "?", "level": get_score_entry(m.name)["level"] if m and m.name else 1})
+    leader = players.get(party.leader_id)
+    await send(player, {
+        "type": "party",
+        "id": party.id,
+        "leader": leader.name if leader else "?",
+        "members": members,
+        "dungeon_id": party.dungeon_id,
+    })
+
+
+async def cmd_market_list(player, msg):
+    await send(player, {
+        "type": "market",
+        "orders": [_market_order_dict(o) for o in market_orders],
+        "treasury": round(tax_treasury, 2),
+        "tax_treasury": round(tax_treasury, 2),
+        "tax_collected_lifetime": round(tax_collected_lifetime, 2),
+        "collected_lifetime": round(tax_collected_lifetime, 2),
+        "tax_rate": TAX_RATE,
+        "tax_min": TAX_MINIMUM,
+    })
+
+
+async def cmd_market_post(player, msg):
+    iid = find_item_by_name(player.inventory, msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    try:
+        price = int(msg.get("price", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0
+    if price <= 0:
+        price = item_suggested_price(iid)
+    player.inventory.remove(iid)
+    if player.equipped == iid:
+        player.equipped = None
+    oid = next(_id_counter)
+    market_orders.append({"id": oid, "seller": player.name, "item": iid, "price": price, "ts": time.time()})
+    mark_scores_dirty()
+    await send(player, {"type": "message", "text": f"Listed {ITEM_DEFS[iid]['name']} for {price} gold (order #{oid})."})
+    await send(player, stats_view(player))
+
+
+async def cmd_market_cancel(player, msg):
+    try:
+        oid = int(msg.get("id", 0))
+    except (TypeError, ValueError):
+        await send(player, {"type": "error", "text": "market_cancel needs an 'id'."})
+        return
+    for o in list(market_orders):
+        if o["id"] == oid and o["seller"] == player.name:
+            market_orders.remove(o)
+            player.inventory.append(o["item"])
+            mark_scores_dirty()
+            await send(player, {"type": "message", "text": f"Cancelled order #{oid}."})
+            await send(player, stats_view(player))
+            return
+    await send(player, {"type": "error", "text": f"No order #{oid} of yours."})
+
+
+async def cmd_market_buy(player, msg):
+    global tax_treasury, tax_collected_lifetime
+    oid = msg.get("id", None)
+    choice = None
+    if oid is not None:
+        try:
+            oid = int(oid)
+        except (TypeError, ValueError):
+            await send(player, {"type": "error", "text": f"No order #{msg.get('id')}."})
+            return
+        for o in market_orders:
+            if o["id"] == oid:
+                choice = o
+                break
+        if not choice:
+            await send(player, {"type": "error", "text": f"No order #{oid}."})
+            return
+    else:
+        affordable = [o for o in market_orders if o["seller"] != player.name and player.gold >= o["price"]]
+        if not affordable:
+            await send(player, {"type": "error", "text": "No affordable orders."})
+            return
+        choice = min(affordable, key=lambda o: o["price"])
+    if player.gold < choice["price"]:
+        await send(player, {"type": "error", "text": "You can't afford that."})
+        return
+    price = choice["price"]
+    tax = max(TAX_MINIMUM, round(price * TAX_RATE))
+    seller_payout = price - tax
+    player.gold -= price
+    tax_treasury += tax
+    tax_collected_lifetime += tax
+    market_orders.remove(choice)
+    player.inventory.append(choice["item"])
+    buyer_entry = get_score_entry(player.name)
+    seller_entry = get_score_entry(choice["seller"])
+    buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
+    seller_entry["trades_completed"] = seller_entry.get("trades_completed", 0) + 1
+    seller_entry["tax_paid"] = seller_entry.get("tax_paid", 0.0) + tax
+    seller_entry["gold_bank"] = seller_entry.get("gold_bank", 0) + seller_payout
+    market_history.append({
+        "time": time.strftime("%H:%M:%S"), "ts": time.time(),
+        "buyer": player.name, "seller": choice["seller"],
+        "item": ITEM_DEFS.get(choice["item"], {}).get("name", choice["item"]),
+        "price": price, "tax": tax, "payout": seller_payout,
+    })
+    while len(market_history) > MARKET_HISTORY_SIZE:
+        del market_history[0]
+    mark_scores_dirty()
+    await send(player, {"type": "message", "text": f"You buy {ITEM_DEFS.get(choice['item'], {}).get('name', choice['item'])} for {price} gold."})
+    await award_points(player, 2, "made a market purchase")
+    await award_xp(player.name, 3, "made a market purchase")
+    await award_points_to_name(choice["seller"], 2, "made a market sale")
+    await award_xp(choice["seller"], 3, "made a market sale")
+    await credit_gold(choice["seller"], 0)
+    await send(player, stats_view(player))
+
+# ---------------------------------------------------------------------------
+# GM commands (treasury-priced, loopback GM stream only)
+# ---------------------------------------------------------------------------
+
+def _is_gm(player):
+    if isinstance(player, GMStream):
+        return True
+    return (getattr(player, "name", "") or "").startswith("GM")
+
+
+async def _spend_tax(player, cost, what):
+    global tax_treasury
+    if tax_treasury < cost:
+        await send(player, {"type": "message", "text": f"GM: insufficient treasury for {what} ({cost} needed, {round(tax_treasury,2)} available)."})
+        return False
+    tax_treasury = round(tax_treasury - cost, 2)
+    mark_scores_dirty()
+    return True
+
+
+async def cmd_gm_reward(player, msg):
+    gold = msg.get("gold", None)
+    item = msg.get("item", None)
+    if gold is not None:
+        try:
+            gold = int(gold)
+        except (TypeError, ValueError):
+            gold = 0
+        if gold <= 0:
+            await send(player, {"type": "error", "text": "gm_reward needs a positive 'gold' amount."})
+            return
+        if not await _spend_tax(player, gold, f"reward {gold}g"):
+            return
+        target = msg.get("player", "")
+        p = find_player_anywhere(target) if target else None
+        if p:
+            p.gold += gold
+            await send(p, stats_view(p))
+            await send(p, {"type": "message", "text": f"The GM grants you {gold} gold."})
+        elif target:
+            entry = get_score_entry(target)
+            entry["gold_bank"] = entry.get("gold_bank", 0) + gold
+            mark_scores_dirty()
+        await send(player, {"type": "message", "text": f"GM: rewarded {gold} gold to {target or '?'}. Treasury now {round(tax_treasury,2)}."})
+        return
+    if item:
+        iid = find_item_by_name(list(ITEM_DEFS.keys()), str(item))
+        if not iid:
+            await send(player, {"type": "error", "text": f"Unknown item '{item}'."})
+            return
+        cost = ITEM_DEFS.get(iid, {}).get("value", 1) or 1
+        if not await _spend_tax(player, cost, f"reward item {iid}"):
+            return
+        target = msg.get("player", "")
+        room = msg.get("room", "")
+        if target:
+            p = find_player_anywhere(target)
+            if p:
+                p.inventory.append(iid)
+                await send(p, stats_view(p))
+            else:
+                await send(player, {"type": "error", "text": f"Player '{target}' not found."})
+                return
+        elif room and room in ROOMS:
+            _add_ground(room, iid)
+            await sync_room(room)
+        else:
+            await send(player, {"type": "error", "text": "gm_reward needs a 'player' or 'room' for items."})
+            return
+        await send(player, {"type": "message", "text": f"GM: rewarded {iid} ({cost} tax spent). Treasury now {round(tax_treasury,2)}."})
+        return
+    await send(player, {"type": "error", "text": "gm_reward needs 'gold' or 'item'."})
+
+
+def ITHERE_ITEM_NAMES_MSG(iid):
+    return ITEM_DEFS.get(iid, {}).get("name", iid)
+
+
+async def cmd_gm_buff(player, msg):
+    kind = str(msg.get("type", "")).lower()
+    if kind not in ("xp", "gold"):
+        await send(player, {"type": "error", "text": "gm_buff needs 'type' xp|gold."})
+        return
+    try:
+        minutes = int(msg.get("minutes", 5))
+    except (TypeError, ValueError):
+        minutes = 5
+    minutes = max(1, min(60, minutes))
+    cost = minutes * GM_BUFF_COST_PER_MINUTE
+    if not await _spend_tax(player, cost, f"{kind} buff x{minutes}m"):
+        return
+    buffs[kind] = time.time() + minutes * 60
+    await send(player, {"type": "message", "text": f"GM: {kind.upper()}x2 world event for {minutes}m. Treasury now {round(tax_treasury,2)}."})
+    await broadcast_all({"type": "message", "text": f"World event: double {kind} for {minutes} minutes!"})
+
+
+async def cmd_gm_boss(player, msg):
+    room = msg.get("room", "")
+    if room not in ROOMS:
+        await send(player, {"type": "error", "text": f"Unknown room '{room}'."})
+        return
+    try:
+        strength = int(msg.get("strength", 1))
+    except (TypeError, ValueError):
+        strength = 1
+    strength = max(1, min(5, strength))
+    cost = strength * GM_BOSS_COST_PER_STRENGTH
+    if not await _spend_tax(player, cost, f"boss s{strength}"):
+        return
+    bid = f"boss_{next(_id_counter)}"
+    npcs[bid] = {
+        "id": bid, "name": f"Elite Menace {strength}*", "room": room,
+        "hp": 30 + 40 * strength, "max_hp": 30 + 40 * strength,
+        "attack": 5 + 4 * strength, "hostile": True, "behavior": "idle",
+        "loot": ["healing_herb"], "gold": 10 * strength,
+        "respawn_seconds": 0, "alive": True, "respawn_at": None, "contributors": {},
+    }
+    await sync_room(room)
+    await send(player, {"type": "message", "text": f"GM: Elite {strength}* menace spawned in {room}. Treasury now {round(tax_treasury,2)}."})
+
+
+async def cmd_gm_announce(player, msg):
+    text = (msg.get("text") or "").strip()
+    if not text:
+        await send(player, {"type": "error", "text": "gm_announce needs 'text'."})
+        return
+    if not await _spend_tax(player, GM_ANNOUNCE_COST, "announce"):
+        return
+    await broadcast_all({"type": "message", "text": f"ANNOUNCEMENT: {text[:200]}"})
+    await send(player, {"type": "message", "text": "GM: announcement sent."})
+
+
+async def cmd_gm_heal(player, msg):
+    name = (msg.get("player") or "").strip()
+    if not name:
+        await send(player, {"type": "error", "text": "gm_heal needs a 'player' name."})
+        return
+    target = find_player_anywhere(name)
+    if not target or not target.logged_in:
+        await send(player, {"type": "error", "text": f"'{name}' is not online."})
+        return
+    missing = target.max_hp - target.hp
+    if missing <= 0:
+        await send(player, {"type": "error", "text": f"{target.name} is already at full HP (no charge)."})
+        return
+    cost = missing * GM_HEAL_COST_PER_HP
+    if not await _spend_tax(player, cost, f"heal {target.name}"):
+        return
+    target.hp = target.max_hp
+    await send(target, stats_view(target))
+    await send(target, {"type": "message", "text": "The GM restores you to full health."})
+    await send(player, {"type": "message", "text": f"GM: {target.name} healed ({cost} tax spent)."})
+
+
+async def cmd_gm_teleport(player, msg):
+    name = (msg.get("player") or "").strip()
+    room = (msg.get("room") or "").strip()
+    if not name or room not in ROOMS:
+        await send(player, {"type": "error", "text": "gm_teleport needs a 'player' and a valid 'room'."})
+        return
+    target = find_player_anywhere(name)
+    if not target or not target.logged_in:
+        await send(player, {"type": "error", "text": f"'{name}' is not online."})
+        return
+    if target.room == room:
+        await send(player, {"type": "error", "text": f"{target.name} is already in {room} (no charge)."})
+        return
+    if len(players_in_room(room)) >= MAX_PLAYERS_PER_ROOM:
+        await send(player, {"type": "error", "text": f"{room} is full."})
+        return
+    if not await _spend_tax(player, GM_TELEPORT_COST, f"teleport {target.name}"):
+        return
+    remove_member(target)
+    target.room = room
+    add_member(target)
+    await send(target, room_view(target.room))
+    await send(target, stats_view(target))
+    await send(player, {"type": "message", "text": f"GM: {target.name} teleported to {room}."})
+
+
+async def cmd_gm_slay(player, msg):
+    target = (msg.get("target") or "").strip().lower()
+    if not target:
+        await send(player, {"type": "error", "text": "gm_slay needs a 'target'."})
+        return
+    matches = [n for n in all_npcs() if n.get("alive") and (target in n["name"].lower() or target in str(n["id"]).lower())]
+    if not matches:
+        await send(player, {"type": "error", "text": f"No living NPC matches '{target}'."})
+        return
+    if len(matches) > 1 and target not in [str(m["id"]).lower() for m in matches]:
+        # Ambiguous unless exact id given; require more specific text.
+        names = ", ".join(m["name"] for m in matches[:5])
+        await send(player, {"type": "error", "text": f"Ambiguous target '{target}': {names}. Be more specific."})
+        return
+    # Prefer exact id match, else first.
+    npc = next((m for m in matches if str(m["id"]).lower() == target), matches[0])
+    if not npc.get("alive"):
+        await send(player, {"type": "error", "text": f"{npc['name']} is already dead."})
+        return
+    cost = max(GM_SLAY_MIN_COST, (npc.get("max_hp", 10) or 10) * GM_SLAY_COST_PER_HP)
+    if not await _spend_tax(player, cost, f"slay {npc['name']}"):
+        return
+    npc["alive"] = False
+    npc["respawn_at"] = time.time() + (npc.get("respawn_seconds", 60) or 60) if npc.get("respawn_seconds", 60) else None
+    for loot_id in npc.get("loot", []):
+        _add_ground(npc["room"], loot_id)
+    await broadcast_room(npc["room"], {"type": "combat", "text": f"Divine lightning strikes {npc['name']} dead."})
+    await sync_room(npc["room"])
+    unsealed = check_dungeon_clear(npc["room"])
+    await send(player, {
+        "type": "message",
+        "text": f"GM: {npc['name']} slain ({cost} tax spent)."
+                + (" Floor unsealed." if unsealed else "")
+                + f" Treasury now {round(tax_treasury, 2)}."
+    })
+
+
+async def cmd_gm_kick(player, msg):
+    """Disconnect a player. Free -- moderation, not economy."""
+    name = (msg.get("player") or "").strip()
+    if not name:
+        await send(player, {"type": "error", "text": "gm_kick needs a 'player' name."})
+        return
+    target = find_player_anywhere(name)
+    if not target or not target.logged_in:
+        await send(player, {"type": "error", "text": f"'{name}' is not online to kick."})
+        return
+    reason = (msg.get("reason") or "kicked by the GM").strip() or "kicked by the GM"
+    if not await _spend_tax(player, 0, f"kick {target.name}"):
+        return
+    await send(target, {"type": "message", "text": f"You have been kicked by the GM ({reason})."})
+    await send(player, {"type": "message", "text": f"GM: {target.name} kicked ({reason})."})
+    await asyncio.sleep(0.2)
+    await target.ws.close()
+
+
+async def broadcast_all(payload):
+    for p in list(players.values()):
+        if p.logged_in:
+            await send(p, payload)
+
+
+# --- GM stream (dedicated WebSocket port, loopback-only) ---------------
+
+class GMStream:
+    """Minimal player-like object for the GM-only WebSocket stream."""
+    __slots__ = ("ws", "id", "name", "outbound", "outbound_event")
+    def __init__(self, ws):
+        self.ws = ws
+        self.id = next(_id_counter)
+        self.name = "<gm-dashboard>"
+        self.outbound = deque(maxlen=OUTBOUND_QUEUE_MAX)
+        self.outbound_event = asyncio.Event()
+
+
+GM_HANDLERS = {
+    "gm_reward": cmd_gm_reward,
+    "gm_buff": cmd_gm_buff,
+    "gm_boss": cmd_gm_boss,
+    "gm_announce": cmd_gm_announce,
+    "gm_heal": cmd_gm_heal,
+    "gm_teleport": cmd_gm_teleport,
+    "gm_slay": cmd_gm_slay,
+    "gm_kick": cmd_gm_kick,
+}
+
+
+async def handle_gm_connection(ws):
+    # Loopback-only gate.
+    try:
+        host = getattr(getattr(ws, "remote_address", None), "__getitem__", lambda i: "?")(0) if getattr(ws, "remote_address", None) else "?"
+    except Exception:
+        host = "?"
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        return
+    player = GMStream(ws)
+    writer_task = asyncio.create_task(_outbound_writer(player))
+    try:
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await send(player, {"type": "error", "text": "invalid JSON"})
+                continue
+            cmd = msg.get("cmd")
+            handler = GM_HANDLERS.get(cmd)
+            if not handler:
+                await send(player, {"type": "error", "text": f"Unknown GM command '{cmd}'."})
+                continue
+            try:
+                await handler(player, msg)
+            except Exception as e:
+                await send(player, {"type": "error", "text": f"GM command failed: {e}"})
+    except Exception:
+        pass
+    finally:
+        writer_task.cancel()
+        try:
+            await writer_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+HANDLERS = {
+    "login": cmd_login,
+    "look": cmd_look,
+    "move": cmd_move,
+    "say": cmd_say,
+    "attack": cmd_attack,
+    "take": cmd_take,
+    "gather": cmd_gather,
+    "drop": cmd_drop,
+    "equip": cmd_equip,
+    "use": cmd_use,
+    "rest": cmd_rest,
+    "buy": cmd_buy,
+    "sell": cmd_sell,
+    "craft": cmd_craft,
+    "give": cmd_give,
+    "inventory": cmd_inventory,
+    "stats": cmd_stats,
+    "who": cmd_who,
+    "leaderboard": cmd_leaderboard,
+    "help": cmd_help,
+    "party_invite": cmd_party_invite,
+    "party_accept": cmd_party_accept,
+    "party_leave": cmd_party_leave,
+    "party_info": cmd_party_info,
+    "market_list": cmd_market_list,
+    "market_post": cmd_market_post,
+    "market_cancel": cmd_market_cancel,
+    "market_buy": cmd_market_buy,
+    "quest": cmd_quest,
+    "quest_accept": cmd_quest,
+    "quest_turn_in": cmd_quest,
+    "commission_post": cmd_commission_post,
+    "commission_list": cmd_commission_list,
+    "commission_fill": cmd_commission_fill,
+    "commission_cancel": cmd_commission_cancel,
+}
+
+SCORE_ARG_EXTRACTORS = {
+    "attack": lambda msg: str(msg.get("target", "")).lower(),
+    "move": lambda msg: str(msg.get("dir", "")).lower(),
+    "take": lambda msg: str(msg.get("item", "")).lower(),
+    "gather": lambda msg: str(msg.get("node") or msg.get("item", "")).lower(),
+    "craft": lambda msg: str(msg.get("recipe", "")).lower(),
+    "buy": lambda msg: str(msg.get("item", "")).lower(),
+    "sell": lambda msg: str(msg.get("item", "")).lower(),
+    "give": lambda msg: str(msg.get("item") or f"gold:{msg.get('gold', '')}").lower(),
+    "rest": lambda msg: "rest",
+    "market_post": lambda msg: str(msg.get("item", "")).lower(),
+    "market_buy": lambda msg: str(msg.get("id", "")).lower(),
+    "quest": lambda msg: str(msg.get("action", "")).lower(),
+    "quest_accept": lambda msg: "accept",
+    "quest_turn_in": lambda msg: "turn_in",
+    "commission_post": lambda msg: str(msg.get("target") or msg.get("required_kills", "")).lower(),
+    "commission_fill": lambda msg: str(msg.get("commission_id", "")).lower(),
+    "commission_cancel": lambda msg: str(msg.get("commission_id", "")).lower(),
+}
+
+
+# ---------------------------------------------------------------------------
+# Telemetry + live dashboard
+# ---------------------------------------------------------------------------
+
+HTTP_HOST = "0.0.0.0"
+HTTP_PORT = 8766
+ACTIVITY_LOG_SIZE = 100
+TRACK_LOG_SIZE = 30
+SCORE_HISTORY_SIZE = 40
+
+VERBOSE = os.environ.get("TEXTMMO_VERBOSE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def vlog(msg):
+    if VERBOSE:
+        print(f"[log] {msg}")
+
+
+START_TIME = time.time()
+command_log = []
+track_log = {}
+_score_history = {}
+
+
+def log_command(name, cmd, msg):
+    """Record one client command with a short human-readable detail."""
+    if cmd == "login":
+        name = name or str(msg.get("name", ""))
+        detail = name
+    elif cmd == "say":
+        detail = str(msg.get("text", ""))
+    elif cmd == "give":
+        detail = msg.get("item") or f"gold:{msg.get('gold', '')}"
+    elif cmd in ("move", "attack", "take", "drop", "equip", "use", "buy", "sell", "craft"):
+        detail = str(msg.get("dir") or msg.get("target") or msg.get("item") or msg.get("recipe") or "")
+    elif cmd.startswith("market_"):
+        detail = str(msg.get("item") or msg.get("id") or "")
+    elif cmd.startswith("party_"):
+        detail = str(msg.get("target") or "")
+    elif cmd.startswith("quest"):
+        detail = str(msg.get("action") or cmd)
+    elif cmd.startswith("commission"):
+        detail = str(msg.get("target") or msg.get("commission_id") or msg.get("id") or "")
+    elif cmd == "gather":
+        detail = str(msg.get("node") or msg.get("item") or "")
+    else:
+        detail = ""
+    entry = get_score_entry(name) if name and name != "<new>" else None
+    lvl = entry["level"] if entry else 1
+    entry_log = {"time": time.strftime("%H:%M:%S"), "name": name or "<new>", "cmd": cmd, "detail": detail, "level": lvl}
+    command_log.append(entry_log)
+    if len(command_log) > ACTIVITY_LOG_SIZE:
+        del command_log[0]
+    if name and name != "<new>":
+        per = track_log.setdefault(name, [])
+        per.append(entry_log)
+        while len(per) > TRACK_LOG_SIZE:
+            del per[0]
+
+
+def record_score_point(name, score):
+    hist = _score_history.setdefault(name.lower(), [])
+    hist.append((time.time(), round(score, 2)))
+    while len(hist) > SCORE_HISTORY_SIZE:
+        del hist[0]
+
+
+def _quest_snapshot():
+    """Dashboard quest panel: catalog, live active counts, lifetime turn-ins."""
+    now = time.time()
+    while quest_turnin_times and quest_turnin_times[0] < now - 60:
+        del quest_turnin_times[0]
+    active = {"guard_charm": 0, "delver": 0}
+    completions = {"guard_charm": 0, "delver": 0}
+    for e in SCORES.values():
+        if e.get("quest_guard_active"):
+            active["guard_charm"] += 1
+        if e.get("quest_delver_active"):
+            active["delver"] += 1
+        completions["guard_charm"] += e.get("quest_guard_completions", 0)
+        completions["delver"] += e.get("quest_delver_completions", 0)
+    return {
+        "catalog": [
+            {**{"id": qid}, **{k: v for k, v in q.items() if k != "inputs"}, "inputs": q.get("inputs", {})}
+            for qid, q in QUESTS.items()
+        ],
+        "active": active,
+        "completions": completions,
+        "turnins_last_min": len(quest_turnin_times),
+    }
+
+
+def world_snapshot():
+    rooms = []
+    for rid, r in ROOMS.items():
+        rooms.append({
+            "id": rid, "name": r["name"],
+            "exits": [{"dir": d, "to": t, "to_name": ROOMS.get(t, {}).get("name", t)} for d, t in r.get("exits", {}).items()],
+            "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
+            "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
+            "items": [ITEM_DEFS[i]["name"] for i in room_items.get(rid, [])],
+        })
+    online_players = []
+    for p in players.values():
+        if not p.logged_in:
+            continue
+        e = get_score_entry(p.name)
+        online_players.append({
+            "name": p.name, "level": e["level"], "score": round(e["score"], 2),
+            "score_history": [s for _, s in _score_history.get(p.name.lower(), [])],
+            "kills": e.get("kills", 0), "deaths": e.get("deaths", 0),
+            "gold": p.gold, "hp": p.hp, "max_hp": p.max_hp,
+            "variety": round(compute_variety(e), 2), "room": p.room,
+            "last_action": (track_log.get(p.name, [{}])[-1].get("cmd", "") if track_log.get(p.name) else ""),
+            "recent_actions": list(track_log.get(p.name, [])),
+        })
+    scores = sorted(
+        [{"name": e.get("display_name"), "score": round(e.get("score", 0), 2), "level": e.get("level", 1)} for e in SCORES.values()],
+        key=lambda x: x["score"], reverse=True,
+    )
+    dungeon_views = []
+    for d in dungeons.values():
+        floors = []
+        max_floor = 0
+        for fno, f in sorted(d.floors.items()):
+            max_floor = max(max_floor, fno)
+            floors.append({"floor": fno, "guards_alive": sum(1 for g in f.guards if g["alive"]),
+                           "guards_total": len(f.guards), "cleared": f.cleared})
+        members = []
+        party = parties.get(d.party_id)
+        if party:
+            for mid in party.member_ids:
+                m = players.get(mid)
+                if m:
+                    members.append(m.name)
+        dungeon_views.append({"id": d.id, "party": members, "max_floor_reached": max_floor, "floors": floors})
+    bosses = [{"name": n["name"], "room": n["room"], "hp": n["hp"], "max_hp": n["max_hp"], "attack": n["attack"]}
+              for n in npcs.values() if str(n["id"]).startswith("boss_") and n["alive"]]
+    buffs_view = {}
+    for k in ("xp", "gold"):
+        remaining = max(0, int(buffs.get(k, 0) - time.time()))
+        buffs_view[k] = remaining
+    return {
+        "server": {"ws_port": PORT, "gm_port": GM_PORT, "uptime": int(time.time() - START_TIME),
+                   "players_online": len(online_players), "connections": len(players)},
+        "rooms": rooms, "players": online_players, "scores": scores,
+        "activity": list(command_log),
+        "market": {"treasury": round(tax_treasury, 2), "collected_lifetime": round(tax_collected_lifetime, 2),
+                   "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM, "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
+                   "orders": [{"id": o["id"], "seller": o["seller"], "item": ITEM_DEFS.get(o["item"], {}).get("name", o["item"]),
+                               "price": o["price"], "ts": o.get("ts", 0)} for o in market_orders],
+                   "history": list(market_history)},
+        "buffs": buffs_view,
+        "bosses": bosses,
+        "dungeons": dungeon_views,
+        "quests": _quest_snapshot(),
+        "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),
+                    "items": sorted([v["name"] for v in ITEM_DEFS.values()]),
+                    "rooms": sorted(list(ROOMS.keys()))},
+    }
+
+
+world_snapshot_json = None
+
+
+def refresh_snapshot_json():
+    global world_snapshot_json
+    try:
+        world_snapshot_json = json.dumps(world_snapshot())
+    except Exception:
+        pass
+
+
+async def dashboard_refresh_loop():
+    while True:
+        await asyncio.sleep(SNAPSHOT_REFRESH_SECONDS)
+        refresh_snapshot_json()
+
+
+def start_dashboard():
+    import threading
+    here = dirname(abspath(__file__))
+    html_path = join(here, "dashboard.html")
+
+    class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            if VERBOSE:
+                print(f"[http] {self.address_string()}: {fmt % args}")
+
+        def _send(self, body, content_type):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path == "/api/state":
+                state = world_snapshot_json if world_snapshot_json is not None else "{}"
+                self._send(state.encode(), "application/json")
+            elif path in ("/", "/dashboard.html") and os.path.exists(html_path):
+                with open(html_path, "rb") as f:
+                    self._send(f.read(), "text/html; charset=utf-8")
+            else:
+                self.send_error(404)
+
+    try:
+        refresh_snapshot_json()
+        from http.server import ThreadingHTTPServer
+        httpd = ThreadingHTTPServer((HTTP_HOST, HTTP_PORT), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        print(f"Live dashboard: http://localhost:{HTTP_PORT}/")
+    except OSError as e:
+        print(f"Warning: dashboard could not start on port {HTTP_PORT}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# NPC AI loop — runs independently of any player connection
+# ---------------------------------------------------------------------------
+
+async def npc_ai_loop():
+    while True:
+        await asyncio.sleep(NPC_TICK_SECONDS)
+        now = time.time()
+        prune_commissions(now)
+        for node in list(gather_nodes.values()):
+            if not node["available"] and node["respawn_at"] and now >= node["respawn_at"]:
+                node["available"] = True
+                node["respawn_at"] = None
+                await sync_room(node["room"])
+        for npc in list(all_npcs()):
+            if not npc.get("alive", False):
+                if npc["respawn_at"] and now >= npc["respawn_at"]:
+                    respawn_npc(npc)
+                    await broadcast_room(npc["room"], {"type": "message", "text": f"{npc['name']} respawns."})
+                    await sync_room(npc["room"])
+                continue
+            room_id = npc["room"]
+            targets = players_in_room(room_id)
+            if npc["hostile"] and targets:
+                victim = random.choice(targets)
+                dmg = random.randint(1, npc["attack"])
+                dmg = max(0, dmg - _player_buff_amount(victim, "damage_reduction"))
+                victim.hp -= dmg
+                await send(victim, {"type": "combat", "text": f"{npc['name']} attacks you for {dmg}."})
+                await broadcast_room(room_id, {"type": "combat", "text": f"{npc['name']} attacks {victim.name} for {dmg}."}, exclude=victim)
+                if victim.hp <= 0:
+                    await respawn_player(victim)
+            elif not npc["hostile"] and npc.get("behavior") == "wander" and random.random() < 0.1:
+                exits = ROOMS.get(room_id, {}).get("exits", {})
+                if exits:
+                    dest = random.choice(list(exits.values()))
+                    if dest in ROOMS:
+                        npc["room"] = dest
+                        await sync_room(room_id)
+                        await sync_room(dest)
+
+
+async def _leave_party_on_disconnect(player):
+    # A pending invitation can never be accepted after disconnect, so drop
+    # it instead of leaking one dict entry per abandoned invite.
+    _pending_party_invites.pop(player.id, None)
+    party = parties.get(player.party_id) if player.party_id else None
+    if not party:
+        return
+    party.member_ids.discard(player.id)
+    player.party_id = None
+    if not party.member_ids:
+        _delete_party(party)
+    elif party.leader_id == player.id:
+        party.leader_id = next(iter(party.member_ids))
+
+
+async def handle_connection(ws):
+    if MAX_TOTAL_CONNECTIONS is not None and len(players) >= MAX_TOTAL_CONNECTIONS:
+        try:
+            await ws.send(json.dumps({"type": "error", "text": "Server is full right now. Try again shortly."}))
+        finally:
+            await ws.close()
+        return
+    pid = next(_id_counter)
+    player = Player(ws=ws, id=pid)
+    player.outbound_event = asyncio.Event()
+    players[pid] = player
+    writer_task = asyncio.create_task(_outbound_writer(player))
+    vlog(f"connection {pid} opened from {getattr(ws, 'remote_address', '?')}")
+    try:
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await send(player, {"type": "error", "text": "invalid JSON"})
+                continue
+            cmd = msg.get("cmd")
+            if isinstance(cmd, str) and cmd.startswith("gm_"):
+                await send(player, {"type": "error", "text": f"GM actions are only available through the dashboard's GM stream (ws://127.0.0.1:{GM_PORT})."})
+                continue
+            if not player.logged_in and cmd != "login":
+                await send(player, {"type": "error", "text": "You must 'login' first."})
+                continue
+            handler = HANDLERS.get(cmd)
+            if not handler:
+                await send(player, {"type": "error", "text": f"Unknown command '{cmd}'."})
+                continue
+            log_command(player.name, cmd, msg)
+            if cmd in SCORE_ARG_EXTRACTORS:
+                record_action(player.name, (cmd, SCORE_ARG_EXTRACTORS[cmd](msg)))
+            if player.logged_in:
+                _tick_player_buffs(player)
+            await handler(player, msg)
+    except websockets.ConnectionClosed:
+        pass
+    finally:
+        writer_task.cancel()
+        try:
+            await writer_task
+        except (asyncio.CancelledError, websockets.ConnectionClosed):
+            pass
+        if player.logged_in:
+            await broadcast_room(player.room, {"type": "message", "text": f"{player.name} disappears."})
+            remove_member(player)
+            if dungeon_for_room(player.room):
+                player.room = DUNGEON_ENTRANCE_ROOM
+            if name_owners.get(player.name.lower()) == pid:
+                del name_owners[player.name.lower()]
+            await _leave_party_on_disconnect(player)
+            lvl = get_score_entry(player.name)["level"]
+            vlog(f"player {player.name} (lv{lvl}) disconnected")
+        else:
+            vlog(f"connection {pid} closed before login")
+        del players[pid]
+
+
+async def _run_resilient(task_name, coro_factory):
+    """Run a background coroutine forever; restart on crash."""
+    while True:
+        try:
+            await coro_factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[{task_name}] crashed with {type(e).__name__}: {e} — "
+                  f"restarting in {TASK_RESTART_DELAY}s", flush=True)
+            await asyncio.sleep(TASK_RESTART_DELAY)
+
+
+async def main():
+    start_dashboard()
+    asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop))
+    asyncio.create_task(_run_resilient("scores_save", scores_save_loop))
+    asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop))
+    try:
+        if VERBOSE:
+            print(f"Server 0.5 (instanced dungeon, parties, market, GM) on ws://{HOST}:{PORT}")
+            print(f"GM stream on ws://{GM_HOST}:{GM_PORT}")
+        game_server = await websockets.serve(handle_connection, HOST, PORT)
+        gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
+        try:
+            await asyncio.Future()
+        finally:
+            game_server.close()
+            gm_server.close()
+    finally:
+        save_scores()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, OSError) as e:
+        print(f"Could not start server: {e}")
+

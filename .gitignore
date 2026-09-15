@@ -1,0 +1,28 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Runtime game state (regenerated at runtime, never commit)
+scores.json
+
+# ML / Torch training checkpoints (local training progress, never commit)
+ml/ml_weights.json
+ml/ml_best.json
+torch_agents/ml_weights.json
+torch_agents/ml_best.json
+*.pt
+*.pth
+
+# Logs, temp output and OS noise
+output.txt
+*.log
+*.tmp
+%TEMP%/
+.DS_Store
+Thumbs.db

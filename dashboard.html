@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Text MMO — Live Dashboard</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #171c22; --panel2: #1e252d; --border: #2a333d;
+    --text: #d7e0e8; --dim: #8b98a5; --accent: #6fc3ff; --good: #7ee787;
+    --warn: #ffb454; --bad: #ff7b72;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 13px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  h1 { font-size: 16px; margin: 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--dim); margin: 0 0 8px; }
+  h3 { margin: 0 0 6px; font-size: 13px; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+           padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+  header .meta { color: var(--dim); font-size: 12px; }
+  header .meta b { color: var(--text); }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good);
+         display: inline-block; margin-right: 6px; }
+  #dot.stale { background: var(--bad); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tab { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+         background: var(--panel); color: var(--dim); cursor: pointer; user-select: none; }
+  .tab:hover { color: var(--text); border-color: var(--accent); }
+  .tab.active { background: var(--accent); color: #0b1622; border-color: var(--accent); font-weight: bold; }
+  .tabview { display: none; }
+  .tabview.active { display: block; }
+  .grid { display: grid; grid-template-columns: 1fr 340px; gap: 12px; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+           border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--dim); font-weight: normal;
+       font-size: 11px; text-transform: uppercase; padding: 4px 6px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .room { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+  .world-map { overflow-x: auto; background: #0b0f13; border: 1px solid var(--border);
+               border-radius: 6px; margin-bottom: 10px; min-height: 180px; }
+  .world-map svg { display: block; min-width: 720px; width: 100%; height: 480px; }
+  .world-map .link { stroke: #43515f; stroke-width: 1.5; }
+  .world-map .link-label { fill: var(--dim); font-size: 10px; text-anchor: middle; }
+  .world-map .node { fill: var(--panel2); stroke: var(--border); stroke-width: 1.5; }
+  .world-map .node.start { stroke: var(--accent); }
+  .world-map .node-label { fill: var(--text); font-size: 11px; text-anchor: middle; }
+  .world-map .node-meta { fill: var(--dim); font-size: 9px; text-anchor: middle; }
+  .tag { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 7px; border-radius: 999px;
+         font-size: 11px; background: var(--panel); border: 1px solid var(--border); }
+  .alive { color: var(--good); } .dead { color: var(--bad); }
+  .itemtag { color: var(--warn); }
+  .exittag { color: var(--accent); border-style: dashed; }
+  .hpbar { width: 70px; height: 6px; background: var(--border); border-radius: 3px; display: inline-block; vertical-align: middle; }
+  .hpbar i { display: block; height: 100%; border-radius: 3px; background: var(--good); }
+  .hpbar i.low { background: var(--bad); }
+  #activity { max-height: 520px; overflow-y: auto; }
+  #activity .row { padding: 3px 0; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
+  #activity .t { color: var(--dim); flex: 0 0 58px; }
+  #activity .n { color: var(--accent); flex: 0 0 96px; overflow: hidden; text-overflow: ellipsis; }
+  #activity .c { flex: 1; }
+  #activity .c .cmd { font-weight: bold; }
+  #activity .c .d { color: var(--dim); }
+  #trackDetail { max-height: 420px; overflow-y: auto; }
+  #trackDetail .row { padding: 3px 0; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
+  #trackDetail .t { color: var(--dim); flex: 0 0 58px; }
+  #trackDetail .c { flex: 1; }
+  #trackDetail .c .cmd { font-weight: bold; }
+  #trackDetail .c .d { color: var(--dim); }
+  #trackDetail .tmeta { color: var(--dim); margin-bottom: 6px; }
+  #trackDetail .tmeta b { color: var(--text); }
+  #trackSelect { width: 100%; margin-bottom: 8px; }
+  .cmd-move { color: #79c0ff; } .cmd-attack { color: #ff7b72; } .cmd-take { color: #d2a8ff; }
+  .cmd-say { color: #7ee787; } .cmd-buy, .cmd-sell, .cmd-craft { color: #ffb454; }
+  .cmd-market_post { color: #ffb454; } .cmd-market_buy { color: #79c0ff; }
+  .buy { color: #79c0ff; font-weight: bold; } .sell { color: #ffb454; font-weight: bold; }
+  .legend { font-size: 11px; color: var(--dim); font-weight: normal; text-transform: none;
+            letter-spacing: 0; margin-left: 8px; }
+  .cmd-gm_reward, .cmd-gm_buff, .cmd-gm_boss { color: #ff7b72; }
+  .cmd-party_invite, .cmd-party_accept { color: #d2a8ff; }
+  .empty { color: var(--dim); font-style: italic; }
+  .spark { display: block; }
+  .statrow { display: flex; gap: 24px; flex-wrap: wrap; }
+  .stat { min-width: 110px; }
+  .stat .v { font-size: 20px; font-weight: bold; }
+  .stat .l { color: var(--dim); font-size: 11px; text-transform: uppercase; }
+  .dung { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .floor { display: flex; gap: 10px; align-items: center; padding: 4px 0; border-bottom: 1px dotted var(--border); }
+  .floor:last-child { border-bottom: none; }
+  .floor .fn { width: 90px; color: var(--accent); }
+  .floor .st { color: var(--dim); }
+  .buff { display: inline-block; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); margin: 2px 4px 2px 0; font-size: 11px; }
+  .buff.on { border-color: var(--good); color: var(--good); }
+  input, select, button { font: inherit; background: var(--panel2); color: var(--text);
+                          border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  button { cursor: pointer; background: var(--panel); }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  .gmform { display: grid; grid-template-columns: 150px 1fr; gap: 8px 12px; align-items: center; }
+  .gmform label { color: var(--dim); }
+  .gm-pane { display: none; margin-top: 10px; }
+  .gm-pane.active { display: grid; }
+  .gm-cost { color: var(--warn); font-size: 11px; }
+  .gm-preset.on { background: var(--accent); color: #0b1622; border-color: var(--accent); }
+  #gmlog { max-height: 320px; overflow-y: auto; background: #0b0f13; border: 1px solid var(--border);
+           border-radius: 6px; padding: 8px; margin-top: 10px; font-size: 12px; }
+  #gmlog .row { padding: 2px 0; border-bottom: 1px dotted var(--border); }
+  #gmlog .row:last-child { border-bottom: none; }
+  .gmcred { display: flex; gap: 12px; flex-wrap: wrap; color: var(--dim); }
+  .gmcred b { color: var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Text MMO — Live Dashboard</h1>
+  <span class="meta"><span id="dot"></span><span id="status">connecting…</span></span>
+  <span class="meta">uptime <b id="uptime">-</b></span>
+  <span class="meta">players online <b id="online">-</b></span>
+  <span class="meta">connections <b id="conns">-</b></span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="world">World</div>
+  <div class="tab" data-tab="market">Market</div>
+  <div class="tab" data-tab="dungeon">Dungeons</div>
+  <div class="tab" data-tab="gm">GM</div>
+</div>
+
+<div id="view-world" class="tabview active">
+  <div class="grid">
+    <div>
+      <div class="panel">
+        <h2>World</h2>
+        <div id="worldMap" class="world-map"></div>
+        <div id="rooms" class="rooms"></div>
+      </div>
+      <div class="panel">
+        <h2>Performance</h2>
+        <table>
+          <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th><th>trend</th>
+                 <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
+                 <th>variety</th><th>room</th><th>last</th></tr></thead>
+          <tbody id="perf"></tbody>
+        </table>
+        <p class="empty" id="noPerf" style="display:none">No online players.</p>
+      </div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2>Top 10 all time</h2>
+        <table><thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th></tr></thead>
+               <tbody id="scores"></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>Live activity</h2>
+        <div id="activity"></div>
+      </div>
+      <div class="panel">
+        <h2>Track character</h2>
+        <select id="trackSelect"></select>
+        <div id="trackDetail"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="view-market" class="tabview">
+  <div class="panel">
+    <h2>Market</h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="m-treasury">-</div><div class="l">GM treasury</div></div>
+      <div class="stat"><div class="v" id="m-lifetime">-</div><div class="l">tax collected (lifetime)</div></div>
+      <div class="stat"><div class="v" id="m-rate">-</div><div class="l">tax rate</div></div>
+      <div class="stat"><div class="v" id="m-trades">-</div><div class="l">completed trades</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Open sell orders (anywhere in the world)</h2>
+    <table>
+      <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>seller</th><th>posted</th></tr></thead>
+      <tbody id="orders"></tbody>
+    </table>
+    <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
+  </div>
+  <div class="panel">
+    <h2>Buy &amp; sell history <span class="legend"><span class="buy">■</span> buyer <span class="sell">■</span> seller</span></h2>
+    <table>
+      <thead><tr><th>#</th><th>time</th><th>buyer</th><th>seller</th><th>item</th><th>price</th><th>tax</th><th>seller gets</th></tr></thead>
+      <tbody id="tradeHistory"></tbody>
+    </table>
+    <p class="empty" id="noTrades" style="display:none">No completed trades yet.</p>
+  </div>
+</div>
+
+<div id="view-dungeon" class="tabview">
+  <div class="panel">
+    <h2>World event buffs</h2>
+    <div id="buffs"></div>
+  </div>
+  <div class="panel">
+    <h2>Elite bosses (GM spawned)</h2>
+    <table><thead><tr><th>name</th><th>room</th><th>hp</th><th>attack</th></tr></thead>
+           <tbody id="bosses"></tbody></table>
+    <p class="empty" id="noBosses" style="display:none">No GM bosses alive.</p>
+  </div>
+  <div class="panel">
+    <h2>Instanced party dungeons</h2>
+    <div id="dungeons"></div>
+  </div>
+</div>
+
+<div id="view-gm" class="tabview">
+  <div class="panel">
+    <h2>GM console</h2>
+    <div class="gmcred">
+      <span>treasury <b id="g-treasury">-</b></span>
+      <span id="g-status">ws: disconnected</span>
+    </div>
+    <div style="margin-top:10px;margin-bottom:8px;color:var(--dim);font-size:11px;">
+      GM stream connects to <code>ws://127.0.0.1:<span id="g-gm-port">-</span></code> (loopback-only)
+    </div>
+
+    <datalist id="gm-players"></datalist>
+    <datalist id="gm-items"></datalist>
+    <datalist id="gm-rooms"></datalist>
+    <datalist id="gm-npcs"></datalist>
+
+    <div class="gmform" style="margin-top:10px">
+      <label for="gm-action">Action</label>
+      <select id="gm-action">
+        <option value="gold">Reward gold (1:1 tax)</option>
+        <option value="item">Drop item (floor value)</option>
+        <option value="buff">World buff (50 tax/min)</option>
+        <option value="boss">Spawn boss (100 tax/star)</option>
+        <option value="announce">Announce (25 tax flat)</option>
+        <option value="heal">Heal player (2 tax/HP)</option>
+        <option value="teleport">Teleport player (50 tax flat)</option>
+        <option value="slay">Slay NPC (1 tax/HP, min 10)</option>
+        <option value="kick">Kick player (free)</option>
+      </select>
+    </div>
+
+    <div class="gmform gm-pane active" data-pane="gold">
+      <label for="gm-gold-player">Player</label>
+      <input id="gm-gold-player" list="gm-players" placeholder="character name">
+      <label for="gm-gold-amount">Gold</label>
+      <input id="gm-gold-amount" type="number" min="1" value="50">
+      <label>Quick</label>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button type="button" class="gm-preset" data-gold="50">+50</button>
+        <button type="button" class="gm-preset" data-gold="250">+250</button>
+        <button type="button" class="gm-preset" data-gold="1000">+1000</button>
+      </div>
+      <label>Cost</label><span id="gm-gold-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-gold">Reward gold</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="item">
+      <label for="gm-item-target">Target</label>
+      <input id="gm-item-target" list="gm-players" placeholder="player name">
+      <label for="gm-item-room">Room</label>
+      <input id="gm-item-room" list="gm-rooms" placeholder="room id">
+      <label for="gm-item-name">Item</label>
+      <input id="gm-item-name" list="gm-items" placeholder="item name, e.g. healing_herb">
+      <label>Cost</label><span class="gm-cost">varies (item floor value)</span>
+      <label></label><button id="gm-send-item">Drop item</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="buff">
+      <label for="gm-buff-type">Buff</label>
+      <select id="gm-buff-type"><option value="xp">XP (2x)</option><option value="gold">Gold (2x)</option></select>
+      <label for="gm-buff-min">Minutes</label>
+      <input id="gm-buff-min" type="number" min="1" max="60" value="5">
+      <label>Cost</label><span id="gm-buff-cost" class="gm-cost"></span>
+      <label>Presets</label>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button type="button" class="gm-preset" data-buff="xp" data-min="5">XP 5m</button>
+        <button type="button" class="gm-preset" data-buff="xp" data-min="15">XP 15m</button>
+        <button type="button" class="gm-preset" data-buff="gold" data-min="5">Gold 5m</button>
+        <button type="button" class="gm-preset" data-buff="gold" data-min="15">Gold 15m</button>
+      </div>
+      <label></label><button id="gm-send-buff">Activate buff</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="boss">
+      <label for="gm-boss-room">Room</label>
+      <input id="gm-boss-room" list="gm-rooms" placeholder="room id">
+      <label for="gm-boss-str">Strength</label>
+      <select id="gm-boss-str">
+        <option value="1">★ (100 tax)</option>
+        <option value="2">★★ (200 tax)</option>
+        <option value="3" selected>★★★ (300 tax)</option>
+        <option value="4">★★★★ (400 tax)</option>
+        <option value="5">★★★★★ (500 tax)</option>
+      </select>
+      <label>Cost</label><span id="gm-boss-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-boss">Spawn boss</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="announce">
+      <label for="gm-announce-text">Message</label>
+      <input id="gm-announce-text" maxlength="200" placeholder="server-wide message (max 200 chars)">
+      <label>Cost</label><span id="gm-announce-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-announce">Broadcast</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="heal">
+      <label for="gm-heal-player">Player</label>
+      <input id="gm-heal-player" list="gm-players" placeholder="character name">
+      <label>Cost</label><span id="gm-heal-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-heal">Heal to full</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="teleport">
+      <label for="gm-teleport-player">Player</label>
+      <input id="gm-teleport-player" list="gm-players" placeholder="character name">
+      <label for="gm-teleport-room">Room</label>
+      <input id="gm-teleport-room" list="gm-rooms" placeholder="room id (surface only)">
+      <label>Cost</label><span id="gm-teleport-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-teleport">Teleport</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="slay">
+      <label for="gm-slay-target">NPC</label>
+      <input id="gm-slay-target" list="gm-npcs" placeholder="NPC name (must be unique)">
+      <label>Cost</label><span id="gm-slay-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-slay">Slay NPC</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="kick">
+      <label for="gm-kick-player">Player</label>
+      <input id="gm-kick-player" list="gm-players" placeholder="character name">
+      <label for="gm-kick-reason">Reason</label>
+      <input id="gm-kick-reason" maxlength="120" placeholder="optional reason">
+      <label>Cost</label><span id="gm-kick-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-kick">Kick player</button>
+    </div>
+    <div id="gmlog"></div>
+  </div>
+</div>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const $ = id => document.getElementById(id);
+
+let lastState = null;
+
+function hpbar(hp, max) {
+  if (max == null || max === 0) return "";
+  const pct = Math.max(0, Math.min(100, hp / max * 100));
+  const cls = pct < 30 ? "low" : "";
+  return `<span class="hpbar"><i class="${cls}" style="width:${pct}%"></i></span>`;
+}
+
+function sparkline(hist) {
+  if (!hist || hist.length < 2) return `<span class="dim">—</span>`;
+  const vals = hist.map(p => p[1]);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const span = (max - min) || 1;
+  const w = 70, h = 18;
+  const pts = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * w;
+    const y = h - 3 - ((v - min) / span) * (h - 6);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const stroke = vals[vals.length-1] >= vals[0] ? "var(--good)" : "var(--bad)";
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <polyline points="${pts.join(" ")}" fill="none" stroke="${stroke}" stroke-width="1.5"/></svg>`;
+}
+
+function cmdClass(cmd) { return "cmd-" + cmd; }
+
+function exitEntries(room) {
+  const exits = (room && room.exits) || [];
+  if (Array.isArray(exits)) {
+    return exits
+      .filter(e => e && e.to)
+      .map(e => [e.dir || "exit", e.to, e.to_name || e.to]);
+  }
+  return Object.entries(exits).map(([dir, to]) => [dir, to, to]);
+}
+
+function renderWorldMap(rooms) {
+  const byId = Object.fromEntries(rooms.map(r => [r.id, r]));
+  const neighbors = Object.fromEntries(rooms.map(r => [r.id, new Set()]));
+  for (const room of rooms) {
+    for (const [, target] of exitEntries(room)) {
+      if (byId[target]) {
+        neighbors[room.id].add(target);
+        neighbors[target].add(room.id);
+      }
+    }
+  }
+
+  // Layer the graph from Town Square. This is deterministic and keeps the
+  // dashboard useful as rooms are added without maintaining pixel coordinates.
+  const depth = {};
+  const queue = [byId.town_square ? "town_square" : rooms[0]?.id];
+  if (queue[0]) depth[queue[0]] = 0;
+  while (queue.length) {
+    const id = queue.shift();
+    for (const next of neighbors[id] || []) {
+      if (depth[next] === undefined) {
+        depth[next] = depth[id] + 1;
+        queue.push(next);
+      }
+    }
+  }
+  let fallbackDepth = Math.max(0, ...Object.values(depth)) + 1;
+  for (const room of rooms) {
+    if (depth[room.id] === undefined) depth[room.id] = fallbackDepth++;
+  }
+
+  const layers = {};
+  for (const room of rooms) (layers[depth[room.id]] ||= []).push(room);
+  const maxDepth = Math.max(1, ...Object.keys(layers).map(Number));
+  const width = 1200, height = 480, marginX = 85, marginY = 35;
+  const positions = {};
+  for (const [layer, layerRooms] of Object.entries(layers)) {
+    const x = marginX + Number(layer) * ((width - marginX * 2) / maxDepth);
+    const step = (height - marginY * 2) / (layerRooms.length + 1);
+    layerRooms.forEach((room, i) => { positions[room.id] = { x, y: marginY + step * (i + 1) }; });
+  }
+
+  const seen = new Set();
+  const links = [];
+  for (const room of rooms) {
+    for (const [direction, target, targetName] of exitEntries(room)) {
+      if (!byId[target]) continue;
+      const key = [room.id, target].sort().join("|");
+      if (seen.has(key)) {
+        const existing = links.find(link => link.key === key);
+        if (existing) existing.labels.push(`${esc(direction)} to ${esc(targetName)}`);
+      } else {
+        seen.add(key);
+        links.push({ key, a: positions[room.id], b: positions[target],
+          labels: [`${esc(direction)} to ${esc(targetName)}`] });
+      }
+    }
+  }
+
+  const lines = links.map(link => {
+    const mx = (link.a.x + link.b.x) / 2;
+    const my = (link.a.y + link.b.y) / 2 - 5;
+    return `<line class="link" x1="${link.a.x}" y1="${link.a.y}" x2="${link.b.x}" y2="${link.b.y}" />
+      <text class="link-label" x="${mx}" y="${my}">${link.labels.join(" · ")}</text>`;
+  }).join("");
+  const nodes = rooms.map(room => {
+    const p = positions[room.id];
+    const occupants = (room.players || []).length;
+    return `<g><rect class="node ${room.id === "town_square" ? "start" : ""}" x="${p.x - 60}" y="${p.y - 18}" width="120" height="36" rx="8" />
+      <text class="node-label" x="${p.x}" y="${p.y - 2}">${esc(room.name)}</text>
+      <text class="node-meta" x="${p.x}" y="${p.y + 11}">${occupants ? `${occupants} player${occupants === 1 ? "" : "s"}` : esc(room.id)}</text></g>`;
+  }).join("");
+  $("worldMap").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Surface world connections">
+    <text class="node-meta" x="16" y="18" text-anchor="start">SURFACE CONNECTIONS · dungeon instances shown separately</text>
+    ${lines}${nodes}</svg>`;
+}
+
+function renderRooms(rooms) {
+  $("rooms").innerHTML = rooms.map(r => `
+    <div class="room">
+      <h3>${esc(r.name)}</h3>
+      ${r.players.length ? r.players.map(p => {
+        const name = p.name ?? p;
+        const lvl = p.level !== undefined ? p.level : 1;
+        return `<span class="tag alive">${esc(name)} <span class="dim">(lv${lvl})</span></span>`;
+      }).join("") : ""}
+      ${r.npcs.map(n => `<span class="tag ${n.alive ? "alive" : "dead"}">${esc(n.name)}
+          ${n.alive ? (n.max_hp ? ` (${n.hp}/${n.max_hp})` : "") : " (dead)"}</span>`).join("")}
+      ${r.items.map(i => `<span class="tag itemtag">${esc(i)}</span>`).join("")}
+      ${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}
+      ${(!r.players.length && !r.npcs.length && !r.items.length) ? `<span class="empty">empty</span>` : ""}
+    </div>`).join("");
+}
+
+function renderPerf(players) {
+  $("perf").innerHTML = players.map((p, i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td>${esc(p.name)}</td>
+      <td>${p.level ?? 1}</td>
+      <td><b>${p.score.toFixed(1)}</b></td>
+      <td>${sparkline(p.score_history)}</td>
+      <td>${p.kills}</td>
+      <td>${p.deaths}</td>
+      <td>${p.gold}</td>
+      <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
+      <td>${p.variety.toFixed(2)}</td>
+      <td>${esc(p.room)}</td>
+      <td>${esc(p.last_action)}</td>
+    </tr>`).join("");
+  $("noPerf").style.display = players.length ? "none" : "";
+}
+
+function renderScores(scores) {
+  $("scores").innerHTML = scores.slice(0, 10).map((s, i) => `
+    <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${s.score.toFixed(1)}</b></td></tr>`).join("");
+}
+
+function renderActivity(activity) {
+  $("activity").innerHTML = activity.map(a => `
+    <div class="row">
+      <span class="t">${esc(a.time)}</span>
+      <span class="n">${esc(a.name)} ${a.level ? `<span class="dim">(lv${a.level})</span>` : ""}</span>
+      <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
+        ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
+    </div>`).join("");
+}
+
+function renderMarket(m) {
+  $("m-treasury").textContent = m.treasury.toFixed(1);
+  $("m-lifetime").textContent = m.collected_lifetime.toFixed(1);
+  $("m-rate").textContent = Math.round(m.tax_rate * 100) + "% (min " + (m.tax_min ?? 1) + ")";
+  $("m-trades").textContent = m.trade_count;
+  $("g-treasury").textContent = m.treasury.toFixed(1);
+  if (typeof updateGMCosts === "function") updateGMCosts();
+  $("orders").innerHTML = m.orders.map((o, i) => `
+    <tr><td>${i+1}</td><td>${esc(o.id)}</td><td>${esc(o.item)}</td>
+        <td><b>${o.price}</b></td><td class="sell">${esc(o.seller)}</td>
+        <td>${esc(o.ts)}</td></tr>`).join("");
+  $("noOrders").style.display = m.orders.length ? "none" : "";
+  const history = m.history || [];
+  $("tradeHistory").innerHTML = history.map((h, i) => `
+    <tr><td>${i+1}</td><td>${esc(h.time ?? h.ts)}</td><td class="buy">${esc(h.buyer)}</td>
+        <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}</td>
+        <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join("");
+  $("noTrades").style.display = history.length ? "none" : "";
+}
+
+function mmss(secs) {
+  if (!secs || secs <= 0) return "0s";
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m ? `${m}m ${s}s` : `${s}s`;
+}
+
+function renderBuffs(b) {
+  const parts = [];
+  for (const k of ["xp", "gold"]) {
+    const s = b[k] || 0;
+    parts.push(`<span class="buff ${s > 0 ? "on" : ""}">${k.toUpperCase()}x2 ${
+      s > 0 ? `— ${mmss(s)} left` : "— inactive"}</span>`);
+  }
+  $("buffs").innerHTML = parts.join("") || `<span class="empty">no active buffs</span>`;
+}
+
+function renderBosses(bosses) {
+  $("bosses").innerHTML = bosses.map(b => `
+    <tr><td><b>${esc(b.name)}</b></td><td>${esc(b.room)}</td>
+        <td>${b.hp}/${b.max_hp}</td><td>${b.attack}</td></tr>`).join("");
+  $("noBosses").style.display = bosses.length ? "none" : "";
+}
+
+function renderDungeons(dungeons) {
+  if (!dungeons || !dungeons.length) {
+    $("dungeons").innerHTML = `<span class="empty">No dungeons opened yet. Players enter through the graveyard's 'enter' doorway.</span>`;
+    return;
+  }
+  $("dungeons").innerHTML = dungeons.map(d => `
+    <div class="dung">
+      <h3>Dungeon ${esc(d.id)} <span class="tag alive">${esc((d.party || []).join(", ") || "solo")}</span>
+          <span class="tag">max floor ${d.max_floor_reached || 0}</span></h3>
+      ${(d.floors || []).map(f => `
+        <div class="floor">
+          <span class="fn">Floor ${f.floor}</span>
+          <span class="st">${f.guards_alive}/${f.guards_total} guards alive</span>
+          <span class="st">${f.cleared ? "cleared (unsealed)" : "sealed until guards die"}</span>
+        </div>`).join("")}
+      ${(d.floors || []).length ? "" : `<span class="empty">floor 1 not generated yet</span>`}
+    </div>`).join("");
+}
+
+let trackedName = null;
+let trackedNamesKey = "";
+
+function renderTracker(players) {
+  const sel = $("trackSelect");
+  const names = players.map(p => p.name);
+  // Only rebuild the dropdown when the online roster changes, so an open
+  // dropdown isn't yanked away on every 1s refresh.
+  const key = names.join("\n");
+  if (key !== trackedNamesKey) {
+    trackedNamesKey = key;
+    if (!names.includes(trackedName)) trackedName = names[0] ?? null;
+    sel.innerHTML = names.map(n =>
+      `<option value="${esc(n)}"${n === trackedName ? " selected" : ""}>${esc(n)}</option>`).join("");
+  }
+  const detail = $("trackDetail");
+  const p = players.find(x => x.name === trackedName);
+  if (!p) {
+    detail.innerHTML = `<span class="empty">No online players to track.</span>`;
+    return;
+  }
+  const acts = p.recent_actions || [];
+  detail.innerHTML = `
+    <div class="tmeta"><b>${esc(p.name)}</b> (lv${p.level ?? 1}) · ${esc(p.room)} ·
+      score <b>${p.score.toFixed(1)}</b> · ${p.hp}/${p.max_hp} HP ${hpbar(p.hp, p.max_hp)} ·
+      ${p.gold} gold · ${acts.length} recent action${acts.length === 1 ? "" : "s"}</div>` +
+    (acts.length ? acts.map(a => `
+      <div class="row">
+        <span class="t">${esc(a.time)}</span>
+        <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
+          ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
+      </div>`).join("") : `<span class="empty">No tracked actions yet.</span>`);
+}
+
+$("trackSelect").addEventListener("change", e => {
+  trackedName = e.target.value || null;
+  if (lastState) renderTracker(lastState.players);
+});
+
+function renderAll(s) {
+  const sections = [
+    ["world map", () => renderWorldMap(s.rooms || [])],
+    ["rooms", () => renderRooms(s.rooms || [])],
+    ["performance", () => renderPerf(s.players || [])],
+    ["scores", () => renderScores(s.scores || [])],
+    ["activity", () => renderActivity(s.activity || [])],
+    ["character tracker", () => renderTracker(s.players || [])],
+    ["market", () => renderMarket(s.market || {orders: [], history: []})],
+    ["buffs", () => renderBuffs(s.buffs || {})],
+    ["bosses", () => renderBosses(s.bosses || [])],
+    ["dungeons", () => renderDungeons(s.dungeons || [])],
+  ];
+  const failed = [];
+  for (const [name, render] of sections) {
+    try { render(); }
+    catch (e) { failed.push(name); console.error(`Dashboard ${name} failed`, e); }
+  }
+  if (failed.length) {
+    $("status").textContent = `live, render issue: ${failed.join(", ")}`;
+    $("status").style.color = "var(--warn)";
+  }
+}
+
+async function tick() {
+  try {
+    const res = await fetch("/api/state");
+    if (!res.ok) throw new Error(res.status);
+    const s = await res.json();
+    lastState = s;
+    $("dot").classList.remove("stale");
+    $("status").textContent = "live";
+    $("uptime").textContent = s.server.uptime + "s";
+    $("online").textContent = s.server.players_online;
+    $("conns").textContent = s.server.connections;
+    if (s.server.gm_port) {
+      $("g-gm-port").textContent = s.server.gm_port;
+    }
+    if (s.catalog) {
+      populateDatalists(s.catalog);
+    }
+    renderAll(s);
+  } catch (e) {
+    $("dot").classList.add("stale");
+    $("status").textContent = "no server connection";
+  }
+}
+
+function populateDatalists(cat) {
+  const setDatalist = (id, arr) => {
+    const dl = $(id);
+    if (dl) dl.innerHTML = (arr || []).map(v => `<option value="${esc(v)}">`).join("");
+  };
+  setDatalist("gm-players", cat.players);
+  setDatalist("gm-items", cat.items);
+  setDatalist("gm-rooms", cat.rooms);
+  if (lastState && lastState.rooms) {
+    const npcs = [];
+    for (const r of lastState.rooms) {
+      for (const n of (r.npcs || [])) {
+        if (n.alive && !npcs.includes(n.name)) npcs.push(n.name);
+      }
+    }
+    setDatalist("gm-npcs", npcs.sort());
+  }
+}
+
+// ---- Tab switching -------------------------------------------------------
+for (const tab of document.querySelectorAll(".tab")) {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tabview").forEach(v => v.classList.remove("active"));
+    tab.classList.add("active");
+    $("view-" + tab.dataset.tab).classList.add("active");
+  });
+}
+
+// ---- GM console ----------------------------------------------------------
+let gmws = null;
+let gmBuf = [];
+
+function gmlog(text, cls) {
+  const row = document.createElement("div");
+  row.className = "row" + (cls ? " " + cls : "");
+  row.textContent = new Date().toLocaleTimeString() + "  " + text;
+  $("gmlog").prepend(row);
+  while ($("gmlog").children.length > 200) $("gmlog").lastChild.remove();
+}
+
+function gmOpen() {
+  try {
+    if (!lastState) return;
+    const port = lastState.server.gm_port || 8767;
+    gmws = new WebSocket(`ws://127.0.0.1:${port}`);
+    gmws.onopen = () => {
+      $("g-status").textContent = `ws: connected to 127.0.0.1:${port}`;
+      $("g-status").style.color = "var(--good)";
+      for (const m of gmBuf.splice(0)) gmws.send(JSON.stringify(m));
+    };
+    gmws.onmessage = ev => {
+      try { gmlog(JSON.parse(ev.data).text || ev.data); }
+      catch { gmlog(ev.data); }
+    };
+    gmws.onclose = () => {
+      $("g-status").textContent = "ws: disconnected — click a button to reconnect";
+      $("g-status").style.color = "var(--bad)";
+      gmws = null;
+    };
+    gmws.onerror = () => gmws && gmws.close();
+  } catch (e) {
+    gmlog("WS error: " + e.message);
+  }
+}
+
+function gmSend(payload) {
+  gmlog("> " + JSON.stringify(payload));
+  if (gmws && gmws.readyState === WebSocket.OPEN) gmws.send(JSON.stringify(payload));
+  else { gmBuf.push(payload); gmOpen(); }
+}
+
+// ---- GM action panes -----------------------------------------------------
+function gmActivePane() {
+  const v = $("gm-action").value;
+  document.querySelectorAll(".gm-pane").forEach(p =>
+    p.classList.toggle("active", p.dataset.pane === v));
+  updateGMCosts();
+}
+$("gm-action").addEventListener("change", gmActivePane);
+
+function gmPlayerByName(name) {
+  if (!lastState || !name) return null;
+  return lastState.players.find(p => p.name.toLowerCase() === name.toLowerCase()) || null;
+}
+
+function gmNpcMaxHp(name) {
+  if (!lastState || !name || !lastState.rooms) return null;
+  const needle = name.toLowerCase();
+  for (const r of lastState.rooms) {
+    for (const n of (r.npcs || [])) {
+      if (n.alive && n.name.toLowerCase().includes(needle)) return n.max_hp;
+    }
+  }
+  return null;
+}
+
+function gmCostText(cost) {
+  const treasury = parseFloat($("g-treasury").textContent) || 0;
+  if (cost == null) return `treasury: ${treasury}`;
+  const ok = treasury >= cost;
+  return `${cost} tax (${ok ? "" : "insufficient "}treasury: ${treasury})`;
+}
+
+function updateGMCosts() {
+  const buffMin = Math.min(60, Math.max(1, parseInt($("gm-buff-min").value, 10) || 5));
+  const bossStr = Math.min(5, Math.max(1, parseInt($("gm-boss-str").value, 10) || 3));
+  $("gm-gold-cost").textContent = gmCostText(parseInt($("gm-gold-amount").value, 10) || 0);
+  $("gm-buff-cost").textContent = gmCostText(buffMin * 50);
+  $("gm-boss-cost").textContent = gmCostText(bossStr * 100);
+  $("gm-announce-cost").textContent = gmCostText(25);
+  $("gm-teleport-cost").textContent = gmCostText(50);
+  $("gm-kick-cost").textContent = gmCostText(0);
+  const healTarget = gmPlayerByName($("gm-heal-player").value.trim());
+  if (healTarget && healTarget.max_hp > healTarget.hp) {
+    $("gm-heal-cost").textContent = gmCostText((healTarget.max_hp - healTarget.hp) * 2);
+  } else {
+    $("gm-heal-cost").textContent = healTarget ? "already full (no charge)" : gmCostText(null);
+  }
+  const slayHp = gmNpcMaxHp($("gm-slay-target").value.trim());
+  $("gm-slay-cost").textContent = slayHp == null ? gmCostText(null) : gmCostText(Math.max(10, slayHp));
+}
+
+$("gm-send-gold").addEventListener("click", () => {
+  const player = $("gm-gold-player").value.trim();
+  const gold = parseInt($("gm-gold-amount").value, 10);
+  if (!player || !gold) { gmlog("player name and gold amount are required"); return; }
+  gmSend({ "cmd": "gm_reward", "player": player, "gold": gold });
+});
+
+$("gm-send-item").addEventListener("click", () => {
+  const player = $("gm-item-target").value.trim();
+  const room = $("gm-item-room").value.trim();
+  const item = $("gm-item-name").value.trim();
+  if (!item || (!player && !room)) { gmlog("item name and (player or room) are required"); return; }
+  const payload = { "cmd": "gm_reward", "item": item };
+  if (room) payload.room = room;
+  else payload.player = player;
+  gmSend(payload);
+});
+
+$("gm-send-buff").addEventListener("click", () => {
+  const type = $("gm-buff-type").value;
+  const minutes = parseInt($("gm-buff-min").value, 10) || 5;
+  gmSend({ "cmd": "gm_buff", "type": type, "minutes": Math.min(60, Math.max(1, minutes)) });
+});
+
+$("gm-send-boss").addEventListener("click", () => {
+  const room = $("gm-boss-room").value.trim();
+  const strength = Math.min(5, Math.max(1, parseInt($("gm-boss-str").value, 10) || 3));
+  if (!room) { gmlog("room id is required (e.g. deep_forest)"); return; }
+  gmSend({ "cmd": "gm_boss", "room": room, "strength": strength });
+});
+
+$("gm-send-announce").addEventListener("click", () => {
+  const text = $("gm-announce-text").value.trim();
+  if (!text) { gmlog("announcement text is required"); return; }
+  gmSend({ "cmd": "gm_announce", "text": text.slice(0, 200) });
+});
+
+$("gm-send-heal").addEventListener("click", () => {
+  const player = $("gm-heal-player").value.trim();
+  if (!player) { gmlog("player name is required"); return; }
+  gmSend({ "cmd": "gm_heal", "player": player });
+});
+
+$("gm-send-teleport").addEventListener("click", () => {
+  const player = $("gm-teleport-player").value.trim();
+  const room = $("gm-teleport-room").value.trim();
+  if (!player || !room) { gmlog("player name and room id are required"); return; }
+  gmSend({ "cmd": "gm_teleport", "player": player, "room": room });
+});
+
+$("gm-send-slay").addEventListener("click", () => {
+  const target = $("gm-slay-target").value.trim();
+  if (!target) { gmlog("NPC name is required"); return; }
+  gmSend({ "cmd": "gm_slay", "target": target });
+});
+
+$("gm-send-kick").addEventListener("click", () => {
+  const player = $("gm-kick-player").value.trim();
+  if (!player) { gmlog("player name is required"); return; }
+  const payload = { "cmd": "gm_kick", "player": player };
+  const reason = $("gm-kick-reason").value.trim();
+  if (reason) payload.reason = reason.slice(0, 120);
+  gmSend(payload);
+});
+
+// Preset buttons (gold amounts, buff shortcuts)
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".gm-preset");
+  if (!btn) return;
+  if (btn.dataset.gold) {
+    $("gm-gold-amount").value = btn.dataset.gold;
+    updateGMCosts();
+  }
+  if (btn.dataset.buff) {
+    $("gm-buff-type").value = btn.dataset.buff;
+    $("gm-buff-min").value = btn.dataset.min;
+    updateGMCosts();
+  }
+});
+
+// Update cost display on input change (flat-cost actions need none)
+["gm-gold-amount", "gm-buff-min", "gm-heal-player", "gm-slay-target"].forEach(id =>
+  $(id)?.addEventListener("input", updateGMCosts));
+$("gm-buff-type")?.addEventListener("change", updateGMCosts);
+$("gm-boss-str")?.addEventListener("change", updateGMCosts);
+
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
