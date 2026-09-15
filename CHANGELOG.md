@@ -10,6 +10,11 @@ All notable changes to the text MMO engine are recorded here.
 - P0 fix: commission collusion — repeated poster+filler pairs now earn
   diminishing rewards (1/(1+prior_fills), floor 10%). Strangers always
   get full value. Commission list shows your effective rate per poster.
+- Commission poster reward: poster now earns 10% of the bounty as score +
+  XP when their commission is filled (online poster gets a notification).
+  Posting is no longer a pure gold sink.
+  Any escrow remainder (posted gold minus reduced payout) is sunk to the
+  treasury as an additional collusion deterrent.
 - Carry cap + gated `drop`: packs hold 24 units (worn gear and up to 5 arrows
   exempt); `take` / `gather` / `buy` / `market_buy` refuse at the cap without
   charging gold, while crafting, rewards, and GM grants bypass. `drop`

@@ -512,7 +512,9 @@ def collusion_multiplier(poster_name, filler_name):
     between the same pair halves the effective gold and XP.  Strangers
     always get full value, so legitimate cross-player bounties are
     unaffected.  The floor is 10 % so that even serial collaborators
-    still get *something* (avoiding feel-bad zero-reward completions)."""
+    still get *something* (avoiding feel-bad zero-reward completions).
+    The escrow remainder (posted gold minus reduced payout) is sunk to
+    the treasury as an additional collusion deterrent."""
     poster = get_score_entry(poster_name)
     prev = poster.get("collab_fills", {}).get(filler_name, 0)
     return max(0.1, 1.0 / (1 + prev))
@@ -1766,6 +1768,8 @@ async def cmd_commission_fill(player, msg):
         await send(player, {"type": "error", "text": f"Commission #{cid} needs {commission['required_kills']}x {commission['target']} slain since posting ({have} verified)."})
         return
     # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
+    # Any escrow remainder (posted gold minus reduced payout) is sunk to the
+    # treasury as an additional collusion deterrent.
     mult = collusion_multiplier(commission["poster"], player.name)
     eff_gold = max(1, int(commission["reward_gold"] * mult))
     eff_xp = max(0, int(commission["reward_xp"] * mult))
@@ -1784,6 +1788,15 @@ async def cmd_commission_fill(player, msg):
     player.gold += min(commission.get("escrow", commission["reward_gold"]), eff_gold)
     commission["escrow"] = max(0, commission.get("escrow", commission["reward_gold"]) - eff_gold)
     commission["status"] = "completed"
+    # Poster reward: 10% of the bounty as score + XP for coordinating.
+    poster_score = max(1, int(commission["reward_gold"] * 0.1))
+    poster_xp = max(1, int(commission["reward_xp"] * 0.1))
+    poster_name = commission["poster"]
+    await award_points_to_name(poster_name, poster_score, f"commission #{cid} filled by {player.name}")
+    await award_xp(poster_name, poster_xp, f"commission #{cid} filled by {player.name}")
+    for pp in players_by_name.get(poster_name.lower(), ()):
+        if pp.logged_in:
+            await send(pp, {"type": "message", "text": f"Your commission #{cid} was filled by {player.name}! +{poster_score} score, +{poster_xp}xp."})
     mark_scores_dirty()
     await send(player, stats_view(player))
 
