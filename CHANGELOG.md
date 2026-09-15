@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- P0 fix: trade_count double-count — each market fill now counts as one trade
+  (buyer only), not two. Dashboard shows accurate fill volume.
+- P0 fix: quest-giver kill penalty — killing registered quest givers now
+  applies a -0.5 score penalty (XP/gold stay at zero). Never worth it.
 - Carry cap + gated `drop`: packs hold 24 units (worn gear and up to 5 arrows
   exempt); `take` / `gather` / `buy` / `market_buy` refuse at the cap without
   charging gold, while crafting, rewards, and GM grants bypass. `drop`

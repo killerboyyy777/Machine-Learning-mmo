@@ -281,7 +281,8 @@ async def main():
     assert buyer.gold == 900
     assert "rusty_sword" in buyer.inventory
     assert srv.SCORES["seller"]["tax_paid"] == tax
-    assert srv.SCORES["seller"]["trades_completed"] == 1 and srv.SCORES["buyer"]["trades_completed"] == 1
+    assert srv.SCORES["buyer"]["trades_completed"] == 1
+    assert srv.SCORES["seller"].get("trades_completed", 0) == 0
     assert srv.SCORES["seller"]["gold_bank"] == 90
     print("MARKET_TAX_OK")
 

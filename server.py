@@ -1327,14 +1327,14 @@ async def cmd_attack(player, msg):
             share = dmg_dealt / total_dmg
             pts = pool * share
             xp = pts
-            # Registered quest-giving NPCs give essentially nothing — killing
-            # them is never worth it compared to real objectives.
+            # Registered quest-giving NPCs penalize: killing them is never
+            # worth it.  Score goes negative; XP and gold stay at zero.
             is_quest_npc = is_quest_giver(npc["id"])
             if is_quest_npc:
-                pts = 0.1
-                xp = 0.1
+                pts = -0.5
+                xp = 0
                 gold_share = 0
-                reason = f"defeated {npc['name']} (quest NPC - minimal reward)"
+                reason = f"defeated {npc['name']} (quest NPC - penalty)"
             elif cname == player.name:
                 reason = f"defeated {npc['name']}"
                 get_score_entry(cname)["kills"] += 1
@@ -2317,7 +2317,6 @@ async def cmd_market_buy(player, msg):
     buyer_entry = get_score_entry(player.name)
     seller_entry = get_score_entry(choice["seller"])
     buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
-    seller_entry["trades_completed"] = seller_entry.get("trades_completed", 0) + 1
     seller_entry["tax_paid"] = seller_entry.get("tax_paid", 0.0) + tax
     seller_entry["gold_bank"] = seller_entry.get("gold_bank", 0) + seller_payout
     market_history.append({
