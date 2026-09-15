@@ -265,7 +265,7 @@ Every message is JSON. Client → server messages have a `cmd` field:
 {"cmd": "gather", "node": "pine_timber"}
 {"cmd": "commission_post", "target": "rat", "required_kills": 5, "reward_gold": 25, "reward_xp": 50}
 {"cmd": "commission_list"}
-{"cmd": "commission_fill", "commission_id": 42}   # pays only with verified kills of the target since posting (no self-fills)
+{"cmd": "commission_fill", "commission_id": 42}   # pays only with verified kills of the target since posting (no self-fills); repeated poster+filler pairs earn diminishing rewards (escrow remainder sunk to treasury)
 {"cmd": "commission_cancel", "commission_id": 42}
 {"cmd": "quest", "action": "list"}         # what quests exist, where, and their state
 {"cmd": "quest", "action": "accept"}       # Town Guard quest (default: guard_charm)
@@ -790,7 +790,9 @@ Long-term state is bounded so fresh-name bot farming can't grow memory or
   score entries untouched for the TTL are evicted (never online players or
   entries owed banked gold); their track/score history goes with them.
 - `COMMISSION_TTL_SECONDS` (default 1 hour) — completed/cancelled commissions
-  are pruned. Open bounties hold real escrow and are never pruned.
+  are pruned. Open bounties hold real escrow and are never pruned. Repeated
+  poster+filler pairs earn diminishing rewards (1/(1+prior_fills), floor 10%);
+  any escrow remainder is sunk to the treasury.
 - `DUNGEON_MAX_FLOOR` (default 50) — the stairs crumble below this; one
   deep-diving party can't accumulate floor objects (or per-floor item
   registrations) forever.
