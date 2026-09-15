@@ -94,6 +94,31 @@ days, `[M]` two–five days, `[L]` several days–weeks.
   - Deferred to Stage 2+ (gated on Stage 1 metrics): torch past a handful
     of agents; 150+ scale; server-side spawn pressure; market pagination;
     one-hot obs ceiling (embeddings/locality).
+- [ ] [L] Carry cap + drop + personal bank (decided: 24 units; worn gear and
+  5 arrows exempt; craft inputs-free-first; drop single+amount; unlimited
+  bank at one location TBD, suggested: market)
+  - Server: `INVENTORY_CAP = 24` counting units; worn weapon/armor/offhand
+    and up to `AMMO_EXEMPT_COUNT = 5` arrows don't count (verify first
+    whether equipped pieces live inside `inventory` or beside it)
+  - Overflow blocks `take` (items only, gold piles unaffected), `gather`,
+    and `buy` (gold never charged on rejection) with a clear "pack full"
+    error naming the cap; `craft` always allowed (inputs removed first,
+    outputs may overflow); quest/commission/gold rewards bypass (gold/XP
+    aren't items; charm comes from crafting)
+  - `drop` returns: `{"cmd": "drop", "item": "..."}` drops one unit,
+    optional `"amount": N`; dropped items land on the ground like loot
+  - Personal bank without limit: `bank_deposit` / `bank_withdraw` /
+    `bank_list`, usable only at the bank location (TBD — suggested market),
+    persisted per character in `scores.json` (mirrors `gold_bank` pattern)
+  - Env: re-add `drop` action, add `bank_deposit` (lowest-margin surplus)
+    and `bank_withdraw` (most valuable banked, from parsed list) actions
+    (48 → 51); parse bank list into state; gate take/gather/buy masks on
+    fullness; one `inv_full_norm` scalar (OBS 175 → 176) — single batched
+    checkpoint reset for all of the above
+  - Tests: cap enforced per command with exact counts; exempt math;
+    drop/amount/ground round-trip; bank deposit/withdraw/list + persistence
+    across logout; overflow error texts
+  - Docs: protocol, README market/inventory sections, CHANGELOG
 
 ## P2 — depth
 
@@ -120,6 +145,9 @@ days, `[M]` two–five days, `[L]` several days–weeks.
   - Total crafts, per-recipe mastery, tier mastery, and discoveries
   - Replace flat craft rewards with tier-aware score and XP
   - Material-cost and recipe-profitability tests
+- [ ] [S] Add a pricing parameter to market listings (`fixed` | `undercut-best-ask` |
+  `margin-over-material-cost`), so sellers and agents price from live order-book
+  state and crafting cost instead of the flat suggested price
 - [ ] [M] Dashboard And Documentation (crafting)
   - Crafting/Artisans dashboard tab
   - Gathering nodes, commissions, artisan rankings, buffs, and ammo supply

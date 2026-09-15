@@ -3,7 +3,14 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
-- Agent capability pass (`ml_env.py`, no obs/action-space change): the env
+- Agent market disposition (quicksell vs hold vs speculate): the env now
+  prices every holding at merchant value vs best-market-ask margin
+  (`flip_margin()`; unlisted items nominal +1 for price discovery); `sell`
+  takes the lowest margin, `market_post` the highest positive one, with
+  keep rules (worn gear, quest charm, last herb, low bow arrows); new
+  `flip_margin_norm` + `inv_value_norm` observation scalars (OBS 173 → 175)
+  and `flip_margin` in step info so trainers can attribute the decision.
+- Agent capability pass (`ml_env.py`): the env
   now parses `room_gold`, `gatherables`, `market_slots`, and commission
   lists into state; `take` prefers gold piles, `gather`/`market_expand`/
   `commission_fill`/`commission_cancel` are gated and targeted (richest

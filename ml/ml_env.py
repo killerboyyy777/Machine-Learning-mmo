@@ -46,6 +46,17 @@ is first-class here, not an ignored detail:
     terms, any detected buy fill (`market_fill`), and our standing orders
     with nets (`own_orders`) so trainers can attribute tax-aware P&L.
 
+Disposition (quicksell vs hold vs speculate) is decided, not hardcoded:
+  - every holding carries merchant value vs best-market-ask margin
+    (`flip_margin()`; unlisted items count nominal +1 so first listings do
+    price discovery); `sell` takes the lowest margin, `market_post` the
+    highest positive one, holding is whatever is picked neither for;
+  - keep rules protect worn gear, the quest charm, a last healing herb,
+    and bow arrows while low;
+  - the observation carries `flip_margin_norm` + `inv_value_norm` and
+    `step()` info carries `flip_margin`, so trainers can see (and shape)
+    whether each disposition matched the opportunity.
+
 Actions added on top of the old (move/attack/take/rest/look) set:
   - move_up / move_down / move_enter   (dungeon travel; "enter" opens the
     party's private instance from the graveyard)
@@ -135,6 +146,34 @@ MARKET_SLOT_PRICE_BASE = getattr(srv, "MARKET_SLOT_PRICE_BASE", 50)
 def market_slot_price(slots):
     """Gold cost of the next stall slot (doubling from the base price)."""
     return MARKET_SLOT_PRICE_BASE * (2 ** max(0, slots - MARKET_SLOTS_BASE))
+
+
+def merchant_value(iid):
+    """Gold the merchant pays for an item (mirrors cmd_sell)."""
+    return srv.ITEM_DEFS.get(iid, {}).get("value", 1) or 1
+
+
+def best_market_ask(orders, iid, exclude_seller=None):
+    """Cheapest open ask for an item from other sellers (None if unlisted)."""
+    name = srv.ITEM_DEFS.get(iid, {}).get("name", iid)
+    asks = [o["price"] for o in orders or []
+            if o.get("item") == name and o.get("seller") != exclude_seller]
+    return min(asks) if asks else None
+
+
+def flip_margin(iid, orders, exclude_seller=None):
+    """Expected profit of listing over merchant sale: best ask minus tax
+    minus merchant value. None when no comparable ask exists (the market
+    hasn't priced it yet -- first listings do price discovery)."""
+    ask = best_market_ask(orders, iid, exclude_seller)
+    if ask is None:
+        return None
+    return market_net(ask) - merchant_value(iid)
+
+
+# Item ids the agent must never liquidate blindly (resolved once; rules
+# degrade gracefully to "no exception" if the catalog ever renames them).
+_HEALING_HERB_ID = srv.find_item_by_name(list(srv.ITEM_DEFS), "healing herb")
 
 # Display names that must never be attacked (merchants, quest givers,
 # healers). Everything else in a room -- hostile static NPCs and unknown
@@ -358,7 +397,8 @@ def flatten_obs(obs):
         + [obs["hp_frac"], obs["gold_norm"], obs["score_norm"], obs["variety"],
            obs["allies_norm"], obs["party_norm"], obs["level_norm"],
            obs["xp_progress"], obs["market_norm"], obs["market_any"],
-           obs["tax_rate"], obs["tax_min_norm"], obs["own_net_norm"]]
+           obs["tax_rate"], obs["tax_min_norm"], obs["own_net_norm"],
+           obs["flip_margin_norm"], obs["inv_value_norm"]]
         # Quest block appended last so earlier indices never shift.
         + [obs["quest_active"], obs["quest_ready"], obs["quest_has_charm"],
            obs["quest_mat_bark"], obs["quest_mat_hide"], obs["quest_mat_ecto"],
@@ -375,10 +415,10 @@ OBS_SIZE = (
     + len(DIRECTIONS)                      # exit mask
     + len(NPC_LIST) + 1                    # npc presence + unknown-npc count
     + len(ITEM_LIST) + len(ITEM_LIST) + 2  # ground + inventory presence + flags
-    + 13                                   # scalars (hp_frac, gold_norm, score_norm, variety,
+    + 15                                   # scalars (hp_frac, gold_norm, score_norm, variety,
                                            # allies_norm, party_norm, level_norm, xp_progress,
                                            # market_norm, market_any, tax_rate, tax_min_norm,
-                                           # own_net_norm)
+                                           # own_net_norm, flip_margin_norm, inv_value_norm)
     + 7                                    # quest block (active/ready/has_charm/3 mats/giver_here)
     + 3                                    # delver quest block (active/ready/giver_here)
     + 1                                    # arrows_norm (ammo-family count; bows eat one per shot)
@@ -427,6 +467,7 @@ class TextMMOEnv:
         self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
         self._mask_cache = None  # refreshed by every _build_obs()
         self._inv_type_cache = {}  # ditto: item-type -> first display name
+        self._flip_table = []  # ditto: per-holding value/margin rows
 
     async def _reader(self):
         try:
@@ -604,6 +645,12 @@ class TextMMOEnv:
             # be stale until the next market_list; trainers should diff ids
             # across steps to spot completed sales.
             "own_orders": self._own_orders(),
+            # Best list-over-merchant margin currently held (0 when nothing
+            # sellable beats the merchant): trainers can attribute whether a
+            # sell/post/hold step matched the opportunity.
+            "flip_margin": max(
+                [(r["margin"] if r["margin"] is not None else 1) for r in self._holdings()
+                 if self._sellable(r)], default=0),
             # Quest transitions this step, for reward shaping / logging.
             # accepted: False->True on quest_accept; turned_in: True->False
             # on quest_turn_in (reward lands via score/xp/gold events);
@@ -647,6 +694,47 @@ class TextMMOEnv:
                 price = o.get("price", 0)
                 out.append({"id": o.get("id"), "price": price, "net": market_net(price)})
         return out
+
+    def _holdings(self):
+        """One row per inventory item: display name, id, merchant value, and
+        market flip margin (None = unlisted, i.e. price discovery).
+
+        Cached per observation in _build_obs; mappings read the table instead
+        of re-scanning inventory x open orders on every mask evaluation."""
+        return self._flip_table
+
+    def _sellable(self, row):
+        """Keep rules shared by quicksell and speculate: never worn gear,
+        never the quest charm, never a last healing herb, never bow arrows
+        while running low."""
+        s = self._state
+        if row["name"] in {s.get("equipped"), s.get("armor"), s.get("offhand")} - {None}:
+            return False
+        if row["iid"] == QUEST_RESULT_ID:
+            return False
+        if _HEALING_HERB_ID and row["iid"] == _HEALING_HERB_ID:
+            if sum(1 for r in self._flip_table if r["iid"] == _HEALING_HERB_ID) <= 1:
+                return False
+        if "arrow" in row["name"].lower():
+            equipped_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped") or "")
+            if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
+                arrows = sum(1 for r in self._flip_table if "arrow" in r["name"].lower())
+                if arrows <= 5:
+                    return False
+        return True
+
+    def _refresh_holdings(self):
+        s = self._state
+        orders = ((s.get("market_state") or {}).get("orders") or [])
+        rows = []
+        for name in s.get("inv_names") or []:
+            iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+            if not iid:
+                continue
+            rows.append({"name": name, "iid": iid,
+                         "value": merchant_value(iid),
+                         "margin": flip_margin(iid, orders, exclude_seller=self.name)})
+        self._flip_table = rows
 
     def _detect_fill(self, action, gold_before, inv_before):
         """Heuristic fill detection for our own market_buy: inventory grew and
@@ -696,6 +784,7 @@ class TextMMOEnv:
         Served from the per-observation cache refreshed by _build_obs
         (computed on demand before the first observation lands)."""
         if self._mask_cache is None:
+            self._refresh_holdings()
             self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
         return list(self._mask_cache)
 
@@ -769,10 +858,15 @@ class TextMMOEnv:
             # server validates merchant presence and gold.
             return {"cmd": "buy", "item": "arrow"}
         if action == "sell":
-            name = self._first_inv_typed("junk")
-            if name:
-                return {"cmd": "sell", "item": name}
-            return None
+            # Quicksell the lowest-margin holding: when nothing carries a
+            # market premium, merchant gold now beats waiting on a listing.
+            # Keep rules: worn gear, the quest charm, a last healing herb,
+            # and bow arrows while low never quicksell.
+            cands = [r for r in self._holdings() if self._sellable(r)]
+            if not cands:
+                return None
+            cands.sort(key=lambda r: (r["margin"] if r["margin"] is not None else -1, -r["value"]))
+            return {"cmd": "sell", "item": cands[0]["name"]}
         if action == "equip":
             # One action fills all three gear slots over successive steps:
             # weapon first, then armor, then offhand. The server routes each
@@ -967,28 +1061,21 @@ class TextMMOEnv:
             # Read the unified quest catalog (what/where/state).
             return {"cmd": "quest", "action": "list"}
         if action == "market_post":
-            # List the most valuable sellable: stall cap respected (expand
-            # instead once full), worn gear and the quest charm never listed.
+            # Speculate on the highest-margin holding: list only when the
+            # market beats the merchant (margin > 0) or the item is unlisted
+            # (nominal +1: first listings do price discovery). Stall cap
+            # respected -- expand instead once full. Same keep rules as sell.
             own_open = sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
                            if o.get("seller") == self.name)
             if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
                 return None
-            worn = {s.get("equipped"), s.get("armor"), s.get("offhand")} - {None}
-            best, best_val = None, -1
-            for name in s.get("inv_names") or []:
-                if name in worn:
-                    continue
-                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
-                if not iid or iid == QUEST_RESULT_ID:
-                    continue
-                if srv.ITEM_DEFS[iid].get("type") not in ("junk", "weapon", "consumable"):
-                    continue
-                val = srv.ITEM_DEFS[iid].get("value", 1) or 1
-                if val > best_val:
-                    best, best_val = name, val
-            if best:
-                return {"cmd": "market_post", "item": best, "price": 0}
-            return None
+            cands = [(r["margin"] if r["margin"] is not None else 1, r["value"], r["name"])
+                     for r in self._holdings() if self._sellable(r)]
+            cands = [c for c in cands if c[0] > 0]
+            if not cands:
+                return None
+            cands.sort(key=lambda c: (-c[0], -c[1]))
+            return {"cmd": "market_post", "item": cands[0][2], "price": 0}
         if action == "market_buy":
             return {"cmd": "market_buy"}
         if action == "market_cancel":
@@ -1054,6 +1141,18 @@ class TextMMOEnv:
             if o.get("seller") == self.name
         )
 
+        # --- Disposition features: quicksell vs hold vs speculate ---
+        # Best flip margin across sellable holdings (unknown-ask items count
+        # +1 nominal: first listings do price discovery) and total merchant
+        # value of everything carried. These let the policy learn *which*
+        # disposition pays instead of acting blind.
+        self._refresh_holdings()
+        sellable = [r for r in self._flip_table if self._sellable(r)]
+        best_margin = max([(r["margin"] if r["margin"] is not None else 1)
+                           for r in sellable], default=0)
+        flip_margin_norm = min(max(0.0, best_margin) / 50.0, 1.0)
+        inv_value_norm = min(sum(r["value"] for r in self._flip_table) / 200.0, 1.0)
+
         # --- Quest features: what the quest is + where we stand in it ---
         # Active/ready come straight from the server's stats event; the rest
         # are derived locally so the model sees *why* it can/can't progress.
@@ -1110,6 +1209,8 @@ class TextMMOEnv:
             "tax_rate": s["tax_rate"],
             "tax_min_norm": s["tax_min"] / 10.0,
             "own_net_norm": own_net / 200.0,   # after-tax value of our listings
+            "flip_margin_norm": flip_margin_norm,  # best list-over-merchant margin held
+            "inv_value_norm": inv_value_norm,  # merchant value of everything carried
             "quest_active": quest_active,
             "quest_ready": quest_ready,
             "quest_has_charm": quest_has_charm,
@@ -1142,9 +1243,8 @@ class TextMMOEnv:
                 "quest2_ready": quest2_ready,
             }, "delver"),
         }
-        # Refresh per-observation caches: inventory index (helpers memoize
-        # against it) and the valid-action mask (trainers read it every step;
-        # computing once here beats re-scanning inventory 50x per step).
+        # Refresh per-observation caches for the mask below (holdings table
+        # is already fresh from the disposition features above).
         self._inv_type_cache = {}
         self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
         return obs

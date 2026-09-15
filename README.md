@@ -600,7 +600,7 @@ the agent learns the same resistance to hardcoded loops that governs all players
 
 ### Observation space
 
-Same as `flatten_obs()` in `ml_env.py` — a 173-dimensional vector covering:
+Same as `flatten_obs()` in `ml_env.py` — a 175-dimensional vector covering:
 
 - Room one-hot (32 static rooms)
 - Exit mask across all directions (including `up`/`down`/`enter`)
@@ -610,7 +610,10 @@ Same as `flatten_obs()` in `ml_env.py` — a 173-dimensional vector covering:
   `party_norm`, `level_norm`, `xp_progress`, `market_norm`, `market_any`,
   plus market-tax terms: live `tax_rate`, `tax_min_norm`, and `own_net_norm`
   (the exact after-tax net value of the agent's standing sell orders, using
-  the server's 10%-with-1-gold-minimum formula)
+  the server's 10%-with-1-gold-minimum formula), plus disposition terms:
+  `flip_margin_norm` (best list-over-merchant margin held) and
+  `inv_value_norm` (merchant value of everything carried) — these let the
+  policy learn quicksell-vs-hold-vs-speculate instead of acting blind
 - Quest block (7 dims): `quest_active`, `quest_ready`, `quest_has_charm`,
   `quest_mat_bark`, `quest_mat_hide`, `quest_mat_ecto`, `quest_giver_here`
 - Delver block (3 dims): `quest2_active`, `quest2_ready`, `quest2_giver_here`
@@ -693,7 +696,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
   dungeon floors, turn in for 30 XP + 15 gold + 10 score, repeatable.
 - **Persistence:** weights to `ml_weights.json` (shared with `ml_client.py`);
   best model to `ml_best.json`. Note: the quest and world expansions changed
-  OBS_SIZE (now 173) and N_ACTIONS (now 48), so older checkpoints need retraining.
+  OBS_SIZE (now 175) and N_ACTIONS (still 48), so older checkpoints need retraining.
 - **Training:** call `agent.train(total_steps=N)` from Python, or run
   `torch_agents\torch_batch_loop.bat` after starting the server
 
