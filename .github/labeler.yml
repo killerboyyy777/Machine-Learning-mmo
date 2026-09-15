@@ -1,0 +1,49 @@
+# area:server — game engine, protocol, world systems
+area:server:
+  - changed-files:
+      - any-glob-to-any-file:
+          - server.py
+          - world.json
+
+# area:ml-env — observations, actions, rewards
+area:ml-env:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ml/**/*
+          - ml_env.py
+
+# area:torch-agents — PyTorch DQN agent and farm
+area:torch-agents:
+  - changed-files:
+      - any-glob-to-any-file:
+          - torch_agents/**/*
+
+# area:tests — unit, live, grind, persistence suites
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**/*
+
+# area:docs — README, CHANGELOG, TODO, protocol docs
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - README.md
+          - CHANGELOG.md
+          - TODO.md
+          - docs/**/*
+
+# area:dashboard — live dashboard, GM panel, charts
+area:dashboard:
+  - changed-files:
+      - any-glob-to-any-file:
+          - dashboard.html
+
+# documentation — docs and guides
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - README.md
+          - CHANGELOG.md
+          - TODO.md
+          - docs/**/*
