@@ -7,8 +7,8 @@ loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
 human, a bot, and an LLM agent all look identical to the server.
 
-> **Authorship note:** this project is human-designed and human-led, with AI
-> coding assistants used along the way for implementation.
+> **Authorship note:** this project is human-designed and human-led but with AI
+> coding assistants where used along the way for a lot of implementation.
 
 ## Setup
 
