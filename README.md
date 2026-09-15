@@ -7,6 +7,9 @@ loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
 human, a bot, and an LLM agent all look identical to the server.
 
+> **Authorship note:** this project is human-designed and human-led, with AI
+> coding assistants used along the way for implementation.
+
 ## Setup
 
 ```bash
@@ -690,7 +693,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
   dungeon floors, turn in for 30 XP + 15 gold + 10 score, repeatable.
 - **Persistence:** weights to `ml_weights.json` (shared with `ml_client.py`);
   best model to `ml_best.json`. Note: the quest and world expansions changed
-  OBS_SIZE (now 173) and N_ACTIONS (now 50), so older checkpoints need retraining.
+  OBS_SIZE (now 173) and N_ACTIONS (now 48), so older checkpoints need retraining.
 - **Training:** call `agent.train(total_steps=N)` from Python, or run
   `torch_agents\torch_batch_loop.bat` after starting the server
 
@@ -837,6 +840,6 @@ take it next time it is free.
 ```
 
 A token is purely your choice; it never affects gameplay, score, or the ML
-agent. In-game manipulation of *other players' characters* via `give`,
-`attack`, and other live commands is always allowed and unaffected — tokens
+agent. In-game interaction with *other players' characters* via `attack`
+and other live commands is always allowed and unaffected — tokens
 only prevent a different *script* from taking over someone's name.

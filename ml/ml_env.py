@@ -97,6 +97,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import sys
 
 # ml_env.py lives in the ml/ subfolder but reuses the engine's already-loaded
@@ -117,6 +118,45 @@ NPC_ID_TO_NAME = {k: v["name"] for k, v in srv.WORLD["npcs"].items()}
 NPC_LIST = sorted(NPC_ID_TO_NAME.keys())
 ITEM_LIST = sorted(ITEM_ID_TO_NAME.keys())
 ROOM_LIST = sorted(srv.ROOMS.keys())
+
+# Shopkeepers and their wares, read live from world.json (server is
+# authoritative; this only mirrors it so buy decisions can weigh needs).
+MERCHANT_NAMES = sorted({v["name"] for v in srv.WORLD["npcs"].values() if v.get("shop")})
+MERCHANT_PRICES = {}
+for _npc in srv.WORLD["npcs"].values():
+    for _iid, _price in ((_npc.get("shop") or {}).items()):
+        MERCHANT_PRICES.setdefault(_iid, _price)
+
+# Stall-slot terms, mirroring server.py (getattr fallbacks as elsewhere).
+MARKET_SLOTS_BASE = getattr(srv, "MARKET_ORDER_SLOTS_BASE", 3)
+MARKET_SLOT_PRICE_BASE = getattr(srv, "MARKET_SLOT_PRICE_BASE", 50)
+
+
+def market_slot_price(slots):
+    """Gold cost of the next stall slot (doubling from the base price)."""
+    return MARKET_SLOT_PRICE_BASE * (2 ** max(0, slots - MARKET_SLOTS_BASE))
+
+# Display names that must never be attacked (merchants, quest givers,
+# healers). Everything else in a room -- hostile static NPCs and unknown
+# dynamic ones like dungeon guards -- is a legal target.
+NON_HOSTILE_NAMES = {v["name"] for v in srv.WORLD["npcs"].values() if not v.get("hostile")}
+
+# Open-commission list lines look like:
+#   #12: slay 5x Giant Rat -- reward 25g + 50xp (posted by Alice)
+_COMMISSION_RE = re.compile(
+    r"#(\d+):\s*slay\s+(\d+)\s*x\s+(.+?)\s*[-\u2013\u2014]+\s*reward\s+(\d+)\s*g\s*\+\s*(\d+)\s*xp\s*\(\s*posted by\s+([^)]+)\)",
+    re.IGNORECASE,
+)
+
+
+def _parse_commissions(text):
+    """Best-effort parse of a commission_list message; [] when unparseable."""
+    out = []
+    for m in _COMMISSION_RE.finditer(text or ""):
+        cid, kills, target, gold, xp, poster = m.groups()
+        out.append({"id": int(cid), "kills": int(kills), "target": target.strip(),
+                    "gold": int(gold), "xp": int(xp), "poster": poster.strip()})
+    return out
 
 # Market tax terms, mirroring server.py so the env (and any importer) can
 # compute exactly what a trade nets. The getattr fallbacks keep this file
@@ -377,10 +417,16 @@ class TextMMOEnv:
             "quest_guard_active": False, "guard_charm_crafted": False,
             "quest_delver_active": False, "quest_delver_ready": False,
             "buff_attack_amount": 0, "buff_damage_reduction_amount": 0,
+            # Market/gathering/commission mirrors (server is authoritative;
+            # these only let action mapping see what events already said).
+            "room_gold": 0, "gatherables": [],
+            "market_slots": 3, "open_commissions": [],
         }
         self._pending_reward = 0.0
         self._step_count = 0
         self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
+        self._mask_cache = None  # refreshed by every _build_obs()
+        self._inv_type_cache = {}  # ditto: item-type -> first display name
 
     async def _reader(self):
         try:
@@ -392,6 +438,8 @@ class TextMMOEnv:
                     self._state["exits"] = event["exits"]
                     self._state["npc_names"] = event["npcs"]
                     self._state["item_names"] = event["items"]
+                    self._state["room_gold"] = event.get("gold", 0) or 0
+                    self._state["gatherables"] = event.get("gatherables") or []
                     self._state["player_names"] = event["players"]
                     self._state["is_dungeon"] = event.get("is_dungeon", False)
                     self._state["dungeon_floor"] = event.get("dungeon_floor") or 0
@@ -413,6 +461,7 @@ class TextMMOEnv:
                     self._state["offhand"] = event.get("offhand")
                     self._state["defense"] = event.get("defense", 0)
                     self._state["market_orders"] = event.get("market_orders", 0)
+                    self._state["market_slots"] = event.get("market_slots", self._state.get("market_slots", 3))
                     # Quest flags ride along on every stats event (server's
                     # stats_view always includes them now).
                     if "quest_guard_active" in event:
@@ -444,6 +493,15 @@ class TextMMOEnv:
                     self._state["tax_min"] = event.get("tax_min", self._state["tax_min"])
                 elif t == "party":
                     self._state["party_info"] = event
+                elif t == "message":
+                    # Only structured use: commission_list replies, parsed
+                    # best-effort into the open-bounty list (stale until the
+                    # next list call; fill/cancel treat it as advisory).
+                    text = event.get("text", "")
+                    if "Open commissions:" in text:
+                        self._state["open_commissions"] = _parse_commissions(text)
+                    elif "No open commissions" in text:
+                        self._state["open_commissions"] = []
                 elif t == "xp":
                     self._state["level"] = event.get("level", self._state["level"])
                     self._state["xp"] = event.get("total", self._state["xp"])
@@ -607,7 +665,12 @@ class TextMMOEnv:
             await self.ws.close()
 
     def _first_inv_typed(self, item_type, exclude_equipped=True):
-        """First inventory display name of a given item type (or None)."""
+        """First inventory display name of a given item type (or None).
+
+        Memoized per observation (cleared in _build_obs): mask computation
+        calls this dozens of times per step for the same unchanged state."""
+        if exclude_equipped and item_type in self._inv_type_cache:
+            return self._inv_type_cache[item_type]
         for name in self._state["inv_names"] or []:
             iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
             if not iid:
@@ -616,7 +679,11 @@ class TextMMOEnv:
                 continue
             if exclude_equipped and iid == self._state["equipped"]:
                 continue
+            if exclude_equipped:
+                self._inv_type_cache[item_type] = name
             return name
+        if exclude_equipped:
+            self._inv_type_cache[item_type] = None
         return None
 
     def _first_ground_item(self):
@@ -624,8 +691,13 @@ class TextMMOEnv:
 
     def valid_action_mask(self):
         """1/0 per action in ACTIONS order: 1 when the action maps to a real
-        command in the current state (never a guaranteed-error pick)."""
-        return [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
+        command in the current state (never a guaranteed-error pick).
+
+        Served from the per-observation cache refreshed by _build_obs
+        (computed on demand before the first observation lands)."""
+        if self._mask_cache is None:
+            self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
+        return list(self._mask_cache)
 
     def _action_to_cmd(self, action):
         s = self._state
@@ -646,12 +718,18 @@ class TextMMOEnv:
                 return {"cmd": "heal"}
             return None
         if action == "attack":
-            if s["npc_names"]:
-                # Dungeon guards and static world NPCs are both reported by
-                # name, so this generic "attack the first thing" covers both.
-                return {"cmd": "attack", "target": s["npc_names"][0]}
+            # First hostile thing only: never punch merchants, quest givers,
+            # or healers. Unknown/dynamic names (dungeon guards) count as
+            # hostile -- players ride the separate player_names list.
+            for name in s["npc_names"] or []:
+                if name not in NON_HOSTILE_NAMES:
+                    return {"cmd": "attack", "target": name}
             return None
         if action == "take":
+            # Loose gold piles first (fungible, no merchant trip needed),
+            # then the first ground item.
+            if s.get("room_gold", 0) > 0:
+                return {"cmd": "take", "item": "gold"}
             item = self._first_ground_item()
             if item:
                 return {"cmd": "take", "item": item}
@@ -659,8 +737,32 @@ class TextMMOEnv:
         if action == "look":
             return {"cmd": "look"}
         if action == "buy":
-            # Buy the merchant's cheapest consumable (healing herb) to stay alive.
-            return {"cmd": "buy", "item": "healing"}
+            # Need-aware, cheapest-first: a weapon when barehanded, a healing
+            # herb when hurt or herb-less, arrows when the wielded bow runs
+            # low. Merchant presence and gold still validated server-side.
+            if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+                return None
+            gold = s.get("gold", 0)
+
+            def _cheapest(pred):
+                cands = [(iid, MERCHANT_PRICES[iid]) for iid in MERCHANT_PRICES if pred(iid)]
+                return min(cands, key=lambda t: t[1], default=(None, None))
+
+            if not s.get("equipped"):
+                iid, price = _cheapest(lambda i: srv.ITEM_DEFS.get(i, {}).get("type") == "weapon")
+                if iid and gold >= price:
+                    return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
+            herbs = sum(1 for n in (s.get("inv_names") or []) if "healing herb" in n.lower())
+            iid, price = _cheapest(lambda i: srv.ITEM_DEFS.get(i, {}).get("type") == "consumable")
+            if iid and gold >= price and (s.get("hp", 1) < s.get("max_hp", 1) or herbs == 0):
+                return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
+            equipped_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped") or "")
+            if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
+                arrows = sum(1 for n in (s.get("inv_names") or []) if "arrow" in n.lower())
+                iid, price = _cheapest(lambda i: "arrow" in srv.ITEM_DEFS.get(i, {}).get("name", "").lower())
+                if iid and arrows < 5 and gold >= price:
+                    return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
+            return None
         if action == "buy_arrows":
             # Stock ammunition for bows (Oak Longbow consumes 1 arrow per
             # shot; attacking empty-handed errors). Ungated like "buy": the
@@ -821,8 +923,11 @@ class TextMMOEnv:
                 return {"cmd": "craft", "recipe": "serpentbrand"}
             return None
         if action == "gather":
-            # Gather from available nodes in the current room
-            return {"cmd": "gather"}
+            # Only when the latest room snapshot shows nodes; the server
+            # picks the first available one (a depleted pick just errors).
+            if s.get("gatherables"):
+                return {"cmd": "gather"}
+            return None
         if action == "commission_post":
             # Post a new escrowed bounty
             return {"cmd": "commission_post"}
@@ -830,11 +935,19 @@ class TextMMOEnv:
             # List open commissions
             return {"cmd": "commission_list"}
         if action == "commission_fill":
-            # Fill/accept an open commission
-            return {"cmd": "commission_fill"}
+            # Fill the richest open bounty not posted by us (server still
+            # verifies kills and rejects self-deals; its error is signal).
+            cands = [c for c in (s.get("open_commissions") or []) if c["poster"] != self.name]
+            if not cands:
+                return None
+            best = max(cands, key=lambda c: (c["gold"] + c["xp"], -c["id"]))
+            return {"cmd": "commission_fill", "commission_id": best["id"]}
         if action == "commission_cancel":
-            # Cancel a posted commission
-            return {"cmd": "commission_cancel"}
+            # Cancel our own oldest open bounty, if the last listing showed one.
+            mine = [c for c in (s.get("open_commissions") or []) if c["poster"] == self.name]
+            if not mine:
+                return None
+            return {"cmd": "commission_cancel", "commission_id": min(m["id"] for m in mine)}
         if action == "quest_accept":
             # Accept the Town Guard's guard_charm quest. The server requires
             # standing in the guard's room; sending it elsewhere just yields
@@ -854,9 +967,27 @@ class TextMMOEnv:
             # Read the unified quest catalog (what/where/state).
             return {"cmd": "quest", "action": "list"}
         if action == "market_post":
-            name = self._first_inv_typed("junk") or self._first_inv_typed("weapon")
-            if name:
-                return {"cmd": "market_post", "item": name, "price": 0}
+            # List the most valuable sellable: stall cap respected (expand
+            # instead once full), worn gear and the quest charm never listed.
+            own_open = sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
+                           if o.get("seller") == self.name)
+            if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
+                return None
+            worn = {s.get("equipped"), s.get("armor"), s.get("offhand")} - {None}
+            best, best_val = None, -1
+            for name in s.get("inv_names") or []:
+                if name in worn:
+                    continue
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if not iid or iid == QUEST_RESULT_ID:
+                    continue
+                if srv.ITEM_DEFS[iid].get("type") not in ("junk", "weapon", "consumable"):
+                    continue
+                val = srv.ITEM_DEFS[iid].get("value", 1) or 1
+                if val > best_val:
+                    best, best_val = name, val
+            if best:
+                return {"cmd": "market_post", "item": best, "price": 0}
             return None
         if action == "market_buy":
             return {"cmd": "market_buy"}
@@ -871,9 +1002,17 @@ class TextMMOEnv:
         if action == "market_list":
             return {"cmd": "market_list"}
         if action == "market_expand":
-            # Buy +1 stall slot if we can afford the next one; the server
-            # rejects with an error otherwise (itself a learning signal).
-            return {"cmd": "market_expand"}
+            # Buy +1 stall slot, but only when the stall is actually full
+            # and the next slot is affordable (mirrors the server's doubling
+            # price from the 50g base; the server has the final word).
+            slots = s.get("market_slots", MARKET_SLOTS_BASE)
+            own_open = sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
+                           if o.get("seller") == self.name)
+            if own_open < slots:
+                return None
+            if s.get("gold", 0) >= market_slot_price(slots):
+                return {"cmd": "market_expand"}
+            return None
         if action == "party_invite":
             # Invite the first other player visible in the room.
             for pname in s.get("player_names") or []:
@@ -947,7 +1086,7 @@ class TextMMOEnv:
         ammo_best_norm = (max(held_bonus) / 2.0) if held_bonus else 0.0
         defense_norm = min(float(s.get("defense", 0) or 0), 10.0) / 10.0
 
-        return {
+        obs = {
             "room_onehot": room_onehot,
             "is_dungeon": is_dungeon,
             "floor_norm": floor_norm,
@@ -1003,6 +1142,12 @@ class TextMMOEnv:
                 "quest2_ready": quest2_ready,
             }, "delver"),
         }
+        # Refresh per-observation caches: inventory index (helpers memoize
+        # against it) and the valid-action mask (trainers read it every step;
+        # computing once here beats re-scanning inventory 50x per step).
+        self._inv_type_cache = {}
+        self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
+        return obs
 
 
 # ---------------------------------------------------------------------------

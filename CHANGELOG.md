@@ -3,6 +3,14 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Agent capability pass (`ml_env.py`, no obs/action-space change): the env
+  now parses `room_gold`, `gatherables`, `market_slots`, and commission
+  lists into state; `take` prefers gold piles, `gather`/`market_expand`/
+  `commission_fill`/`commission_cancel` are gated and targeted (richest
+  non-own bounty, own oldest); `buy`/`market_post` are need-aware (weapon
+  first, most-profitable listing, worn gear and quest charm excluded);
+  `attack` skips non-hostile NPCs; mask + inventory lookups cached per
+  observation. Dead `drop`/`give` actions already removed (48 total).
 - Rest is now location-gated and paid: +5 HP only in rest areas (Town Square,
   Market, Healing Spring, Lake Shrine) for 2 gold. Sister Maren's `heal`
   (full restore, her tile only) now costs 5 gold.

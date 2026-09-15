@@ -102,6 +102,10 @@ days, `[M]` two–five days, `[L]` several days–weeks.
   Dungeons/Parties, Agents, Operations) — BLOCKED: the wiki backend repo
   (`...-mmo.wiki.git`) returns "Repository not found" while the repository is
   private; revisit if it goes public (Home.md draft staged, wiki flag enabled)
+- [ ] [XS] Enable branch protection requiring green CI on `master` — BLOCKED:
+  GitHub returns 403 (needs Pro or a public repository) while private;
+  revisit if it goes public or with a paid plan (exact check contexts
+  documented; CI already annotates PRs non-blocking in the meantime)
 - [ ] [S] Expose active buffs and complete ammo counts consistently in `stats`,
   dashboard player rows, and dashboard player tracking
 - [ ] [S] Add a dashboard quest panel using the existing `/api/state.quests` data
