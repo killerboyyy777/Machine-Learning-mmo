@@ -173,6 +173,7 @@ Available commands:
 {"cmd": "move", "dir": "north"}
 {"cmd": "attack", "target": "goblin"}
 {"cmd": "take", "item": "sword"}
+{"cmd": "drop", "item": "sword"}
 {"cmd": "equip", "item": "sword"}
 {"cmd": "use", "item": "healing herb"}
 {"cmd": "rest"}
@@ -236,6 +237,7 @@ Every message is JSON. Client → server messages have a `cmd` field:
 {"cmd": "move", "dir": "down"}           # descend (only once the floor is cleared)
 {"cmd": "attack", "target": "goblin"}
 {"cmd": "take", "item": "sword"}
+{"cmd": "drop", "item": "sword"}              # shed load — only works with a full pack (24 units)
 {"cmd": "equip", "item": "sword"}
 {"cmd": "use", "item": "healing herb"}
 {"cmd": "rest"}                            # +5 HP, rest areas only, 2 gold
@@ -280,6 +282,15 @@ its `type` (`weapon` / `armor` / `offhand`); selling, dropping, or posting a
 worn piece unequips it. Incoming damage is reduced by worn defense plus any
 active damage-reduction buff. Former attack armors are now real armor:
 Reinforced Leather (DR 2), Iron Plate (DR 3), Old Shield (offhand, DR 1).
+
+### Carry cap
+
+Packs hold **24 units**: worn gear and up to 5 arrows ride free. At the cap,
+`take` / `gather` / `buy` / `market_buy` refuse with a "pack full" error
+(gold is never charged on rejection); crafting, quest/commission rewards,
+and GM grants always go through. `drop` (single unit, optional `"amount"`)
+exists solely to shed load, so it only works with a full pack. Pack load
+rides in `stats` as `pack` / `pack_max`.
 
 ### Ammunition
 
@@ -625,7 +636,7 @@ Same as `flatten_obs()` in `ml_env.py` — a 175-dimensional vector covering:
 - Gear (2 dims): `ammo_best_norm` (best loaded arrow bonus), `defense_norm`
   (worn armor + offhand damage reduction)
 
-### Action space (48 actions — covers all game mechanics)
+### Action space (49 actions — covers all game mechanics)
 
 Agents only ever pick valid actions: the env exposes `valid_action_mask()`
 (1 per action whose prerequisites are visibly met — right room, enough gold,
@@ -637,7 +648,7 @@ verify still goes through and errors as a learning signal.
 |---|---|
 | Movement | `move_north`, `move_south`, `move_east`, `move_west`, `move_enter`, `move_up`, `move_down` |
 | Combat | `attack` |
-| Items | `take` |
+| Items | `take`, `drop` |
 | Survival | `rest`, `heal` |
 | Information | `look` |
 | Market | `buy`, `buy_arrows`, `sell`, `equip`, `use`, `craft`, `craft_charm`, `craft_iron`, `craft_arrows`, `craft_sharpening_oil`, `craft_fortitude_tonic`, `craft_greater_sharpening_oil`, `craft_ironhide_draught`, `craft_wardens_blade`, `craft_iron_arrow`, `craft_steel_arrow`, `craft_serpentbrand`, `market_post`, `market_buy`, `market_cancel`, `market_list`, `market_expand` |
@@ -674,7 +685,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
 ### Key design
 
 - **Architecture:** 3-layer MLP (input → 128 → 128) with 5 heads:
-  48 Q-values + gold + loot + market + quest predictors
+  49 Q-values + gold + loot + market + quest predictors
 - **Connection resilience:** `ml_env.step()` now catches `websockets.exceptions.ConnectionClosedError`, sets `done=True`, and returns a terminal observation so the farm/bot continues rather than crashing.
 - **Exploration:** epsilon-greedy with linear decay
 - **Learning:** online TD update with Huber loss + experience replay (10000 transitions)
@@ -696,7 +707,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
   dungeon floors, turn in for 30 XP + 15 gold + 10 score, repeatable.
 - **Persistence:** weights to `ml_weights.json` (shared with `ml_client.py`);
   best model to `ml_best.json`. Note: the quest and world expansions changed
-  OBS_SIZE (now 175) and N_ACTIONS (still 48), so older checkpoints need retraining.
+  OBS_SIZE (now 175) and N_ACTIONS (now 49), so older checkpoints need retraining.
 - **Training:** call `agent.train(total_steps=N)` from Python, or run
   `torch_agents\torch_batch_loop.bat` after starting the server
 

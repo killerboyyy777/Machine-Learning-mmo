@@ -353,6 +353,27 @@ DIRECTIONS = sorted(set(DIRECTIONS) | {srv.DUNGEON_ENTRANCE_DIR, "up", "down"})
 REST_COST = getattr(srv, "REST_COST", 2)
 HEAL_COST = getattr(srv, "HEAL_COST", 5)
 HEALER_NAME = "Sister Maren"
+
+# Carry-cap mirror (server authoritative; this only gates masks the same way
+# cmd_take/gather/buy/market_buy reject: worn gear and up to 5 arrows ride free).
+INVENTORY_CAP = getattr(srv, "INVENTORY_CAP", 24)
+AMMO_EXEMPT_COUNT = getattr(srv, "AMMO_EXEMPT_COUNT", 5)
+
+
+def pack_units(state):
+    """Pack load in units, mirroring the server's exemptions."""
+    inv = state.get("inv_names") or []
+    units = len(inv)
+    for slot in (state.get("equipped"), state.get("armor"), state.get("offhand")):
+        if slot and slot in inv:
+            units -= 1
+    arrows = sum(1 for n in inv if "arrow" in n.lower())
+    units -= min(arrows, AMMO_EXEMPT_COUNT)
+    return max(0, units)
+
+
+def pack_full(state):
+    return pack_units(state) >= INVENTORY_CAP
 ACTIONS = (
     [f"move_{d}" for d in DIRECTIONS]
     + ["attack", "take", "rest", "look",
@@ -375,7 +396,9 @@ ACTIONS = (
         # Endgame craft: Warden's Trophy + mats -> fixed-damage blade.
         "craft_wardens_blade",
         # Ammo variant crafts (feed the ammo family) + mid-tier blade.
-        "craft_iron_arrow", "craft_steel_arrow", "craft_serpentbrand"]
+        "craft_iron_arrow", "craft_steel_arrow", "craft_serpentbrand",
+        # Shedding load: only valid with a full pack (server rule).
+        "drop"]
 )
 N_ACTIONS = len(ACTIONS)
 
@@ -701,7 +724,7 @@ class TextMMOEnv:
 
         Cached per observation in _build_obs; mappings read the table instead
         of re-scanning inventory x open orders on every mask evaluation."""
-        return self._flip_table
+        return getattr(self, "_flip_table", [])
 
     def _sellable(self, row):
         """Keep rules shared by quicksell and speculate: never worn gear,
@@ -713,12 +736,12 @@ class TextMMOEnv:
         if row["iid"] == QUEST_RESULT_ID:
             return False
         if _HEALING_HERB_ID and row["iid"] == _HEALING_HERB_ID:
-            if sum(1 for r in self._flip_table if r["iid"] == _HEALING_HERB_ID) <= 1:
+            if sum(1 for r in self._holdings() if r["iid"] == _HEALING_HERB_ID) <= 1:
                 return False
         if "arrow" in row["name"].lower():
             equipped_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped") or "")
             if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
-                arrows = sum(1 for r in self._flip_table if "arrow" in r["name"].lower())
+                arrows = sum(1 for r in self._holdings() if "arrow" in r["name"].lower())
                 if arrows <= 5:
                     return False
         return True
@@ -783,7 +806,10 @@ class TextMMOEnv:
 
         Served from the per-observation cache refreshed by _build_obs
         (computed on demand before the first observation lands)."""
-        if self._mask_cache is None:
+        if getattr(self, "_mask_cache", None) is None:
+            for attr, default in (("_flip_table", []), ("_inv_type_cache", {})):
+                if not hasattr(self, attr):
+                    setattr(self, attr, default)
             self._refresh_holdings()
             self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
         return list(self._mask_cache)
@@ -815,14 +841,28 @@ class TextMMOEnv:
                     return {"cmd": "attack", "target": name}
             return None
         if action == "take":
-            # Loose gold piles first (fungible, no merchant trip needed),
-            # then the first ground item.
+            # Loose gold piles first (fungible, no merchant trip needed, and
+            # gold ignores the pack cap), then the first ground item.
             if s.get("room_gold", 0) > 0:
                 return {"cmd": "take", "item": "gold"}
+            if pack_full(s):
+                return None
             item = self._first_ground_item()
             if item:
                 return {"cmd": "take", "item": item}
             return None
+        if action == "drop":
+            # Shed the cheapest sellable unit -- but only with a full pack,
+            # mirroring the server rule (below the cap this always errors).
+            if not pack_full(s):
+                return None
+            cands = sorted(
+                ((r["value"], r["name"]) for r in self._holdings() if self._sellable(r)),
+                key=lambda t: t[0],
+            )
+            if not cands:
+                return None
+            return {"cmd": "drop", "item": cands[0][1]}
         if action == "look":
             return {"cmd": "look"}
         if action == "buy":
@@ -830,6 +870,8 @@ class TextMMOEnv:
             # herb when hurt or herb-less, arrows when the wielded bow runs
             # low. Merchant presence and gold still validated server-side.
             if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+                return None
+            if pack_full(s):
                 return None
             gold = s.get("gold", 0)
 
@@ -854,8 +896,10 @@ class TextMMOEnv:
             return None
         if action == "buy_arrows":
             # Stock ammunition for bows (Oak Longbow consumes 1 arrow per
-            # shot; attacking empty-handed errors). Ungated like "buy": the
-            # server validates merchant presence and gold.
+            # shot; attacking empty-handed errors). Pack-full buys bounce
+            # server-side; merchant presence and gold still validated there.
+            if pack_full(s):
+                return None
             return {"cmd": "buy", "item": "arrow"}
         if action == "sell":
             # Quicksell the lowest-margin holding: when nothing carries a
@@ -1019,6 +1063,10 @@ class TextMMOEnv:
         if action == "gather":
             # Only when the latest room snapshot shows nodes; the server
             # picks the first available one (a depleted pick just errors).
+            # A full pack bounces server-side without consuming the node,
+            # so skip it here too.
+            if pack_full(s):
+                return None
             if s.get("gatherables"):
                 return {"cmd": "gather"}
             return None
@@ -1077,6 +1125,9 @@ class TextMMOEnv:
             cands.sort(key=lambda c: (-c[0], -c[1]))
             return {"cmd": "market_post", "item": cands[0][2], "price": 0}
         if action == "market_buy":
+            # A full pack bounces server-side (gold never charged), so skip.
+            if pack_full(s):
+                return None
             return {"cmd": "market_buy"}
         if action == "market_cancel":
             # Cancel our own cheapest standing order if we have any.

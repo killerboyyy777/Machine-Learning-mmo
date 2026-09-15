@@ -663,6 +663,33 @@ def _tick_player_buffs(player):
 # Bonus damage per shot for the fancier variants (flat ladder).
 AMMO_BONUS = {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2}
 
+# Carry cap: pack load counts every inventory unit except worn gear and up
+# to AMMO_EXEMPT_COUNT arrows (quivers ride free). At the cap, take/gather/
+# buy/market_buy refuse with a "pack full" error (gold is never charged on
+# rejection); craft, quest/commission rewards, and GM grants always go
+# through. `drop` exists solely to shed load, so it only works at the cap.
+INVENTORY_CAP = 24
+AMMO_EXEMPT_COUNT = 5
+
+
+def _inventory_units(player):
+    """Pack load in units after exemptions."""
+    units = len(player.inventory)
+    for slot in (player.equipped, player.armor, player.offhand):
+        if slot and slot in player.inventory:
+            units -= 1
+    arrows = sum(1 for iid in player.inventory if iid in AMMO_BONUS)
+    units -= min(arrows, AMMO_EXEMPT_COUNT)
+    return max(0, units)
+
+
+def _pack_full(player):
+    return _inventory_units(player) >= INVENTORY_CAP
+
+
+def _pack_full_error():
+    return f"Your pack is full ({INVENTORY_CAP} units). Drop something first."
+
 
 def _player_defense(player):
     """Damage reduction from worn gear (armor + offhand slots)."""
@@ -979,6 +1006,8 @@ def stats_view(player):
         "max_hp": player.max_hp,
         "attack": player.attack,
         "gold": player.gold,
+        "pack": _inventory_units(player),
+        "pack_max": INVENTORY_CAP,
         "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
         "armor": ITEM_DEFS[player.armor]["name"] if player.armor else None,
         "offhand": ITEM_DEFS[player.offhand]["name"] if player.offhand else None,
@@ -1385,9 +1414,48 @@ async def cmd_take(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": f"No '{item_name}' here to take."})
         return
+    if _pack_full(player):
+        await send(player, {"type": "error", "text": _pack_full_error()})
+        return
     _remove_ground(player.room, iid)
     player.inventory.append(iid)
     await send(player, {"type": "message", "text": f"You take {ITEM_DEFS[iid]['name']}."})
+    await send(player, stats_view(player))
+    await sync_room(player.room)
+
+
+async def cmd_drop(player, msg):
+    """Shed load onto the ground — but only when the pack is actually full.
+    Drop exists solely to make room, so below the cap it refuses."""
+    if not _pack_full(player):
+        await send(player, {"type": "error", "text": f"Your pack isn't full — drop is only for making room ({_inventory_units(player)}/{INVENTORY_CAP} units)."})
+        return
+    iid = find_item_by_name(player.inventory, msg.get("item", ""))
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    try:
+        amount = int(msg.get("amount", 1))
+    except (TypeError, ValueError):
+        amount = 1
+    dropped = 0
+    for _ in range(max(1, amount)):
+        if iid not in player.inventory:
+            break
+        player.inventory.remove(iid)
+        dropped += 1
+    if dropped <= 0:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    if player.equipped == iid and iid not in player.inventory:
+        player.equipped = None
+    if player.armor == iid and iid not in player.inventory:
+        player.armor = None
+    if player.offhand == iid and iid not in player.inventory:
+        player.offhand = None
+    for _ in range(dropped):
+        _add_ground(player.room, iid)
+    await send(player, {"type": "message", "text": f"You drop {dropped}x {ITEM_DEFS[iid]['name']}."})
     await send(player, stats_view(player))
     await sync_room(player.room)
 
@@ -1405,6 +1473,9 @@ async def cmd_gather(player, msg):
         node = cands[0] if cands else None
     if not node:
         await send(player, {"type": "error", "text": "No available gathering node matches that here."})
+        return
+    if _pack_full(player):
+        await send(player, {"type": "error", "text": _pack_full_error()})
         return
     node["available"] = False
     node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
@@ -1521,6 +1592,9 @@ async def cmd_buy(player, msg):
     price = merchant["shop"][iid]
     if player.gold < price:
         await send(player, {"type": "error", "text": f"You need {price} gold."})
+        return
+    if _pack_full(player):
+        await send(player, {"type": "error", "text": _pack_full_error()})
         return
     player.gold -= price
     player.inventory.append(iid)
@@ -1748,7 +1822,7 @@ async def cmd_leaderboard(player, msg):
 
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
-        "Commands: login look move attack take gather equip use rest heal buy sell craft "
+        "Commands: login look move attack take gather drop equip use rest heal buy sell craft "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
         "market_post market_list market_cancel market_buy market_expand quest"
@@ -2229,6 +2303,9 @@ async def cmd_market_buy(player, msg):
     if player.gold < choice["price"]:
         await send(player, {"type": "error", "text": "You can't afford that."})
         return
+    if _pack_full(player):
+        await send(player, {"type": "error", "text": _pack_full_error()})
+        return
     price = choice["price"]
     tax = max(TAX_MINIMUM, round(price * TAX_RATE))
     seller_payout = price - tax
@@ -2574,6 +2651,7 @@ HANDLERS = {
     "attack": cmd_attack,
     "take": cmd_take,
     "gather": cmd_gather,
+    "drop": cmd_drop,
     "equip": cmd_equip,
     "use": cmd_use,
     "rest": cmd_rest,
@@ -2607,6 +2685,7 @@ SCORE_ARG_EXTRACTORS = {
     "move": lambda msg: str(msg.get("dir", "")).lower(),
     "take": lambda msg: str(msg.get("item", "")).lower(),
     "gather": lambda msg: str(msg.get("node") or msg.get("item", "")).lower(),
+    "drop": lambda msg: str(msg.get("item", "")).lower(),
     "craft": lambda msg: str(msg.get("recipe", "")).lower(),
     "buy": lambda msg: str(msg.get("item", "")).lower(),
     "sell": lambda msg: str(msg.get("item", "")).lower(),
@@ -2650,7 +2729,7 @@ def log_command(name, cmd, msg):
     if cmd == "login":
         name = name or str(msg.get("name", ""))
         detail = name
-    elif cmd in ("move", "attack", "take", "equip", "use", "buy", "sell", "craft"):
+    elif cmd in ("move", "attack", "take", "drop", "equip", "use", "buy", "sell", "craft"):
         detail = str(msg.get("dir") or msg.get("target") or msg.get("item") or msg.get("recipe") or "")
     elif cmd.startswith("market_"):
         detail = str(msg.get("item") or msg.get("id") or "")

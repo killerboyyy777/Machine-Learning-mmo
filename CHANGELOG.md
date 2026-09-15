@@ -3,6 +3,12 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Carry cap + gated `drop`: packs hold 24 units (worn gear and up to 5 arrows
+  exempt); `take` / `gather` / `buy` / `market_buy` refuse at the cap without
+  charging gold, while crafting, rewards, and GM grants bypass. `drop`
+  (single unit, optional amount) only works with a full pack. Pack load rides
+  in `stats`; agents get a matching `drop` action gated the same way in masks
+  (49 total).
 - Agent market disposition (quicksell vs hold vs speculate): the env now
   prices every holding at merchant value vs best-market-ask margin
   (`flip_margin()`; unlisted items nominal +1 for price discovery); `sell`

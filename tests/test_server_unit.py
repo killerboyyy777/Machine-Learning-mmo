@@ -125,6 +125,42 @@ async def main():
     del srv.npcs["ammo_dummy"]
     print("AMMO_FAMILY_OK")
 
+    # --- Carry cap: exemptions, exact enforcement, drop-to-make-room ---
+    assert srv.INVENTORY_CAP == 24 and srv.AMMO_EXEMPT_COUNT == 5
+    packer = srv.Player(ws=FakeWS(), id=10007, name="PackTester", logged_in=True)
+    packer.room = "market"
+    srv.add_member(packer)
+    packer.inventory = ["rat_tail"] * 18 + ["oak_longbow", "arrow", "arrow",
+                                            "arrow", "arrow", "arrow", "arrow"]
+    await srv.cmd_equip(packer, {"item": "oak longbow"})
+    # 18 tails + bow + 6 arrows - 1 worn bow - 5 exempt arrows = 19 units
+    assert srv._inventory_units(packer) == 19
+    assert not srv._pack_full(packer)
+    packer.inventory.extend(["rat_tail"] * 5)
+    assert srv._inventory_units(packer) == 24
+    assert srv._pack_full(packer)
+    packer.gold = 1000
+    await srv.cmd_buy(packer, {"item": "healing herb"})  # blocked, gold untouched
+    assert inbox[-1]["type"] == "error" and packer.gold == 1000
+    assert "healing_herb" not in packer.inventory
+    srv.room_items["market"].append("wolf_pelt")
+    gold_before = packer.gold
+    await srv.cmd_take(packer, {"item": "wolf pelt"})  # blocked at cap
+    assert inbox[-1]["type"] == "error" and "pack is full" in inbox[-1]["text"].lower()
+    assert "wolf_pelt" not in packer.inventory and packer.gold == gold_before
+    assert "wolf_pelt" in srv.room_items["market"]  # ground untouched
+    srv.room_items["market"].remove("wolf_pelt")
+    await srv.cmd_drop(packer, {"item": "rat tail", "amount": 3})
+    assert packer.inventory.count("rat_tail") == 20
+    assert srv.room_items["market"].count("rat_tail") == 3
+    assert not srv._pack_full(packer)
+    await srv.cmd_drop(packer, {"item": "rat tail"})  # below cap: refused
+    assert inbox[-1]["type"] == "error"
+    assert packer.inventory.count("rat_tail") == 20  # nothing dropped
+    for _ in range(3):
+        srv.room_items["market"].remove("rat_tail")
+    print("CARRY_CAP_OK")
+
     # --- Gatherer progression: harvest, cooldown, respawn, repeat ---
     gatherer = srv.Player(ws=FakeWS(), id=10004, name="GatherTester", logged_in=True)
     gatherer.room = "lumber_camp"
