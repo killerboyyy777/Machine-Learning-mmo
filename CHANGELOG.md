@@ -7,6 +7,9 @@ All notable changes to the text MMO engine are recorded here.
   (buyer only), not two. Dashboard shows accurate fill volume.
 - P0 fix: quest-giver kill penalty — killing registered quest givers now
   applies a -0.5 score penalty (XP/gold stay at zero). Never worth it.
+- P0 fix: commission collusion — repeated poster+filler pairs now earn
+  diminishing rewards (1/(1+prior_fills), floor 10%). Strangers always
+  get full value. Commission list shows your effective rate per poster.
 - Carry cap + gated `drop`: packs hold 24 units (worn gear and up to 5 arrows
   exempt); `take` / `gather` / `buy` / `market_buy` refuse at the cap without
   charging gold, while crafting, rewards, and GM grants bypass. `drop`

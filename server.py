@@ -465,6 +465,7 @@ def get_score_entry(name):
     entry.setdefault("crafts_tier", {})
     entry.setdefault("craft_profitability", {})
     entry.setdefault("kills_by_npc", {})  # lower npc name -> [kill timestamps] for commission verification
+    entry.setdefault("collab_fills", {})  # filler_name -> count (poster tracks how many times this filler collected)
     return entry
 
 
@@ -502,6 +503,19 @@ def verified_npc_kills(name, target, since_ts):
     if not frag:
         return 0
     return sum(1 for key, tss in log.items() if frag in key for ts in tss if ts >= since_ts)
+
+
+def collusion_multiplier(poster_name, filler_name):
+    """Scale commission rewards to penalise repeated poster+filler pairs.
+
+    First fill between two names pays full reward; each subsequent fill
+    between the same pair halves the effective gold and XP.  Strangers
+    always get full value, so legitimate cross-player bounties are
+    unaffected.  The floor is 10 % so that even serial collaborators
+    still get *something* (avoiding feel-bad zero-reward completions)."""
+    poster = get_score_entry(poster_name)
+    prev = poster.get("collab_fills", {}).get(filler_name, 0)
+    return max(0.1, 1.0 / (1 + prev))
 
 
 def compute_variety(entry):
@@ -1712,7 +1726,13 @@ async def cmd_commission_list(player, msg):
         await send(player, {"type": "message", "text": "No open commissions right now."})
         await send(player, stats_view(player))
         return
-    lines = [f"#{c['id']}: slay {c['required_kills']}x {c['target']} — reward {c['reward_gold']}g + {c['reward_xp']}xp (posted by {c['poster']})" for c in open_cmds]
+    lines = []
+    for c in open_cmds:
+        mult = collusion_multiplier(c["poster"], player.name)
+        eg = max(1, int(c["reward_gold"] * mult))
+        ex = max(0, int(c["reward_xp"] * mult))
+        tag = "" if mult >= 1.0 else f" (your rate: x{mult:.1f})"
+        lines.append(f"#{c['id']}: slay {c['required_kills']}x {c['target']} — reward {eg}g + {ex}xp{tag} (posted by {c['poster']})")
     await send(player, {"type": "message", "text": "Open commissions:\n" + "\n".join(lines)})
     await send(player, stats_view(player))
 
@@ -1745,19 +1765,24 @@ async def cmd_commission_fill(player, msg):
     if have < commission["required_kills"]:
         await send(player, {"type": "error", "text": f"Commission #{cid} needs {commission['required_kills']}x {commission['target']} slain since posting ({have} verified)."})
         return
+    # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
+    mult = collusion_multiplier(commission["poster"], player.name)
+    eff_gold = max(1, int(commission["reward_gold"] * mult))
+    eff_xp = max(0, int(commission["reward_xp"] * mult))
     commission["status"] = "filled"
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
+    # Track the collaboration on the poster's score entry.
+    poster_entry = get_score_entry(commission["poster"])
+    collab = poster_entry.setdefault("collab_fills", {})
+    collab[player.name] = collab.get(player.name, 0) + 1
     mark_scores_dirty()
-    # Single score award (previously the XP and gold amounts were each
-    # awarded as score, double-paying). XP goes through award_xp so
-    # level-ups and xp events fire; gold goes straight to the live
-    # character instead of the offline bank.
-    await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{commission['reward_gold']}g, +{commission['reward_xp']}xp."})
-    await award_points(player, commission["reward_xp"] + commission["reward_gold"], f"completed commission #{cid}")
-    await award_xp(player.name, commission["reward_xp"], f"completed commission #{cid}")
-    player.gold += commission.get("escrow", commission["reward_gold"])
-    commission["escrow"] = 0
+    collab_note = "" if mult >= 1.0 else f" (collab penalty x{mult:.1f})"
+    await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{eff_gold}g, +{eff_xp}xp.{collab_note}"})
+    await award_points(player, eff_xp + eff_gold, f"completed commission #{cid}")
+    await award_xp(player.name, eff_xp, f"completed commission #{cid}")
+    player.gold += min(commission.get("escrow", commission["reward_gold"]), eff_gold)
+    commission["escrow"] = max(0, commission.get("escrow", commission["reward_gold"]) - eff_gold)
     commission["status"] = "completed"
     mark_scores_dirty()
     await send(player, stats_view(player))
