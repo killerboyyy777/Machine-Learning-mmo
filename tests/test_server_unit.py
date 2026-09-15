@@ -104,13 +104,24 @@ async def main():
         g["alive"] = False
     assert srv.check_dungeon_clear(rid1)
     assert d.floors[1].cleared
-    assert "dungeon_blade_1" in d.floors[1].items
-    blade = "dungeon_blade_1"
+    assert not any(i.startswith("dungeon_blade_") for i in d.floors[1].items)
     g0 = d.floors[1].guards[0]
     srv.respawn_npc(g0)
     assert d.floors[1].cleared == False
-    assert blade not in d.floors[1].items
     print("DUNGEON_SEAL_OK")
+
+    # --- Warden boss on the last floor: fixed stats, trophy loot, no scaling ---
+    w = d.floor(srv.DUNGEON_MAX_FLOOR)
+    assert len(w.guards) == 1
+    boss = w.guards[0]
+    assert boss["name"] == "The Warden of the Deep"
+    assert boss["max_hp"] == srv.WARDEN_HP and boss["attack"] == srv.WARDEN_ATK
+    assert boss["loot"] == ["warden_trophy"]
+    assert boss["respawn_seconds"] == srv.WARDEN_RESPAWN_SECONDS
+    assert d.floor(srv.DUNGEON_MAX_FLOOR + 10) is w  # depth clamps at the cap
+    assert srv.ITEM_DEFS["wardens_blade"]["damage"] == 13
+    assert srv.RECIPES["wardens_blade"]["inputs"]["warden_trophy"] == 1
+    print("WARDEN_OK")
 
     # --- Market tax ---
     srv.tax_treasury = 0.0; srv.tax_collected_lifetime = 0.0
@@ -241,6 +252,55 @@ async def main():
     assert any("kicked" in m.get("text", "") for m in inbox if m.get("type") == "message")
     unplayer(kickme)
     print("GM_KICK_OK")
+
+    # commissions: fill needs verified kills since posting, no self-dealing
+    poster = mkplayer("Poster", 40005)
+    poster.gold = 100
+    before_cids = set(srv._commissions)
+    await srv.cmd_commission_post(poster, {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 5})
+    cid = max(set(srv._commissions) - before_cids)
+    assert poster.gold == 90  # escrow locked
+    filler = mkplayer("Filler", 40006, room="old_shop")
+    await srv.cmd_commission_fill(filler, {"commission_id": cid})
+    assert inbox[-1]["type"] == "error"  # no verified kills yet
+    await srv.cmd_commission_fill(poster, {"commission_id": cid})
+    assert inbox[-1]["type"] == "error"  # own bounty
+    for _ in range(40):
+        if not srv.npcs["rat"]["alive"]:
+            break
+        filler.hp = filler.max_hp
+        await srv.cmd_attack(filler, {"target": "rat"})
+    assert not srv.npcs["rat"]["alive"]
+    assert srv.verified_npc_kills("Filler", "rat", 0) >= 1
+    g0 = filler.gold
+    s0 = srv.get_score_entry("Filler")["score"]
+    await srv.cmd_commission_fill(filler, {"commission_id": cid})
+    assert srv._commissions[cid]["status"] == "completed"
+    assert filler.gold - g0 == 10  # full escrow paid out
+    assert srv.get_score_entry("Filler")["score"] > s0
+    unplayer(poster)
+    unplayer(filler)
+    print("COMMISSION_VERIFY_OK")
+
+    # death penalty scales with gold removed (flat floor when broke)
+    broke = mkplayer("Broke", 40007)
+    srv.get_score_entry("Broke")["score"] = 100.0
+    broke.gold = 0
+    await srv.respawn_player(broke)
+    assert srv.get_score_entry("Broke")["score"] == 95.0
+    assert broke.gold == 0
+    rich = mkplayer("Rich", 40008, room="market")
+    srv.get_score_entry("Rich")["score"] = 1000.0
+    rich.gold = 1000
+    await srv.respawn_player(rich)
+    # 400 dropped as floor pile + 100 vanished -> penalty 5 + 0.1*500 = 55
+    assert srv.get_score_entry("Rich")["score"] == 945.0
+    assert rich.gold == 500
+    assert srv.room_gold.get("market", 0) >= 400
+    assert rich.room == "town_square"
+    unplayer(broke)
+    unplayer(rich)
+    print("DEATH_SCALE_OK")
 
     srv.send = orig_send
     print("ALL_OK")

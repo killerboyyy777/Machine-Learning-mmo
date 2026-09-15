@@ -188,6 +188,18 @@
       "respawn_seconds": 5,
       "shop": {"healing_herb": 5, "rusty_sword": 15, "old_shield": 8, "arrow": 2}
     },
+    "healer": {
+      "name": "Sister Maren",
+      "room": "healing_spring",
+      "hp": 40,
+      "max_hp": 40,
+      "attack": 0,
+      "hostile": false,
+      "behavior": "idle",
+      "loot": [],
+      "gold": 0,
+      "respawn_seconds": 30
+    },
     "rat": {
       "name": "Giant Rat",
       "room": "old_shop",
@@ -435,6 +447,8 @@
     "reinforced_leather": {"name": "Reinforced Leather Armor", "type": "weapon", "damage": 6},
     "oak_longbow": {"name": "Oak Longbow", "type": "weapon", "damage": 5, "ammo": "arrow"},
     "iron_plate": {"name": "Iron Plate Armor", "type": "weapon", "damage": 8},
+    "warden_trophy": {"name": "Warden's Trophy", "type": "junk", "value": 30},
+    "wardens_blade": {"name": "Warden's Blade", "type": "weapon", "damage": 13, "value": 60},
     "rat_tail": {"name": "Rat Tail", "type": "junk", "value": 1},
     "wolf_pelt": {"name": "Wolf Pelt", "type": "junk", "value": 4},
     "treant_bark": {"name": "Treant Bark", "type": "junk", "value": 10},
@@ -547,6 +561,12 @@
       "result": "ironhide_draught",
       "tier": 3,
       "category": "buff"
+    },
+    "wardens_blade": {
+      "inputs": {"warden_trophy": 1, "iron_ore": 2, "serpent_scale": 1},
+      "result": "wardens_blade",
+      "tier": 4,
+      "category": "equipment"
     }
   },
   "room_items": {

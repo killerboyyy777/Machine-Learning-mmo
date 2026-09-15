@@ -32,6 +32,9 @@ MIN_HISTORY_FOR_VARIETY = 5
 MIN_VARIETY = 0.2
 DIFFICULTY_K = 50.0
 DEATH_PENALTY = 5.0
+DEATH_GOLD_DROP_PCT = 40   # of carried gold drops as a floor pile on death
+DEATH_GOLD_LOST_PCT = 10   # of carried gold vanishes permanently on death
+DEATH_SCORE_PER_GOLD_LOST = 0.1  # extra score penalty per gold removed on death (floor: DEATH_PENALTY)
 ALLY_ATTACK_BONUS_PER_PLAYER = 1
 ALLY_ATTACK_BONUS_CAP = 3
 TEAMWORK_BONUS_PER_EXTRA_CONTRIBUTOR = 0.2
@@ -62,10 +65,24 @@ DUNGEON_ATK_GROWTH = 0.5
 # (plus per-floor ITEM_DEFS registrations) without limit. At the cap the
 # stairs simply crumble; guards already outscale players well before it.
 DUNGEON_MAX_FLOOR = 50
+# The last floor is home to a fixed boss instead of formula guards. Its
+# stats are deliberately off-formula (the ×1.35/×1.5 curve would be absurd
+# at floor 50) and it respawns slowly so its trophy stays prestigious.
+WARDEN_HP = 350
+WARDEN_ATK = 28
+WARDEN_GOLD = 150
+WARDEN_RESPAWN_SECONDS = 600
 PARTY_MAX_MEMBERS = 4
 
 TAX_RATE = 0.10
 TAX_MINIMUM = 1
+
+# Player-market stall slots: each seller may hold this many open orders.
+# Extra slots are bought with `market_expand` for gold (fee -> treasury):
+# the n-th extra slot costs MARKET_SLOT_PRICE_BASE * 2**(n-1), so expanding
+# is cheap early and a real late-game gold sink.
+MARKET_ORDER_SLOTS_BASE = 3
+MARKET_SLOT_PRICE_BASE = 50
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -103,6 +120,10 @@ ROOMS[DUNGEON_ENTRANCE_ROOM].setdefault("exits", {}).setdefault(DUNGEON_ENTRANCE
 
 # room_id -> list of item ids currently lying on the ground (static rooms)
 room_items = {rid: list(WORLD.get("room_items", {}).get(rid, [])) for rid in ROOMS}
+
+# Loose gold lying on the ground (death drops), room_id -> amount. Dungeon
+# rooms default to 0 via .get and vanish with their instance if destroyed.
+room_gold = {rid: 0 for rid in ROOMS}
 
 # Gathering nodes have their own respawn timers and do not share ground loot
 # state. This keeps safe harvesting independent from NPC respawns. They tick
@@ -155,17 +176,34 @@ class Dungeon:
     def _build_floor(self, floor_no):
         f = DungeonFloor()
         n = floor_no
+        room_id = self.room_id(n)
+        if n >= DUNGEON_MAX_FLOOR:
+            # The last floor belongs to the Warden: a single fixed boss whose
+            # trophy is crafted into the Warden's Blade (fixed damage, never
+            # scaling). No formula guards and no scaling relics down here.
+            f.guards.append({
+                "id": f"dg_{self.id}_{n}_warden",
+                "name": "The Warden of the Deep",
+                "room": room_id,
+                "hp": WARDEN_HP, "max_hp": WARDEN_HP, "attack": WARDEN_ATK,
+                "hostile": True, "behavior": "idle",
+                "loot": ["warden_trophy"],
+                "gold": WARDEN_GOLD,
+                "respawn_seconds": WARDEN_RESPAWN_SECONDS,
+                "alive": True, "respawn_at": None, "contributors": {},
+                "dungeon_id": self.id,
+            })
+            return f
         hp = round(DUNGEON_BASE_HP * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
         atk = round(DUNGEON_BASE_ATK * (1 + DUNGEON_ATK_GROWTH) ** (n - 1))
         count = min(1 + (n - 1) // 2, 4)          # more guards as you descend
         gold = round(3 * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
         shard = f"dungeon_shard_{n}"
-        blade = f"dungeon_blade_{n}"
-        # Unique items are registered on demand so loot scales with depth
-        # without pre-generating thousands of floors at startup.
+        # Relic items are registered on demand so loot scales with depth
+        # without pre-generating thousands of floors at startup. (There is no
+        # scaling blade anymore: the Warden's Blade is crafted from the
+        # floor-50 Warden's trophy at a fixed damage.)
         ITEM_DEFS.setdefault(shard, {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 2 + n * 4})
-        ITEM_DEFS.setdefault(blade, {"name": f"Dungeon Blade +{2 + n * 2}", "type": "weapon", "damage": 2 + n * 2})
-        room_id = self.room_id(n)
         for k in range(count):
             f.guards.append({
                 "id": f"dg_{self.id}_{n}_{k}",
@@ -409,6 +447,7 @@ def get_score_entry(name):
     entry.setdefault("gold_bank", 0)         # coin earned while offline
     entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
     entry.setdefault("tax_paid", 0.0)        # market tax they bore (seller side)
+    entry.setdefault("market_slots", MARKET_ORDER_SLOTS_BASE)  # open sell-order cap (expandable)
     entry.setdefault("dungeon_floors_cleared", 0)
     entry.setdefault("quest_guard_active", False)
     entry.setdefault("guard_charm_crafted", False)
@@ -416,8 +455,13 @@ def get_score_entry(name):
     entry.setdefault("quest_delver_baseline", 0)
     entry.setdefault("quest_guard_completions", 0)
     entry.setdefault("quest_delver_completions", 0)
+    entry.setdefault("quest_remedy_active", False)
+    entry.setdefault("quest_tonic_active", False)
+    entry.setdefault("quest_remedy_completions", 0)
+    entry.setdefault("quest_tonic_completions", 0)
     entry.setdefault("crafts_tier", {})
     entry.setdefault("craft_profitability", {})
+    entry.setdefault("kills_by_npc", {})  # lower npc name -> [kill timestamps] for commission verification
     return entry
 
 
@@ -428,6 +472,33 @@ def record_action(name, signature):
     hist.append(list(signature))
     if len(hist) > ACTION_WINDOW:
         del hist[0]
+
+
+# Cap per NPC-name kill timestamp log (commission verification window).
+COMMISSION_KILL_LOG_CAP = 2000
+
+
+def record_npc_kill(name, npc_name):
+    """Log one killing blow for commission verification."""
+    entry = get_score_entry(name)
+    log = entry.setdefault("kills_by_npc", {})
+    key = (npc_name or "").lower()
+    tss = log.setdefault(key, [])
+    tss.append(time.time())
+    if len(tss) > COMMISSION_KILL_LOG_CAP:
+        del tss[:-COMMISSION_KILL_LOG_CAP]
+    mark_scores_dirty()
+
+
+def verified_npc_kills(name, target, since_ts):
+    """Kills of NPCs matching `target` (same substring rules as attacking)
+    credited to `name` at or after `since_ts`."""
+    entry = get_score_entry(name)
+    log = entry.get("kills_by_npc", {})
+    frag = (target or "").lower()
+    if not frag:
+        return 0
+    return sum(1 for key, tss in log.items() if frag in key for ts in tss if ts >= since_ts)
 
 
 def compute_variety(entry):
@@ -469,15 +540,18 @@ async def award_points(player, base_points, reason):
     return await award_points_to_name(player.name, base_points, reason)
 
 
-async def apply_death_penalty(player):
+async def apply_death_penalty(player, gold_lost=0):
+    """Score penalty scales with wealth lost: a flat floor for broke
+    characters, plus per gold removed (dropped pile + vanished)."""
     entry = get_score_entry(player.name)
     entry["deaths"] += 1
-    entry["score"] = max(0.0, entry["score"] - DEATH_PENALTY)
+    penalty = DEATH_PENALTY + DEATH_SCORE_PER_GOLD_LOST * max(0, gold_lost)
+    entry["score"] = max(0.0, entry["score"] - penalty)
     record_score_point(player.name, entry["score"])
     mark_scores_dirty()
     await send(player, {
         "type": "score",
-        "gained": -DEATH_PENALTY,
+        "gained": -round(penalty, 2),
         "total": round(entry["score"], 2),
         "variety": None,
         "reason": "died",
@@ -655,6 +729,12 @@ def item_suggested_price(iid):
     return ITEM_DEFS.get(iid, {}).get("value", 1) or 1
 
 
+def market_slot_price(current_slots):
+    """Gold cost of the next stall slot: doubling from the base price."""
+    extra = max(0, current_slots - MARKET_ORDER_SLOTS_BASE)
+    return MARKET_SLOT_PRICE_BASE * (2 ** extra)
+
+
 def _market_order_dict(order):
     iid = order["item"]
     return {
@@ -816,6 +896,7 @@ def dungeon_room_view(room_id, dungeon):
         "exits": exits,
         "npcs": guards,
         "items": items,
+        "gold": room_gold.get(room_id, 0),
         "players": [p.name for p in players_in_room(room_id)],
         "is_dungeon": True,
         "dungeon_floor": floor_no,
@@ -836,6 +917,7 @@ def room_view(room_id):
         "exits": dict(room.get("exits", {})),
         "npcs": [n["name"] for n in npcs_in_room(room_id)],
         "items": [ITEM_DEFS[i]["name"] for i in room_items[room_id]],
+        "gold": room_gold.get(room_id, 0),
         "players": [p.name for p in players_in_room(room_id)],
         "is_dungeon": False,
         "dungeon_floor": 0,
@@ -859,7 +941,6 @@ def check_dungeon_clear(room_id):
     if any(g["alive"] for g in f.guards):
         return False
     f.cleared = True
-    f.items.append(f"dungeon_blade_{floor_no}")
     return True
 
 
@@ -883,10 +964,15 @@ def stats_view(player):
         "party_size": len(party.member_ids) if party else 1,
         "inv": [ITEM_DEFS[i]["name"] for i in player.inventory][:20],
         "market_orders": len(market_orders),
+        "market_slots": entry.get("market_slots", MARKET_ORDER_SLOTS_BASE) if entry else MARKET_ORDER_SLOTS_BASE,
         "quest_guard_active": bool(entry.get("quest_guard_active", False)) if entry else False,
         "guard_charm_crafted": bool(entry.get("guard_charm_crafted", False)) if entry else False,
         "quest_delver_active": bool(entry.get("quest_delver_active", False)) if entry else False,
         "quest_delver_ready": bool(quest_delver_ready(entry)) if entry else False,
+        "quest_remedy_active": bool(entry.get("quest_remedy_active", False)) if entry else False,
+        "quest_remedy_ready": bool(entry.get("quest_remedy_active", False) and _quest_has_inputs(player, QUESTS["remedy"]["inputs"])) if entry else False,
+        "quest_tonic_active": bool(entry.get("quest_tonic_active", False)) if entry else False,
+        "quest_tonic_ready": bool(entry.get("quest_tonic_active", False) and _quest_has_inputs(player, QUESTS["tonic"]["inputs"])) if entry else False,
         "buffs": {
             category: {"amount": value["amount"], "remaining": value["remaining"]}
             for category, value in player.active_buffs.items()
@@ -902,14 +988,27 @@ async def sync_room(room_id):
 
 
 async def respawn_player(player):
-    await apply_death_penalty(player)
+    # Death drop: 40% of carried gold stays as a floor pile where you died,
+    # 10% vanishes permanently, the rest stays with you.
+    dropped = (player.gold * DEATH_GOLD_DROP_PCT) // 100
+    lost = (player.gold * DEATH_GOLD_LOST_PCT) // 100
+    player.gold -= (dropped + lost)
+    await apply_death_penalty(player, dropped + lost)
+    death_room = player.room
+    if dropped > 0:
+        room_gold[death_room] = room_gold.get(death_room, 0) + dropped
     player.hp = player.max_hp
     remove_member(player)
     player.room = START_ROOM
     add_member(player)
-    await send(player, {"type": "death", "text": "You died and wake up back in Town Square."})
+    text = "You died and wake up back in Town Square."
+    if dropped > 0 or lost > 0:
+        text += f" You dropped {dropped} gold where you fell and lost {lost} gold outright."
+    await send(player, {"type": "death", "text": text})
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
+    if death_room != player.room:
+        await sync_room(death_room)
 
 
 def respawn_npc(npc):
@@ -925,9 +1024,6 @@ def respawn_npc(npc):
         f = d.floors.get(floor_no)
         if f and f.cleared:
             f.cleared = False
-            blade = f"dungeon_blade_{floor_no}"
-            while blade in f.items:
-                f.items.remove(blade)
 
 
 async def credit_gold(name, amount):
@@ -1185,6 +1281,7 @@ async def cmd_attack(player, msg):
             elif cname == player.name:
                 reason = f"defeated {npc['name']}"
                 get_score_entry(cname)["kills"] += 1
+                record_npc_kill(cname, npc["name"])
                 if player.hp <= player.max_hp * 0.3:
                     pts *= 1.5
                     xp *= 1.5
@@ -1234,6 +1331,28 @@ async def cmd_attack(player, msg):
 
 async def cmd_take(player, msg):
     item_name = msg.get("item", "")
+    # Loose gold piles (death drops) are picked up by name, optionally with
+    # an amount: {"cmd": "take", "item": "gold"} takes all,
+    # {"cmd": "take", "item": "gold", "amount": 5} takes up to 5.
+    if str(item_name or "").strip().lower() in ("gold", "gold pile", "coins"):
+        pile = room_gold.get(player.room, 0)
+        if pile <= 0:
+            await send(player, {"type": "error", "text": "No loose gold here to take."})
+            return
+        try:
+            want = int(msg.get("amount", pile))
+        except (TypeError, ValueError):
+            want = pile
+        take = max(0, min(pile, want))
+        if take <= 0:
+            await send(player, {"type": "error", "text": "No loose gold here to take."})
+            return
+        room_gold[player.room] = pile - take
+        player.gold += take
+        await send(player, {"type": "message", "text": f"You pick up {take} gold."})
+        await send(player, stats_view(player))
+        await sync_room(player.room)
+        return
     iid = find_item_by_name(_ground_items(player.room), item_name)
     if not iid:
         await send(player, {"type": "error", "text": f"No '{item_name}' here to take."})
@@ -1332,6 +1451,20 @@ async def cmd_use(player, msg):
 async def cmd_rest(player, msg):
     player.hp = min(player.max_hp, player.hp + 5)
     await send(player, {"type": "message", "text": "You rest and recover 5 HP."})
+    await send(player, stats_view(player))
+
+
+async def cmd_heal(player, msg):
+    """Full heal, but only on the same tile as Sister Maren the healer."""
+    healer = find_npc_in_room(player.room, "healer")
+    if not healer:
+        await send(player, {"type": "error", "text": "No healer here. Sister Maren tends the wounded at the Healing Spring."})
+        return
+    if player.hp >= player.max_hp:
+        await send(player, {"type": "message", "text": "Sister Maren smiles: you are already whole."})
+        return
+    player.hp = player.max_hp
+    await send(player, {"type": "message", "text": "Sister Maren lays hands on you. You feel fully healed."})
     await send(player, stats_view(player))
 
 
@@ -1489,6 +1622,12 @@ async def cmd_commission_fill(player, msg):
     if commission["poster"] == player.name:
         await send(player, {"type": "error", "text": f"You cannot fill your own commission #{cid}."})
         return
+    # No free payouts: the filler must have slain the required kills of the
+    # target since this commission was posted (verified from kill timestamps).
+    have = verified_npc_kills(player.name, commission["target"], commission["created_ts"])
+    if have < commission["required_kills"]:
+        await send(player, {"type": "error", "text": f"Commission #{cid} needs {commission['required_kills']}x {commission['target']} slain since posting ({have} verified)."})
+        return
     commission["status"] = "filled"
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
@@ -1592,10 +1731,10 @@ async def cmd_leaderboard(player, msg):
 
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
-        "Commands: login look move say attack take gather drop equip use rest buy sell craft "
+        "Commands: login look move say attack take gather drop equip use rest heal buy sell craft "
         "commission_post commission_list commission_fill commission_cancel "
         "give inventory stats who leaderboard help party_invite party_accept party_leave party_info "
-        "market_post market_list market_cancel market_buy quest quest_accept quest_turn_in"
+        "market_post market_list market_cancel market_buy market_expand quest quest_accept quest_turn_in"
     )})
 
 # ---------------------------------------------------------------------------
@@ -1612,6 +1751,16 @@ QUEST_DELVER_XP = 30
 QUEST_DELVER_GOLD = 15
 QUEST_DELVER_POINTS = 10
 QUEST_DELVER_FLOORS = 1
+# Sister Maren's remedy quest: gather herbs for the healing spring.
+QUEST_REMEDY_INPUTS = {"healing_herb": 3}
+QUEST_REMEDY_XP = 20
+QUEST_REMEDY_GOLD = 10
+QUEST_REMEDY_POINTS = 8
+# Sister Maren's tonic quest: brew a Fortitude Tonic (iron + berries).
+QUEST_TONIC_INPUTS = {"fortitude_tonic": 1}
+QUEST_TONIC_XP = 40
+QUEST_TONIC_GOLD = 20
+QUEST_TONIC_POINTS = 12
 
 quest_turnin_times = []
 
@@ -1623,6 +1772,11 @@ QUEST_GIVERS = {
         "name": "Town Guard",
         "room": "town_square",
         "description": "A stalwart guard who needs help protecting the town.",
+    },
+    "healer": {
+        "name": "Sister Maren",
+        "room": "healing_spring",
+        "description": "A gentle healer who tends the wounded and always needs remedies.",
     },
     # Easy to add new quest givers:
     # "old_wizard": {
@@ -1680,6 +1834,32 @@ QUESTS = {
         "reward_points": QUEST_DELVER_POINTS,
         "repeatable": True,
     },
+    "remedy": {
+        "giver_npc": "healer",
+        "giver_name": QUEST_GIVERS["healer"]["name"],
+        "room": QUEST_GIVERS["healer"]["room"],
+        "inputs": dict(QUEST_REMEDY_INPUTS),
+        "result": None,
+        "result_name": None,
+        "objective": "gather",
+        "reward_xp": QUEST_REMEDY_XP,
+        "reward_gold": QUEST_REMEDY_GOLD,
+        "reward_points": QUEST_REMEDY_POINTS,
+        "repeatable": True,
+    },
+    "tonic": {
+        "giver_npc": "healer",
+        "giver_name": QUEST_GIVERS["healer"]["name"],
+        "room": QUEST_GIVERS["healer"]["room"],
+        "inputs": dict(QUEST_TONIC_INPUTS),
+        "result": None,
+        "result_name": None,
+        "objective": "craft",
+        "reward_xp": QUEST_TONIC_XP,
+        "reward_gold": QUEST_TONIC_GOLD,
+        "reward_points": QUEST_TONIC_POINTS,
+        "repeatable": True,
+    },
 }
 
 
@@ -1687,6 +1867,11 @@ def quest_delver_ready(entry):
     """True when an accepted Depth Delver quest has enough new clears."""
     return (entry.get("dungeon_floors_cleared", 0)
             - entry.get("quest_delver_baseline", 0) >= QUEST_DELVER_FLOORS)
+
+
+def _quest_has_inputs(player, inputs):
+    """True when the player's inventory covers every required input."""
+    return all(player.inventory.count(iid) >= qty for iid, qty in (inputs or {}).items())
 
 
 async def cmd_quest(player, msg):
@@ -1725,10 +1910,18 @@ async def cmd_quest(player, msg):
             await send(player, {"type": "message", "text": "Town Guard: Ah, adventurer! We need protectors for our walls. "
                   "Bring me an Ancient Guardian Charm, crafted from Treant Bark, Troll Hide, and Ectoplasm. "
                   f"Return it to me for a reward of {QUEST_GUARD_XP} XP and {QUEST_GUARD_GOLD} gold. This quest can be repeated."})
-        else:
+        elif qid == "delver":
             await send(player, {"type": "message", "text": "Town Guard: The deeps stir below the graveyard. "
                   f"Clear {QUEST_DELVER_FLOORS} dungeon floor{'s' if QUEST_DELVER_FLOORS != 1 else ''} in your party's instance, "
                   f"then report back for {QUEST_DELVER_XP} XP and {QUEST_DELVER_GOLD} gold. Repeatable."})
+        elif qid == "remedy":
+            await send(player, {"type": "message", "text": "Sister Maren: The spring's remedies run low, friend. "
+                  "Bring me 3 Healing Herbs from the wilds and I will make it worth your while: "
+                  f"{QUEST_REMEDY_XP} XP and {QUEST_REMEDY_GOLD} gold. Come back any time."})
+        else:
+            await send(player, {"type": "message", "text": "Sister Maren: The wounded need something stronger than herbs. "
+                  "Brew a Fortitude Tonic (Iron Ore and Mountain Berry) and bring it to me for "
+                  f"{QUEST_TONIC_XP} XP and {QUEST_TONIC_GOLD} gold. I will always have work for you."})
         await send(player, stats_view(player))
     elif action == "turn_in":
         if not _quest_active(entry, qid):
@@ -1739,11 +1932,18 @@ async def cmd_quest(player, msg):
                 await send(player, {"type": "message", "text": "You haven't crafted the Ancient Guardian Charm yet. "
                       "Gather 1 Treant Bark, 1 Troll Hide, and 1 Ectoplasm, then craft it."})
                 return
-        else:
+        elif qid == "delver":
             if not quest_delver_ready(entry):
                 have = entry.get("dungeon_floors_cleared", 0) - entry.get("quest_delver_baseline", 0)
                 await send(player, {"type": "message", "text": f"The deeps are not yet quiet ({have}/{QUEST_DELVER_FLOORS} floors cleared). "
                       "Descend through the graveyard archway and clear a floor."})
+                return
+        else:
+            need = quest.get("inputs", {})
+            missing = [f"{qty}x {ITEM_DEFS[iid]['name']}" for iid, qty in need.items()
+                       if player.inventory.count(iid) < qty]
+            if missing:
+                await send(player, {"type": "message", "text": f"Sister Maren still needs: {', '.join(missing)}."})
                 return
         if not _giver_present():
             await send(player, {"type": "error", "text": f"The {quest['giver_name']} isn't here. Return to {ROOMS[quest['room']]['name']} to turn in."})
@@ -1753,9 +1953,14 @@ async def cmd_quest(player, msg):
                 player.inventory.remove(QUEST_CHARM_RESULT)
             entry["guard_charm_crafted"] = False
             entry["quest_guard_active"] = False
-        else:
+        elif qid == "delver":
             entry["quest_delver_active"] = False
             entry["quest_delver_baseline"] = entry.get("dungeon_floors_cleared", 0)
+        else:
+            for iid, qty in quest.get("inputs", {}).items():
+                for _ in range(qty):
+                    player.inventory.remove(iid)
+            _set_quest_active(entry, qid, False)
         _record_turnin()
         await send(player, {"type": "message", "text": f"{quest['giver_name']}: Excellent work! Here's your reward: "
               f"{quest['reward_xp']} XP and {quest['reward_gold']} gold. "
@@ -1769,15 +1974,22 @@ async def cmd_quest(player, msg):
 
 
 def qid_key(entry, qid, kind):
-    if qid == "guard_charm":
-        return {"completions": "quest_guard_completions"}[kind]
-    return {"completions": "quest_delver_completions"}[kind]
+    return {"completions": {
+        "guard_charm": "quest_guard_completions",
+        "delver": "quest_delver_completions",
+        "remedy": "quest_remedy_completions",
+        "tonic": "quest_tonic_completions",
+    }[qid]}[kind]
 
 
 def _quest_active(entry, qid):
     if qid == "guard_charm":
         return bool(entry.get("quest_guard_active"))
-    return bool(entry.get("quest_delver_active"))
+    if qid == "delver":
+        return bool(entry.get("quest_delver_active"))
+    if qid == "remedy":
+        return bool(entry.get("quest_remedy_active"))
+    return bool(entry.get("quest_tonic_active"))
 
 
 def _set_quest_active(entry, qid, active):
@@ -1785,10 +1997,14 @@ def _set_quest_active(entry, qid, active):
         entry["quest_guard_active"] = bool(active)
         if active:
             entry["guard_charm_crafted"] = False
-    else:
+    elif qid == "delver":
         entry["quest_delver_active"] = bool(active)
         if active:
             entry["quest_delver_baseline"] = entry.get("dungeon_floors_cleared", 0)
+    elif qid == "remedy":
+        entry["quest_remedy_active"] = bool(active)
+    else:
+        entry["quest_tonic_active"] = bool(active)
     mark_scores_dirty()
 
 
@@ -1888,6 +2104,13 @@ async def cmd_market_post(player, msg):
         price = 0
     if price <= 0:
         price = item_suggested_price(iid)
+    entry = get_score_entry(player.name)
+    slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
+    own_open = sum(1 for o in market_orders if o["seller"] == player.name)
+    if own_open >= slots:
+        nxt = market_slot_price(slots)
+        await send(player, {"type": "error", "text": f"Market stall full ({own_open}/{slots}). Use market_expand (next slot {nxt} gold) or cancel an order."})
+        return
     player.inventory.remove(iid)
     if player.equipped == iid:
         player.equipped = None
@@ -1913,6 +2136,23 @@ async def cmd_market_cancel(player, msg):
             await send(player, stats_view(player))
             return
     await send(player, {"type": "error", "text": f"No order #{oid} of yours."})
+
+
+async def cmd_market_expand(player, msg):
+    """Buy +1 market stall slot. Fee goes to the GM treasury (gold sink)."""
+    global tax_treasury
+    entry = get_score_entry(player.name)
+    slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
+    price = market_slot_price(slots)
+    if player.gold < price:
+        await send(player, {"type": "error", "text": f"Next market slot costs {price} gold (you have {player.gold})."})
+        return
+    player.gold -= price
+    tax_treasury += price
+    entry["market_slots"] = slots + 1
+    mark_scores_dirty()
+    await send(player, {"type": "message", "text": f"Market stall expanded to {slots + 1} slots for {price} gold (next: {market_slot_price(slots + 1)} gold)."})
+    await send(player, stats_view(player))
 
 
 async def cmd_market_buy(player, msg):
@@ -2291,6 +2531,7 @@ HANDLERS = {
     "equip": cmd_equip,
     "use": cmd_use,
     "rest": cmd_rest,
+    "heal": cmd_heal,
     "buy": cmd_buy,
     "sell": cmd_sell,
     "craft": cmd_craft,
@@ -2308,6 +2549,7 @@ HANDLERS = {
     "market_post": cmd_market_post,
     "market_cancel": cmd_market_cancel,
     "market_buy": cmd_market_buy,
+    "market_expand": cmd_market_expand,
     "quest": cmd_quest,
     "quest_accept": cmd_quest,
     "quest_turn_in": cmd_quest,
@@ -2327,6 +2569,7 @@ SCORE_ARG_EXTRACTORS = {
     "sell": lambda msg: str(msg.get("item", "")).lower(),
     "give": lambda msg: str(msg.get("item") or f"gold:{msg.get('gold', '')}").lower(),
     "rest": lambda msg: "rest",
+    "heal": lambda msg: "heal",
     "market_post": lambda msg: str(msg.get("item", "")).lower(),
     "market_buy": lambda msg: str(msg.get("id", "")).lower(),
     "quest": lambda msg: str(msg.get("action", "")).lower(),
@@ -2410,15 +2653,13 @@ def _quest_snapshot():
     now = time.time()
     while quest_turnin_times and quest_turnin_times[0] < now - 60:
         del quest_turnin_times[0]
-    active = {"guard_charm": 0, "delver": 0}
-    completions = {"guard_charm": 0, "delver": 0}
+    active = {qid: 0 for qid in QUESTS}
+    completions = {qid: 0 for qid in QUESTS}
     for e in SCORES.values():
-        if e.get("quest_guard_active"):
-            active["guard_charm"] += 1
-        if e.get("quest_delver_active"):
-            active["delver"] += 1
-        completions["guard_charm"] += e.get("quest_guard_completions", 0)
-        completions["delver"] += e.get("quest_delver_completions", 0)
+        for qid in QUESTS:
+            if _quest_active(e, qid):
+                active[qid] += 1
+            completions[qid] += e.get(qid_key(e, qid, "completions"), 0)
     return {
         "catalog": [
             {**{"id": qid}, **{k: v for k, v in q.items() if k != "inputs"}, "inputs": q.get("inputs", {})}
@@ -2439,6 +2680,7 @@ def world_snapshot():
             "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
             "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
             "items": [ITEM_DEFS[i]["name"] for i in room_items.get(rid, [])],
+            "gold": room_gold.get(rid, 0),
         })
     online_players = []
     for p in players.values():

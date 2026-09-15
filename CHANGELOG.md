@@ -3,6 +3,37 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Commission fills now verify work: kills are logged per NPC name with
+  timestamps (`kills_by_npc` in the score entry), and filling requires the
+  filler's kills of the target since the bounty was posted. Posting 0g +
+  huge XP for an alt to collect with zero kills is rejected; same-name
+  self-fill was already blocked.
+- Death penalty scales with wealth lost: flat 5.0 score floor plus 0.1 per
+  gold removed (floor pile + vanished), so dying broke stings the same as
+  before while dying rich costs real score (e.g. 1000g carried -> -55).
+- Dungeon endgame rework: the scaling per-floor `Dungeon Blade` is gone.
+  Floor 50 (the depth cap) is held by **The Warden of the Deep**, a fixed
+  boss (350 HP / 28 attack, 10-minute respawn) dropping a `Warden's Trophy`
+  plus 150 gold. The trophy crafts into the **`Warden's Blade`** (fixed 13
+  damage, best weapon in the game: trophy + 2 Iron Ore + Serpent Scale,
+  tier 4). ML agents get a matching `craft_wardens_blade` action
+  (47 total). New NPC + items also grow the vocabularies (23 NPCs, 35 items),
+  so OBS_SIZE is now 163; checkpoints need retraining.
+- Fixed farm staggered start running only the last bot: the loop variable
+  was late-bound, so all N tasks shared one connection. Now each task binds
+  its own bot (`bot=b`); verified live with 8 bots stepping 206-295 each.
+- Connection resilience widened to `websockets.ConnectionClosed` (was
+  `ConnectionClosedError` only): clean server-side closes no longer crash
+  the whole farm; the episode just ends.
+- Market stall slots: each seller holds at most `MARKET_ORDER_SLOTS_BASE`
+  (3) open orders; `market_expand` buys +1 slot for gold doubling per slot
+  (50/100/200g…), fee to the GM treasury. Cap persisted per character in
+  `scores.json`, visible in `stats` as `market_slots`; ML action space grows
+  44 → 45 (`market_expand`), so older checkpoints restart fresh.
+- Group-play shaping (reward only, no scripted behavior): per-step social
+  bonus now scales per ally (`0.05 × allies × diminish`) instead of flat,
+  plus a one-time formation bonus (`0.5 × diminish`, 500-step cooldown) when
+  a solo agent joins/forms a party -- leave/rejoin cycling can't farm it.
 - Social reward now scales with the server difficulty curve (`diminish_factor`
   in `ml_env.py`, mirroring `compute_diminish`): full +0.1 grouped bonus at
   score 0, fading with marginal score gains, so idling in a party can never

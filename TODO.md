@@ -8,7 +8,8 @@ here, so a future reader is never scanning checkboxes that are already true.
 
 - [ ] Fix dashboard `trade_count` double-counting buyer and seller entries
 - [ ] Add quest coverage to `tests/test_server_unit.py`:
-  accept, craft, turn-in, repeat, and Depth Delver
+  accept, craft, turn-in, repeat, Depth Delver, healer remedy/tonic,
+  and death-drop gold split/pickup
 - [ ] Add ammo and buff unit tests
 - [ ] Add explicit crafting recipe profitability assertions
 - [ ] Update protocol help/README whenever new recipes or item types land

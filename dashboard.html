@@ -476,6 +476,7 @@ function renderRooms(rooms) {
       ${r.npcs.map(n => `<span class="tag ${n.alive ? "alive" : "dead"}">${esc(n.name)}
           ${n.alive ? (n.max_hp ? ` (${n.hp}/${n.max_hp})` : "") : " (dead)"}</span>`).join("")}
       ${r.items.map(i => `<span class="tag itemtag">${esc(i)}</span>`).join("")}
+      ${(r.gold > 0) ? `<span class="tag itemtag">💰 ${esc(r.gold)} gold (death drop)</span>` : ""}
       ${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}
       ${(!r.players.length && !r.npcs.length && !r.items.length) ? `<span class="empty">empty</span>` : ""}
     </div>`).join("");

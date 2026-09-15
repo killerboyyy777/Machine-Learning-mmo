@@ -53,7 +53,8 @@ Actions added on top of the old (move/attack/take/rest/look) set:
     converts 1x Iron Ore into 1 Arrow; "buy" stocks healing
     herbs while "buy_arrows" stocks arrows -- bows like the Oak Longbow
     consume 1 arrow per shot and refuse to fire empty)
-  - market_post / market_buy / market_cancel / market_list
+  - market_post / market_buy / market_cancel / market_list / market_expand
+    (stall slots are capped per seller; market_expand buys +1 for gold)
   - party_invite / party_accept / party_leave / party_info
   - drop / give / say                  (item management + social)
   - quest_accept / quest_turn_in        (Town Guard repeatable quests;
@@ -130,6 +131,14 @@ DIFFICULTY_K = getattr(srv, "DIFFICULTY_K", 50.0)
 def diminish_factor(score):
     """Server's difficulty multiplier at a given total score."""
     return DIFFICULTY_K / (DIFFICULTY_K + max(0.0, score))
+
+
+# Group-play shaping (reward only -- no behavior is scripted, so agents must
+# still discover *how* to group via invite/accept and staying together).
+SOCIAL_PER_ALLY = 0.05  # per-step, per ally beyond self, times diminish
+FORMATION_BONUS = 0.5  # one-time join/form bonus, times diminish ...
+FORMATION_COOLDOWN_STEPS = 500  # ... paid at most this often (env steps), so
+# leave/rejoin cycling can't farm it.
 
 
 def market_tax(price):
@@ -263,7 +272,13 @@ ACTIONS = (
         "craft_sharpening_oil", "craft_fortitude_tonic", "craft_greater_sharpening_oil",
         "craft_ironhide_draught",
         # Gathering and commission actions.
-        "gather", "commission_post", "commission_list", "commission_fill", "commission_cancel"]
+        "gather", "commission_post", "commission_list", "commission_fill", "commission_cancel",
+        # Market stall expansion (buy +1 sell-order slot; fee -> treasury).
+        "market_expand",
+        # Healer visit (full heal, but only on Sister Maren's tile).
+        "heal",
+        # Endgame craft: Warden's Trophy + mats -> fixed-damage blade.
+        "craft_wardens_blade"]
 )
 N_ACTIONS = len(ACTIONS)
 
@@ -344,6 +359,7 @@ class TextMMOEnv:
         }
         self._pending_reward = 0.0
         self._step_count = 0
+        self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
 
     async def _reader(self):
         try:
@@ -447,22 +463,35 @@ class TextMMOEnv:
         quest_crafted_before = bool(self._state.get("guard_charm_crafted"))
         delver_active_before = bool(self._state.get("quest_delver_active"))
         delver_ready_before = bool(self._state.get("quest_delver_ready"))
+        party_before = self._state.get("party_size", 1)
         episode_done = False
         if cmd:
             try:
                 await self._send(**cmd)
-            except websockets.exceptions.ConnectionClosedError:
+            except websockets.ConnectionClosed:
+                # Either side can end the connection (server restart/kick,
+                # clean handshake, dropped socket). End the episode instead
+                # of crashing the whole farm process.
                 episode_done = True
         await asyncio.sleep(self.step_delay)
 
         reward = self._pending_reward
-        # Social reward: only when the agent is in a party with other connected players
-        # (party members are physically close by design, and other_players > 0 means
-        # there are other bots/agents in the world). Scaled by the server's
-        # difficulty curve so it tracks the score signal instead of dwarfing it:
-        # full 0.1 at score 0, ~0.01 at 450, ~0.001 at 4950.
+        # Social reward: only when the agent is grouped with other connected
+        # players (party members are physically close by design, and
+        # other_players > 0 means other bots/agents are in the world).
+        # Scaled by the server's difficulty curve so it tracks the score
+        # signal instead of dwarfing it late in a run, and by group size so
+        # bigger parties pay more than duos.
         if self._state.get("other_players", 0) > 0 and self._state.get("party_size", 1) > 1:
-            reward += 0.1 * diminish_factor(self._state.get("score", 0.0))
+            allies = self._state.get("party_size", 1) - 1
+            reward += SOCIAL_PER_ALLY * allies * diminish_factor(self._state.get("score", 0.0))
+        # Formation bonus: joining/forming a party pays once per cooldown so
+        # the act of grouping is discoverable through the reward trace.
+        party_now = self._state.get("party_size", 1)
+        if party_now > 1 and party_before <= 1:
+            if self._step_count - self._last_formation_step >= FORMATION_COOLDOWN_STEPS:
+                reward += FORMATION_BONUS * diminish_factor(self._state.get("score", 0.0))
+                self._last_formation_step = self._step_count
         self._pending_reward = 0.0
         self._step_count += 1
         if episode_done:
@@ -586,6 +615,11 @@ class TextMMOEnv:
             return None
         if action == "rest":
             return {"cmd": "rest"}
+        if action == "heal":
+            # Full heal from Sister Maren. The server requires standing on
+            # her tile (Healing Spring); anywhere else this errors, which is
+            # itself the learning signal for *where* healing lives.
+            return {"cmd": "heal"}
         if action == "look":
             return {"cmd": "look"}
         if action == "buy":
@@ -693,6 +727,18 @@ class TextMMOEnv:
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "ironhide_draught"}
             return None
+        if action == "craft_wardens_blade":
+            # 1x Warden's Trophy + 2x Iron Ore + 1x Serpent Scale -> Warden's
+            # Blade (tier 4, fixed damage 13, never scaling).
+            have = {}
+            for name in s["inv_names"] or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            need = srv.RECIPES.get("wardens_blade", {}).get("inputs", {"warden_trophy": 1, "iron_ore": 2, "serpent_scale": 1})
+            if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                return {"cmd": "craft", "recipe": "wardens_blade"}
+            return None
         if action == "gather":
             # Gather from available nodes in the current room
             return {"cmd": "gather"}
@@ -740,6 +786,10 @@ class TextMMOEnv:
             return None
         if action == "market_list":
             return {"cmd": "market_list"}
+        if action == "market_expand":
+            # Buy +1 stall slot if we can afford the next one; the server
+            # rejects with an error otherwise (itself a learning signal).
+            return {"cmd": "market_expand"}
         if action == "party_invite":
             # Invite the first other player visible in the room.
             for pname in s.get("player_names") or []:

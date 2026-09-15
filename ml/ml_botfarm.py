@@ -232,9 +232,9 @@ async def main():
     # slightly different initial game states (different room, NPC layout, etc.).
     bot_tasks = []
     for i, b in enumerate(farm.bots):
-        async def start_delayed(idx=i):
+        async def start_delayed(bot=b, idx=i):
             await asyncio.sleep(2 * idx)  # 2‑second delay per bot index
-            await b.run()
+            await bot.run()
         bot_tasks.append(asyncio.create_task(start_delayed(), name=b.name))
     eval_task = asyncio.create_task(evaluator(farm))
     print(f"[farm] {args.bots} bots training on {args.url} — Ctrl+C to stop.")

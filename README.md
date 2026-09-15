@@ -171,6 +171,7 @@ Available commands:
 {"cmd": "equip", "item": "sword"}
 {"cmd": "use", "item": "healing herb"}
 {"cmd": "rest"}
+{"cmd": "heal"}
 {"cmd": "buy", "item": "healing herb"}
 {"cmd": "buy", "item": "arrow"}
 {"cmd": "sell", "item": "wolf pelt"}
@@ -238,6 +239,7 @@ Every message is JSON. Client → server messages have a `cmd` field:
 {"cmd": "equip", "item": "sword"}
 {"cmd": "use", "item": "healing herb"}
 {"cmd": "rest"}
+{"cmd": "heal"}
 {"cmd": "buy", "item": "healing herb"}
 {"cmd": "buy", "item": "arrow"}              # ammunition for bows (2 gold)
 {"cmd": "sell", "item": "wolf pelt"}
@@ -258,11 +260,12 @@ Every message is JSON. Client → server messages have a `cmd` field:
 {"cmd": "market_cancel", "id": 42}
 {"cmd": "market_buy"}                      # auto-buys the cheapest affordable
 {"cmd": "market_buy", "id": 42}
+{"cmd": "market_expand"}                   # buy +1 sell-order slot (fee -> treasury)
 {"cmd": "gather"}                          # harvest a gathering node in this room
 {"cmd": "gather", "node": "pine_timber"}
 {"cmd": "commission_post", "target": "rat", "required_kills": 5, "reward_gold": 25, "reward_xp": 50}
 {"cmd": "commission_list"}
-{"cmd": "commission_fill", "commission_id": 42}
+{"cmd": "commission_fill", "commission_id": 42}   # pays only with verified kills of the target since posting (no self-fills)
 {"cmd": "commission_cancel", "commission_id": 42}
 {"cmd": "quest", "action": "accept"}       # Town Guard quest (alias: quest_accept)
 {"cmd": "quest", "action": "turn_in"}      # (alias: quest_turn_in)
@@ -352,10 +355,14 @@ Rules:
   one instance. `party_invite`/`party_accept`/`party_leave`/`party_info`
   manage membership (max `PARTY_MAX_MEMBERS` = 4). Leaving a solo party
   destroys its dungeon instance.
-- **Enemies scale without bound** — HP grows `×1.35` per floor, attack `×1.5`,
-  and guard count rises 1→4. Loot scales too: kills drop a `Dungeon Relic`
-  worth more each floor, and clearing a floor drops the better
-  `Dungeon Blade`. There is no level cap; nobody can farm it forever.
+- **Enemies scale without bound — until floor 50.** HP grows `×1.35` per floor,
+  attack `×1.5`, and guard count rises 1→4. Kills drop a `Dungeon Relic`
+  worth more each floor. There is no level cap; nobody can farm it forever.
+- **The Warden of the Deep** holds the last floor (50): a single fixed boss
+  (350 HP / 28 attack, 10-minute respawn) dropping a `Warden's Trophy` plus
+  150 gold. The trophy crafts into the **`Warden's Blade`** (fixed 13 damage,
+  best weapon in the game — 2× Iron Ore + Serpent Scale, tier 4). No scaling
+  blades exist; the stairs crumble below floor 50.
 - **Exit rules**: floor 1 **always** has an `up` exit back to the graveyard
   (the retreat path). Deeper floors show *no exits* until the floor is
   cleared — once you descend, you're committed to that floor. A cleared
@@ -402,6 +409,10 @@ the world**:
   (`tax_treasury`), tracked separately from the lifetime stat
   (`tax_collected_lifetime`). An operator can seed initial liquidity with
   `TEXTMMO_GM_SEED=<gold>`.
+- Each seller holds at most `MARKET_ORDER_SLOTS_BASE` (3) open orders. Extra
+  stall slots are bought with `market_expand`: the fee doubles per slot
+  (50g, 100g, 200g, …) and goes to the GM treasury, so big traders fund the
+  world events. Your slot count rides in `stats` as `market_slots`.
 
 The GM treasury is spent on **GM actions**, which are only accepted on the
 dedicated GM stream (`ws://127.0.0.1:8767`, loopback-only) that the
@@ -431,10 +442,12 @@ through the dashboard's GM stream".
 
 ## Quests
 
-Quests are repeatable objectives from specific NPCs. Both live quests share
-the same giver and pattern — accept by the NPC, complete the objective, turn
-in by the NPC — and take a `quest` field (`guard_charm` default) to select
-which one. The aliases `quest_accept` / `quest_turn_in` work the same way.
+Quests are repeatable objectives from specific NPCs. All live quests share
+the same pattern — accept by the NPC, complete the objective, turn in by the
+NPC — and take a `quest` field (`guard_charm` default) to select which one.
+The aliases `quest_accept` / `quest_turn_in` work the same way. New quest
+givers only need a `QUEST_GIVERS` entry; killing one pays almost nothing
+(0.1 pts/XP, no gold), so farming givers is never worth it.
 
 **1. Town Guard's charm quest** (`guard_charm`):
 
@@ -458,6 +471,21 @@ which one. The aliases `quest_accept` / `quest_turn_in` work the same way.
    for a fixed reward: **30 XP, 15 gold, 10 score**. The baseline resets,
    so it repeats forever.
 
+**3. Sister Maren's remedy quest** (`remedy`, from the Healer at the Healing Spring):
+
+1. **Accept** — `{"cmd": "quest", "action": "accept", "quest": "remedy"}` by her side.
+2. **Gather** — bring 3× Healing Herb (picked up around the wilds).
+3. **Turn in** — herbs are consumed, reward: **20 XP, 10 gold, 8 score**. Repeatable.
+
+**4. Sister Maren's tonic quest** (`tonic`):
+
+1. **Accept** — `{"cmd": "quest", "action": "accept", "quest": "tonic"}`.
+2. **Brew** — craft 1× Fortitude Tonic (Iron Ore + Mountain Berry).
+3. **Turn in** — tonic is consumed, reward: **40 XP, 20 gold, 12 score**. Repeatable.
+
+Sister Maren also heals: `{"cmd": "heal"}` restores you fully, but only on
+her tile. `rest` (+5 HP anywhere) still works as field dressing.
+
 Quest state rides along in `stats` events and persists in `scores.json`.
 Tuning constants (`QUEST_GUARD_XP/GOLD/POINTS`, `QUEST_DELVER_*`, inputs,
 giver) live in the "Quests" block of `server.py` and are mirrored
@@ -470,7 +498,14 @@ turn-ins/min) — not yet rendered by the dashboard (see Known Issues).
 
 Scores persist across restarts in `scores.json`. Query with `{"cmd": "stats"}`
 or `{"cmd": "leaderboard"}`. Points come from killing NPCs (weighted by
-difficulty), discovering rooms, with a flat penalty for death.
+difficulty), discovering rooms, with a wealth-scaled penalty for death (see below).
+
+Death also splits your carried gold: **40% drops as a loose pile where you
+fell** (pick it up with `{"cmd": "take", "item": "gold"}` — optional
+`"amount"` takes only part), **10% vanishes permanently**, you keep the rest.
+Piles are visible in `room` snapshots (`gold` field) and on the dashboard.
+The score penalty scales with what you lost: a flat 5.0 floor plus 0.1 per
+gold removed, so dying broke costs 5 while dying with 1000g costs 55.
 
 The system resists grinding the same loop forever via two mechanics:
 - **Variety decay** — repeating the same actions multiplies your gains down.
@@ -541,12 +576,12 @@ the agent learns the same resistance to hardcoded loops that governs all players
 
 ### Observation space
 
-Same as `flatten_obs()` in `ml_env.py` — a 158-dimensional vector covering:
+Same as `flatten_obs()` in `ml_env.py` — a 163-dimensional vector covering:
 
 - Room one-hot (32 static rooms)
 - Exit mask across all directions (including `up`/`down`/`enter`)
-- NPC presence (22 static NPCs + unknown-count)
-- Item presence (33 ground items + 33 inventory items + flags)
+- NPC presence (23 static NPCs + unknown-count)
+- Item presence (35 ground items + 35 inventory items + flags)
 - Scalars: `hp_frac`, `gold_norm`, `score_norm`, `variety`, `allies_norm`,
   `party_norm`, `level_norm`, `xp_progress`, `market_norm`, `market_any`,
   plus market-tax terms: live `tax_rate`, `tax_min_norm`, and `own_net_norm`
@@ -561,7 +596,7 @@ Same as `flatten_obs()` in `ml_env.py` — a 158-dimensional vector covering:
 - Buffs (2 dims): `buff_attack`, `buff_dr` (whether an attack or
   damage-reduction consumable effect is currently active)
 
-### Action space (44 actions — covers all game mechanics)
+### Action space (47 actions — covers all game mechanics)
 
 | Category | Actions |
 |---|---|
@@ -569,9 +604,9 @@ Same as `flatten_obs()` in `ml_env.py` — a 158-dimensional vector covering:
 | Combat | `attack` |
 | Items | `take`, `drop`, `give` |
 | Social | `say` |
-| Survival | `rest` |
+| Survival | `rest`, `heal` |
 | Information | `look` |
-| Market | `buy`, `buy_arrows`, `sell`, `equip`, `use`, `craft`, `craft_charm`, `craft_iron`, `craft_arrows`, `craft_sharpening_oil`, `craft_fortitude_tonic`, `craft_greater_sharpening_oil`, `craft_ironhide_draught`, `market_post`, `market_buy`, `market_cancel`, `market_list` |
+| Market | `buy`, `buy_arrows`, `sell`, `equip`, `use`, `craft`, `craft_charm`, `craft_iron`, `craft_arrows`, `craft_sharpening_oil`, `craft_fortitude_tonic`, `craft_greater_sharpening_oil`, `craft_ironhide_draught`, `craft_wardens_blade`, `market_post`, `market_buy`, `market_cancel`, `market_list`, `market_expand` |
 | Gathering | `gather` |
 | Commissions | `commission_post`, `commission_list`, `commission_fill`, `commission_cancel` |
 | Parties | `party_invite`, `party_accept`, `party_leave`, `party_info` |
@@ -605,12 +640,14 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
 ### Key design
 
 - **Architecture:** 3-layer MLP (input → 128 → 128) with 5 heads:
-  44 Q-values + gold + loot + market + quest predictors
+  47 Q-values + gold + loot + market + quest predictors
 - **Connection resilience:** `ml_env.step()` now catches `websockets.exceptions.ConnectionClosedError`, sets `done=True`, and returns a terminal observation so the farm/bot continues rather than crashing.
 - **Exploration:** epsilon-greedy with linear decay
 - **Learning:** online TD update with Huber loss + experience replay (10000 transitions)
 - **Reward:** change in server score (covers kills, discoveries, market trades,
   crafting, quest turn-ins, assist payouts — inherits the anti-grind curve automatically)
+  plus group-play shaping (reward only): per-ally bonus while grouped and a
+  one-time formation bonus on joining/forming a party, both diminish-scaled
 - **Market P&L (tax-aware):** buys cost full price; filled listings net
   `market_net(price)` after the server's 10%-with-1-minimum tax, so the
   market head learns true profitability instead of raw prices
@@ -625,7 +662,7 @@ dungeon-floor clears since accept, tracked in `info["quest"]` the same way
   dungeon floors, turn in for 30 XP + 15 gold + 10 score, repeatable.
 - **Persistence:** weights to `ml_weights.json` (shared with `ml_client.py`);
   best model to `ml_best.json`. Note: the quest and world expansions changed
-  OBS_SIZE (now 158), so older checkpoints need retraining.
+  OBS_SIZE (now 163) and N_ACTIONS (now 47), so older checkpoints need retraining.
 - **Training:** call `agent.train(total_steps=N)` from Python, or run
   `torch_agents\torch_batch_loop.bat` after starting the server
 
