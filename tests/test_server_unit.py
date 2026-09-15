@@ -449,6 +449,22 @@ async def main():
     print("DEATH_SCALE_OK")
 
     srv.send = orig_send
+
+    # --- Crafting recipe profitability: low-tier recipes should not destroy ---
+    # --- value; high-tier pinnacles (T4+) are prestige sinks by design.    ---
+    for rid, recipe in srv.RECIPES.items():
+        tier = recipe.get("tier", 0)
+        cat = recipe.get("category", "")
+        if cat in ("quest", "ammo") or tier >= 4:
+            continue
+        input_value = sum(srv.ITEM_DEFS.get(iid, {}).get("value", 0) * qty
+                         for iid, qty in recipe["inputs"].items())
+        output_qty = max(1, int(recipe.get("output_qty", 1)))
+        output_value = srv.ITEM_DEFS.get(recipe["result"], {}).get("value", 0) * output_qty
+        assert output_value >= input_value, (
+            f"Recipe {rid} (T{tier}) destroys value: inputs={input_value}, output={output_value}")
+    print("CRAFT_PROFITABILITY_OK")
+
     print("ALL_OK")
 
 asyncio.run(main())
