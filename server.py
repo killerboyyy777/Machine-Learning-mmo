@@ -3127,7 +3127,12 @@ async def handle_connection(ws):
         writer_task.cancel()
         try:
             await writer_task
-        except Exception:
+        except BaseException:
+            # CancelledError (a BaseException, not an Exception) is the
+            # normal outcome here -- and ANY failure at this point must
+            # still fall through to the cleanup below, otherwise the
+            # player's entry, name lock, room slot and party seat leak
+            # (relogin then fails with "already in use" forever).
             pass
         try:
             if was_logged_in:
