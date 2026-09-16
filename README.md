@@ -7,17 +7,6 @@
 [![XMR Donate](https://img.shields.io/badge/XMR-Donate-ff6b35?logo=monero&style=flat-square)](https://explore.monero.org/address/82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2)
 [![Steam Donate](https://img.shields.io/badge/Steam-Donate-000000?logo=steam&style=flat-square)](https://steamcommunity.com/tradeoffer/new/?partner=1211192445&token=T9Hiu3Oz)
 
-<details>
-<summary>📬 Addresses (click to expand)</summary>
-
-| Coin | Address | Explorer |
-|------|---------|----------|
-| **BTC** | `bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg` | [View](https://www.blockchain.com/explorer/addresses/btc/bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg) |
-| **LTC** | `ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4` | [View](https://live.blockcypher.com/ltc/address/ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4) |
-| **XMR** | `82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2` | [View](https://explore.monero.org/address/82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2) |
-
-</details>
-
 A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
 loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
