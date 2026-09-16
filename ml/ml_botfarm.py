@@ -43,10 +43,12 @@ import time
 
 try:
     from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
+    from .ml_env import QUEST_GIVER_NAME
     from .ml_client import LinearQAgent
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
     from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
+    from ml_env import QUEST_GIVER_NAME
     from ml_client import LinearQAgent
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -74,8 +76,9 @@ class ScriptedPolicy:
     the env's valid-action mask. Serves as the fixed comparison point for
     RL runs (same obs/actions/rewards, zero training).
 
-    Subclasses override PRIORITIES (action names, first valid wins) plus
-    optional state-dependent hooks. select() returns an action index.
+    Subclasses override plan() (yield candidate action indices in priority
+    order; first non-None wins) plus optional state-dependent hooks.
+    select() returns an action index.
     """
 
     name = "base"
@@ -159,7 +162,7 @@ class DungeonClearerPolicy(ScriptedPolicy):
         yield self._heal_first(env, mask)
         yield self._first_valid(env, ("attack",), mask)
         yield self._first_valid(env, ("equip", "buy", "take"), mask)
-        giver_here = "Town Guard" in (s.get("npc_names") or [])
+        giver_here = QUEST_GIVER_NAME in (s.get("npc_names") or [])
         if giver_here:
             yield self._first_valid(env, ("quest2_turn_in", "quest2_accept"), mask)
         yield self._first_valid(env, ("move_enter", "move_down"), mask)

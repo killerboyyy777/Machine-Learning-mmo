@@ -34,6 +34,10 @@ def parse_args():
     p.add_argument("--max-steps", type=int, default=500,
                    help="env steps per episode (episodes drive mixer/PBT/status)")
     p.add_argument("--step-timeout", type=float, default=30.0)
+    p.add_argument("--arrivals", type=float, default=2.0, help="arrivals per minute")
+    p.add_argument("--lifetime", type=int, default=100, help="mean lifetime episodes")
+    p.add_argument("--wave-size", type=int, default=10, help="agents per startup wave")
+    p.add_argument("--wave-delay", type=float, default=2.0, help="seconds between waves")
     p.add_argument("--checkpoint", default=None,
                    help="linear weights (default: ml/ml_best.json when present)")
     return p.parse_args()
@@ -52,10 +56,18 @@ async def main():
         "policy_fn": make_linear_policy(ckpt, epsilon=0.05),
         "step_timeout": args.step_timeout,
     }
-    cond = Conductor(args.base_dir, max_agents=args.agents, runner=runner)
+    cond = Conductor(args.base_dir, max_agents=args.agents,
+                     arrivals_per_minute=args.arrivals,
+                     mean_lifetime_episodes=args.lifetime, runner=runner)
     print(f"[soak] {args.agents} agents for {args.duration:.0f}s "
           f"(checkpoint={ckpt or 'fresh'})")
-    await cond.run(duration_seconds=args.duration, wave_size=10, wave_delay=2.0)
+    try:
+        await cond.run(duration_seconds=args.duration, wave_size=args.wave_size,
+                       wave_delay=args.wave_delay)
+    except KeyboardInterrupt:
+        print("[soak] Interrupted, shutting down...")
+        cond.stop()
+        await asyncio.sleep(1)
     st = cond.status()
     alive = st["registry"]["alive"]
     running = st["supervisor"]["running"]

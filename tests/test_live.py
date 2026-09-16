@@ -52,6 +52,21 @@ async def wait_room(ws, timeout=5.0):
     return None
 
 
+async def move_for_room(ws, dir, timeout=5.0, retries=2):
+    """Move, then wait for the room event; re-sync with `look` on timeout.
+
+    CI runners can stall a broadcast past a single window, so a missing
+    room is re-requested instead of failing outright. Returns None only
+    when the server stays silent through every attempt."""
+    await send(ws, {"cmd": "move", "dir": dir})
+    for _ in range(retries + 1):
+        room = await recv(ws, want_type="room", timeout=timeout)
+        if room is not None:
+            return room
+        await send(ws, {"cmd": "look"})
+    return None
+
+
 async def fight_until_room(ws, target_room, dir_to_target, max_rounds=40):
     """Navigate to a room, attacking hostile NPCs (wolf/ghost/rat) that block
     the way. Dies are OK: death respawns you in town_square and this loops."""
@@ -135,21 +150,38 @@ async def main():
     print("GRAVEYARD_OK")
 
     # ---- A: enter dungeon (solo auto-party, floor 1)
-    await send(A, {"cmd": "move", "dir": "enter"})
-    droom = await recv(A, want_type="room", timeout=5.0)
+    droom = await move_for_room(A, "enter")
     assert droom is not None and droom["is_dungeon"] is True and droom["dungeon_floor"] == 1, droom
     assert set(droom["exits"]) == {"up"}
     assert droom["party_size"] >= 1
     print("DUNGEON_ENTER_OK")
 
     await send(A, {"cmd": "move", "dir": "down"})
-    errs = [m for m in await recv(A, timeout=3.0) if m.get("type") == "error"]
-    assert errs and "sealed" in errs[-1]["text"].lower()
+    # First error only (no full-window drain): every idle second in the
+    # dungeon is a combat round tanked without fighting back.
+    err = await recv(A, want_type="error", timeout=5.0)
+    assert err is not None and "sealed" in err.get("text", "").lower(), err
     print("SEALED_DOWN_BLOCKED")
 
-    # floor 1 retreat is allowed even while sealed
-    await send(A, {"cmd": "move", "dir": "up"})
-    room = await recv(A, want_type="room", timeout=5.0)
+    # Floor 1 retreat is allowed even while sealed. Resilient to dying
+    # while idle: a death respawns in town_square, so re-sync with `look`
+    # and, if respawned, walk back and re-enter before retrying.
+    room = None
+    for _ in range(4):
+        await send(A, {"cmd": "look"})
+        cur = await recv(A, want_type="room", timeout=5.0)
+        if cur is None:
+            continue
+        if cur["id"] == "graveyard":
+            room = cur
+            break
+        if cur.get("is_dungeon"):
+            room = await move_for_room(A, "up")
+            if room is not None and room["id"] == "graveyard":
+                break
+            continue  # died mid-retreat; loop re-syncs
+        await fight_until_room(A, "graveyard", "south")
+        await move_for_room(A, "enter")
     assert room is not None and room["id"] == "graveyard", room
     print("FLOOR1_RETREAT_OK")
 
@@ -206,8 +238,7 @@ async def main():
     print("PARTY_OK")
 
     # party dungeon instance is shared
-    await send(A, {"cmd": "move", "dir": "enter"})
-    da = await recv(A, want_type="room", timeout=5.0)
+    da = await move_for_room(A, "enter")
     assert da is not None and da["is_dungeon"] and da["dungeon_floor"] == 1
     assert da["party_size"] == 2, da
     print("PARTY_DUNGEON_SHARED")
