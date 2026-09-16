@@ -11,12 +11,22 @@ import threading
 
 
 class MetricsLogger:
-    """Append-only JSONL metrics writer."""
+    """Append-only JSONL metrics writer with size-based rotation.
 
-    def __init__(self, path, buffer_size=50, flush_every=60.0):
+    Rotation keeps total disk bounded: ``path`` plus ``keep_files``
+    numbered siblings (``path.1`` …) never exceed
+    ``(keep_files + 1) * rotate_mb``. Plain (uncompressed) files stay
+    directly readable by jq/pandas; gzip-on-rotate is a later option if
+    a run ever rotates twice (none has).
+    """
+
+    def __init__(self, path, buffer_size=50, flush_every=60.0,
+                 rotate_mb=50, keep_files=5):
         self.path = path
         self.buffer_size = buffer_size
         self.flush_every = flush_every
+        self.rotate_bytes = rotate_mb * 1024 * 1024
+        self.keep_files = max(1, keep_files)
         self._buffer = []
         self._lock = threading.RLock()
         self._last_flush = time.time()
@@ -37,12 +47,34 @@ class MetricsLogger:
                     or time.time() - self._last_flush >= self.flush_every):
                 self.flush()
 
+    def _maybe_rotate(self):
+        """Shift path -> path.1 -> ... when over budget (call with lock)."""
+        if self.rotate_bytes <= 0:
+            return
+        try:
+            if os.path.getsize(self.path) < self.rotate_bytes:
+                return
+        except OSError:
+            return
+        for i in range(self.keep_files - 1, 0, -1):
+            src = f"{self.path}.{i}"
+            if os.path.exists(src):
+                os.replace(src, f"{self.path}.{i + 1}")
+        try:
+            os.replace(self.path, f"{self.path}.1")
+        except OSError:
+            pass
+        extra = f"{self.path}.{self.keep_files + 1}"
+        if os.path.exists(extra):
+            os.remove(extra)
+
     def flush(self):
         with self._lock:
             for event in self._buffer:
                 self._write_line(event)
             self._buffer.clear()
             self._last_flush = time.time()
+            self._maybe_rotate()
 
     def log_agent_spawn(self, agent_id, agent_type, branch):
         self.log("agent_spawn", agent_id=agent_id, agent_type=agent_type, branch=branch)

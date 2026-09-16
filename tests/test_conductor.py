@@ -117,6 +117,24 @@ mlog2 = MetricsLogger(os.path.join(tmpdir, "t2.jsonl"),
 mlog2.log("ping")
 with open(os.path.join(tmpdir, "t2.jsonl")) as f:
     assert len(f.readlines()) == 1
+# size rotation: ~1KB budget keeps current + 2 siblings; old segments
+# age out by design (bounded disk), newest events always survive
+mlog3 = MetricsLogger(os.path.join(tmpdir, "rot.jsonl"),
+                      buffer_size=10000, flush_every=0,
+                      rotate_mb=0.001, keep_files=2)
+for i in range(300):
+    mlog3.log("tick", i=i, pad="x" * 100)
+mlog3.flush()
+import json as _json2
+seen = []
+for suffix in ("", ".1", ".2"):
+    p = os.path.join(tmpdir, f"rot.jsonl{suffix}")
+    if os.path.exists(p):
+        with open(p) as f:
+            seen.extend(_json2.loads(line)["i"] for line in f)
+assert 0 < len(seen) < 300, len(seen)  # rotated (not everything kept)
+assert max(seen) == 299  # newest data always preserved
+assert not os.path.exists(os.path.join(tmpdir, "rot.jsonl.3"))
 print("METRICS_OK")
 
 # --- #45 supervisor steps counter increments per env step ---
