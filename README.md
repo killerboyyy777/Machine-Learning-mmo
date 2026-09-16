@@ -2,9 +2,20 @@
 
 [![Tests](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml/badge.svg)](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml)
 
-[![LTC](https://img.shields.io/badge/LTC-ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4-blue.svg)](https://litecoin.org)
-[![BTC](https://img.shields.io/badge/BTC-bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg-orange.svg)](https://bitcoin.org)
-[![XMR](https://img.shields.io/badge/XMR-82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2-orange.svg)](https://www.getmonero.org)
+[![Donate LTC](https://img.shields.io/badge/Donate-LTC-blue?logo=litecoin&logoColor=white&style=flat-square)](https://litecoin.org)
+[![Donate BTC](https://img.shields.io/badge/Donate-BTC-orange?logo=bitcoin&logoColor=white&style=flat-square)](https://bitcoin.org)
+[![Donate XMR](https://img.shields.io/badge/Donate-XMR-orange?logo=monero&logoColor=white&style=flat-square)](https://www.getmonero.org)
+
+<details>
+<summary>📬 Crypto addresses (click to expand)</summary>
+
+| Coin | Address |
+|------|---------|
+| **LTC** | `ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4` |
+| **BTC** | `bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg` |
+| **XMR** | `82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2` |
+
+</details>
 
 A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
 loot, respawns, parties, a player market, and instanced dungeons — all driven
