@@ -30,6 +30,10 @@ def linear_check(folder):
     assert loaded.training_steps == 123
     assert loaded.q_values(features) == expected
     assert loaded.bias == agent.bias
+    # version metadata round-trips and matches the live build
+    v = loaded.ckpt_version
+    assert v and v["obs_size"] == OBS_SIZE and v["n_actions"] == N_ACTIONS, v
+    assert v["git_sha"] and v["config_hash"] and v["saved_at"], v
     print("LINEAR_PERSISTENCE_OK")
 
 

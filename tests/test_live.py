@@ -120,7 +120,9 @@ async def main():
     assert ent.get("room", {}).get("id") == "town_square"
     assert ent.get("welcome", {}).get("protocol_version") == 1, ent.get("welcome")
     msgs = await gm_send("gm_reward", player="LiveA", gold=30)
-    assert any("Treasury now 670.0" in m.get("text", "") for m in msgs), msgs
+    assert any("Treasury now 670.0" in m.get("text", "") for m in msgs), (
+        f"{msgs} -- did you reset scores.json to {{}} and start the server "
+        f"with TEXTMMO_GM_SEED=700 in this same shell session?")
     print("LOGIN_GM_SEED_OK")
 
     # ---- A: buy a sword (attack 7) so fights are quick

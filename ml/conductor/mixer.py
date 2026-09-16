@@ -32,6 +32,16 @@ class Mixer:
         for aid in agent_ids:
             self.assign_one(aid)
 
+    def remove_agent(self, agent_id):
+        """Forget an agent whose task ended (crash, cancel, churn death).
+
+        Without this, dead ids pile up in _floor_agents: rebalance() keeps
+        "moving" corpses and snapshot counts inflate forever. Idempotent.
+        """
+        for agents in self._floor_agents.values():
+            if agent_id in agents:
+                agents.remove(agent_id)
+
     def record_reward(self, floor_id, agent_id, reward):
         """Record an episode reward for a specific floor."""
         if floor_id in self._floor_rewards:

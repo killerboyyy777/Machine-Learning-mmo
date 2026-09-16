@@ -1,7 +1,11 @@
 """Agent churn: Poisson arrivals, geometric lifetimes, wave startup.
 
 Agents arrive according to a Poisson process (rate = arrivals_per_minute).
-Each agent's lifetime is drawn from a geometric distribution (mean = mean_lifetime_episodes).
+Each agent's lifetime is drawn from a geometric distribution (mean =
+mean_lifetime_episodes) and counts COMPLETED EPISODES, not wall-clock
+ticks -- an idle agent that never finishes episodes never ages. The
+supervisor reports each completed episode via report_episode() (wired by
+the conductor); without supervised tasks, lifetimes never expire.
 Wave startup batches arrivals into waves for faster initial fill.
 """
 import asyncio
@@ -22,16 +26,23 @@ def geometric_lifetime(mean_episodes):
 
 
 def wave_startup(count, wave_size, wave_delay_seconds):
-    """Generate arrival times for a wave-based startup.
+    """Generate per-agent waits for a wave-based startup.
 
-    Yields (delay_seconds) for each agent, batched into waves.
+    Yields DIFFERENTIAL delays (seconds to wait since the previous spawn),
+    batched into waves -- callers simply ``await asyncio.sleep(delay)``
+    per agent in order. Total startup is ~ the last wave's absolute time,
+    not the sum (the old absolute yields were slept sequentially for a
+    total of 212s at 50/10/2.0). Within a wave, agents stagger by a small
+    jitter so they don't thundering-herd the server.
     wave_size: agents per wave
     wave_delay_seconds: delay between waves
     """
+    prev = 0.0
     for i in range(count):
         wave = i // wave_size
         delay = wave * wave_delay_seconds + random.uniform(0, wave_delay_seconds * 0.3)
-        yield delay
+        yield max(0.0, delay - prev)
+        prev = delay
 
 
 class ChurnManager:
@@ -45,7 +56,11 @@ class ChurnManager:
         self._lifetimes = {}  # agent_id -> episodes_remaining
 
     def tick(self, dt):
-        """Update churn state. Returns list of newly arrived agent_ids."""
+        """Advance the Poisson arrival clock. Returns newly arrived ids.
+
+        Only arrivals are time-driven; deaths come from report_episode().
+        (dt is accepted for API stability; the clock reads wall time.)
+        """
         now = time.time()
         arrived = []
 
@@ -59,20 +74,23 @@ class ChurnManager:
                 except RuntimeError:
                     pass  # filled between check and spawn; retry next tick
 
-        # Check for deaths (lifetime expired)
-        dead = []
-        for aid, remaining in list(self._lifetimes.items()):
-            self._lifetimes[aid] = remaining - 1
-            if self._lifetimes[aid] <= 0:
-                dead.append(aid)
-
-        for aid in dead:
-            self._lifetimes.pop(aid, None)
-            entry = self.registry.get(aid)
-            if entry:
-                entry.alive = False
-
         return arrived
+
+    def report_episode(self, agent_id, event=None):
+        """Charge one completed episode against an agent's lifetime.
+
+        Returns True when the lifetime expired (entry marked dead).
+        Unknown or already-dead ids are ignored."""
+        if agent_id not in self._lifetimes:
+            return False
+        self._lifetimes[agent_id] -= 1
+        if self._lifetimes[agent_id] > 0:
+            return False
+        self._lifetimes.pop(agent_id, None)
+        entry = self.registry.get(agent_id)
+        if entry:
+            entry.alive = False
+        return True
 
     def _spawn_one(self):
         """Spawn a single agent with a random lifetime."""

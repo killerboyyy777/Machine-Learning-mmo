@@ -73,7 +73,9 @@ def parse_args():
     )
     p.add_argument("--step-timeout", type=float, default=30.0)
     p.add_argument("--arrivals", type=float, default=2.0, help="arrivals per minute")
-    p.add_argument("--lifetime", type=int, default=100, help="mean lifetime episodes")
+    p.add_argument("--lifetime", type=int, default=15,
+                   help="mean lifetime in completed episodes (episode-based "
+                        "churn: ~15 episodes sustains turnover in an hour)")
     p.add_argument("--wave-size", type=int, default=10, help="agents per startup wave")
     p.add_argument(
         "--wave-delay", type=float, default=2.0, help="seconds between waves"

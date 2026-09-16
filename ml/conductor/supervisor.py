@@ -122,7 +122,7 @@ class Supervisor:
     """Manages isolated agent tasks with fault recovery."""
 
     def __init__(self, registry, max_concurrent=50, mixer=None, floor_fn=None,
-                 step_timeout=None, metrics=None):
+                 step_timeout=None, metrics=None, episode_hook=None):
         self.registry = registry
         self.max_concurrent = max_concurrent
         # Mixer auto-integration (#51): every completed episode is fed to
@@ -133,6 +133,10 @@ class Supervisor:
         # Death accounting (#135): crashes and churn reaps are logged so
         # soak metrics can tell *why* agents die, not just that they did.
         self._metrics = metrics
+        # Episode hook (#1): called as hook(agent_id, event) per completed
+        # episode -- the conductor wires churn.report_episode here so
+        # lifetimes count episodes, not wall-clock ticks.
+        self._episode_hook = episode_hook
         self._tasks = {}  # agent_id -> AgentTask
         self._lock = asyncio.Lock()
 
@@ -147,24 +151,39 @@ class Supervisor:
 
     async def start_agent(self, agent_id, env_factory, policy_fn, max_steps=2000,
                           step_timeout=None):
-        """Start an isolated task for one agent."""
+        """Start an isolated task for one agent.
+
+        Returns True when a task is running afterwards, False when the
+        agent was skipped (duplicate, at capacity) or its factory raised.
+        A raising factory must never propagate: one bad spawn used to end
+        the whole conductor run.
+        """
         async with self._lock:
             if agent_id in self._tasks:
-                return
+                return False
             if len(self._tasks) >= self.max_concurrent:
-                return
-            env = env_factory(agent_id)
+                return False
+            try:
+                env = env_factory(agent_id)
+            except Exception:
+                return False
             at = AgentTask(agent_id, env, policy_fn, max_steps,
                            step_timeout=step_timeout if step_timeout is not None
                            else self._step_timeout)
             self._tasks[agent_id] = at
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
+            return True
 
     async def _run_with_recovery(self, at):
         """Run an agent task, handling crashes gracefully."""
         try:
             async for event in at.run():
                 self.registry.record_episode(at.agent_id, event["reward"])
+                if self._episode_hook is not None:
+                    try:
+                        self._episode_hook(at.agent_id, event)
+                    except Exception:
+                        pass
                 if self._mixer is not None:
                     try:
                         floor = self._floor_fn(at.env)
@@ -182,6 +201,14 @@ class Supervisor:
                             error=traceback.format_exc())
         finally:
             self._tasks.pop(at.agent_id, None)
+            # The agent isn't running anymore (cancelled, crashed, or
+            # reaped): drop it from the mixer too, or dead ids pile up in
+            # floor lists and inflate rebalance/snapshot counts.
+            if self._mixer is not None:
+                try:
+                    self._mixer.remove_agent(at.agent_id)
+                except Exception:
+                    pass
 
     async def _shutdown(self, at):
         """Cancel a task and close its env (idempotent, never raises,
