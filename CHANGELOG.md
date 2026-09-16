@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+
+## 0.6 - conductor, agent variety, reliability, governance (2026-09-16)
 - P0 fix: trade_count double-count — each market fill now counts as one trade
   (buyer only), not two. Dashboard shows accurate fill volume.
 - P0 fix: quest-giver kill penalty — killing registered quest givers now
