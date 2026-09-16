@@ -1,9 +1,7 @@
 """Conductor agent runners: concrete env_factory + policy_fn (#52).
 
-The supervisor only knows the seams (env_factory(agent_id) -> env,
-policy_fn(obs, agent_id[, mask]) -> action_idx). This module fills them
-with the real game env and real checkpoint-backed policies, so the
-conductor can actually run agents instead of just tracking them:
+Thin compatibility layer over ml.plugins: prefer
+``ml.plugins.instantiate`` + ``make_env_factory`` for new code.
 
     from ml.conductor.runners import make_env_factory, make_linear_policy
 
@@ -13,15 +11,15 @@ conductor can actually run agents instead of just tracking them:
 
 Policies take the env's structured obs dict (what reset()/step() return)
 and an optional valid-action mask -- the supervisor passes the mask when
-the policy accepts a third argument.
+the policy accepts a third argument (and the env itself for a fourth).
 """
 
 try:
-    from ..ml_client import LinearQAgent
-    from ..ml_env import N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
+    from ..ml_env import TextMMOEnv
+    from ..plugins import instantiate
 except ImportError:
-    # Running from inside ml/ (python ml/conductor/runners.py): flat layout.
-    from ml_client import LinearQAgent
+    from ml_env import TextMMOEnv
+    from plugins import instantiate
     from ml_env import N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
 
 
@@ -47,14 +45,8 @@ def make_env_factory(
 
 def make_linear_policy(checkpoint=None, epsilon=0.0):
     """Return policy_fn running a linear-Q checkpoint (epsilon-greedy)."""
-    agent = LinearQAgent(OBS_SIZE, N_ACTIONS)
-    if checkpoint:
-        agent.load(checkpoint)
-
-    def policy(obs, agent_id, mask=None):
-        return agent.act(flatten_obs(obs), epsilon, mask)
-
-    return policy
+    plugin = instantiate("linear", checkpoint=checkpoint, epsilon=epsilon)
+    return plugin.make_policy()
 
 
 def make_torch_policy(checkpoint=None, epsilon=0.0, **agent_kwargs):
@@ -62,15 +54,9 @@ def make_torch_policy(checkpoint=None, epsilon=0.0, **agent_kwargs):
 
     Torch is imported lazily so the conductor package stays importable
     without it."""
-    try:
-        from torch_agents.dqn_agent import TorchDQNAgent
-    except ImportError as e:
-        raise ImportError(f"make_torch_policy needs torch + torch_agents: {e}")
-    agent = TorchDQNAgent(**agent_kwargs)
-    if checkpoint:
-        agent.load_weights(checkpoint)
-
-    def policy(obs, agent_id, mask=None):
-        return agent.act(flatten_obs(obs), epsilon, mask)
-
-    return policy
+    if agent_kwargs:
+        raise ValueError(
+            "make_torch_policy no longer takes agent kwargs; use "
+            "ml.plugins.instantiate('torch', ...) directly")
+    plugin = instantiate("torch", checkpoint=checkpoint, epsilon=epsilon)
+    return plugin.make_policy()

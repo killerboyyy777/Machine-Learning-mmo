@@ -34,7 +34,7 @@ class AgentTask:
         # None disables. Only guards the async env call -- a blocking
         # sync policy_fn would wedge the loop itself (keep policies fast).
         self.step_timeout = step_timeout
-        self._policy_takes_mask = None  # probed from the fn signature once
+        self._policy_arity = None  # probed from the fn signature once
         self.task = None
         self.total_reward = 0.0
         self.steps = 0
@@ -51,18 +51,24 @@ class AgentTask:
                 for _ in range(self.max_steps):
                     if self.done.is_set():
                         break
-                    if self._policy_takes_mask is None:
+                    if self._policy_arity is None:
                         try:
                             n_params = len(inspect.signature(self.policy_fn).parameters)
                         except (TypeError, ValueError):
                             n_params = 2
-                        self._policy_takes_mask = n_params >= 3
-                    if self._policy_takes_mask:
+                        # 2 args: (obs, agent_id); 3: + mask; 4: + env
+                        # (scripted plugins work straight from the env).
+                        self._policy_arity = n_params
+                    if self._policy_arity >= 3:
                         try:
                             mask = self.env.valid_action_mask()
                         except Exception:
                             mask = None
-                        action = self.policy_fn(obs, self.agent_id, mask)
+                        if self._policy_arity >= 4:
+                            action = self.policy_fn(obs, self.agent_id, mask,
+                                                    self.env)
+                        else:
+                            action = self.policy_fn(obs, self.agent_id, mask)
                     else:
                         action = self.policy_fn(obs, self.agent_id)
                     try:
