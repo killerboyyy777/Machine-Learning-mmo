@@ -1,0 +1,19 @@
+name: Release drafter
+
+# Keeps a rolling draft release with notes grouped by area:* labels
+# (#88). The tag workflow (release.yml) publishes on `git tag vX.Y`.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

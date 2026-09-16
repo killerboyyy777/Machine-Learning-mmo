@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in the game, dashboard, or agents misbehaves
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Minimal steps - commands sent, room/NPC involved, seed if relevant (TEXTMMO_GM_SEED), single- or multiplayer.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / evidence
+      description: Server output, dashboard snapshot excerpt, or failing test output.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Suspected area
+      multiple: true
+      options:
+        - area:server
+        - area:ml-env
+        - area:torch-agents
+        - area:conductor
+        - area:dashboard
+        - area:tests
+        - area:docs
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options: [P0, P1, P2, P3]
+      default: 1
+    validations:
+      required: true
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Effort estimate
+      options: [XS, S, M, L]
+      default: 1
+    validations:
+      required: true

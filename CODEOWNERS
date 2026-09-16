@@ -1,0 +1,5 @@
+# Code owners: review requests are auto-assigned by path.
+# See #110. Global owner first, then subsystem refinements below
+# (later lines take precedence for matching files).
+
+* @killerboyyy777

@@ -1,0 +1,38 @@
+# Release Drafter config (#88): auto-generate release notes from merged
+# PR labels. Categories mirror .github/labeler.yml (area:*) so notes group
+# by subsystem; unlabeled PRs fall into "Other".
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+categories:
+  - title: '🖥️ Server'
+    labels:
+      - area:server
+  - title: '🤖 ML env'
+    labels:
+      - area:ml-env
+  - title: '🔥 Torch agents'
+    labels:
+      - area:torch-agents
+  - title: '🎛️ Conductor'
+    labels:
+      - area:conductor
+  - title: '📊 Dashboard'
+    labels:
+      - area:dashboard
+  - title: '🧪 Tests'
+    labels:
+      - area:tests
+  - title: '📚 Docs'
+    labels:
+      - area:docs
+  - title: '⚖️ Balance'
+    labels:
+      - balance
+exclude-labels:
+  - dependencies
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&'
+template: |
+  ## Changes
+
+  $CHANGES
