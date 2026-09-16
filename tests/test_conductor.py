@@ -196,6 +196,36 @@ assert len(mxb._floor_agents["f1"]) == 5  # took up toward (not past) target
 assert len(mxb._floor_agents["f2"]) == 1  # gave down to (not below) target
 print("MIXER_BOUNDS_OK")
 
+# --- stopping tasks closes their envs (no ghost sockets) ---
+class _CloseEnv(_FakeEnv):
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+async def _stop_check():
+    r = Registry(os.path.join(tmpdir, "stop"), max_agents=5)
+    sup = Supervisor(r)
+    env = _CloseEnv()
+    await sup.start_agent("c1", lambda aid: env, lambda obs, aid: 0)
+    await asyncio.sleep(0.1)
+    assert "c1" in sup._tasks
+    await sup.stop_agent("c1")
+    assert "c1" not in sup._tasks and env.closed
+    # reap closes envs of churn-killed agents too
+    env2 = _CloseEnv()
+    r.register("c2", "linear")
+    await sup.start_agent("c2", lambda aid: env2, lambda obs, aid: 0)
+    await asyncio.sleep(0.1)
+    r.get("c2").alive = False
+    assert await sup.reap() == 1
+    assert env2.closed
+
+asyncio.run(_stop_check())
+print("STOP_CLOSES_ENV_OK")
+
 # --- assign_one spreads single arrivals across floors ---
 _mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),
              ["f1", "f2", "f3"])

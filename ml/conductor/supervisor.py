@@ -94,6 +94,18 @@ class AgentTask:
         if self.task and not self.task.done():
             self.task.cancel()
 
+    async def aclose(self):
+        """Stop the task AND close its env. Without the env close, the
+        socket (and its reader task) stays open server-side: the server
+        keeps a live, logged-in ghost that counts as online forever."""
+        self.cancel()
+        env_close = getattr(self.env, "close", None)
+        if env_close is not None:
+            try:
+                await env_close()
+            except Exception:
+                pass
+
 
 class Supervisor:
     """Manages isolated agent tasks with fault recovery."""
@@ -146,11 +158,20 @@ class Supervisor:
         finally:
             self._tasks.pop(at.agent_id, None)
 
+    async def _shutdown(self, at):
+        """Cancel a task and close its env (idempotent, never raises,
+        never blocks longer than a bounded close)."""
+        if at is None:
+            return
+        try:
+            await asyncio.wait_for(at.aclose(), 15.0)
+        except Exception:
+            pass
+
     async def stop_agent(self, agent_id):
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
-            if at:
-                at.cancel()
+        await self._shutdown(at)
 
     async def reap(self):
         """Stop tasks whose registry entry is dead or gone (churn deaths).
@@ -161,17 +182,17 @@ class Supervisor:
                 entry = self.registry.get(aid)
                 if entry is None or not entry.alive:
                     dead.append(aid)
-            for aid in dead:
-                at = self._tasks.pop(aid, None)
-                if at:
-                    at.cancel()
-            return len(dead)
+            tasks = [self._tasks.pop(aid, None) for aid in dead]
+        for at in tasks:
+            await self._shutdown(at)
+        return len(dead)
 
     async def stop_all(self):
         async with self._lock:
-            for at in self._tasks.values():
-                at.cancel()
+            tasks = list(self._tasks.values())
             self._tasks.clear()
+        for at in tasks:
+            await self._shutdown(at)
 
     def status(self):
         return {
