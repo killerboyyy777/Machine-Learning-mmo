@@ -56,6 +56,21 @@ with tempfile.TemporaryDirectory() as tmp:
     assert fresh._rnd_var == agent._rnd_var
 print("RND_PERSISTENCE_OK")
 
+# --- rnd_lambda=0 disables curiosity: learn() reports rnd 0.0 and the
+# predictor is untouched ---
+off = TorchDQNAgent(rnd_lambda=0, replay_size=32, batch_size=8)
+flat = [0.0] * OBS_SIZE
+for _ in range(32):
+    off.store({"state": flat, "action": 0, "reward": 0.0,
+               "next_state": flat, "done": False})
+off.t_step = 32
+pred_before = {k: v.clone() for k, v in off.rnd_pred.state_dict().items()}
+losses = off.learn()
+assert losses["rnd"] == 0.0, losses
+for k, v in pred_before.items():
+    assert torch.equal(off.rnd_pred.state_dict()[k], v), k
+print("RND_DISABLE_OK")
+
 # --- pre-curiosity checkpoints still load (RND stays fresh) ---
 with tempfile.TemporaryDirectory() as tmp:
     path = os.path.join(tmp, "old.pt")

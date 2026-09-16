@@ -452,8 +452,8 @@ class TorchDQNAgent:
 
         # RND predictor chase: fit visited states toward the frozen target
         # (own optimizer -- curiosity representation stays independent of
-        # the Q-value trunk).
-        rnd_loss = self.update_rnd(states)
+        # the Q-value trunk). Skipped when curiosity is disabled.
+        rnd_loss = self.update_rnd(states) if self.rnd_lambda else 0.0
 
         # Periodically sync target network
         self.learn_step += 1
@@ -658,7 +658,8 @@ class TorchDQNAgent:
 
             # RND curiosity on the post-step observation (novel states pay
             # more; the predictor fit in learn() makes them familiar).
-            rnd_bonus = self.rnd_bonus(next_features)
+            # Skipped entirely when rnd_lambda is 0 ("disables" curiosity).
+            rnd_bonus = self.rnd_bonus(next_features) if self.rnd_lambda else 0.0
 
             # Store transition with all auxiliary targets
             self.store(
