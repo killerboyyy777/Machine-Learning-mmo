@@ -39,6 +39,32 @@ area:dashboard:
       - any-glob-to-any-file:
           - dashboard.html
 
+# area:market — player market, stalls, commissions, treasury
+area:market:
+  - changed-files:
+      - any-glob-to-any-file:
+          - server.py
+
+# area:quests — quests, givers, difficulty curve
+area:quests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - server.py
+          - world.json
+
+# area:conductor — large-scale orchestrator
+area:conductor:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ml/conductor/**/*
+
+# balance — economy/progression balance: faucets, sinks, exploits
+balance:
+  - changed-files:
+      - any-glob-to-any-file:
+          - server.py
+          - world.json
+
 # documentation — docs and guides
 documentation:
   - changed-files:
