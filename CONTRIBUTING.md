@@ -25,6 +25,11 @@ lanes follow the same workflow and [Code of Conduct](CODE_OF_CONDUCT.md).
    contract between server, dashboard, bots, and agents. Changing a
    command, event, or observation shape? Say so in the PR and update
    `README.md`, `dashboard.html`, and the ML env in the same PR.
+5. **Docs ship with the change.** Every PR updates the docs it affects
+   in the same PR -- no "docs later" PRs: `README.md`/wiki for behavior,
+   `CHANGELOG.md` Unreleased for anything user-visible, docstrings for
+   new modules/functions, `.github/` docs for workflow changes. A PR
+   with stale docs is not done.
 5. **Pre-commit hooks.** Install once (`pip install pre-commit &&
    pre-commit install`): black, ruff, mypy, and the fast test subset run
    on every commit (see `.pre-commit-config.yaml`).
