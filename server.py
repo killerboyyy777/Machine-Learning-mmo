@@ -9,6 +9,7 @@ import json
 import os
 import random
 import signal
+import sys
 import time
 import itertools
 from collections import deque
@@ -3159,6 +3160,12 @@ async def _run_resilient(task_name, coro_factory):
 
 
 async def main():
+    log_file = os.environ.get("TEXTMMO_LOG_FILE")
+    if log_file:
+        _logf = open(log_file, "a", buffering=1)
+        sys.stdout = _logf
+        sys.stderr = _logf
+        print(f"[server] logging to {log_file}", flush=True)
     start_dashboard()
     asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop))
     asyncio.create_task(_run_resilient("scores_save", scores_save_loop))

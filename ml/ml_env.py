@@ -543,7 +543,8 @@ class TextMMOEnv:
     -- including sharing party dungeons and trading on the same market."""
 
     def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
-                 reward_mode="score", curriculum_stage=3, curriculum_auto=False):
+                 reward_mode="score", curriculum_stage=3, curriculum_auto=False,
+                 connect_timeout=10.0, close_timeout=5.0, connect_retries=3):
         if reward_mode not in REWARD_MODES:
             raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
         if curriculum_stage not in (0, 1, 2, 3):
@@ -555,6 +556,12 @@ class TextMMOEnv:
         self.reward_mode = reward_mode
         self.curriculum_stage = curriculum_stage
         self.curriculum_auto = curriculum_auto
+        # reset() timeouts: a half-dead socket's close handshake (or a
+        # stalled listener's accept) must never wedge an agent task
+        # forever -- supervisor tasks have no other way out of reset().
+        self.connect_timeout = connect_timeout
+        self.close_timeout = close_timeout
+        self.connect_retries = connect_retries
         self.ws = None
         self._reader_task = None
         self._state = {
@@ -680,13 +687,36 @@ class TextMMOEnv:
     async def _send(self, cmd, **kwargs):
         await self.ws.send(json.dumps({"cmd": cmd, **kwargs}))
 
-    async def reset(self):
-        if self.ws is not None:
-            if self._reader_task:
-                self._reader_task.cancel()
-            await self.ws.close()
+    async def _close_ws(self):
+        """Drop the current socket, never hanging: cancel the reader, then
+        close with a timeout; abandon the socket on any failure."""
+        ws, self.ws = self.ws, None
+        if self._reader_task:
+            self._reader_task.cancel()
+            self._reader_task = None
+        if ws is None:
+            return
+        try:
+            await asyncio.wait_for(ws.close(), self.close_timeout)
+        except Exception:
+            pass
 
-        self.ws = await websockets.connect(self.url)
+    async def reset(self):
+        await self._close_ws()
+
+        last_error = None
+        for _ in range(max(1, self.connect_retries)):
+            try:
+                self.ws = await asyncio.wait_for(
+                    websockets.connect(self.url), self.connect_timeout)
+                break
+            except Exception as e:
+                last_error = e
+                self.ws = None
+        else:
+            raise ConnectionError(
+                f"{self.name}: connect failed after {self.connect_retries} tries: {last_error}")
+
         self._reader_task = asyncio.create_task(self._reader())
         await self._send("login", name=self.name)
         await self._send("stats")
@@ -902,10 +932,7 @@ class TextMMOEnv:
         return None
 
     async def close(self):
-        if self._reader_task:
-            self._reader_task.cancel()
-        if self.ws is not None:
-            await self.ws.close()
+        await self._close_ws()
 
     def _first_inv_typed(self, item_type, exclude_equipped=True):
         """First inventory display name of a given item type (or None).
