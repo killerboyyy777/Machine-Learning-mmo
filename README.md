@@ -67,3 +67,7 @@ The README is intentionally short — everything lives in the
 * [Code of Conduct](CODE_OF_CONDUCT.md) — Contributor Covenant v2.1.
 * [Security policy](SECURITY.md) — how to report vulnerabilities
   (privately, never in a public issue).
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
