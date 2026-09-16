@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Protocol versioning (#72): `PROTOCOL_VERSION = 1` on server and env,
+  sent on login and echoed in `welcome`; mismatches warn via
+  `version_match` in step info, old clients unaffected.
+- Eval statistics (#69): paired t-test (exact, no scipy), Cohen's d,
+  95% CI, SIGNIFICANT/INCONCLUSIVE verdicts, `--out run.json` records.
 
 ## 0.6 - conductor, agent variety, reliability, governance (2026-09-16)
 - P0 fix: trade_count double-count — each market fill now counts as one trade
