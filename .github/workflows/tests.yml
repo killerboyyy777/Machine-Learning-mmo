@@ -24,6 +24,7 @@ jobs:
       - run: python tests/test_pbt.py
       - run: python tests/test_curriculum.py
       - run: python tests/test_plugins.py
+      - run: python tests/test_env_reset.py
 
   live:
     name: Live protocol + ML env (fresh server, seed 700)
@@ -60,6 +61,7 @@ jobs:
       - run: python tests/test_persistence.py
       - run: python tests/test_rnd.py
       - run: python tests/test_runners.py
+      - run: python tests/test_eval_stats.py
 
   audit:
     name: Dependency audit (pip-audit)
