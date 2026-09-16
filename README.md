@@ -2,14 +2,10 @@
 
 [![Tests](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml/badge.svg)](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml)
 
-[![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsor-ea4aaa?logo=github-sponsors&style=flat-square)](https://github.com/sponsors/killerboyyy777)
-[![PayPal Donate](https://img.shields.io/badge/PayPal-Donate-00457c?logo=paypal&style=flat-square)](https://paypal.me/killerboyyy777)
-
 [![BTC Donate](https://img.shields.io/badge/BTC-Donate-f7931a?logo=bitcoin&style=flat-square)](https://www.blockchain.com/explorer/addresses/btc/bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg)
-[![ETH Donate](https://img.shields.io/badge/ETH-Donate-3c3c3d?logo=ethereum&style=flat-square)](https://etherscan.io/address/0x0)
 [![LTC Donate](https://img.shields.io/badge/LTC-Donate-a6a9aa?logo=litecoin&style=flat-square)](https://live.blockcypher.com/ltc/address/ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4)
 [![XMR Donate](https://img.shields.io/badge/XMR-Donate-ff6b35?logo=monero&style=flat-square)](https://xmrchain.net/address/82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2)
-[![USDC Donate](https://img.shields.io/badge/USDC-Donate-2775ca?logo=usd-coin&style=flat-square)](https://etherscan.io/token/0xa0b86a33e6441e6c7d3e4c5f6b8c8c8c8c8c8c8c)
+[![Steam Donate](https://img.shields.io/badge/Steam-Donate-000000?logo=steam&style=flat-square)](https://steamcommunity.com/tradeoffer/new/?partner=1211192445&token=T9Hiu3Oz)
 
 <details>
 <summary>📬 Addresses (click to expand)</summary>
@@ -17,7 +13,6 @@
 | Coin | Address | Explorer |
 |------|---------|----------|
 | **BTC** | `bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg` | [View](https://www.blockchain.com/explorer/addresses/btc/bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg) |
-| **ETH / USDC** | `0x0` (set your address) | [View](https://etherscan.io/address/0x0) |
 | **LTC** | `ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4` | [View](https://live.blockcypher.com/ltc/address/ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4) |
 | **XMR** | `82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2` | [View](https://xmrchain.net/address/82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2) |
 
