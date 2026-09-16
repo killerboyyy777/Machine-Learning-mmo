@@ -84,8 +84,13 @@ class AgentTask:
                 self.total_reward += episode_reward
                 yield {"agent_id": self.agent_id, "episode": self.episodes,
                        "reward": episode_reward, "steps": self.steps}
-        except Exception as e:
+        except Exception:
+            # Record, then re-raise: an escaping exception is a task-killing
+            # crash, and the supervisor (not this generator) owns the
+            # recovery policy + death accounting. CancelledError and
+            # GeneratorExit are BaseExceptions: they still pass through.
             self.last_error = traceback.format_exc()
+            raise
         finally:
             self.done.set()
 
@@ -111,7 +116,7 @@ class Supervisor:
     """Manages isolated agent tasks with fault recovery."""
 
     def __init__(self, registry, max_concurrent=50, mixer=None, floor_fn=None,
-                 step_timeout=None):
+                 step_timeout=None, metrics=None):
         self.registry = registry
         self.max_concurrent = max_concurrent
         # Mixer auto-integration (#51): every completed episode is fed to
@@ -119,8 +124,20 @@ class Supervisor:
         self._mixer = mixer
         self._floor_fn = floor_fn or _env_floor
         self._step_timeout = step_timeout
+        # Death accounting (#135): crashes and churn reaps are logged so
+        # soak metrics can tell *why* agents die, not just that they did.
+        self._metrics = metrics
         self._tasks = {}  # agent_id -> AgentTask
         self._lock = asyncio.Lock()
+
+    def _log_death(self, agent_id, episodes, total_reward, error=None):
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.log_agent_death(agent_id, episodes, total_reward,
+                                          error=error)
+        except Exception:
+            pass
 
     async def start_agent(self, agent_id, env_factory, policy_fn, max_steps=2000,
                           step_timeout=None):
@@ -155,6 +172,8 @@ class Supervisor:
             entry = self.registry.get(at.agent_id)
             if entry:
                 entry.alive = False
+            self._log_death(at.agent_id, at.episodes, at.total_reward,
+                            error=traceback.format_exc())
         finally:
             self._tasks.pop(at.agent_id, None)
 
@@ -175,7 +194,8 @@ class Supervisor:
 
     async def reap(self):
         """Stop tasks whose registry entry is dead or gone (churn deaths).
-        Returns the number of reaped tasks."""
+        Reaped agents get a death metric (no error: ended by churn, not by
+        crash). Returns the number of reaped tasks."""
         async with self._lock:
             dead = []
             for aid in self._tasks:
@@ -184,6 +204,8 @@ class Supervisor:
                     dead.append(aid)
             tasks = [self._tasks.pop(aid, None) for aid in dead]
         for at in tasks:
+            if at is not None:
+                self._log_death(at.agent_id, at.episodes, at.total_reward)
             await self._shutdown(at)
         return len(dead)
 

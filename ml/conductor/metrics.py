@@ -47,9 +47,12 @@ class MetricsLogger:
     def log_agent_spawn(self, agent_id, agent_type, branch):
         self.log("agent_spawn", agent_id=agent_id, agent_type=agent_type, branch=branch)
 
-    def log_agent_death(self, agent_id, episodes, total_reward):
+    def log_agent_death(self, agent_id, episodes, total_reward, error=None):
+        kw = {}
+        if error:
+            kw["error"] = str(error)[-500:]  # traceback tail, if any
         self.log("agent_death", agent_id=agent_id, episodes=episodes,
-                 total_reward=round(total_reward, 4))
+                 total_reward=round(total_reward, 4), **kw)
 
     def log_episode(self, agent_id, episode, reward, steps):
         self.log("episode", agent_id=agent_id, episode=episode,
