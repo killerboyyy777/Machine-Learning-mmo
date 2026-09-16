@@ -10,7 +10,6 @@ area:ml-env:
   - changed-files:
       - any-glob-to-any-file:
           - ml/**/*
-          - ml_env.py
 
 # area:torch-agents — PyTorch DQN agent and farm
 area:torch-agents:

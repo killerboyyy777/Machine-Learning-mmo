@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Launcher cleanup (#178): removed redundant `torch_bot_longterm.bat`
+  (one-liner subsumed by `torch_bot.bat --steps N`) and `torch_bots.bat`
+  (N processes, one checkpoint file — the last-writer-wins race
+  `torch_farm` exists to eliminate); `start.bat` now links
+  `torch_farm.bat`.
 - Soak lifecycle fixes: churn lifetimes count completed episodes
   (supervisor hook) instead of wall-clock ticks; wave startup sleeps
   differential delays (50 agents in ~9s, was 212s); mixer drops dead ids
