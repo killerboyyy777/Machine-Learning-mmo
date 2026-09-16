@@ -428,6 +428,37 @@ async def main():
     unplayer(filler)
     print("COMMISSION_VERIFY_OK")
 
+    # --- Commission cancel: poster cancels, half refund ---
+    canposter = mkplayer("CanPoster", 40020)
+    canposter.gold = 200
+    before_cids = set(srv._commissions)
+    await srv.cmd_commission_post(canposter, {"target": "wolf", "required_kills": 1, "reward_gold": 100, "reward_xp": 0})
+    ccid = max(set(srv._commissions) - before_cids)
+    assert canposter.gold == 100  # escrowed 100
+    await srv.cmd_commission_cancel(canposter, {"commission_id": ccid})
+    assert srv._commissions[ccid]["status"] == "cancelled"
+    assert canposter.gold == 150  # half refund: 50
+    # Non-poster cannot cancel
+    other = mkplayer("Other", 40021)
+    await srv.cmd_commission_cancel(other, {"commission_id": ccid})
+    assert inbox[-1]["type"] == "error"
+    unplayer(canposter)
+    unplayer(other)
+    print("COMMISSION_CANCEL_OK")
+
+    # --- Crafted equipment provides stat bonus ---
+    gearhead = mkplayer("Gearhead", 40022)
+    gearhead.inventory = ["wolf_pelt", "rat_tail", "rat_tail"]
+    base_atk = gearhead.attack
+    base_def = srv._player_defense(gearhead)
+    await srv.cmd_craft(gearhead, {"recipe": "reinforced_leather"})
+    assert "reinforced_leather" in gearhead.inventory
+    await srv.cmd_equip(gearhead, {"item": "reinforced leather"})
+    assert srv._player_defense(gearhead) == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
+    assert gearhead.armor == "reinforced_leather"
+    unplayer(gearhead)
+    print("CRAFTED_GEAR_OK")
+
     # death penalty scales with gold removed (flat floor when broke)
     broke = mkplayer("Broke", 40007)
     srv.get_score_entry("Broke")["score"] = 100.0
