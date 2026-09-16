@@ -21,6 +21,7 @@ echo.
 echo   Train the ML bot:    ml\ml_client.bat         (single agent)
 echo                        ml\ml_botfarm.bat       (N concurrent bots)
 echo                        torch_agents\torch_bot.bat      (PyTorch DQN, single agent)
+echo                        torch_agents\torch_farm.bat      (PyTorch DQN, N agents, shared policy)
 echo                        torch_agents\torch_batch_loop.bat (4 agents, repeat batches)
 echo   GM console:          the dashboard's GM tab  (local, no auth)
 echo.
