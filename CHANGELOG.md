@@ -301,6 +301,52 @@ All notable changes to the text MMO engine are recorded here.
   orders. `torch/dqn_agent.py` uses these for exact after-tax market P&L targets (buys
   cost full price, fills net price-minus-tax) instead of the old gold-delta
   proxy; stale `ml/` weights were reset for the new observation size.
+- P1 batch complete (#4-#11, merged): 24-unit carry cap with gated `drop`
+  action (N 48 → 49, `pack`/`pack_max` in stats), crafting profitability
+  assertions, quest unit tests, `server_config.json` overrides, ML reward
+  config (`ml/ml_config.json`), trimmed dashboard perf table, historical
+  player-count/score graphs (30s sampling, ~1hr buffer), crafting ML
+  support + verification tests, and the `ml/conductor` orchestrator
+  (registry, supervisor, churn, mixer, metrics).
+- Specialist reward modes (#36/#37): `TextMMOEnv(..., reward_mode=...)`
+  with `score` (default, unchanged), `xp` (raw XP + per-level bonus), and
+  `econ` (gold + inventory-value delta); tuned via `ml_config.json`.
+- Scripted baselines (#34): `GatherSell`, `DungeonClearer`,
+  `MarketFlipper`, `MarketMaker` behavior-tree policies
+  (`--scripted .../mixed`) as fixed RL comparisons; no learning.
+- RND curiosity (#35): frozen-target/predictor bonus riding the DQN TD
+  target (`--rnd-lambda 0` disables fully); predictor persists in
+  checkpoints with backward compat.
+- Population-based training (#38): exploit (copy winner weights) +
+  explore (mutate hyperparams), gated on episodes and fitness delta.
+- Conductor hardening (#45-52): supervisor step counter + watchdog
+  timeouts, registry full-precision rewards, package exports, async wave
+  fill, per-key config coercion warnings, automatic mixer integration,
+  and real `runners.py` (`make_env_factory`, linear/torch policies) so
+  the conductor actually runs agents.
+- Curriculum (#59): stages 0-3 (rats → dungeons → crafting → full
+  economy) with mask-level gating and score-threshold auto-advance;
+  default stage 3 behaves exactly as before.
+- Evaluation + provenance (#53/#54): checkpoints embed git SHA, config
+  hash, dims, timestamp; `python -m torch_agents.eval` runs fixed seeds
+  with mean/std and baseline deltas.
+- Ops (#55-58, #60): SIGTERM/SIGINT graceful shutdown (listeners close,
+  sockets close, scores save), `/health` endpoint, pre-commit
+  (black/ruff/mypy/fast tests), pip-audit CI job, nightly 50-agent soak
+  workflow with metrics artifacts.
+- Soak reliability fixes: bounded mixer rebalance (the old loop hung
+  forever on uniform input), ghost-proof disconnect cleanup
+  (`logged_in` cleared first, entry always popped), bounded env
+  close/connect with retries, supervisor closes envs on stop/reap (no
+  more ghost sockets), death/crash metrics in the supervisor, live-test
+  death-resilient dungeon section. 9-hour validation soak: PASS, 30/30
+  alive, 9,819 episodes, zero errors.
+- Governance + public launch: CoC (Covenant 2.1), CONTRIBUTING (dual
+  audience), SECURITY.md, CODEOWNERS, YAML issue forms, release-drafter
+  notes, Dependabot automerge (patch/minor), branch protection ruleset
+  (4 green CI checks, no force-push/deletion), canonical Apache-2.0
+  LICENSE (detected), wiki (9 guides) with README slimmed to an index.
+  Repo is public.
 
 ## 0.5 — parties, instanced dungeons, player market, GM mode, leveling (2026-09-14)
 
