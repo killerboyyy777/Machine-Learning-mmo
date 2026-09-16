@@ -1,0 +1,61 @@
+{
+  "_comment": "Server tuning overrides. Delete keys to use defaults. Restart server after changes.",
+
+  "scoring": {
+    "ACTION_WINDOW": 20,
+    "MIN_HISTORY_FOR_VARIETY": 5,
+    "MIN_VARIETY": 0.2,
+    "DIFFICULTY_K": 50.0,
+    "DEATH_PENALTY": 5.0,
+    "DEATH_GOLD_DROP_PCT": 40,
+    "DEATH_GOLD_LOST_PCT": 10,
+    "DEATH_SCORE_PER_GOLD_LOST": 0.1,
+    "SCORE_ENTRY_MAX": 2000,
+    "SCORE_ENTRY_TTL_SECONDS": 604800
+  },
+
+  "economy": {
+    "TAX_RATE": 0.10,
+    "TAX_MINIMUM": 1,
+    "MARKET_ORDER_SLOTS_BASE": 3,
+    "MARKET_SLOT_PRICE_BASE": 50,
+    "INVENTORY_CAP": 24,
+    "AMMO_EXEMPT_COUNT": 5
+  },
+
+  "leveling": {
+    "XP_BASE": 100,
+    "XP_GROWTH": 1.5,
+    "LEVEL_HP_PER_LEVEL": 5,
+    "LEVEL_ATK_PER_LEVEL": 1
+  },
+
+  "dungeon": {
+    "DUNGEON_BASE_HP": 20,
+    "DUNGEON_BASE_ATK": 4,
+    "DUNGEON_HP_GROWTH": 0.35,
+    "DUNGEON_ATK_GROWTH": 0.5,
+    "DUNGEON_MAX_FLOOR": 50,
+    "WARDEN_HP": 350,
+    "WARDEN_ATK": 28,
+    "WARDEN_GOLD": 150,
+    "WARDEN_RESPAWN_SECONDS": 600,
+    "PARTY_MAX_MEMBERS": 4
+  },
+
+  "quests": {
+    "QUEST_GUARD_XP": 50,
+    "QUEST_GUARD_GOLD": 25,
+    "QUEST_GUARD_POINTS": 15,
+    "QUEST_DELVER_XP": 30,
+    "QUEST_DELVER_GOLD": 15,
+    "QUEST_DELVER_POINTS": 10,
+    "QUEST_DELVER_FLOORS": 1,
+    "QUEST_REMEDY_XP": 20,
+    "QUEST_REMEDY_GOLD": 10,
+    "QUEST_REMEDY_POINTS": 8,
+    "QUEST_TONIC_XP": 40,
+    "QUEST_TONIC_GOLD": 20,
+    "QUEST_TONIC_POINTS": 12
+  }
+}

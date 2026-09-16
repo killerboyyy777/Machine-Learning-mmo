@@ -2,6 +2,10 @@
 
 [![Tests](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml/badge.svg)](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml)
 
+[![BTC Donate](https://img.shields.io/badge/BTC-Donate-f7931a?logo=bitcoin&style=flat-square)](https://www.blockchain.com/explorer/addresses/btc/bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg)
+[![LTC Donate](https://img.shields.io/badge/LTC-Donate-a6a9aa?logo=litecoin&style=flat-square)](https://live.blockcypher.com/ltc/address/ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4)
+[![Steam Donate](https://img.shields.io/badge/Steam-Donate-000000?logo=steam&style=flat-square)](https://steamcommunity.com/tradeoffer/new/?partner=1211192445&token=T9Hiu3Oz)
+
 A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
 loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a

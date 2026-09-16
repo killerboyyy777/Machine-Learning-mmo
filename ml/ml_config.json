@@ -1,0 +1,9 @@
+{
+  "_comment": "ML env tuning overrides. Delete keys to use defaults. Restart training after changes.",
+
+  "reward_shaping": {
+    "SOCIAL_PER_ALLY": 0.05,
+    "FORMATION_BONUS": 0.5,
+    "FORMATION_COOLDOWN_STEPS": 500
+  }
+}

@@ -85,7 +85,6 @@
   .cmd-gm_reward, .cmd-gm_buff, .cmd-gm_boss { color: #ff7b72; }
   .cmd-party_invite, .cmd-party_accept { color: #d2a8ff; }
   .empty { color: var(--dim); font-style: italic; }
-  .spark { display: block; }
   .statrow { display: flex; gap: 24px; flex-wrap: wrap; }
   .stat { min-width: 110px; }
   .stat .v { font-size: 20px; font-weight: bold; }
@@ -143,9 +142,9 @@
       <div class="panel">
         <h2>Performance</h2>
         <table>
-          <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th><th>trend</th>
+          <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
                  <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
-                 <th>variety</th><th>room</th><th>last</th></tr></thead>
+                 <th>room</th></tr></thead>
           <tbody id="perf"></tbody>
         </table>
         <p class="empty" id="noPerf" style="display:none">No online players.</p>
@@ -156,6 +155,13 @@
         <h2>Top 10 all time</h2>
         <table><thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th></tr></thead>
                <tbody id="scores"></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>History</h2>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><canvas id="histPlayers" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><canvas id="histScore" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+        </div>
       </div>
       <div class="panel">
         <h2>Live activity</h2>
@@ -176,7 +182,6 @@
     <div class="statrow">
       <div class="stat"><div class="v" id="m-treasury">-</div><div class="l">GM treasury</div></div>
       <div class="stat"><div class="v" id="m-lifetime">-</div><div class="l">tax collected (lifetime)</div></div>
-      <div class="stat"><div class="v" id="m-rate">-</div><div class="l">tax rate</div></div>
       <div class="stat"><div class="v" id="m-trades">-</div><div class="l">completed trades</div></div>
     </div>
   </div>
@@ -359,22 +364,6 @@ function hpbar(hp, max) {
   return `<span class="hpbar"><i class="${cls}" style="width:${pct}%"></i></span>`;
 }
 
-function sparkline(hist) {
-  if (!hist || hist.length < 2) return `<span class="dim">—</span>`;
-  const vals = hist.map(p => p[1]);
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const span = (max - min) || 1;
-  const w = 70, h = 18;
-  const pts = vals.map((v, i) => {
-    const x = (i / (vals.length - 1)) * w;
-    const y = h - 3 - ((v - min) / span) * (h - 6);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  const stroke = vals[vals.length-1] >= vals[0] ? "var(--good)" : "var(--bad)";
-  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-    <polyline points="${pts.join(" ")}" fill="none" stroke="${stroke}" stroke-width="1.5"/></svg>`;
-}
-
 function cmdClass(cmd) { return "cmd-" + cmd; }
 
 function exitEntries(room) {
@@ -489,14 +478,11 @@ function renderPerf(players) {
       <td>${esc(p.name)}</td>
       <td>${p.level ?? 1}</td>
       <td><b>${p.score.toFixed(1)}</b></td>
-      <td>${sparkline(p.score_history)}</td>
       <td>${p.kills}</td>
       <td>${p.deaths}</td>
       <td>${p.gold}</td>
       <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
-      <td>${p.variety.toFixed(2)}</td>
       <td>${esc(p.room)}</td>
-      <td>${esc(p.last_action)}</td>
     </tr>`).join("");
   $("noPerf").style.display = players.length ? "none" : "";
 }
@@ -504,6 +490,40 @@ function renderPerf(players) {
 function renderScores(scores) {
   $("scores").innerHTML = scores.slice(0, 10).map((s, i) => `
     <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${s.score.toFixed(1)}</b></td></tr>`).join("");
+}
+
+function drawLineChart(canvasId, values, color) {
+  const c = document.getElementById(canvasId);
+  if (!c || !values.length) return;
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = (max - min) || 1;
+  const pad = 4;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = (i / (values.length - 1)) * (W - pad * 2) + pad;
+    const y = H - pad - ((v - min) / span) * (H - pad * 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.15;
+  ctx.lineTo(W - pad, H - pad);
+  ctx.lineTo(pad, H - pad);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function renderHistory(history) {
+  if (!history || history.length < 2) return;
+  drawLineChart("histPlayers", history.map(h => h.players_online), "#79c0ff");
+  const topScore = history.map(h => (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0);
+  drawLineChart("histScore", topScore, "#d2a8ff");
 }
 
 function renderActivity(activity) {
@@ -519,7 +539,6 @@ function renderActivity(activity) {
 function renderMarket(m) {
   $("m-treasury").textContent = m.treasury.toFixed(1);
   $("m-lifetime").textContent = m.collected_lifetime.toFixed(1);
-  $("m-rate").textContent = Math.round(m.tax_rate * 100) + "% (min " + (m.tax_min ?? 1) + ")";
   $("m-trades").textContent = m.trade_count;
   $("g-treasury").textContent = m.treasury.toFixed(1);
   if (typeof updateGMCosts === "function") updateGMCosts();
@@ -623,6 +642,7 @@ function renderAll(s) {
     ["rooms", () => renderRooms(s.rooms || [])],
     ["performance", () => renderPerf(s.players || [])],
     ["scores", () => renderScores(s.scores || [])],
+    ["history", () => renderHistory(s.history || [])],
     ["activity", () => renderActivity(s.activity || [])],
     ["character tracker", () => renderTracker(s.players || [])],
     ["market", () => renderMarket(s.market || {orders: [], history: []})],

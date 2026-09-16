@@ -222,6 +222,29 @@ FORMATION_BONUS = 0.5  # one-time join/form bonus, times diminish ...
 FORMATION_COOLDOWN_STEPS = 500  # ... paid at most this often (env steps), so
 # leave/rejoin cycling can't farm it.
 
+# ---------------------------------------------------------------------------
+# Optional config file: ml_config.json overrides reward shaping constants.
+# ---------------------------------------------------------------------------
+_ML_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml_config.json")
+
+def _apply_ml_config():
+    if not os.path.isfile(_ML_CONFIG_FILE):
+        return
+    try:
+        with open(_ML_CONFIG_FILE) as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    g = globals()
+    for section in cfg.values():
+        if not isinstance(section, dict):
+            continue
+        for key, val in section.items():
+            if key in g:
+                g[key] = type(g[key])(val)
+
+_apply_ml_config()
+
 
 def market_tax(price):
     """Gold taken by the treasury on a sale at `price` (server formula:

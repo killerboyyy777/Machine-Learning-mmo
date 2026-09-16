@@ -89,6 +89,34 @@ XP_GROWTH = 1.5
 LEVEL_HP_PER_LEVEL = 5
 LEVEL_ATK_PER_LEVEL = 1
 
+# ---------------------------------------------------------------------------
+# Optional config file: server_config.json overrides any of the above
+# constants.  Delete a key (or the whole file) to fall back to the default.
+# ---------------------------------------------------------------------------
+CONFIG_FILE = join(dirname(abspath(__file__)), "server_config.json")
+
+def _apply_config():
+    """Load server_config.json and override matching global constants."""
+    if not os.path.isfile(CONFIG_FILE):
+        return
+    try:
+        with open(CONFIG_FILE) as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: could not load {CONFIG_FILE}: {e}")
+        return
+    import inspect as _inspect
+    g = globals()
+    for section in cfg.values():
+        if not isinstance(section, dict):
+            continue
+        for key, val in section.items():
+            if key in g:
+                g[key] = type(g[key])(val)  # coerce to original type
+    print(f"Config loaded from {os.path.basename(CONFIG_FILE)}")
+
+_apply_config()
+
 GM_BUFF_COST_PER_MINUTE = 50
 GM_BOSS_COST_PER_STRENGTH = 100
 GM_BUFF_MULT = 2.0
@@ -2759,6 +2787,9 @@ START_TIME = time.time()
 command_log = []
 track_log = {}
 _score_history = {}
+_dashboard_history = []  # [{ts, players_online, top_scores: [{name, score}]}]
+_HISTORY_SAMPLE_INTERVAL = 30  # seconds between samples
+_HISTORY_MAX_SAMPLES = 120     # ~1 hour of samples at 30s intervals
 
 
 def log_command(name, cmd, msg):
@@ -2891,6 +2922,7 @@ def world_snapshot():
         "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),
                     "items": sorted([v["name"] for v in ITEM_DEFS.values()]),
                     "rooms": sorted(list(ROOMS.keys()))},
+        "history": list(_dashboard_history),
     }
 
 
@@ -2906,8 +2938,24 @@ def refresh_snapshot_json():
 
 
 async def dashboard_refresh_loop():
+    last_sample = 0.0
     while True:
         await asyncio.sleep(SNAPSHOT_REFRESH_SECONDS)
+        now = time.time()
+        if now - last_sample >= _HISTORY_SAMPLE_INTERVAL:
+            last_sample = now
+            top = sorted(
+                [{"name": e.get("display_name", "?"), "score": round(e.get("score", 0), 2)}
+                 for e in SCORES.values()],
+                key=lambda x: x["score"], reverse=True,
+            )[:5]
+            _dashboard_history.append({
+                "ts": now,
+                "players_online": sum(1 for p in players.values() if p.logged_in),
+                "top_scores": top,
+            })
+            if len(_dashboard_history) > _HISTORY_MAX_SAMPLES:
+                del _dashboard_history[0]
         refresh_snapshot_json()
 
 

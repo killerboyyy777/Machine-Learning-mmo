@@ -428,6 +428,37 @@ async def main():
     unplayer(filler)
     print("COMMISSION_VERIFY_OK")
 
+    # --- Commission cancel: poster cancels, half refund ---
+    canposter = mkplayer("CanPoster", 40020)
+    canposter.gold = 200
+    before_cids = set(srv._commissions)
+    await srv.cmd_commission_post(canposter, {"target": "wolf", "required_kills": 1, "reward_gold": 100, "reward_xp": 0})
+    ccid = max(set(srv._commissions) - before_cids)
+    assert canposter.gold == 100  # escrowed 100
+    await srv.cmd_commission_cancel(canposter, {"commission_id": ccid})
+    assert srv._commissions[ccid]["status"] == "cancelled"
+    assert canposter.gold == 150  # half refund: 50
+    # Non-poster cannot cancel
+    other = mkplayer("Other", 40021)
+    await srv.cmd_commission_cancel(other, {"commission_id": ccid})
+    assert inbox[-1]["type"] == "error"
+    unplayer(canposter)
+    unplayer(other)
+    print("COMMISSION_CANCEL_OK")
+
+    # --- Crafted equipment provides stat bonus ---
+    gearhead = mkplayer("Gearhead", 40022)
+    gearhead.inventory = ["wolf_pelt", "rat_tail", "rat_tail"]
+    base_atk = gearhead.attack
+    base_def = srv._player_defense(gearhead)
+    await srv.cmd_craft(gearhead, {"recipe": "reinforced_leather"})
+    assert "reinforced_leather" in gearhead.inventory
+    await srv.cmd_equip(gearhead, {"item": "reinforced leather"})
+    assert srv._player_defense(gearhead) == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
+    assert gearhead.armor == "reinforced_leather"
+    unplayer(gearhead)
+    print("CRAFTED_GEAR_OK")
+
     # death penalty scales with gold removed (flat floor when broke)
     broke = mkplayer("Broke", 40007)
     srv.get_score_entry("Broke")["score"] = 100.0
@@ -449,6 +480,75 @@ async def main():
     print("DEATH_SCALE_OK")
 
     srv.send = orig_send
-    print("ALL_OK")
+
+    # --- Crafting recipe profitability: low-tier recipes should not destroy ---
+    # --- value; high-tier pinnacles (T4+) are prestige sinks by design.    ---
+    for rid, recipe in srv.RECIPES.items():
+        tier = recipe.get("tier", 0)
+        cat = recipe.get("category", "")
+        if cat in ("quest", "ammo") or tier >= 4:
+            continue
+        input_value = sum(srv.ITEM_DEFS.get(iid, {}).get("value", 0) * qty
+                         for iid, qty in recipe["inputs"].items())
+        output_qty = max(1, int(recipe.get("output_qty", 1)))
+        output_value = srv.ITEM_DEFS.get(recipe["result"], {}).get("value", 0) * output_qty
+        assert output_value >= input_value, (
+            f"Recipe {rid} (T{tier}) destroys value: inputs={input_value}, output={output_value}")
+    print("CRAFT_PROFITABILITY_OK")
+
+    # --- Quest system: list, accept, turn_in, giver check, repeat ---
+    srv.send = fake_send  # re-patch after GM tests restored orig_send
+    inbox.clear()
+    qtester = srv.Player(ws=FakeWS(), id=10010, name="Quester", logged_in=True)
+    qtester.room = "town_square"
+    srv.add_member(qtester)
+    qentry = srv.get_score_entry("Quester")
+
+    # List shows all quests
+    await srv.cmd_quest(qtester, {"action": "list"})
+    quest_list_msg = [m for m in inbox if "guard_charm" in m.get("text", "") and "delver" in m.get("text", "")]
+    assert quest_list_msg, "quest list should show guard_charm and delver"
+
+    # Accept requires giver present
+    qtester.room = "lumber_camp"  # no guard here
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    err_msgs = [m for m in inbox if m.get("type") == "error"]
+    assert err_msgs and "isn't here" in err_msgs[-1]["text"]
+    assert not qentry.get("quest_guard_active")
+
+    # Accept with giver present
+    qtester.room = "town_square"
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    assert qentry.get("quest_guard_active")
+    ok_msgs = [m for m in inbox if m.get("type") == "message" and "Ah" in m.get("text", "")]
+    assert ok_msgs
+
+    # Cannot accept same quest twice
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    dup_msgs = [m for m in inbox if m.get("type") == "message" and "already have" in m.get("text", "")]
+    assert dup_msgs
+
+    # Turn_in without conditions fails
+    await srv.cmd_quest(qtester, {"action": "turn_in", "quest": "guard_charm"})
+    fail_msgs = [m for m in inbox if m.get("type") == "message" and "haven't crafted" in m.get("text", "")]
+    assert fail_msgs
+
+    # Simulate charm crafted, turn_in succeeds
+    qentry["guard_charm_crafted"] = True
+    qtester.inventory.append(srv.QUEST_CHARM_RESULT)
+    old_xp = qentry["xp"]
+    old_gold = qtester.gold
+    await srv.cmd_quest(qtester, {"action": "turn_in", "quest": "guard_charm"})
+    assert not qentry.get("quest_guard_active")
+    assert qentry["quest_guard_completions"] == 1
+    assert qentry["xp"] > old_xp
+    assert qtester.gold > old_gold
+    assert srv.QUEST_CHARM_RESULT not in qtester.inventory
+
+    # Can repeat: accept again
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    assert qentry.get("quest_guard_active")
+    qentry["guard_charm_crafted"] = False
+    print("QUEST_OK")
 
 asyncio.run(main())
