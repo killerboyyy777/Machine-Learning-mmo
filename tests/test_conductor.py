@@ -111,6 +111,12 @@ ev1 = json.loads(lines[0])
 assert ev1["event"] == "agent_spawn" and ev1["agent_id"] == "a1"
 ev2 = json.loads(lines[1])
 assert ev2["event"] == "episode" and ev2["reward"] == 5.0
+# time-based auto-flush: flush_every=0 writes through immediately
+mlog2 = MetricsLogger(os.path.join(tmpdir, "t2.jsonl"),
+                      buffer_size=10000, flush_every=0)
+mlog2.log("ping")
+with open(os.path.join(tmpdir, "t2.jsonl")) as f:
+    assert len(f.readlines()) == 1
 print("METRICS_OK")
 
 # --- #45 supervisor steps counter increments per env step ---
@@ -152,7 +158,73 @@ assert len(cm_full.tick(1.0)) == 1  # fills the single slot
 cm_full._next_arrival = 0
 assert cm_full.tick(1.0) == []  # full: skipped, no RuntimeError
 assert len(r_full.alive_agents()) == 1
+# corpses don't wedge long runs: a dead slot is reusable for arrivals
+dead_id = r_full.alive_agents()[0].agent_id
+r_full.get(dead_id).alive = False
+cm_full._next_arrival = 0
+assert len(cm_full.tick(1.0)) == 1
+assert len(r_full.alive_agents()) == 1 and r_full.snapshot()["total"] == 2
 print("CHURN_FULL_OK")
+
+# --- rebalance always terminates: uniform no-signal hung the old loop ---
+import threading as _th
+
+mxu = Mixer(Registry(os.path.join(tmpdir, "mxu"), max_agents=50),
+            ["f1", "f2", "f3"])
+mxu._floor_rewards = {"f1": [0, 0], "f2": [0, 0], "f3": [0, 0]}
+mxu._floor_agents = {"f1": ["a", "b", "c"], "f2": ["d", "e", "f"],
+                     "f3": ["g", "h", "i"]}
+_out = []
+_t = _th.Thread(target=lambda: _out.append(mxu.rebalance()), daemon=True)
+_t.start()
+_t.join(timeout=5)
+assert not _t.is_alive(), "rebalance hung on uniform input"
+assert _out[0] == []  # nowhere to go: every floor is a donor, none a receiver
+assert sum(len(v) for v in mxu._floor_agents.values()) == 9  # conserved
+print("MIXER_NO_HANG_OK")
+
+# --- rebalance moves respect donor/receiver bounds ---
+mxb = Mixer(Registry(os.path.join(tmpdir, "mxb"), max_agents=50),
+            ["f1", "f2"])
+mxb._floor_rewards = {"f1": [10, 10, 10], "f2": [0, 0, 0]}
+mxb._floor_agents = {"f1": ["a"], "f2": ["b", "c", "d", "e", "f"]}
+moves = mxb.rebalance()
+assert sum(len(v) for v in mxb._floor_agents.values()) == 6  # conserved
+assert len(moves) == 4  # f2 surplus 4 -> f1 deficit
+assert all(m[1] == "f2" and m[2] == "f1" for m in moves)
+assert len(mxb._floor_agents["f1"]) == 5  # took up toward (not past) target
+assert len(mxb._floor_agents["f2"]) == 1  # gave down to (not below) target
+print("MIXER_BOUNDS_OK")
+
+# --- stopping tasks closes their envs (no ghost sockets) ---
+class _CloseEnv(_FakeEnv):
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+async def _stop_check():
+    r = Registry(os.path.join(tmpdir, "stop"), max_agents=5)
+    sup = Supervisor(r)
+    env = _CloseEnv()
+    await sup.start_agent("c1", lambda aid: env, lambda obs, aid: 0)
+    await asyncio.sleep(0.1)
+    assert "c1" in sup._tasks
+    await sup.stop_agent("c1")
+    assert "c1" not in sup._tasks and env.closed
+    # reap closes envs of churn-killed agents too
+    env2 = _CloseEnv()
+    r.register("c2", "linear")
+    await sup.start_agent("c2", lambda aid: env2, lambda obs, aid: 0)
+    await asyncio.sleep(0.1)
+    r.get("c2").alive = False
+    assert await sup.reap() == 1
+    assert env2.closed
+
+asyncio.run(_stop_check())
+print("STOP_CLOSES_ENV_OK")
 
 # --- assign_one spreads single arrivals across floors ---
 _mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),

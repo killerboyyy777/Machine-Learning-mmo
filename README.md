@@ -861,5 +861,13 @@ take it next time it is free.
 
 A token is purely your choice; it never affects gameplay, score, or the ML
 agent. In-game interaction with *other players' characters* via `attack`
-and other live commands is always allowed and unaffected — tokens
+and other live commands is always allowed and unaffected - tokens
 only prevent a different *script* from taking over someone's name.
+
+## Community
+
+* [Contributing guide](CONTRIBUTING.md) — workflow for non-coders and
+  researchers, protocol-stability rules, releases, labels/milestones.
+* [Code of Conduct](CODE_OF_CONDUCT.md) — Contributor Covenant v2.1.
+* [Security policy](SECURITY.md) — how to report vulnerabilities
+  (privately, never in a public issue).
