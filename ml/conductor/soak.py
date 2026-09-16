@@ -13,15 +13,40 @@ Nightly (CI):: see .github/workflows/soak.yml (50 agents, 1 hour).
 """
 import argparse
 import asyncio
+import faulthandler
 import json
 import os
 import sys
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ml.conductor.conductor import Conductor
 from ml.conductor.runners import make_env_factory, make_linear_policy
+
+
+def setup_file_logging(base_dir):
+    """Mirror all output into <base-dir>/soak.log and arm crash diagnostics.
+
+    faulthandler covers fatal crashes (segfault/abort); sys.excepthook and
+    the asyncio handler cover Python-level deaths; a periodic traceback
+    dump covers silent event-loop wedges. Returns the log file object."""
+    os.makedirs(base_dir, exist_ok=True)
+    logf = open(os.path.join(base_dir, "soak.log"), "a", buffering=1)
+    faulthandler.enable(file=logf)
+    # Hang watchdog: dump every 30min even when healthy -- the only trace
+    # a wedged loop leaves behind.
+    faulthandler.dump_traceback_later(1800, repeat=True, file=logf)
+
+    def _excepthook(t, v, tb):
+        logf.write("".join(traceback.format_exception(t, v, tb)))
+        logf.flush()
+
+    sys.excepthook = _excepthook
+    sys.stdout = logf
+    sys.stderr = logf
+    return logf
 
 
 def parse_args():
@@ -82,6 +107,15 @@ async def status_logger(cond, path, interval):
 
 async def main():
     args = parse_args()
+    logf = setup_file_logging(args.base_dir)
+    loop = asyncio.get_running_loop()
+
+    def _async_handler(loop, context):
+        logf.write(f"asyncio: {context.get('message')} "
+                   f"{context.get('exception', '')}\n")
+        logf.flush()
+
+    loop.set_exception_handler(_async_handler)
     ckpt = args.checkpoint
     if ckpt is None:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

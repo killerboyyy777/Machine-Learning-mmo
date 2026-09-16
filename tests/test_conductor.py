@@ -111,6 +111,12 @@ ev1 = json.loads(lines[0])
 assert ev1["event"] == "agent_spawn" and ev1["agent_id"] == "a1"
 ev2 = json.loads(lines[1])
 assert ev2["event"] == "episode" and ev2["reward"] == 5.0
+# time-based auto-flush: flush_every=0 writes through immediately
+mlog2 = MetricsLogger(os.path.join(tmpdir, "t2.jsonl"),
+                      buffer_size=10000, flush_every=0)
+mlog2.log("ping")
+with open(os.path.join(tmpdir, "t2.jsonl")) as f:
+    assert len(f.readlines()) == 1
 print("METRICS_OK")
 
 # --- #45 supervisor steps counter increments per env step ---
