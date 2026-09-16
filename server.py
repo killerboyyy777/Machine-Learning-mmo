@@ -393,23 +393,43 @@ def gather_nodes_in_room(room_id):
 # Scoring system
 # ---------------------------------------------------------------------------
 
+SCORES_BACKUP_GENERATIONS = 2  # rotated copies kept: scores.json.1 (+ .2)
+
+
 def load_scores():
-    try:
-        with open(SCORES_FILE) as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                return data
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+    # Prefer the primary file; fall back to rotated backups so one torn
+    # write or corrupt save never loses the whole world (#166).
+    candidates = [SCORES_FILE] + [f"{SCORES_FILE}.{i}"
+                                  for i in range(1, SCORES_BACKUP_GENERATIONS + 1)]
+    for path in candidates:
+        try:
+            with open(path) as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    if path != SCORES_FILE:
+                        print(f"Warning: {os.path.basename(SCORES_FILE)} missing/corrupt, "
+                              f"recovered from {os.path.basename(path)}")
+                    return data
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
     return {}
 
 
 def save_scores():
     # Atomic write: a kill mid-flush must never leave a truncated scores.json.
+    # The previous good copy rotates aside first, so there is always a
+    # fallback generation even if this write itself goes bad.
     tmp = SCORES_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
             json.dump(SCORES, f)
+        for i in range(SCORES_BACKUP_GENERATIONS, 0, -1):
+            src = SCORES_FILE if i == 1 else f"{SCORES_FILE}.{i - 1}"
+            if os.path.exists(src):
+                try:
+                    os.replace(src, f"{SCORES_FILE}.{i}")
+                except OSError:
+                    pass
         os.replace(tmp, SCORES_FILE)
     except OSError:
         pass
@@ -3225,7 +3245,27 @@ async def main():
         print("Scores saved. Bye.", flush=True)
 
 
+def parse_args(argv=None):
+    """CLI flags (#173). Host covers the game port and the dashboard HTTP
+    server together; the GM stream stays loopback-only regardless."""
+    import argparse
+    ap = argparse.ArgumentParser(description="Text MMO engine.")
+    ap.add_argument("--host", default=HOST,
+                    help="bind address for game + dashboard "
+                         "(default 0.0.0.0; use 127.0.0.1 for "
+                         "localhost-only training without firewall prompts)")
+    ap.add_argument("--port", type=int, default=PORT, help="game port")
+    ap.add_argument("--http-port", type=int, default=HTTP_PORT,
+                    help="dashboard port")
+    ap.add_argument("--gm-port", type=int, default=GM_PORT, help="GM port")
+    return ap.parse_args(argv)
+
+
 if __name__ == "__main__":
+    _args = parse_args()
+    HOST, PORT = _args.host, _args.port
+    HTTP_HOST, HTTP_PORT = _args.host, _args.http_port
+    GM_PORT = _args.gm_port
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, OSError) as e:
