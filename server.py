@@ -2967,6 +2967,11 @@ async def dashboard_refresh_loop():
                 "ts": now,
                 "players_online": sum(1 for p in players.values() if p.logged_in),
                 "top_scores": top,
+                # Market snapshot for volume charts (additive; old readers
+                # ignore unknown keys, so this never breaks the protocol).
+                "market_orders": len(market_orders),
+                "treasury": round(tax_treasury, 2),
+                "trades": sum(e.get("trades_completed", 0) for e in SCORES.values()),
             })
             if len(_dashboard_history) > _HISTORY_MAX_SAMPLES:
                 del _dashboard_history[0]
