@@ -61,8 +61,10 @@ class Conductor:
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
         self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d_10_f1"])
         self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
+        self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
         self.supervisor = Supervisor(self.registry, max_concurrent=max_agents,
-                                     mixer=self.mixer, metrics=self.metrics)
+                                     mixer=self.mixer, metrics=self.metrics,
+                                     episode_hook=self.churn.report_episode)
         # Slots (#152): weighted round-robin over agent kinds. `runners`
         # is a list of slot specs (plugin or raw); legacy `runner` is one
         # slot. Empty = track-only mode (no supervised tasks).
@@ -73,7 +75,6 @@ class Conductor:
         self._cycle = [i for i, s in enumerate(self._slots)
                        for _ in range(s["weight"])]
         self._cursor = 0
-        self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
         # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
         # enable exploit/explore rounds, or None to run without a population.
         self.pbt = PBTManager(self.registry, self.metrics, **pbt) if pbt is not None else None
@@ -90,18 +91,31 @@ class Conductor:
         return slot
 
     async def _maybe_start(self, agent_id):
-        """Start a supervised task for a fresh agent when slots are set."""
-        slot = self._next_slot()
-        if slot is None:
-            return
-        entry = self.registry.get(agent_id)
-        if entry is not None:
-            entry.agent_type = slot["agent_type"]
-        await self.supervisor.start_agent(
-            agent_id,
-            slot["env_factory"],
-            slot["policy_fn"],
-            step_timeout=slot.get("step_timeout"))
+        """Start a supervised task for a fresh agent.
+
+        Returns True when a task is running afterwards. Never raises: a
+        bad spawn is logged as spawn_error and skipped, so one raising
+        factory can't end the whole run.
+        """
+        try:
+            slot = self._next_slot()
+            if slot is None:
+                return False
+            entry = self.registry.get(agent_id)
+            if entry is not None:
+                entry.agent_type = slot["agent_type"]
+            return await self.supervisor.start_agent(
+                agent_id,
+                slot["env_factory"],
+                slot["policy_fn"],
+                step_timeout=slot.get("step_timeout"))
+        except Exception as e:
+            try:
+                self.metrics.log("spawn_error", agent_id=agent_id,
+                                 error=str(e)[-300:])
+            except Exception:
+                pass
+            return False
 
     def report_fitness(self, agent_id, fitness, episodes=1):
         """Feed an evaluation result into the PBT population (no-op when
@@ -132,10 +146,11 @@ class Conductor:
             await asyncio.sleep(delay)
             agent_id = self.churn._spawn_one()
             entry = self.registry.get(agent_id)
-            if entry:
+            # Log + assign only for agents that actually started: anything
+            # else is an alive-without-task ghost until churn reaps it.
+            if entry and await self._maybe_start(agent_id):
                 self.metrics.log_agent_spawn(agent_id, entry.agent_type, entry.branch)
                 self.mixer.assign_one(agent_id)
-                await self._maybe_start(agent_id)
             wave_count += 1
             if wave_count % wave_size == 0:
                 alive = len(self.registry.alive_agents())
@@ -159,9 +174,9 @@ class Conductor:
             arrived = self.churn.tick(1.0)
             for aid in arrived:
                 entry = self.registry.get(aid)
-                if entry:
+                if entry and await self._maybe_start(aid):
                     self.metrics.log_agent_spawn(aid, entry.agent_type, entry.branch)
-                    await self._maybe_start(aid)
+                    self.mixer.assign_one(aid)
             await self.supervisor.reap()
 
             # Periodic rebalance

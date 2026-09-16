@@ -14,6 +14,7 @@ import ml.conductor as cond
 from ml.conductor import (
     AgentTask,
     ChurnManager,
+    Conductor,
     MetricsLogger,
     Mixer,
     Registry,
@@ -67,10 +68,14 @@ assert all(l >= 1 for l in lifetimes)
 assert 30 < sum(lifetimes) / len(lifetimes) < 80
 delays = list(wave_startup(25, 10, 5.0))
 assert len(delays) == 25
+assert all(d >= 0 for d in delays)
 assert delays[10] > delays[9]
+# Differential scheduling: 50 agents in waves of 10 every 2s starts
+# in ~8.6s total, not the 212s the old absolute-then-sum behavior took.
+assert sum(wave_startup(50, 10, 2.0)) < 60.0
 print("CHURN_HELPERS_OK")
 
-# --- ChurnManager tick ---
+# --- ChurnManager tick (arrivals only; deaths come from episodes) ---
 reg3 = Registry(os.path.join(tmpdir, "reg3"), max_agents=5)
 cm = ChurnManager(reg3, arrivals_per_minute=1000, mean_lifetime_episodes=2)
 cm._next_arrival = 0
@@ -78,10 +83,17 @@ arrived = cm.tick(1.0)
 assert len(arrived) == 1
 aid = arrived[0]
 assert reg3.get(aid) is not None
-cm._lifetimes[aid] = 1
+# Ticking alone never kills, however many ticks pass...
 cm._next_arrival = float("inf")
-cm.tick(1.0)
+for _ in range(50):
+    cm.tick(1.0)
+assert reg3.get(aid).alive
+# ...only completed episodes age lifetimes (forced to 1, one report kills)
+cm._lifetimes[aid] = 1
+assert cm.report_episode(aid) is True
 assert not reg3.get(aid).alive
+assert cm.report_episode(aid) is False  # unknown/gone ids are safe
+assert cm.report_episode("nobody") is False
 print("CHURN_TICK_OK")
 
 # --- Mixer ---
@@ -179,6 +191,7 @@ assert cm_full.tick(1.0) == []  # full: skipped, no RuntimeError
 assert len(r_full.alive_agents()) == 1
 # corpses don't wedge long runs: a dead slot is reusable for arrivals
 dead_id = r_full.alive_agents()[0].agent_id
+assert cm_full.report_episode(dead_id) is False  # long lifetime: no death yet
 r_full.get(dead_id).alive = False
 cm_full._next_arrival = 0
 assert len(cm_full.tick(1.0)) == 1
@@ -304,6 +317,50 @@ async def _reap_death_check():
 assert asyncio.run(_reap_death_check())
 print("DEATH_REAP_OK")
 
+# --- start_agent reports status; bad factories never propagate ---
+async def _start_status():
+    r = Registry(os.path.join(tmpdir, "st"), max_agents=5)
+    sup = Supervisor(r, max_concurrent=1)
+    env = _FakeEnv()
+
+    def boom(aid):
+        raise RuntimeError("factory exploded")
+
+    assert await sup.start_agent("ok", lambda aid: env, lambda o, a: 0) is True
+    assert await sup.start_agent("ok", lambda aid: env, lambda o, a: 0) is False
+    assert await sup.start_agent("full", lambda aid: env, lambda o, a: 0) is False
+    assert await sup.start_agent("boom", boom, lambda o, a: 0) is False
+    await sup.stop_all()
+
+asyncio.run(_start_status())
+print("START_STATUS_OK")
+
+
+async def _maybe_start_check():
+    import tempfile as _tf
+
+    tmp2 = _tf.mkdtemp()
+    cond = Conductor(os.path.join(tmp2, "c"), max_agents=5, runners=[
+        {"env_factory": lambda aid: (_ for _ in ()).throw(RuntimeError("x")),
+         "policy_fn": lambda o, a: 0},
+    ])
+    cond.registry.register("z1", "linear")
+    # raising factory: False, no exception, nothing logged/assigned
+    assert await cond._maybe_start("z1") is False
+    assert cond.mixer._floor_agents == {"town_square": [], "graveyard": [],
+                                        "d_10_f1": []}
+    # healthy slot: True
+    cond2 = Conductor(os.path.join(tmp2, "c2"), max_agents=5, runners=[
+        {"plugin": "gather"},
+    ])
+    cond2.registry.register("z2", "linear")
+    assert await cond2._maybe_start("z2") is True
+    assert cond2.registry.get("z2").agent_type == "scripted"
+    await cond2.supervisor.stop_all()
+
+asyncio.run(_maybe_start_check())
+print("MAYBE_START_OK")
+
 # --- assign_one spreads single arrivals across floors ---
 _mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),
              ["f1", "f2", "f3"])
@@ -321,6 +378,23 @@ async def _fill():
 
 asyncio.run(_fill())
 print("WAVE_FILL_ASYNC_OK")
+
+# --- supervisor episodes age churn lifetimes (episode, not wall-clock) ---
+async def _hook_check():
+    r = Registry(os.path.join(tmpdir, "hook"), max_agents=5)
+    cm = ChurnManager(r, arrivals_per_minute=0)
+    sup = Supervisor(r, episode_hook=cm.report_episode)
+    aid = cm._spawn_one()
+    cm._lifetimes[aid] = 2
+    env = _FakeEnv()
+    await sup.start_agent(aid, lambda i: env, lambda obs, x: 0)
+    await asyncio.sleep(0.4)
+    # episodes completed -> lifetime charged down (2 -> 1 -> 0 -> dead)
+    assert r.get(aid).alive is False
+    await sup.stop_all()
+
+asyncio.run(_hook_check())
+print("EPISODE_HOOK_OK")
 
 # --- #50 watchdog: hung env.step ends the episode instead of wedging ---
 import time as _time
@@ -357,6 +431,9 @@ async def _sup_mixer():
     assert len(mx._floor_rewards["town_square"]) > 0
     assert mx.snapshot()["town_square"]["mean_reward"] == 1.0
     await sup.stop_all()
+    # ended tasks leave no corpses in floor lists
+    assert mx._floor_agents == {"town_square": []}
+    assert mx.snapshot()["town_square"]["agents"] == 0
 
 asyncio.run(_sup_mixer())
 print("MIXER_AUTO_OK")
