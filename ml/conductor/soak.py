@@ -13,8 +13,10 @@ Nightly (CI):: see .github/workflows/soak.yml (50 agents, 1 hour).
 """
 import argparse
 import asyncio
+import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -40,7 +42,42 @@ def parse_args():
     p.add_argument("--wave-delay", type=float, default=2.0, help="seconds between waves")
     p.add_argument("--checkpoint", default=None,
                    help="linear weights (default: ml/ml_best.json when present)")
+    p.add_argument("--status-every", type=float, default=300.0,
+                   help="seconds between status snapshots (0 disables)")
+    p.add_argument("--status-file", default=None,
+                   help="JSONL status log (default: <base-dir>/soak_status.jsonl)")
     return p.parse_args()
+
+
+def summarize(cond):
+    """Lean status snapshot for the overnight log (aggregates only -- the
+    full per-agent registry is saved by the conductor at the end)."""
+    st = cond.status()
+    agents = st["registry"]["agents"]
+    episodes = sum(a["episodes"] for a in agents)
+    mean_r = (sum(a["mean_reward"] * a["episodes"] for a in agents)
+              / max(1, episodes))
+    return {
+        "ts": time.time(),
+        "uptime": round(st["uptime"], 1),
+        "alive": st["registry"]["alive"],
+        "total": st["registry"]["total"],
+        "episodes": episodes,
+        "mean_reward": round(mean_r, 4),
+        "supervisor_running": st["supervisor"]["running"],
+        "mixer": st["mixer"],
+    }
+
+
+async def status_logger(cond, path, interval):
+    """Append summarize() lines until the run ends, plus a final snapshot."""
+    await asyncio.sleep(min(interval, 5.0))
+    while cond.status()["running"]:
+        with open(path, "a") as f:
+            f.write(json.dumps(summarize(cond)) + "\n")
+        await asyncio.sleep(interval)
+    with open(path, "a") as f:
+        f.write(json.dumps(summarize(cond)) + "\n")
 
 
 async def main():
@@ -59,11 +96,17 @@ async def main():
     cond = Conductor(args.base_dir, max_agents=args.agents,
                      arrivals_per_minute=args.arrivals,
                      mean_lifetime_episodes=args.lifetime, runner=runner)
+    status_file = args.status_file or os.path.join(args.base_dir,
+                                                   "soak_status.jsonl")
     print(f"[soak] {args.agents} agents for {args.duration:.0f}s "
-          f"(checkpoint={ckpt or 'fresh'})")
+          f"(checkpoint={ckpt or 'fresh'})", flush=True)
+    print(f"[soak] settings: {vars(args)}", flush=True)
+    tasks = [cond.run(duration_seconds=args.duration, wave_size=args.wave_size,
+                      wave_delay=args.wave_delay)]
+    if args.status_every > 0:
+        tasks.append(status_logger(cond, status_file, args.status_every))
     try:
-        await cond.run(duration_seconds=args.duration, wave_size=args.wave_size,
-                       wave_delay=args.wave_delay)
+        await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         print("[soak] Interrupted, shutting down...")
         cond.stop()

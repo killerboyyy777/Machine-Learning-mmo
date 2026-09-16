@@ -152,6 +152,12 @@ assert len(cm_full.tick(1.0)) == 1  # fills the single slot
 cm_full._next_arrival = 0
 assert cm_full.tick(1.0) == []  # full: skipped, no RuntimeError
 assert len(r_full.alive_agents()) == 1
+# corpses don't wedge long runs: a dead slot is reusable for arrivals
+dead_id = r_full.alive_agents()[0].agent_id
+r_full.get(dead_id).alive = False
+cm_full._next_arrival = 0
+assert len(cm_full.tick(1.0)) == 1
+assert len(r_full.alive_agents()) == 1 and r_full.snapshot()["total"] == 2
 print("CHURN_FULL_OK")
 
 # --- assign_one spreads single arrivals across floors ---
