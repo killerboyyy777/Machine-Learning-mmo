@@ -60,10 +60,14 @@ No code required:
 
 ## Branch protection
 
-`master` requires 1 review + green CI, no force pushes, no deletions
-(enabled when the repo goes public / Pro; until then this is convention,
-enforced by review). To (re)apply the rule programmatically after repo
-creation or transfer, run:
+`master` is guarded by the "Master Branch Protection" ruleset: PR merges
+need the 4 green CI checks on an up-to-date branch, force pushes and
+deletions are forbidden. Solo-dev note: there is deliberately NO approval
+requirement -- the owner cannot approve their own PRs, so any count above
+0 deadlocks every merge (verified the hard way); re-add
+`required_approving_review_count` when a second human joins. Convention
+remains branches + PRs + green CI; `gh pr merge --squash` once clean. To
+(re)apply the rule programmatically after repo creation or transfer, run:
 
 ```bash
 bash scripts/enable-protection.sh
