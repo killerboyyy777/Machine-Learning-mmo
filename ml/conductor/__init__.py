@@ -8,5 +8,6 @@ Architecture:
   - Supervisor: per-task isolation, crash recovery, episode management
   - Churn: Poisson arrivals, geometric lifetimes, wave-based startup
   - Mixer: adaptive cell reallocation across dungeon floors
+  - PBT: population-based training (exploit best weights, explore hparams)
   - Metrics: JSONL event stream for offline analysis
 """

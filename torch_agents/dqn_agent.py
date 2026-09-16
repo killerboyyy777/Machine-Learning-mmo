@@ -36,7 +36,9 @@ Key design:
     (Q-values, gold, loot, market-value, quest-value)
   - Training: experience replay; online TD update per step with
     auxiliary losses
-  - Exploration: epsilon-greedy with linear decay
+  - Exploration: epsilon-greedy with linear decay, plus RND curiosity
+  (frozen random target vs trained predictor; normalized prediction error
+  rides the TD target with weight rnd_lambda, predictor trains separately)
 - Save/load weights to torch_agents/ml_weights.json (torch.save format, separate
      from the JSON weights used by ml_client.py). Note: adding quest dims
      changed OBS_SIZE/N_ACTIONS, so checkpoints saved before quests need
@@ -69,6 +71,25 @@ from ml_env import (
 def _fmt_loss(v) -> str:
     """Format a loss component that is None while the replay buffer warms up."""
     return f"{v:.3f}" if v is not None else "warmup"
+
+# ---------------------------------------------------------------------------
+# Random Network Distillation (curiosity) -- see TorchDQNAgent below
+# ---------------------------------------------------------------------------
+
+class RNDNet(nn.Module):
+    """Small MLP embedding observations into a k-dim curiosity space."""
+
+    def __init__(self, obs_size: int, hidden: int = 128, out_dim: int = 32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_size, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, out_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
 
 # ---------------------------------------------------------------------------
 # Q-Network architecture with auxiliary heads + market value head
@@ -168,6 +189,11 @@ class TorchDQNAgent:
         intrinsic_lambda: float = 1.0,  # weight for quest exploration bonus
         intrinsic_accept: float = 1.0,  # bonus on quest accept (per cycle)
         intrinsic_progress: float = 2.0,  # bonus on charm craft / delver ready
+        rnd_lambda: float = 0.1,  # weight for RND curiosity bonus
+        rnd_hidden: int = 128,  # RND embedding width
+        rnd_dim: int = 32,  # RND embedding size
+        rnd_lr: float = 1e-3,  # RND predictor learning rate
+        rnd_ema: float = 0.01,  # running-stat momentum for bonus norm
     ):
         self.name = name
         self.url = url
@@ -198,6 +224,24 @@ class TorchDQNAgent:
         self.intrinsic_lambda = intrinsic_lambda
         self.intrinsic_accept = intrinsic_accept
         self.intrinsic_progress = intrinsic_progress
+
+        # RND curiosity (Random Network Distillation): a frozen random
+        # target net plus a predictor trained on visited states. Prediction
+        # error is high in rarely-seen areas (dungeons, crafting chains)
+        # and decays as they become familiar -- a pure exploration bonus
+        # that complements the quest-gated bonus above. Normalized by a
+        # running error std so the scale stays stable through training.
+        self.rnd_lambda = rnd_lambda
+        self.rnd_ema = rnd_ema
+        self.rnd_target = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(self.device)
+        self.rnd_target.eval()
+        for p in self.rnd_target.parameters():
+            p.requires_grad_(False)
+        self.rnd_pred = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(self.device)
+        self.rnd_opt = optim.Adam(self.rnd_pred.parameters(), lr=rnd_lr)
+        self._rnd_lr = rnd_lr
+        self._rnd_mean = 0.0
+        self._rnd_var = 1.0
 
         self.replay: list = [None] * replay_size
         self.replay_idx = 0
@@ -244,6 +288,37 @@ class TorchDQNAgent:
             best = max(valid, key=lambda a: float(q_vals[a].item()))
         return int(best)
 
+    # ---- RND curiosity ------------------------------------------------------
+
+    def _rnd_error(self, x: torch.Tensor) -> torch.Tensor:
+        """Per-row mean-squared prediction error (no grad)."""
+        with torch.no_grad():
+            target = self.rnd_target(x)
+        pred = self.rnd_pred(x)
+        return ((pred - target) ** 2).mean(dim=1)
+
+    def rnd_bonus(self, features: list[float]) -> float:
+        """Normalized curiosity bonus for one observation. Updates the
+        running error stats online, so repeated states pay less."""
+        x = torch.tensor([features], dtype=torch.float32, device=self.device)
+        raw = float(self._rnd_error(x).item())
+        self._rnd_mean += self.rnd_ema * (raw - self._rnd_mean)
+        self._rnd_var += self.rnd_ema * ((raw - self._rnd_mean) ** 2 - self._rnd_var)
+        std = max(1e-4, self._rnd_var ** 0.5)
+        return max(0.0, (raw - self._rnd_mean) / std)
+
+    def update_rnd(self, states: torch.Tensor) -> float:
+        """One predictor step toward the frozen target on a batch of
+        states. Returns the mean predictor loss."""
+        self.rnd_pred.train()
+        self.rnd_opt.zero_grad()
+        with torch.no_grad():
+            target = self.rnd_target(states)
+        loss = nn.functional.mse_loss(self.rnd_pred(states), target)
+        loss.backward()
+        self.rnd_opt.step()
+        return float(loss.detach())
+
     # ---- storage ------------------------------------------------------------
 
     def store(self, transition: dict) -> None:
@@ -286,17 +361,20 @@ class TorchDQNAgent:
         Returns a dict of loss components for logging."""
         # Buffer warm-up
         if self.t_step < self.replay_size:
-            return {"td": None, "gold": None, "loot": None, "market": None, "quest": None}
+            return {"td": None, "gold": None, "loot": None, "market": None,
+                    "quest": None, "rnd": None}
 
         # Sample minibatch
         available = [i for i, t in enumerate(self.replay) if t is not None]
         if len(available) < self.batch_size:
-            return {"td": None, "gold": None, "loot": None, "market": None, "quest": None}
+            return {"td": None, "gold": None, "loot": None, "market": None,
+                    "quest": None, "rnd": None}
         indices = random.sample(available, self.batch_size)
         batch = [self.replay[i] for i in indices if self.replay[i] is not None]
 
         if len(batch) < self.batch_size:
-            return {"td": None, "gold": None, "loot": None, "market": None, "quest": None}
+            return {"td": None, "gold": None, "loot": None, "market": None,
+                    "quest": None, "rnd": None}
 
         # ---- build tensors from batch ----
         states = torch.tensor(
@@ -331,13 +409,19 @@ class TorchDQNAgent:
         intrinsic_targets = torch.tensor(
             [b.get("quest_intrinsic", 0.0) for b in batch], dtype=torch.float32, device=self.device
         )
+        rnd_targets = torch.tensor(
+            [b.get("rnd_bonus", 0.0) for b in batch], dtype=torch.float32, device=self.device
+        )
 
         # ---- current Q-values for the actions taken ----
         # (forward() returns a dict of heads; Q-values live under "q")
         q_vals = self.q.get_q(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # ---- TD target on the shaped reward ----
-        shaped = rewards + self.intrinsic_lambda * intrinsic_targets
+        # r = score + quest-intrinsic + RND curiosity (both exploration
+        # bonuses ride the TD target; the predictor itself trains below).
+        shaped = (rewards + self.intrinsic_lambda * intrinsic_targets
+                  + self.rnd_lambda * rnd_targets)
         with torch.no_grad():
             target_q = self.target.get_q(next_states).max(1)[0]
             td_targets = shaped + self.gamma * target_q * (1.0 - dones)
@@ -366,6 +450,11 @@ class TorchDQNAgent:
         total_loss.backward()
         self.optimizer.step()
 
+        # RND predictor chase: fit visited states toward the frozen target
+        # (own optimizer -- curiosity representation stays independent of
+        # the Q-value trunk).
+        rnd_loss = self.update_rnd(states)
+
         # Periodically sync target network
         self.learn_step += 1
         if self.learn_step % 100 == 0:
@@ -377,6 +466,7 @@ class TorchDQNAgent:
             "loot": float(loot_loss.detach()),
             "market": float(market_loss.detach()),
             "quest": float(quest_loss.detach()),
+            "rnd": rnd_loss,
         }
 
     # ---- weight persistence -------------------------------------------------
@@ -389,6 +479,10 @@ class TorchDQNAgent:
             "q_state_dict": self.q.state_dict(),
             "target_state_dict": self.target.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "rnd_pred_state_dict": self.rnd_pred.state_dict(),
+            "rnd_opt_state_dict": self.rnd_opt.state_dict(),
+            "rnd_mean": self._rnd_mean,
+            "rnd_var": self._rnd_var,
             "epsilon": self._epsilon(),
             "training_steps": self.t_step,
             "learn_step": self.learn_step,
@@ -415,6 +509,20 @@ class TorchDQNAgent:
                 self.target.load_state_dict(self.q.state_dict())
             if "optimizer_state_dict" in ckpt:
                 self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            # RND state: absent in pre-curiosity checkpoints (keep fresh),
+            # shape-mismatched after RND resizing (keep fresh, warn below).
+            if "rnd_pred_state_dict" in ckpt:
+                try:
+                    self.rnd_pred.load_state_dict(ckpt["rnd_pred_state_dict"])
+                except RuntimeError as e:
+                    print(f"RND predictor shape changed, starting fresh: {e}")
+            if "rnd_opt_state_dict" in ckpt:
+                try:
+                    self.rnd_opt.load_state_dict(ckpt["rnd_opt_state_dict"])
+                except (RuntimeError, ValueError, KeyError):
+                    pass
+            self._rnd_mean = float(ckpt.get("rnd_mean", 0.0))
+            self._rnd_var = float(ckpt.get("rnd_var", 1.0))
             self.t_step = int(ckpt.get("training_steps", 0))
             self.learn_step = int(ckpt.get("learn_step", 0))
             self.best_score = float(ckpt.get("best_score", self.best_score))
@@ -548,6 +656,10 @@ class TorchDQNAgent:
                 quest_intrinsic += self.intrinsic_progress
             intrinsic_total += quest_intrinsic
 
+            # RND curiosity on the post-step observation (novel states pay
+            # more; the predictor fit in learn() makes them familiar).
+            rnd_bonus = self.rnd_bonus(next_features)
+
             # Store transition with all auxiliary targets
             self.store(
                 {
@@ -561,6 +673,7 @@ class TorchDQNAgent:
                     "market_pnl": market_pnl,
                     "quest_reward": quest_reward,
                     "quest_intrinsic": quest_intrinsic,
+                    "rnd_bonus": rnd_bonus,
                 }
             )
 
@@ -575,7 +688,8 @@ class TorchDQNAgent:
             if self.t_step >= self.replay_size:
                 losses = self.learn()
             else:
-                losses = {"td": None, "gold": None, "loot": None, "market": None, "quest": None}
+                losses = {"td": None, "gold": None, "loot": None, "market": None,
+                          "quest": None, "rnd": None}
 
             # Log every 50 steps
             if self.t_step % 50 == 0:
@@ -586,7 +700,7 @@ class TorchDQNAgent:
                     f"room={obs['room_id']}  quest={obs.get('quest_stage', '?')}/{obs.get('quest2_stage', '?')}  "
                     f"quests(acc/turn)={quest_accepts}/{quest_turnins} "
                     f"delver(acc/turn)={quest2_accepts}/{quest2_turnins} intr={intrinsic_total:.1f}  "
-                    f"losses(TD/Gold/Loot/Mkt/Qst)={_fmt_loss(losses['td'])}/{_fmt_loss(losses['gold'])}/{_fmt_loss(losses['loot'])}/{_fmt_loss(losses['market'])}/{_fmt_loss(losses['quest'])}"
+                    f"losses(TD/Gold/Loot/Mkt/Qst/Rnd)={_fmt_loss(losses['td'])}/{_fmt_loss(losses['gold'])}/{_fmt_loss(losses['loot'])}/{_fmt_loss(losses['market'])}/{_fmt_loss(losses['quest'])}/{_fmt_loss(losses['rnd'])}"
                 )
 
             # Save checkpoint + best-model snapshot
@@ -659,12 +773,15 @@ def main():
     parser.add_argument("--url", default="ws://localhost:8765", help="game WebSocket URL")
     parser.add_argument("--steps", type=int, default=2000, help="total training steps this run")
     parser.add_argument("--save-every", type=int, default=500, help="checkpoint weights every N steps")
+    parser.add_argument("--rnd-lambda", type=float, default=0.1, help="RND curiosity weight (0 disables)")
+    parser.add_argument("--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate")
     args = parser.parse_args()
 
     if args.demo:
         asyncio.run(_demo())
         return
-    agent = TorchDQNAgent(name=args.name, url=args.url)
+    agent = TorchDQNAgent(name=args.name, url=args.url,
+                          rnd_lambda=args.rnd_lambda, rnd_lr=args.rnd_lr)
     agent.load_weights()
     asyncio.run(agent.train(total_steps=args.steps, save_every=args.save_every))
 

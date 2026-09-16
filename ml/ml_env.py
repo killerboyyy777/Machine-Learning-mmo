@@ -8,7 +8,7 @@ file only exists to turn that protocol into fixed-size numeric observations
 and a small discrete action space, which is the part an RL agent actually
 needs and a hand-written bot doesn't.
 
-Reward is simply the change in the server's own `score` between steps --
+Reward defaults to the change in the server's own `score` between steps --
 including any assist payouts from other players' kills that land on you
 asynchronously. This means an RL agent trained against this env is directly
 optimizing the same score an anti-hardcoding curve already governs (see
@@ -18,6 +18,12 @@ scripted): a per-ally bonus while grouped and a one-time bonus on
 joining/forming a party (cooldown-gated so leave/rejoin cycling can't farm
 it). Both scale with `diminish_factor`, mirroring the server's difficulty
 curve, so they track the score signal instead of dwarfing it late in a run.
+
+Specialist reward modes (constructor flag `reward_mode`, same obs/actions):
+"xp" pays raw XP gained plus XP_LEVEL_BONUS per level-up (pure combat/quest
+agent, ignores gold); "econ" pays gold_delta plus ECON_INV_LAMBDA times the
+merchant-value delta of carried items (pure market/craft/loot agent, ignores
+XP). Both are tuned via ml_config.json like the social terms.
 
 The observation covers everything a fixed-size vector can reasonably carry
 about the 0.5 systems (instanced party dungeons, the player market, parties,
@@ -222,6 +228,17 @@ FORMATION_BONUS = 0.5  # one-time join/form bonus, times diminish ...
 FORMATION_COOLDOWN_STEPS = 500  # ... paid at most this often (env steps), so
 # leave/rejoin cycling can't farm it.
 
+# Specialist reward modes (reward only -- observation/action space unchanged).
+# "score" (default): change in server score + group-play shaping above.
+# "xp": raw XP gained this step + XP_LEVEL_BONUS per level-up. Pure
+#   combat/quest signal: ignores gold, score, and social terms.
+# "econ": gold_delta + ECON_INV_LAMBDA * inventory-value delta (merchant
+#   value of carried items). Pure economic signal: market arbitrage, craft
+#   margins, and loot all show up; combat XP does not.
+REWARD_MODES = ("score", "xp", "econ")
+XP_LEVEL_BONUS = 5.0  # extra reward per level-up in "xp" mode
+ECON_INV_LAMBDA = 1.0  # weight of inventory-value delta in "econ" mode
+
 # ---------------------------------------------------------------------------
 # Optional config file: ml_config.json overrides reward shaping constants.
 # ---------------------------------------------------------------------------
@@ -255,6 +272,19 @@ def market_tax(price):
 def market_net(price):
     """Gold the seller actually receives for a sale at `price`."""
     return price - market_tax(price)
+
+
+def inventory_value(names):
+    """Merchant value of a carried item list (unresolvable names count 0).
+
+    Used by the "econ" reward mode to price loot pickups, crafts, and
+    sales into the step reward."""
+    total = 0
+    for n in names or []:
+        iid = srv.find_item_by_name(list(srv.ITEM_DEFS), n)
+        if iid:
+            total += merchant_value(iid)
+    return total
 
 # --- Quest catalog (mirrors server.py QUESTS) --------------------------------
 # What the Town Guard quest IS, in one place, so models (and their trainers)
@@ -480,11 +510,15 @@ class TextMMOEnv:
     multiple ML agents (and/or bots, and/or humans) can occupy it together
     -- including sharing party dungeons and trading on the same market."""
 
-    def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None):
+    def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
+                 reward_mode="score"):
+        if reward_mode not in REWARD_MODES:
+            raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
         self.name = name
         self.url = url
         self.step_delay = step_delay
         self.max_steps = max_steps
+        self.reward_mode = reward_mode
         self.ws = None
         self._reader_task = None
         self._state = {
@@ -509,6 +543,8 @@ class TextMMOEnv:
             "market_slots": 3, "open_commissions": [],
         }
         self._pending_reward = 0.0
+        self._pending_xp = 0.0  # accumulated "xp" event gains (for "xp" mode)
+        self._pending_levels = 0  # accumulated "level_up" events (for "xp" mode)
         self._step_count = 0
         self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
         self._mask_cache = None  # refreshed by every _build_obs()
@@ -590,10 +626,12 @@ class TextMMOEnv:
                     elif "No open commissions" in text:
                         self._state["open_commissions"] = []
                 elif t == "xp":
+                    self._pending_xp += event.get("gained", 0.0) or 0.0
                     self._state["level"] = event.get("level", self._state["level"])
                     self._state["xp"] = event.get("total", self._state["xp"])
                     self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
                 elif t == "level_up":
+                    self._pending_levels += 1
                     self._state["level"] = event.get("level", self._state["level"])
                 elif t == "death":
                     self._state["hp"] = self._state["max_hp"]
@@ -620,6 +658,8 @@ class TextMMOEnv:
         await asyncio.sleep(self.step_delay * 2)  # let the initial snapshot land
 
         self._pending_reward = 0.0
+        self._pending_xp = 0.0
+        self._pending_levels = 0
         self._step_count = 0
         return self._build_obs()
 
@@ -628,6 +668,7 @@ class TextMMOEnv:
         cmd = self._action_to_cmd(action)
         gold_before = self._state["gold"]
         inv_before = list(self._state["inv_names"] or [])
+        inv_value_before = inventory_value(inv_before)
         quest_active_before = bool(self._state.get("quest_guard_active"))
         quest_crafted_before = bool(self._state.get("guard_charm_crafted"))
         delver_active_before = bool(self._state.get("quest_delver_active"))
@@ -644,24 +685,16 @@ class TextMMOEnv:
                 episode_done = True
         await asyncio.sleep(self.step_delay)
 
-        reward = self._pending_reward
-        # Social reward: only when the agent is grouped with other connected
-        # players (party members are physically close by design, and
-        # other_players > 0 means other bots/agents are in the world).
-        # Scaled by the server's difficulty curve so it tracks the score
-        # signal instead of dwarfing it late in a run, and by group size so
-        # bigger parties pay more than duos.
-        if self._state.get("other_players", 0) > 0 and self._state.get("party_size", 1) > 1:
-            allies = self._state.get("party_size", 1) - 1
-            reward += SOCIAL_PER_ALLY * allies * diminish_factor(self._state.get("score", 0.0))
-        # Formation bonus: joining/forming a party pays once per cooldown so
-        # the act of grouping is discoverable through the reward trace.
-        party_now = self._state.get("party_size", 1)
-        if party_now > 1 and party_before <= 1:
-            if self._step_count - self._last_formation_step >= FORMATION_COOLDOWN_STEPS:
-                reward += FORMATION_BONUS * diminish_factor(self._state.get("score", 0.0))
-                self._last_formation_step = self._step_count
+        xp_gained = self._pending_xp
+        levels_gained = self._pending_levels
+        gold_delta = self._state["gold"] - gold_before
+        inv_delta = inventory_value(self._state["inv_names"]) - inv_value_before
+        reward = self._compute_reward(
+            self._pending_reward, xp_gained, levels_gained,
+            gold_delta, inv_delta, party_before)
         self._pending_reward = 0.0
+        self._pending_xp = 0.0
+        self._pending_levels = 0
         self._step_count += 1
         if episode_done:
             done = True
@@ -682,7 +715,11 @@ class TextMMOEnv:
         next_obs = self._build_obs()
         info = {
             "action": action,
-            "gold_delta": self._state["gold"] - gold_before,
+            "gold_delta": gold_delta,
+            "reward_mode": self.reward_mode,
+            "xp_gained": xp_gained,
+            "levels_gained": levels_gained,
+            "inv_delta": inv_delta,
             "tax_rate": self._state["tax_rate"],
             "tax_min": self._state["tax_min"],
             # Buy fill detected this step (or None): {"side": "buy", "cost": N}.
@@ -729,6 +766,40 @@ class TextMMOEnv:
         done = episode_done or (self.max_steps is not None and self._step_count >= self.max_steps)
         info["action_mask"] = 1 if cmd is not None else 0
         return next_obs, reward, done, info
+
+    def _compute_reward(self, score_gain, xp_gain, levels, gold_delta,
+                          inv_delta, party_before):
+        """Step reward for the configured `reward_mode`, from accumulated
+        event pendings and state diffs (pure function of its arguments plus
+        the social/formation state -- no I/O, unit-testable).
+
+        - "xp": raw XP plus XP_LEVEL_BONUS per level-up. Ignores gold,
+          score, and social terms by design (pure combat/quest agent).
+        - "econ": gold flow plus ECON_INV_LAMBDA times carried-value flow.
+          Ignores XP and score by design (pure market/craft/loot agent).
+        - "score" (default): server score gain plus group-play shaping."""
+        if self.reward_mode == "xp":
+            return xp_gain + XP_LEVEL_BONUS * levels
+        if self.reward_mode == "econ":
+            return gold_delta + ECON_INV_LAMBDA * inv_delta
+        reward = score_gain
+        # Social reward: only when the agent is grouped with other connected
+        # players (party members are physically close by design, and
+        # other_players > 0 means other bots/agents are in the world).
+        # Scaled by the server's difficulty curve so it tracks the score
+        # signal instead of dwarfing it late in a run, and by group size so
+        # bigger parties pay more than duos.
+        if self._state.get("other_players", 0) > 0 and self._state.get("party_size", 1) > 1:
+            allies = self._state.get("party_size", 1) - 1
+            reward += SOCIAL_PER_ALLY * allies * diminish_factor(self._state.get("score", 0.0))
+        # Formation bonus: joining/forming a party pays once per cooldown so
+        # the act of grouping is discoverable through the reward trace.
+        party_now = self._state.get("party_size", 1)
+        if party_now > 1 and party_before <= 1:
+            if self._step_count - self._last_formation_step >= FORMATION_COOLDOWN_STEPS:
+                reward += FORMATION_BONUS * diminish_factor(self._state.get("score", 0.0))
+                self._last_formation_step = self._step_count
+        return reward
 
     def _own_orders(self):
         """Our standing sell orders with exact after-tax net, from the latest

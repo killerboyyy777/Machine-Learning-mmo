@@ -12,13 +12,14 @@ from .supervisor import Supervisor
 from .churn import ChurnManager, wave_startup
 from .mixer import Mixer
 from .metrics import MetricsLogger
+from .pbt import PBTManager
 
 
 class Conductor:
     """Top-level orchestrator for large-scale agent management."""
 
     def __init__(self, base_dir, max_agents=50, arrivals_per_minute=2.0,
-                 mean_lifetime_episodes=100, floors=None):
+                 mean_lifetime_episodes=100, floors=None, pbt=None):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -27,9 +28,23 @@ class Conductor:
         self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
         self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d_10_f1"])
         self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
+        # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
+        # enable exploit/explore rounds, or None to run without a population.
+        self.pbt = PBTManager(self.registry, self.metrics, **pbt) if pbt is not None else None
 
         self._running = False
         self._start_time = None
+
+    def report_fitness(self, agent_id, fitness, episodes=1):
+        """Feed an evaluation result into the PBT population (no-op when
+        PBT is disabled). Agents must be enrolled first (see enroll_pbt)."""
+        if self.pbt is not None:
+            self.pbt.report(agent_id, fitness, episodes)
+
+    def enroll_pbt(self, agent_id, hparams=None):
+        """Enroll a registered agent in the PBT population."""
+        if self.pbt is not None:
+            self.pbt.register(agent_id, hparams)
 
     async def run(self, duration_seconds=3600, wave_size=10, wave_delay=5.0):
         """Run the conductor for a fixed duration.
@@ -60,10 +75,12 @@ class Conductor:
 
         print(f"[conductor] Startup complete: {len(self.registry.alive_agents())} agents")
 
-        # Main loop: churn + rebalance + holdout evaluation
+        # Main loop: churn + rebalance + PBT exploit/explore
         end_time = self._start_time + duration_seconds
         rebalance_interval = 60.0  # seconds between rebalance checks
+        pbt_interval = 300.0  # seconds between PBT exploit/explore rounds
         last_rebalance = time.time()
+        last_pbt = time.time()
 
         while self._running and time.time() < end_time:
             await asyncio.sleep(1.0)
@@ -82,6 +99,14 @@ class Conductor:
                 if moves:
                     self.metrics.log_rebalance(moves)
                 last_rebalance = now
+
+            # Periodic PBT exploit/explore (no-op when disabled)
+            if self.pbt is not None and now - last_pbt >= pbt_interval:
+                ops = self.pbt.step()
+                if ops:
+                    print(f"[conductor] PBT: {len(ops)} exploit(s) "
+                          + ", ".join(f"{o['loser']}<-{o['winner']}" for o in ops))
+                last_pbt = now
 
             # Periodic status
             alive = len(self.registry.alive_agents())
@@ -107,4 +132,5 @@ class Conductor:
             "registry": self.registry.snapshot(),
             "supervisor": self.supervisor.status(),
             "mixer": self.mixer.snapshot(),
+            "pbt": self.pbt.snapshot() if self.pbt is not None else None,
         }

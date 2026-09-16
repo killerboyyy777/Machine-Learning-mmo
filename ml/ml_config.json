@@ -4,6 +4,8 @@
   "reward_shaping": {
     "SOCIAL_PER_ALLY": 0.05,
     "FORMATION_BONUS": 0.5,
-    "FORMATION_COOLDOWN_STEPS": 500
+    "FORMATION_COOLDOWN_STEPS": 500,
+    "XP_LEVEL_BONUS": 5.0,
+    "ECON_INV_LAMBDA": 1.0
   }
 }

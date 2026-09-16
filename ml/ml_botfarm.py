@@ -37,15 +37,16 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import signal
 import time
 
 try:
-    from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
+    from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
     from .ml_client import LinearQAgent
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
-    from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
+    from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
     from ml_client import LinearQAgent
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,6 +67,129 @@ def save_json(path, data):
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
+
+
+class ScriptedPolicy:
+    """Fixed behavior-tree baseline: no learning, just a priority list over
+    the env's valid-action mask. Serves as the fixed comparison point for
+    RL runs (same obs/actions/rewards, zero training).
+
+    Subclasses override PRIORITIES (action names, first valid wins) plus
+    optional state-dependent hooks. select() returns an action index.
+    """
+
+    name = "base"
+    # Ordered fallback when nothing role-specific fires.
+    WANDER = ("rest", "look")
+
+    def _valid(self, env):
+        return env.valid_action_mask()
+
+    def _idx(self, action_name):
+        try:
+            return ACTIONS.index(action_name)
+        except ValueError:
+            return None
+
+    def _first_valid(self, env, names, mask=None):
+        mask = self._valid(env) if mask is None else mask
+        for n in names:
+            i = self._idx(n)
+            if i is not None and mask[i]:
+                return i
+        return None
+
+    def _random_move(self, env, mask=None, prefer=()):
+        """A valid move action, preferring `prefer` names, else uniform
+        among valid moves (deterministic priority would march every bot
+        into the same wall-hugging loop)."""
+        mask = self._valid(env) if mask is None else mask
+        pick = self._first_valid(env, prefer, mask)
+        if pick is not None:
+            return pick
+        moves = [i for i, a in enumerate(ACTIONS)
+                 if a.startswith("move_") and mask[i]]
+        if moves:
+            return random.choice(moves)
+        return None
+
+    def _heal_first(self, env, mask=None):
+        """Heal/use/rest when hurt, else None. Shared by all roles."""
+        s = env._state
+        if s.get("hp", 1) >= s.get("max_hp", 1):
+            return None
+        return self._first_valid(env, ("heal", "use", "rest"), mask)
+
+    def select(self, env):
+        mask = self._valid(env)
+        for step in self.plan(env, mask):
+            if step is not None:
+                return step
+        return self._idx("look")
+
+    def plan(self, env, mask):
+        """Yield candidate action indices in priority order. Subclasses
+        override; base just wanders."""
+        yield self._heal_first(env, mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+class GatherSellPolicy(ScriptedPolicy):
+    """Gather -> sell loop: pick up gold/loot, gather nodes, quicksell to
+    the merchant, gear up when barehanded."""
+    name = "gather"
+
+    def plan(self, env, mask):
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("take", "gather"), mask)
+        yield self._first_valid(env, ("sell", "market_post"), mask)
+        yield self._first_valid(env, ("equip", "buy"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+class DungeonClearerPolicy(ScriptedPolicy):
+    """Combat specialist: attack hostiles, loot, push into the dungeon,
+    work the delver quest when the giver is present."""
+    name = "dungeon"
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("attack",), mask)
+        yield self._first_valid(env, ("equip", "buy", "take"), mask)
+        giver_here = "Town Guard" in (s.get("npc_names") or [])
+        if giver_here:
+            yield self._first_valid(env, ("quest2_turn_in", "quest2_accept"), mask)
+        yield self._first_valid(env, ("move_enter", "move_down"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+class MarketFlipperPolicy(ScriptedPolicy):
+    """Economic specialist: keep the market snapshot fresh, list high-margin
+    holdings, buy fills, merchant-sell the rest."""
+    name = "market"
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("take",), mask)
+        if not s.get("market_state"):
+            yield self._first_valid(env, ("market_list",), mask)
+        yield self._first_valid(env, ("market_post", "market_buy"), mask)
+        yield self._first_valid(env, ("sell", "market_list"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+SCRIPTED_POLICIES = {
+    "gather": GatherSellPolicy,
+    "dungeon": DungeonClearerPolicy,
+    "market": MarketFlipperPolicy,
+}
+SCRIPTED_NAMES = tuple(SCRIPTED_POLICIES)
 
 
 class Farm:
@@ -137,6 +261,12 @@ class BotRunner:
         self.recent_rewards = []
         self.score = 0.0
         self.total_steps = 0
+        mode = getattr(farm.args, "scripted", "none")
+        if mode and mode != "none":
+            role = mode if mode in SCRIPTED_POLICIES else SCRIPTED_NAMES[index % len(SCRIPTED_NAMES)]
+            self.policy = SCRIPTED_POLICIES[role]()
+        else:
+            self.policy = None
 
     def fitness(self):
         r = self.recent_rewards
@@ -152,6 +282,9 @@ class BotRunner:
 
     async def run(self):
         await self.reset()
+        if self.policy is not None:
+            await self.run_scripted()
+            return
         while not self.farm.stop.is_set():
             if self.farm.args.steps and self.farm.steps >= self.farm.args.steps:
                 self.farm.stop.set()
@@ -170,6 +303,26 @@ class BotRunner:
             self.farm.steps += 1
             self.total_steps += 1
 
+            if done:
+                await self.reset()
+        await self.env.close()
+
+    async def run_scripted(self):
+        """Fixed-baseline loop: policy picks actions, no weights update.
+        Rewards/scores are still tracked so RL runs can compare directly."""
+        while not self.farm.stop.is_set():
+            if self.farm.args.steps and self.farm.steps >= self.farm.args.steps:
+                self.farm.stop.set()
+                break
+            action = self.policy.select(self.env)
+            next_obs, reward, done, info = await self.env.step(action)
+            self.features = flatten_obs(next_obs)
+            self.score = next_obs["score_raw"]
+            self.recent_rewards.append(reward)
+            if len(self.recent_rewards) > self.farm.args.reward_window:
+                del self.recent_rewards[0]
+            self.farm.steps += 1
+            self.total_steps += 1
             if done:
                 await self.reset()
         await self.env.close()
@@ -205,6 +358,10 @@ def parse_args():
     p.add_argument("--eval-every", type=float, default=5.0, help="seconds between evaluations")
     p.add_argument("--reward-window", type=int, default=200, help="rolling reward window for fitness")
     p.add_argument("--weights", default=WEIGHTS_FILE)
+    p.add_argument("--scripted", default="none",
+                   choices=("none", "gather", "dungeon", "market", "mixed"),
+                   help="run fixed behavior-tree baselines instead of training "
+                        "(one role each, or round-robin with 'mixed')")
     p.add_argument("--epsilon-start", type=float, default=1.0)
     p.add_argument("--epsilon-end", type=float, default=0.05)
     p.add_argument("--epsilon-decay-steps", type=int, default=5000)
