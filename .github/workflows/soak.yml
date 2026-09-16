@@ -33,4 +33,6 @@ jobs:
           name: soak-metrics
           path: |
             soak_run/metrics.jsonl
+            soak_run/soak_status.jsonl
+            soak_run/soak.log
             server.soak.log

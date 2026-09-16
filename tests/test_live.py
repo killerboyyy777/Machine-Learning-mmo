@@ -243,6 +243,22 @@ async def main():
     assert da["party_size"] == 2, da
     print("PARTY_DUNGEON_SHARED")
 
+    # ---- Abrupt disconnect cleans up: the same name can log back in
+    # (regression: cleanup skipped on writer CancelledError leaked the
+    # name lock, failing relogin with "already in use" forever)
+    C = await websockets.connect(URI)
+    await send(C, {"cmd": "login", "name": "RelogProbe"})
+    got = await recv(C, timeout=5.0)
+    assert any(m.get("type") == "welcome" for m in got), got
+    await C.close()
+    await asyncio.sleep(1.5)  # let the server run disconnect cleanup
+    C2 = await websockets.connect(URI)
+    await send(C2, {"cmd": "login", "name": "RelogProbe"})
+    got2 = await recv(C2, timeout=5.0)
+    assert any(m.get("type") == "welcome" for m in got2), got2
+    print("RELOGIN_OK")
+    await C2.close()
+
     # ---- Dashboard snapshot has the new sections
     import urllib.request
     state = json.loads(urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=3).read())

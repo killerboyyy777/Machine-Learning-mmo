@@ -1,0 +1,52 @@
+name: Feature request
+description: New quest, item, system, or agent capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What player/agent experience should this enable?
+    validations:
+      required: true
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Sketch
+      description: Commands, world.json additions, rewards/costs, dashboard/ML impact.
+  - type: textarea
+    id: balance
+    attributes:
+      label: Balance notes
+      description: Faucets/sinks affected, grind resistance, how agents could exploit it.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - area:server
+        - area:ml-env
+        - area:torch-agents
+        - area:conductor
+        - area:dashboard
+        - area:tests
+        - area:docs
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options: [P0, P1, P2, P3]
+      default: 1
+    validations:
+      required: true
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Effort estimate
+      options: [XS, S, M, L]
+      default: 1
+    validations:
+      required: true

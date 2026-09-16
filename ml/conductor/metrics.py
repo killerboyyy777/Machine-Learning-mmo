@@ -13,11 +13,13 @@ import threading
 class MetricsLogger:
     """Append-only JSONL metrics writer."""
 
-    def __init__(self, path, buffer_size=50):
+    def __init__(self, path, buffer_size=50, flush_every=60.0):
         self.path = path
         self.buffer_size = buffer_size
+        self.flush_every = flush_every
         self._buffer = []
         self._lock = threading.RLock()
+        self._last_flush = time.time()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
     def _write_line(self, event):
@@ -27,11 +29,12 @@ class MetricsLogger:
             f.write(line)
 
     def log(self, event_type, **kwargs):
-        """Log a metric event."""
+        """Log a metric event (auto-flushes on size or every flush_every)."""
         event = {"event": event_type, **kwargs}
         with self._lock:
             self._buffer.append(event)
-            if len(self._buffer) >= self.buffer_size:
+            if (len(self._buffer) >= self.buffer_size
+                    or time.time() - self._last_flush >= self.flush_every):
                 self.flush()
 
     def flush(self):
@@ -39,6 +42,7 @@ class MetricsLogger:
             for event in self._buffer:
                 self._write_line(event)
             self._buffer.clear()
+            self._last_flush = time.time()
 
     def log_agent_spawn(self, agent_id, agent_type, branch):
         self.log("agent_spawn", agent_id=agent_id, agent_type=agent_type, branch=branch)

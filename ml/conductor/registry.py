@@ -66,7 +66,11 @@ class Registry:
         with self._lock:
             if agent_id in self._agents:
                 return self._agents[agent_id]
-            if len(self._agents) >= self.max_agents:
+            # Cap counts LIVE agents only: churn-killed entries stay in the
+            # dict as history, so counting corpses would wedge long runs
+            # (no arrivals ever again once max_agents have died).
+            alive = sum(1 for a in self._agents.values() if a.alive)
+            if alive >= self.max_agents:
                 raise RuntimeError(f"Registry full ({self.max_agents} agents)")
             cp_dir = self.base_dir / agent_id
             cp_dir.mkdir(parents=True, exist_ok=True)
