@@ -125,13 +125,64 @@
 </header>
 
 <div class="tabs">
-  <div class="tab active" data-tab="world">World</div>
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="world">World</div>
   <div class="tab" data-tab="market">Market</div>
   <div class="tab" data-tab="dungeon">Dungeons</div>
+  <div class="tab" data-tab="agents">Agents</div>
+  <div class="tab" data-tab="quests">Quests</div>
+  <div class="tab" data-tab="crafting">Crafting</div>
+  <div class="tab" data-tab="config">Config</div>
   <div class="tab" data-tab="gm">GM</div>
 </div>
 
-<div id="view-world" class="tabview active">
+<div id="view-overview" class="tabview active">
+  <div class="panel">
+    <h2>Health</h2>
+    <div class="statrow" id="ovCards"></div>
+  </div>
+  <div class="panel">
+    <h2>Trends</h2>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><canvas id="ovPlayers" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><canvas id="ovScore" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Recent activity</h2>
+    <div id="ovActivity"></div>
+  </div>
+</div>
+
+<div id="view-agents" class="tabview">
+  <div class="panel">
+    <h2>Agents</h2>
+    <p class="empty">Agent pool, training metrics, and bot start/stop land here in Phase 4 (#130).</p>
+  </div>
+</div>
+
+<div id="view-quests" class="tabview">
+  <div class="panel">
+    <h2>Quests</h2>
+    <p class="empty">Quest catalog, active counts, and turn-in rates land here with the quest panel (#14).</p>
+  </div>
+</div>
+
+<div id="view-crafting" class="tabview">
+  <div class="panel">
+    <h2>Crafting</h2>
+    <p class="empty">Recipe tree, profitability, and supply panels land here in Phase 3 (#129).</p>
+  </div>
+</div>
+
+<div id="view-config" class="tabview">
+  <div class="panel">
+    <h2>Config</h2>
+    <p class="empty">Tunable constants with tooltips land here with the config editor (#63) and docs (#76).</p>
+  </div>
+</div>
+
+<div id="view-world" class="tabview">
   <div class="grid">
     <div>
       <div class="panel">
@@ -636,20 +687,62 @@ $("trackSelect").addEventListener("change", e => {
   if (lastState) renderTracker(lastState.players);
 });
 
-function renderAll(s) {
-  const sections = [
-    ["world map", () => renderWorldMap(s.rooms || [])],
-    ["rooms", () => renderRooms(s.rooms || [])],
-    ["performance", () => renderPerf(s.players || [])],
-    ["scores", () => renderScores(s.scores || [])],
-    ["history", () => renderHistory(s.history || [])],
-    ["activity", () => renderActivity(s.activity || [])],
-    ["character tracker", () => renderTracker(s.players || [])],
-    ["market", () => renderMarket(s.market || {orders: [], history: []})],
-    ["buffs", () => renderBuffs(s.buffs || {})],
-    ["bosses", () => renderBosses(s.bosses || [])],
-    ["dungeons", () => renderDungeons(s.dungeons || [])],
+let activeTab = "overview";
+
+function renderOverview(s) {
+  // Health cards: derived client-side from fields the snapshot already
+  // carries -- no server computation needed (offline-first dashboard).
+  const m = s.market || {orders: []};
+  const cards = [
+    ["players", s.server.players_online],
+    ["connections", s.server.connections],
+    ["treasury", (m.treasury ?? 0).toFixed(1)],
+    ["open orders", (m.orders || []).length],
+    ["dungeons", (s.dungeons || []).length],
+    ["uptime", (s.server.uptime ?? 0) + "s"],
   ];
+  $("ovCards").innerHTML = cards.map(([l, v]) =>
+    `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join("");
+  const hist = s.history || [];
+  if (hist.length >= 2) {
+    drawLineChart("ovPlayers", hist.map(h => h.players_online), "#79c0ff");
+    drawLineChart("ovScore", hist.map(h =>
+      (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0), "#d2a8ff");
+  }
+  const acts = (s.activity || []).slice(-8).reverse();
+  $("ovActivity").innerHTML = acts.length ? acts.map(a => `
+    <div class="row">
+      <span class="t">${esc(a.time)}</span>
+      <span class="n">${esc(a.name)} ${a.level ? `<span class="dim">(lv${a.level})</span>` : ""}</span>
+      <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
+        ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
+    </div>`).join("") : `<span class="empty">No activity yet.</span>`;
+}
+
+// Sections grouped by tab: only the active tab renders each tick, so
+// hidden tabs cost no DOM churn. Header stats + catalog fill run always.
+const TAB_SECTIONS = {
+  overview: [["overview", s => renderOverview(s)]],
+  world: [
+    ["world map", s => renderWorldMap(s.rooms || [])],
+    ["rooms", s => renderRooms(s.rooms || [])],
+    ["performance", s => renderPerf(s.players || [])],
+    ["scores", s => renderScores(s.scores || [])],
+    ["history", s => renderHistory(s.history || [])],
+    ["activity", s => renderActivity(s.activity || [])],
+    ["character tracker", s => renderTracker(s.players || [])],
+  ],
+  market: [["market", s => renderMarket(s.market || {orders: [], history: []})]],
+  dungeon: [
+    ["buffs", s => renderBuffs(s.buffs || {})],
+    ["bosses", s => renderBosses(s.bosses || [])],
+    ["dungeons", s => renderDungeons(s.dungeons || [])],
+  ],
+  agents: [], quests: [], crafting: [], config: [], gm: [],
+};
+
+function renderAll(s) {
+  const sections = TAB_SECTIONS[activeTab] || [];
   const failed = [];
   for (const [name, render] of sections) {
     try { render(); }
@@ -710,7 +803,9 @@ for (const tab of document.querySelectorAll(".tab")) {
     document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
     document.querySelectorAll(".tabview").forEach(v => v.classList.remove("active"));
     tab.classList.add("active");
-    $("view-" + tab.dataset.tab).classList.add("active");
+    activeTab = tab.dataset.tab;
+    $("view-" + activeTab).classList.add("active");
+    if (lastState) renderAll(lastState);
   });
 }
 

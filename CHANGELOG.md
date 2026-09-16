@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Dashboard foundation (#127): Overview tab (default landing) with
+  client-side health cards, trend charts, and recent activity; Agents /
+  Quests / Crafting / Config placeholder tabs pointing at follow-up
+  issues; per-tab rendering (hidden tabs cost no DOM churn);
+  `tests/test_dashboard.py` markup/JS consistency checks.
 - Agent plugins (#62/#152): every agent ships as an `AgentPlugin`
   (`ml/plugins/`; built-ins `linear`, `torch`, `gather`, `dungeon`,
   `market`, `maker`; external dirs via discovery). Supervisor passes the
