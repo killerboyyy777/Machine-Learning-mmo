@@ -3,6 +3,18 @@
 # by subsystem; unlabeled PRs fall into "Other".
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
+# Version bumps from PR labels: features -> minor, fixes/docs/deps ->
+# patch (default). Major bumps are manual (retitle the draft release).
+version-resolver:
+  minor:
+    labels:
+      - enhancement
+  patch:
+    labels:
+      - bug
+      - documentation
+      - dependencies
+  default: patch
 categories:
   - title: '🖥️ Server'
     labels:

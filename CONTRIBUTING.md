@@ -92,6 +92,10 @@ GitHub release (notes auto-drafted from PR labels via release-drafter).
 
 * **Labels**: `P0`–`P3` priority, `XS`–`L` effort, `area:*` subsystem
   (auto-applied by `.github/labeler.yml` from changed paths).
+* **Version labels drive releases**: label PRs `enhancement` for a minor
+  bump (`v0.6` → `v0.7`), `bug` / `documentation` / `dependencies` for a
+  patch bump (`v0.6.0` → `v0.6.1`, the default). Anything bigger is a
+  manual major — say so in the PR and retitle the draft release by hand.
 * **Milestones** track phases (`Phase A`–`Phase F`), not priority:
   closed phases stay closed as history; in-progress work lives on a
   `phase-*`/`fix-*` branch until green, then merges to `master`.
