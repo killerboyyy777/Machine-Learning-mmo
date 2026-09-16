@@ -23,6 +23,7 @@ jobs:
       - run: python tests/test_scripted_bots.py
       - run: python tests/test_pbt.py
       - run: python tests/test_curriculum.py
+      - run: python tests/test_plugins.py
 
   live:
     name: Live protocol + ML env (fresh server, seed 700)

@@ -3,6 +3,12 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Agent plugins (#62/#152): every agent ships as an `AgentPlugin`
+  (`ml/plugins/`; built-ins `linear`, `torch`, `gather`, `dungeon`,
+  `market`, `maker`; external dirs via discovery). Supervisor passes the
+  env to 4-arg policies; conductor runs weighted multi-kind slots
+  (`soak --slot gather --slot torch:checkpoint=X`, repeat for weight)
+  with per-type status; `runners.py` kept as a thin compat layer.
 - Protocol versioning (#72): `PROTOCOL_VERSION = 1` on server and env,
   sent on login and echoed in `welcome`; mismatches warn via
   `version_match` in step info, old clients unaffected.

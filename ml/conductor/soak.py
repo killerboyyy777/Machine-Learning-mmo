@@ -23,7 +23,6 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ml.conductor.conductor import Conductor
-from ml.conductor.runners import make_env_factory, make_linear_policy
 
 
 def setup_file_logging(base_dir):
@@ -67,6 +66,13 @@ def parse_args():
     p.add_argument("--wave-delay", type=float, default=2.0, help="seconds between waves")
     p.add_argument("--checkpoint", default=None,
                    help="linear weights (default: ml/ml_best.json when present)")
+    p.add_argument("--slot", action="append", default=None, metavar="SPEC",
+                   help="agent slot: NAME[:key=val,...] with env_* keys routed "
+                        "to the env (repeat a slot to raise its weight). "
+                        "Default: one linear slot. "
+                        "Example: --slot gather --slot torch:checkpoint=X,epsilon=0.1")
+    p.add_argument("--plugin-dir", default=None,
+                   help="extra directory of AgentPlugin *.py files")
     p.add_argument("--status-every", type=float, default=300.0,
                    help="seconds between status snapshots (0 disables)")
     p.add_argument("--status-file", default=None,
@@ -121,15 +127,25 @@ async def main():
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cand = os.path.join(here, "ml_best.json")
         ckpt = cand if os.path.isfile(cand) else None
-    runner = {
-        "env_factory": make_env_factory(args.url, reward_mode=args.reward_mode,
-                                        max_steps=args.max_steps),
-        "policy_fn": make_linear_policy(ckpt, epsilon=0.05),
-        "step_timeout": args.step_timeout,
-    }
+    from ml.plugins import discover, parse_slot
+    discover(args.plugin_dir)
+    if args.slot:
+        slots = [parse_slot(spec) for spec in args.slot]
+        # soak-level env/step defaults apply unless the slot overrides them
+        for slot in slots:
+            slot["env"].setdefault("reward_mode", args.reward_mode)
+            slot["env"].setdefault("max_steps", args.max_steps)
+            slot.setdefault("step_timeout", args.step_timeout)
+    else:
+        slots = [{"plugin": "linear",
+                  "config": {"checkpoint": ckpt, "epsilon": 0.05},
+                  "env": {"reward_mode": args.reward_mode,
+                          "max_steps": args.max_steps},
+                  "weight": 1, "step_timeout": args.step_timeout}]
     cond = Conductor(args.base_dir, max_agents=args.agents,
                      arrivals_per_minute=args.arrivals,
-                     mean_lifetime_episodes=args.lifetime, runner=runner)
+                     mean_lifetime_episodes=args.lifetime,
+                     runners=slots, url=args.url)
     status_file = args.status_file or os.path.join(args.base_dir,
                                                    "soak_status.jsonl")
     print(f"[soak] {args.agents} agents for {args.duration:.0f}s "
@@ -149,6 +165,9 @@ async def main():
     alive = st["registry"]["alive"]
     running = st["supervisor"]["running"]
     print(f"[soak] end: alive={alive}/{args.agents} running={running}")
+    for ptype, cell in sorted(st.get("by_type", {}).items()):
+        print(f"[soak]   {ptype}: alive={cell['alive']} "
+              f"episodes={cell['episodes']} mean_reward={cell['mean_reward']}")
     if alive < args.min_agents:
         print(f"[soak] FAIL: alive {alive} < min {args.min_agents}")
         return 1
