@@ -433,8 +433,7 @@ class TorchDQNAgent:
         td_loss = nn.functional.smooth_l1_loss(q_vals, td_targets)
 
         # ---- auxiliary losses ----
-        # Forward pass through all heads
-        heads = self.q(states)  # dict {"q":..., "gold":..., "loot":..., "market":..., "quest":...}
+        heads = self.q(states)
         pred_gold = heads["gold"]
         pred_loot = heads["loot"]
         pred_market = heads["market"]
@@ -587,7 +586,6 @@ class TorchDQNAgent:
             next_features = flatten_obs(next_obs)
 
             # ---- compute auxiliary targets from observation changes ----
-            # gold: current player gold minus previous
             cur_gold = float(next_obs.get("gold_raw", self._prev_gold))
             gold_delta = cur_gold - self._prev_gold
             self._prev_gold = cur_gold
@@ -666,7 +664,6 @@ class TorchDQNAgent:
 
             # RND curiosity on the post-step observation (novel states pay
             # more; the predictor fit in learn() makes them familiar).
-            # Skipped entirely when rnd_lambda is 0 ("disables" curiosity).
             rnd_bonus = self.rnd_bonus(next_features) if self.rnd_lambda else 0.0
 
             # Store transition with all auxiliary targets
@@ -700,7 +697,6 @@ class TorchDQNAgent:
                 losses = {"td": None, "gold": None, "loot": None, "market": None,
                           "quest": None, "rnd": None}
 
-            # Log every 50 steps
             if self.t_step % 50 == 0:
                 avg_recent = sum(recent_rewards) / len(recent_rewards)
                 print(
@@ -765,7 +761,6 @@ async def _demo():
           f"{QUESTS['guard_charm']['reward_gold']}g -> net {quest_charm_net():+}g (XP/score upside separate)")
     print(f"Quest stage now: {obs.get('quest_stage')}/{obs.get('quest2_stage')}  giver_here={obs.get('quest_giver_here')}")
 
-    # Take one random step
     action = random.randrange(N_ACTIONS)
     print(f"Sample action: {ACTIONS[action]}")
     next_obs, reward, done, info = await env.step(action)

@@ -129,7 +129,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import websockets
-import server as srv  # reuses the already-loaded world data for vocab
+import server as srv
 
 DEFAULT_URL = "ws://localhost:8765"
 
@@ -690,7 +690,6 @@ class TextMMOEnv:
                 elif t == "death":
                     self._state["hp"] = self._state["max_hp"]
                 elif t == "error":
-                    # Could log or track error rate
                     pass
         except websockets.ConnectionClosed:
             pass
@@ -1138,8 +1137,8 @@ class TextMMOEnv:
                 return {"cmd": "use", "item": name}
             return None
         if action == "craft":
-            # Builds reinforced_leather (wolf_pelt + rat tails). The check
-            # above makes sure we only try when we actually have the mats.
+            # Builds reinforced_leather; ungated here (unlike craft_charm
+            # below), so missing mats come back as a server error signal.
             return {"cmd": "craft", "recipe": "reinforced_leather"}
         if action == "craft_charm":
             # Builds the Ancient Guardian Charm for the Town Guard quest
@@ -1275,10 +1274,8 @@ class TextMMOEnv:
                 return {"cmd": "gather"}
             return None
         if action == "commission_post":
-            # Post a new escrowed bounty
             return {"cmd": "commission_post"}
         if action == "commission_list":
-            # List open commissions
             return {"cmd": "commission_list"}
         if action == "commission_fill":
             # Fill the richest open bounty not posted by us (server still
@@ -1356,7 +1353,6 @@ class TextMMOEnv:
                 return {"cmd": "market_expand"}
             return None
         if action == "party_invite":
-            # Invite the first other player visible in the room.
             for pname in s.get("player_names") or []:
                 if pname != self.name:
                     return {"cmd": "party_invite", "target": pname}

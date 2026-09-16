@@ -46,7 +46,6 @@ class Mixer:
         """Record an episode reward for a specific floor."""
         if floor_id in self._floor_rewards:
             self._floor_rewards[floor_id].append(reward)
-            # Keep only recent rewards
             if len(self._floor_rewards[floor_id]) > 100:
                 self._floor_rewards[floor_id] = self._floor_rewards[floor_id][-100:]
 
