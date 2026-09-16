@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Dashboard Phase 2 (#128): Overview health status (Healthy/Idle),
+  market-orders trend chart (new additive history fields), 10-item
+  activity feed; canvas world map v2 (pan/zoom/click, room drawer) --
+  no quadtree/rAF at 32 nodes; rooms grid kept unvirtualized.
 - Dashboard foundation (#127): Overview tab (default landing) with
   client-side health cards, trend charts, and recent activity; Agents /
   Quests / Crafting / Config placeholder tabs pointing at follow-up

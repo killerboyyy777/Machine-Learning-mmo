@@ -138,7 +138,7 @@
 
 <div id="view-overview" class="tabview active">
   <div class="panel">
-    <h2>Health</h2>
+    <h2>Health <span id="ovHealth" class="tag">-</span></h2>
     <div class="statrow" id="ovCards"></div>
   </div>
   <div class="panel">
@@ -146,6 +146,7 @@
     <div style="display:flex;gap:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><canvas id="ovPlayers" width="300" height="80" style="width:100%;height:80px"></canvas></div>
       <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><canvas id="ovScore" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Market orders</div><canvas id="ovVolume" width="300" height="80" style="width:100%;height:80px"></canvas></div>
     </div>
   </div>
   <div class="panel">
@@ -186,8 +187,9 @@
   <div class="grid">
     <div>
       <div class="panel">
-        <h2>World</h2>
-        <div id="worldMap" class="world-map"></div>
+        <h2>World <span class="legend">drag to pan · wheel to zoom · click a room for detail</span></h2>
+        <div class="world-map"><canvas id="worldMapCanvas" width="1200" height="480" style="width:100%;height:480px;cursor:grab"></canvas></div>
+        <div id="roomDrawer" style="display:none"></div>
         <div id="rooms" class="rooms"></div>
       </div>
       <div class="panel">
@@ -427,7 +429,13 @@ function exitEntries(room) {
   return Object.entries(exits).map(([dir, to]) => [dir, to, to]);
 }
 
-function renderWorldMap(rooms) {
+const MAP_W = 1200, MAP_H = 480;
+let mapView = {x: 0, y: 0, k: 1};   // pan offset + zoom (world units)
+let mapBound = false;               // pan/zoom/click listeners attach once
+let mapRooms = [];                  // last layout, for hit-testing
+let openRoomId = null;              // room detail drawer selection
+
+function mapLayout(rooms) {
   const byId = Object.fromEntries(rooms.map(r => [r.id, r]));
   const neighbors = Object.fromEntries(rooms.map(r => [r.id, new Set()]));
   for (const room of rooms) {
@@ -438,9 +446,8 @@ function renderWorldMap(rooms) {
       }
     }
   }
-
-  // Layer the graph from Town Square. This is deterministic and keeps the
-  // dashboard useful as rooms are added without maintaining pixel coordinates.
+  // Layer the graph from Town Square. Deterministic, no pixel coordinates
+  // to maintain as rooms are added.
   const depth = {};
   const queue = [byId.town_square ? "town_square" : rooms[0]?.id];
   if (queue[0]) depth[queue[0]] = 0;
@@ -457,51 +464,150 @@ function renderWorldMap(rooms) {
   for (const room of rooms) {
     if (depth[room.id] === undefined) depth[room.id] = fallbackDepth++;
   }
-
   const layers = {};
   for (const room of rooms) (layers[depth[room.id]] ||= []).push(room);
   const maxDepth = Math.max(1, ...Object.keys(layers).map(Number));
-  const width = 1200, height = 480, marginX = 85, marginY = 35;
+  const marginX = 85, marginY = 35;
   const positions = {};
   for (const [layer, layerRooms] of Object.entries(layers)) {
-    const x = marginX + Number(layer) * ((width - marginX * 2) / maxDepth);
-    const step = (height - marginY * 2) / (layerRooms.length + 1);
+    const x = marginX + Number(layer) * ((MAP_W - marginX * 2) / maxDepth);
+    const step = (MAP_H - marginY * 2) / (layerRooms.length + 1);
     layerRooms.forEach((room, i) => { positions[room.id] = { x, y: marginY + step * (i + 1) }; });
   }
-
   const seen = new Set();
   const links = [];
   for (const room of rooms) {
-    for (const [direction, target, targetName] of exitEntries(room)) {
+    for (const [direction, target] of exitEntries(room)) {
       if (!byId[target]) continue;
       const key = [room.id, target].sort().join("|");
-      if (seen.has(key)) {
-        const existing = links.find(link => link.key === key);
-        if (existing) existing.labels.push(`${esc(direction)} to ${esc(targetName)}`);
-      } else {
+      if (!seen.has(key)) {
         seen.add(key);
-        links.push({ key, a: positions[room.id], b: positions[target],
-          labels: [`${esc(direction)} to ${esc(targetName)}`] });
+        links.push({a: positions[room.id], b: positions[target]});
       }
     }
   }
+  return {byId, positions, links};
+}
 
-  const lines = links.map(link => {
-    const mx = (link.a.x + link.b.x) / 2;
-    const my = (link.a.y + link.b.y) / 2 - 5;
-    return `<line class="link" x1="${link.a.x}" y1="${link.a.y}" x2="${link.b.x}" y2="${link.b.y}" />
-      <text class="link-label" x="${mx}" y="${my}">${link.labels.join(" · ")}</text>`;
-  }).join("");
-  const nodes = rooms.map(room => {
+function renderRoomDrawer(byId) {
+  const box = $("roomDrawer");
+  if (!openRoomId || !byId[openRoomId]) {
+    box.style.display = "none";
+    return;
+  }
+  const r = byId[openRoomId];
+  box.style.display = "";
+  box.innerHTML = `<div class="room">
+      <h3>${esc(r.name)} <span class="dim">${esc(r.id)}</span>
+        <button id="roomClose" style="float:right">×</button></h3>
+      <div>${(r.players || []).map(p => {
+        const name = p.name ?? p, lvl = p.level ?? 1;
+        return `<span class="tag alive">${esc(name)} <span class="dim">(lv${lvl})</span></span>`; }).join("")}</div>
+      <div>${(r.npcs || []).map(n => `<span class="tag ${n.alive ? "alive" : "dead"}">${esc(n.name)}${n.alive && n.max_hp ? ` (${n.hp}/${n.max_hp})` : ""}</span>`).join("")}</div>
+      <div>${(r.items || []).map(i => `<span class="tag itemtag">${esc(i)}</span>`).join("")}</div>
+      ${(r.gold > 0) ? `<div><span class="tag itemtag">${esc(r.gold)} gold (death drop)</span></div>` : ""}
+      <div>${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}</div>
+    </div>`;
+  $("roomClose").addEventListener("click", () => {
+    openRoomId = null;
+    renderRoomDrawer(byId);
+  });
+}
+
+function renderWorldMap(rooms) {
+  const canvas = $("worldMapCanvas");
+  if (!canvas) return;
+  // 32 nodes redrawn per 1s tick is trivial; no quadtree, dirty rects, or
+  // rAF loop needed at this scale (see #131 if the map ever grows 10x).
+  const {byId, positions, links} = mapLayout(rooms);
+  mapRooms = rooms;
+  const ctx = canvas.getContext("2d");
+  const {x: ox, y: oy, k} = mapView;
+  ctx.clearRect(0, 0, MAP_W, MAP_H);
+  ctx.fillStyle = "#0b0f13";
+  ctx.fillRect(0, 0, MAP_W, MAP_H);
+  const X = wx => (wx + ox) * k, Y = wy => (wy + oy) * k;
+  ctx.strokeStyle = "#43515f";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (const l of links) {
+    ctx.moveTo(X(l.a.x), Y(l.a.y));
+    ctx.lineTo(X(l.b.x), Y(l.b.y));
+  }
+  ctx.stroke();
+  for (const room of rooms) {
     const p = positions[room.id];
+    const px = X(p.x), py = Y(p.y), w = Math.max(30, 120 * k), h = Math.max(14, 36 * k);
     const occupants = (room.players || []).length;
-    return `<g><rect class="node ${room.id === "town_square" ? "start" : ""}" x="${p.x - 60}" y="${p.y - 18}" width="120" height="36" rx="8" />
-      <text class="node-label" x="${p.x}" y="${p.y - 2}">${esc(room.name)}</text>
-      <text class="node-meta" x="${p.x}" y="${p.y + 11}">${occupants ? `${occupants} player${occupants === 1 ? "" : "s"}` : esc(room.id)}</text></g>`;
-  }).join("");
-  $("worldMap").innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Surface world connections">
-    <text class="node-meta" x="16" y="18" text-anchor="start">SURFACE CONNECTIONS · dungeon instances shown separately</text>
-    ${lines}${nodes}</svg>`;
+    ctx.fillStyle = "#1e252d";
+    ctx.strokeStyle = room.id === "town_square" ? "#79c0ff" : "#2a333d";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
+    ctx.fill();
+    ctx.stroke();
+    if (k > 0.4) {
+      ctx.fillStyle = "#d7e0e8";
+      ctx.font = "11px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(room.name, px, py - 2);
+      ctx.fillStyle = "#8b98a5";
+      ctx.font = "9px monospace";
+      ctx.fillText(occupants ? `${occupants} player${occupants === 1 ? "" : "s"}` : room.id, px, py + 11);
+    }
+  }
+  if (!mapBound) {
+    mapBound = true;
+    let drag = null;
+    canvas.addEventListener("wheel", e => {
+      e.preventDefault();
+      const r = canvas.getBoundingClientRect();
+      const mx = (e.clientX - r.left) * (MAP_W / r.width);
+      const my = (e.clientY - r.top) * (MAP_H / r.height);
+      const k2 = Math.min(4, Math.max(0.5, mapView.k * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+      mapView.x = mx / k2 - (mx / mapView.k - mapView.x);
+      mapView.y = my / k2 - (my / mapView.k - mapView.y);
+      mapView.k = k2;
+      if (lastState) renderWorldMap(lastState.rooms || []);
+    }, {passive: false});
+    canvas.addEventListener("mousedown", e => {
+      drag = {x: e.clientX, y: e.clientY, moved: false};
+    });
+    canvas.addEventListener("mousemove", e => {
+      if (!drag) return;
+      const r = canvas.getBoundingClientRect();
+      const dx = (e.clientX - drag.x) * (MAP_W / r.width) / mapView.k;
+      const dy = (e.clientY - drag.y) * (MAP_H / r.height) / mapView.k;
+      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
+      mapView.x += dx;
+      mapView.y += dy;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      if (lastState) renderWorldMap(lastState.rooms || []);
+    });
+    canvas.addEventListener("mouseup", e => {
+      const wasDrag = drag && drag.moved;
+      drag = null;
+      if (wasDrag || !lastState) return;
+      const r = canvas.getBoundingClientRect();
+      const mx = (e.clientX - r.left) * (MAP_W / r.width);
+      const my = (e.clientY - r.top) * (MAP_H / r.height);
+      const {positions} = mapLayout(lastState.rooms || []);
+      let best = null, bestD = 60 / mapView.k;
+      for (const [id, p] of Object.entries(positions)) {
+        const d = Math.hypot((p.x + mapView.x) * mapView.k - mx,
+                             (p.y + mapView.y) * mapView.k - my);
+        if (d < bestD) { bestD = d; best = id; }
+      }
+      if (best) {
+        const {byId} = mapLayout(lastState.rooms || []);
+        openRoomId = best;
+        renderRoomDrawer(byId);
+      }
+    });
+    canvas.addEventListener("mouseleave", () => { drag = null; });
+  }
+  renderRoomDrawer(byId);
 }
 
 function renderRooms(rooms) {
@@ -698,18 +804,28 @@ function renderOverview(s) {
     ["connections", s.server.connections],
     ["treasury", (m.treasury ?? 0).toFixed(1)],
     ["open orders", (m.orders || []).length],
+    ["lifetime trades", m.trade_count ?? 0],
     ["dungeons", (s.dungeons || []).length],
     ["uptime", (s.server.uptime ?? 0) + "s"],
   ];
   $("ovCards").innerHTML = cards.map(([l, v]) =>
     `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join("");
+  const pill = $("ovHealth");
+  if (s.server.players_online > 0) {
+    pill.textContent = "● Healthy";
+    pill.style.color = "var(--good)";
+  } else {
+    pill.textContent = "○ Idle";
+    pill.style.color = "var(--dim)";
+  }
   const hist = s.history || [];
   if (hist.length >= 2) {
     drawLineChart("ovPlayers", hist.map(h => h.players_online), "#79c0ff");
     drawLineChart("ovScore", hist.map(h =>
       (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0), "#d2a8ff");
+    drawLineChart("ovVolume", hist.map(h => h.market_orders ?? 0), "#ffb454");
   }
-  const acts = (s.activity || []).slice(-8).reverse();
+  const acts = (s.activity || []).slice(-10).reverse();
   $("ovActivity").innerHTML = acts.length ? acts.map(a => `
     <div class="row">
       <span class="t">${esc(a.time)}</span>

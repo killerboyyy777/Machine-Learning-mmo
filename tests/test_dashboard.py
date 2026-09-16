@@ -34,6 +34,11 @@ m = re.search(r'<div id="(view-[\w-]+)" class="tabview active"', html)
 assert m and m.group(1) == "view-overview", "default view is not overview"
 print("DEFAULT_TAB_OK")
 
+# --- Phase 2 widgets exist: health pill, volume chart, canvas map, drawer ---
+for wid in ("ovHealth", "ovVolume", "worldMapCanvas", "roomDrawer"):
+    assert f'id="{wid}"' in html, f"missing widget {wid}"
+print("PHASE2_WIDGETS_OK")
+
 # --- placeholder panels point at follow-up work (no bare TODOs) ---
 for view in ("agents", "quests", "crafting", "config"):
     block = re.search(rf'<div id="view-{view}" class="tabview">(.*?)</div>\s*</div>',
