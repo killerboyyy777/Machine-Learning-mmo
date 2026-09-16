@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Server bind flags (#173): `--host`/`--port`/`--http-port`/`--gm-port`
+  (localhost training without firewall prompts; GM stays loopback-only).
+- Scores backup rotation (#166): `scores.json.1`/`.2` rotate on every
+  save; load falls back with a warning when the primary is missing or
+  corrupt.
 - Repo automation: release versioning from labels (enhancement=minor,
   default patch), Dependabot automerge for patch/minor on green CI,
   failure-log artifacts, test_dashboard/test_env_reset/test_eval_stats
