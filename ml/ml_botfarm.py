@@ -297,7 +297,6 @@ async def main():
             farm.stop.set()
         await asyncio.gather(eval_task, return_exceptions=True)
 
-    # Print farm summary before exiting
     print("\n--- Farm summary ---")
     for b in farm.bots:
         print(f"  {b.name}: score={b.score:.2f} steps={b.total_steps}")

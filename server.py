@@ -236,7 +236,7 @@ class Dungeon:
             return f
         hp = round(DUNGEON_BASE_HP * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
         atk = round(DUNGEON_BASE_ATK * (1 + DUNGEON_ATK_GROWTH) ** (n - 1))
-        count = min(1 + (n - 1) // 2, 4)          # more guards as you descend
+        count = min(1 + (n - 1) // 2, 4)
         gold = round(3 * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
         shard = f"dungeon_shard_{n}"
         # Relic items are registered on demand so loot scales with depth
@@ -253,7 +253,7 @@ class Dungeon:
                 "hostile": True, "behavior": "idle",
                 "loot": [shard],
                 "gold": gold,
-                "respawn_seconds": 20 + n * 10,   # deeper floors take longer to recover
+                "respawn_seconds": 20 + n * 10,
                 "alive": True, "respawn_at": None, "contributors": {},
                 "dungeon_id": self.id,
             })
@@ -1659,8 +1659,7 @@ async def cmd_heal(player, msg):
 async def cmd_buy(player, msg):
     merchant = find_merchant_in_room(player.room)
     if not merchant:
-        # ML env buys from anywhere in tests? No — but allow market-room-less?
-        # Keep strict: must be by a merchant.
+        # Buys require standing by a merchant; no remote or market-room sale.
         await send(player, {"type": "error", "text": "No merchant here."})
         return
     iid = find_shop_item(merchant["shop"], msg.get("item", ""))
@@ -1838,7 +1837,6 @@ async def cmd_commission_fill(player, msg):
     commission["status"] = "filled"
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
-    # Track the collaboration on the poster's score entry.
     poster_entry = get_score_entry(commission["poster"])
     collab = poster_entry.setdefault("collab_fills", {})
     collab[player.name] = collab.get(player.name, 0) + 1
@@ -1969,12 +1967,7 @@ QUEST_GIVERS = {
         "room": "healing_spring",
         "description": "A gentle healer who tends the wounded and always needs remedies.",
     },
-    # Easy to add new quest givers:
-    # "old_wizard": {
-    #     "name": "Old Wizard",
-    #     "room": "wizard_tower",
-    #     "description": "A mysterious wizard seeking rare components.",
-    # },
+    # New givers are one entry following the schema above.
 }
 
 
@@ -2630,7 +2623,6 @@ async def cmd_gm_slay(player, msg):
         names = ", ".join(m["name"] for m in matches[:5])
         await send(player, {"type": "error", "text": f"Ambiguous target '{target}': {names}. Be more specific."})
         return
-    # Prefer exact id match, else first.
     npc = next((m for m in matches if str(m["id"]).lower() == target), matches[0])
     if not npc.get("alive"):
         await send(player, {"type": "error", "text": f"{npc['name']} is already dead."})
