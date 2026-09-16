@@ -3118,24 +3118,31 @@ async def handle_connection(ws):
     except websockets.ConnectionClosed:
         pass
     finally:
+        # Mark logged-out FIRST so a half-finished cleanup below can never
+        # leave a ghost behind that still counts as online. The entry is
+        # removed at the end; pop() (not del) tolerates double cleanup.
+        was_logged_in = player.logged_in
+        player.logged_in = False
         writer_task.cancel()
         try:
             await writer_task
-        except (asyncio.CancelledError, websockets.ConnectionClosed):
+        except Exception:
             pass
-        if player.logged_in:
-            await broadcast_room(player.room, {"type": "message", "text": f"{player.name} disappears."})
-            remove_member(player)
-            if dungeon_for_room(player.room):
-                player.room = DUNGEON_ENTRANCE_ROOM
-            if name_owners.get(player.name.lower()) == pid:
-                del name_owners[player.name.lower()]
-            await _leave_party_on_disconnect(player)
-            lvl = get_score_entry(player.name)["level"]
-            vlog(f"player {player.name} (lv{lvl}) disconnected")
-        else:
-            vlog(f"connection {pid} closed before login")
-        del players[pid]
+        try:
+            if was_logged_in:
+                await broadcast_room(player.room, {"type": "message", "text": f"{player.name} disappears."})
+                remove_member(player)
+                if dungeon_for_room(player.room):
+                    player.room = DUNGEON_ENTRANCE_ROOM
+                if name_owners.get(player.name.lower()) == pid:
+                    del name_owners[player.name.lower()]
+                await _leave_party_on_disconnect(player)
+                lvl = get_score_entry(player.name)["level"]
+                vlog(f"player {player.name} (lv{lvl}) disconnected")
+            else:
+                vlog(f"connection {pid} closed before login")
+        finally:
+            players.pop(pid, None)
 
 
 async def _run_resilient(task_name, coro_factory):
