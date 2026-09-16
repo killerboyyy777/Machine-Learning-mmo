@@ -45,3 +45,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: fast-dashboard
+        name: fast tests (dashboard markup, no server/torch)
+        entry: python tests/test_dashboard.py
+        language: system
+        pass_filenames: false
+        always_run: true
