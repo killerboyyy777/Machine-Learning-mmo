@@ -3,16 +3,28 @@
 Run from the repo root:  python tests/test_conductor.py
 Covers: registry CRUD, churn spawn/death, mixer rebalance, metrics writes.
 """
+import asyncio
 import json
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ml.conductor.registry import Registry
-from ml.conductor.churn import ChurnManager, poisson_interval, geometric_lifetime, wave_startup
-from ml.conductor.mixer import Mixer
-from ml.conductor.metrics import MetricsLogger
+import ml.conductor as cond
+from ml.conductor import (
+    AgentTask,
+    ChurnManager,
+    MetricsLogger,
+    Mixer,
+    Registry,
+    Supervisor,
+)
+from ml.conductor.churn import geometric_lifetime, poisson_interval, wave_startup
+
+# #47: public classes are importable from the package root
+assert {"Conductor", "Registry", "Supervisor", "ChurnManager", "Mixer",
+        "MetricsLogger", "PBTManager", "AgentEntry", "AgentTask"} <= set(cond.__all__)
+print("EXPORTS_OK")
 
 tmpdir = tempfile.mkdtemp()
 reg_path = os.path.join(tmpdir, "reg")
@@ -41,6 +53,9 @@ reg.save()
 reg2 = Registry(reg_path, max_agents=5)
 reg2.load()
 assert reg2.get("a1").episodes == 2
+# #46: full-precision total survives the round-trip (not mean*episodes)
+assert reg2.get("a1").total_reward == 30.0
+assert reg2.get("a1").mean_reward == 15.0
 print("REGISTRY_OK")
 
 # --- Churn helpers ---
@@ -97,5 +112,103 @@ assert ev1["event"] == "agent_spawn" and ev1["agent_id"] == "a1"
 ev2 = json.loads(lines[1])
 assert ev2["event"] == "episode" and ev2["reward"] == 5.0
 print("METRICS_OK")
+
+# --- #45 supervisor steps counter increments per env step ---
+class _FakeEnv:
+    async def reset(self):
+        await asyncio.sleep(0)  # yield like a real (network) env does
+        return {"obs": 0}
+
+    async def step(self, action):
+        await asyncio.sleep(0)
+        return ({"obs": 1}, 1.0, True, {})
+
+
+async def _collect(task, n=2):
+    # run() is infinite by design (stops only on cancel) -- take n
+    # episodes (1 step each: the fake env is always done) then stop it.
+    out = []
+    gen = task.run()
+    async for ev in gen:
+        out.append(ev)
+        if len(out) >= n:
+            task.cancel()
+            await gen.aclose()
+            break
+    return out
+
+
+at = AgentTask("t1", _FakeEnv(), lambda obs, aid: 0, max_steps=5)
+evs = asyncio.run(_collect(at))
+assert at.steps == 2 and at.episodes == 2, (at.steps, at.episodes)
+assert [e["steps"] for e in evs] == [1, 2]
+print("SUPERVISOR_STEPS_OK")
+
+# --- churn arrivals skip a full registry instead of raising ---
+r_full = Registry(os.path.join(tmpdir, "full"), max_agents=1)
+cm_full = ChurnManager(r_full, arrivals_per_minute=1000000)
+cm_full._next_arrival = 0
+assert len(cm_full.tick(1.0)) == 1  # fills the single slot
+cm_full._next_arrival = 0
+assert cm_full.tick(1.0) == []  # full: skipped, no RuntimeError
+assert len(r_full.alive_agents()) == 1
+print("CHURN_FULL_OK")
+
+# --- assign_one spreads single arrivals across floors ---
+_mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),
+             ["f1", "f2", "f3"])
+for _aid in ["x", "y", "z", "w"]:
+    _mx2.assign_one(_aid)
+assert [_mx2._floor_agents[f] for f in ["f1", "f2", "f3"]] == [["x", "w"], ["y"], ["z"]]
+print("MIXER_ASSIGN_ONE_OK")
+
+# --- #48 wave_fill is awaitable and fills without blocking ---
+async def _fill():
+    r = Registry(os.path.join(tmpdir, "wf"), max_agents=5)
+    cm = ChurnManager(r)
+    n = await cm.wave_fill(3, wave_size=10, wave_delay=0.01)
+    assert n == 3 and len(r.alive_agents()) == 3
+
+asyncio.run(_fill())
+print("WAVE_FILL_ASYNC_OK")
+
+# --- #50 watchdog: hung env.step ends the episode instead of wedging ---
+import time as _time
+
+
+class _SlowEnv:
+    async def reset(self):
+        return {"obs": 0}
+
+    async def step(self, action):
+        await asyncio.sleep(5)
+        return ({}, 0.0, True, {})
+
+
+at_slow = AgentTask("t-slow", _SlowEnv(), lambda obs, aid: 0,
+                    max_steps=5, step_timeout=0.05)
+_t0 = _time.time()
+_evs_slow = asyncio.run(_collect(at_slow, n=1))
+_dt = _time.time() - _t0
+assert _dt < 2.0, _dt
+assert "timeout" in (at_slow.last_error or "").lower(), at_slow.last_error
+print("WATCHDOG_OK")
+
+# --- #51 mixer auto-integration: supervisor feeds episode rewards ---
+async def _sup_mixer():
+    r = Registry(os.path.join(tmpdir, "sup"), max_agents=5)
+    mx = Mixer(r, ["town_square"])
+    sup = Supervisor(r, mixer=mx)
+    env = _FakeEnv()
+    env._state = {"room_id": "town_square", "is_dungeon": False,
+                  "dungeon_floor": 0}
+    await sup.start_agent("s1", lambda aid: env, lambda obs, aid: 0)
+    await asyncio.sleep(0.3)
+    assert len(mx._floor_rewards["town_square"]) > 0
+    assert mx.snapshot()["town_square"]["mean_reward"] == 1.0
+    await sup.stop_all()
+
+asyncio.run(_sup_mixer())
+print("MIXER_AUTO_OK")
 
 print("ALL_CONDUCTOR_OK")

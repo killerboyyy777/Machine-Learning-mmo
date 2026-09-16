@@ -44,6 +44,9 @@ class AgentEntry:
             "checkpoint": self.checkpoint_path,
             "episodes": self.episodes,
             "mean_reward": round(self.mean_reward, 4),
+            # Full-precision accumulator: load() prefers this over
+            # reconstructing from the rounded mean (see #46).
+            "total_reward": self.total_reward,
             "alive": self.alive,
         }
 
@@ -149,6 +152,10 @@ class Registry:
                     a.get("checkpoint", ""),
                 )
                 entry.episodes = a.get("episodes", 0)
-                entry.total_reward = a.get("mean_reward", 0) * entry.episodes
+                if "total_reward" in a:
+                    entry.total_reward = a["total_reward"]
+                else:
+                    # Pre-#46 snapshots only stored the rounded mean.
+                    entry.total_reward = a.get("mean_reward", 0) * entry.episodes
                 entry.alive = a.get("alive", True)
                 self._agents[entry.agent_id] = entry

@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import random
+import signal
 import time
 import itertools
 from collections import deque
@@ -105,14 +106,18 @@ def _apply_config():
     except (json.JSONDecodeError, OSError) as e:
         print(f"Warning: could not load {CONFIG_FILE}: {e}")
         return
-    import inspect as _inspect
     g = globals()
     for section in cfg.values():
         if not isinstance(section, dict):
             continue
         for key, val in section.items():
-            if key in g:
+            if key not in g:
+                continue
+            try:
                 g[key] = type(g[key])(val)  # coerce to original type
+            except (TypeError, ValueError) as e:
+                print(f"Warning: {os.path.basename(CONFIG_FILE)}: "
+                      f"skipping {key}={val!r} ({e}); keeping default {g[key]!r}")
     print(f"Config loaded from {os.path.basename(CONFIG_FILE)}")
 
 _apply_config()
@@ -2959,6 +2964,15 @@ async def dashboard_refresh_loop():
         refresh_snapshot_json()
 
 
+def _memory_mb():
+    """Process RSS in MB (stdlib only). None where unreadable."""
+    try:
+        import resource
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+    except Exception:
+        return None
+
+
 def start_dashboard():
     import threading
     here = dirname(abspath(__file__))
@@ -2982,6 +2996,15 @@ def start_dashboard():
             if path == "/api/state":
                 state = world_snapshot_json if world_snapshot_json is not None else "{}"
                 self._send(state.encode(), "application/json")
+            elif path == "/health":
+                # Liveness probe for CI/Docker/monitoring (#56).
+                body = json.dumps({
+                    "status": "ok",
+                    "uptime": round(time.time() - START_TIME, 1),
+                    "players_online": sum(1 for p in players.values() if p.logged_in),
+                    "memory_mb": _memory_mb(),
+                })
+                self._send(body.encode(), "application/json")
             elif path in ("/", "/dashboard.html") and os.path.exists(html_path):
                 with open(html_path, "rb") as f:
                     self._send(f.read(), "text/html; charset=utf-8")
@@ -3133,6 +3156,17 @@ async def main():
     asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop))
     asyncio.create_task(_run_resilient("scores_save", scores_save_loop))
     asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop))
+    # Graceful shutdown (#55): SIGTERM/SIGINT break the wait below so the
+    # finally chain runs -- listeners close, player sockets close, scores
+    # persist, exit 0. Platforms without handler support fall back to
+    # KeyboardInterrupt in __main__.
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, ValueError, OSError, RuntimeError):
+            pass
     try:
         if VERBOSE:
             print(f"Server 0.5 (instanced dungeon, parties, market, GM) on ws://{HOST}:{PORT}")
@@ -3140,12 +3174,23 @@ async def main():
         game_server = await websockets.serve(handle_connection, HOST, PORT)
         gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
         try:
-            await asyncio.Future()
+            await stop.wait()
         finally:
+            print("Shutting down: closing listeners...", flush=True)
             game_server.close()
             gm_server.close()
+            await game_server.wait_closed()
+            await gm_server.wait_closed()
+            for p in list(players.values()):
+                ws = getattr(p, "ws", None)
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
     finally:
         save_scores()
+        print("Scores saved. Bye.", flush=True)
 
 
 if __name__ == "__main__":

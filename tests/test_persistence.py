@@ -50,6 +50,10 @@ def torch_check(folder):
     assert loaded.best_score == 89.5
     assert loaded.q.q_head.bias.detach().tolist() == agent.q.q_head.bias.detach().tolist()
     assert loaded.target.q_head.bias.detach().tolist() == agent.target.q_head.bias.detach().tolist()
+    # #53: version metadata round-trips and matches the live build
+    v = loaded.ckpt_version
+    assert v and v["obs_size"] == OBS_SIZE and v["n_actions"] == N_ACTIONS, v
+    assert v["git_sha"] and v["config_hash"] and v["saved_at"], v
     print("TORCH_PERSISTENCE_OK")
 
 

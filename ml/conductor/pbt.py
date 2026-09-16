@@ -12,6 +12,7 @@ Checkpoint copy goes winner.checkpoint_path -> loser.checkpoint_path via
 the registry (files may not exist yet for fresh members -- then only the
 hyperparameters transfer, which is still a valid exploit step).
 """
+
 import os
 import random
 import shutil
@@ -20,9 +21,16 @@ import shutil
 class PBTManager:
     """Exploit/explore loop over registry-backed population members."""
 
-    def __init__(self, registry, metrics=None, exploit_frac=0.2,
-                 min_episodes=10, min_delta=0.01, perturb=(0.8, 1.2),
-                 mutate_keys=None):
+    def __init__(
+        self,
+        registry,
+        metrics=None,
+        exploit_frac=0.2,
+        min_episodes=10,
+        min_delta=0.01,
+        perturb=(0.8, 1.2),
+        mutate_keys=None,
+    ):
         self.registry = registry
         self.metrics = metrics
         self.exploit_frac = exploit_frac
@@ -30,7 +38,9 @@ class PBTManager:
         self.min_delta = min_delta
         self.perturb = perturb
         self.mutate_keys = mutate_keys  # None = all numeric hparams
-        self._members = {}  # agent_id -> {"hparams": dict, "fitness": float, "episodes": int}
+        self._members = (
+            {}
+        )  # agent_id -> {"hparams": dict, "fitness": float, "episodes": int}
 
     def register(self, agent_id, hparams=None):
         """Enroll a registered agent in the population."""
@@ -60,7 +70,7 @@ class PBTManager:
             if isinstance(v, float):
                 out[k] = v * random.uniform(lo, hi)
             elif isinstance(v, int):
-                out[k] = int(round(v * random.uniform(lo, hi)))
+                out[k] = round(v * random.uniform(lo, hi))
         return out
 
     def _copy_weights(self, winner_id, loser_id):
@@ -84,13 +94,16 @@ class PBTManager:
         """One exploit/explore round. Returns the list of exploit ops:
         [{"loser": id, "winner": id, "hparams": {...}, "weights_copied": bool}]."""
         ranked = sorted(
-            ((aid, m) for aid, m in self._members.items()
-             if m["episodes"] >= self.min_episodes and m["fitness"] > float("-inf")),
+            (
+                (aid, m)
+                for aid, m in self._members.items()
+                if m["episodes"] >= self.min_episodes and m["fitness"] > float("-inf")
+            ),
             key=lambda t: t[1]["fitness"],
         )
         if len(ranked) < 2:
             return []
-        n = min(max(1, int(len(ranked) * self.exploit_frac)), len(ranked) // 2)
+        n = min(max(1, round(len(ranked) * self.exploit_frac)), len(ranked) // 2)
         ops = []
         for i in range(n):
             loser_id = ranked[i][0]
@@ -102,14 +115,23 @@ class PBTManager:
             copied = self._copy_weights(winner_id, loser_id)
             loser["hparams"] = new_hparams
             loser["episodes"] = 0  # re-prove after adopting new genes
-            op = {"loser": loser_id, "winner": winner_id,
-                  "hparams": dict(new_hparams), "weights_copied": copied}
+            op = {
+                "loser": loser_id,
+                "winner": winner_id,
+                "hparams": dict(new_hparams),
+                "weights_copied": copied,
+            }
             ops.append(op)
         if ops and self.metrics is not None:
             self.metrics.log("pbt_exploit", ops=ops)
         return ops
 
     def snapshot(self):
-        return {aid: {"fitness": m["fitness"], "episodes": m["episodes"],
-                      "hparams": dict(m["hparams"])}
-                for aid, m in self._members.items()}
+        return {
+            aid: {
+                "fitness": m["fitness"],
+                "episodes": m["episodes"],
+                "hparams": dict(m["hparams"]),
+            }
+            for aid, m in self._members.items()
+        }

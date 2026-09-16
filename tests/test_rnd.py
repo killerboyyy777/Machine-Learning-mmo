@@ -4,6 +4,7 @@ Run from the repo root: python tests/test_rnd.py
 Covers #35: bonus is non-negative and finite, the predictor learns
 (error shrinks with updates), and RND state survives save/load.
 """
+
 import os
 import sys
 import tempfile
@@ -13,16 +14,15 @@ sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
 import torch
-
-from ml_env import OBS_SIZE
 from dqn_agent import TorchDQNAgent
+from ml_env import OBS_SIZE
 
 agent = TorchDQNAgent(rnd_lambda=0.1)
 obs = [0.1 * ((i % 7) + 1) for i in range(OBS_SIZE)]
 
 # --- bonus is non-negative and finite ---
 b = agent.rnd_bonus(obs)
-assert b >= 0.0 and b != float("inf") and b == b, b  # NaN-proof
+assert b >= 0.0 and b != float("inf") and b == b, b  # noqa: PLR0124 (NaN-proof)
 print(f"RND_BONUS_OK ({b:.4f})")
 
 # --- predictor learns: error shrinks after updates on the same state ---
@@ -40,7 +40,7 @@ print(f"RND_LEARNS_OK ({err0:.4f} -> {err1:.4f})")
 b_seen = agent.rnd_bonus(obs)
 novel = [0.9 - v for v in obs]
 b_novel = agent.rnd_bonus(novel)
-assert b_novel >= 0.0 and b_novel == b_novel
+assert b_novel >= 0.0 and b_novel == b_novel  # noqa: PLR0124 (NaN-proof)
 print(f"RND_NOVELTY_OK (seen={b_seen:.4f} novel={b_novel:.4f})")
 
 # --- RND state survives save/load ---
@@ -74,13 +74,18 @@ print("RND_DISABLE_OK")
 # --- pre-curiosity checkpoints still load (RND stays fresh) ---
 with tempfile.TemporaryDirectory() as tmp:
     path = os.path.join(tmp, "old.pt")
-    torch.save({
-        "q_state_dict": agent.q.state_dict(),
-        "target_state_dict": agent.target.state_dict(),
-        "optimizer_state_dict": agent.optimizer.state_dict(),
-        "training_steps": 0, "learn_step": 0, "best_score": 0.0,
-        "obs_size": OBS_SIZE,
-    }, path)
+    torch.save(
+        {
+            "q_state_dict": agent.q.state_dict(),
+            "target_state_dict": agent.target.state_dict(),
+            "optimizer_state_dict": agent.optimizer.state_dict(),
+            "training_steps": 0,
+            "learn_step": 0,
+            "best_score": 0.0,
+            "obs_size": OBS_SIZE,
+        },
+        path,
+    )
     old = TorchDQNAgent()
     assert old.load_weights(path)
 print("RND_BACKWARD_COMPAT_OK")

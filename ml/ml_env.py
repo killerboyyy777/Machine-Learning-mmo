@@ -25,6 +25,13 @@ agent, ignores gold); "econ" pays gold_delta plus ECON_INV_LAMBDA times the
 merchant-value delta of carried items (pure market/craft/loot agent, ignores
 XP). Both are tuned via ml_config.json like the social terms.
 
+Curriculum (flags `curriculum_stage` 0-3 + `curriculum_auto`): progressive
+action-space unlock -- rats (0), +dungeons (1), +crafting (2), full
+economy (3). Locked actions map to None like any other invalid action, so
+masks shrink/expand with the stage. Auto-advance promotes on score
+thresholds (CURRICULUM_THRESHOLDS). Default is stage 3 / manual: today's
+behavior, byte-identical.
+
 The observation covers everything a fixed-size vector can reasonably carry
 about the 0.5 systems (instanced party dungeons, the player market, parties,
 and leveling), plus the Town Guard repeatable quest:
@@ -239,6 +246,18 @@ REWARD_MODES = ("score", "xp", "econ")
 XP_LEVEL_BONUS = 5.0  # extra reward per level-up in "xp" mode
 ECON_INV_LAMBDA = 1.0  # weight of inventory-value delta in "econ" mode
 
+# Curriculum stages (progressive action-space unlock, #59): 0 = surface
+# rats (combat/loot/rest/heal/shop/party only), 1 adds dungeon travel and
+# the delver quest, 2 adds gathering/crafting and the guard charm quest,
+# 3 unlocks the full economy (market + commissions). Gating is mask-level
+# (locked actions map to None like any other invalid action), so the same
+# policy architecture trains through every stage. Auto-advance promotes on
+# score thresholds when curriculum_auto is on; default is stage 3 / manual
+# (today's behavior, byte-identical).
+CURRICULUM_STAGES = ("rats", "dungeons", "crafting", "full")
+CURRICULUM_THRESHOLDS = (0, 10, 30, 60)  # min score to enter each stage
+# Unlock sets live below ACTIONS (they match on action names).
+
 # ---------------------------------------------------------------------------
 # Optional config file: ml_config.json overrides reward shaping constants.
 # ---------------------------------------------------------------------------
@@ -257,8 +276,13 @@ def _apply_ml_config():
         if not isinstance(section, dict):
             continue
         for key, val in section.items():
-            if key in g:
+            if key not in g:
+                continue
+            try:
                 g[key] = type(g[key])(val)
+            except (TypeError, ValueError) as e:
+                print(f"Warning: ml_config.json: skipping {key}={val!r} "
+                      f"({e}); keeping default {g[key]!r}")
 
 _apply_ml_config()
 
@@ -455,6 +479,14 @@ ACTIONS = (
 )
 N_ACTIONS = len(ACTIONS)
 
+# Curriculum unlock sets (action names gated below their stage).
+STAGE1_UNLOCK = {"move_enter", "move_down", "quest2_accept", "quest2_turn_in"}
+STAGE2_UNLOCK = ({"gather", "quest_accept", "quest_turn_in"}
+                 | {a for a in ACTIONS if a == "craft" or a.startswith("craft_")})
+STAGE3_UNLOCK = {"market_post", "market_buy", "market_cancel", "market_expand",
+                 "commission_post", "commission_list", "commission_fill",
+                 "commission_cancel"}
+
 
 def flatten_obs(obs):
     """Turn the structured observation dict into one flat list of floats,
@@ -511,14 +543,18 @@ class TextMMOEnv:
     -- including sharing party dungeons and trading on the same market."""
 
     def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
-                 reward_mode="score"):
+                 reward_mode="score", curriculum_stage=3, curriculum_auto=False):
         if reward_mode not in REWARD_MODES:
             raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
+        if curriculum_stage not in (0, 1, 2, 3):
+            raise ValueError(f"curriculum_stage must be 0-3, got {curriculum_stage!r}")
         self.name = name
         self.url = url
         self.step_delay = step_delay
         self.max_steps = max_steps
         self.reward_mode = reward_mode
+        self.curriculum_stage = curriculum_stage
+        self.curriculum_auto = curriculum_auto
         self.ws = None
         self._reader_task = None
         self._state = {
@@ -696,6 +732,7 @@ class TextMMOEnv:
         self._pending_xp = 0.0
         self._pending_levels = 0
         self._step_count += 1
+        self._maybe_advance_curriculum()
         if episode_done:
             done = True
             obs = self._build_obs()
@@ -717,6 +754,7 @@ class TextMMOEnv:
             "action": action,
             "gold_delta": gold_delta,
             "reward_mode": self.reward_mode,
+            "curriculum_stage": self.curriculum_stage,
             "xp_gained": xp_gained,
             "levels_gained": levels_gained,
             "inv_delta": inv_delta,
@@ -908,8 +946,33 @@ class TextMMOEnv:
             self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
         return list(self._mask_cache)
 
+    def _curriculum_gated(self, action):
+        """True when the action is locked below the current curriculum stage."""
+        stage = self.curriculum_stage
+        if stage >= 3:
+            return False
+        if stage < 1 and action in STAGE1_UNLOCK:
+            return True
+        if stage < 2 and action in STAGE2_UNLOCK:
+            return True
+        return stage < 3 and action in STAGE3_UNLOCK
+
+    def _maybe_advance_curriculum(self):
+        """Promote through score thresholds when curriculum_auto is on."""
+        if not self.curriculum_auto:
+            return
+        th = CURRICULUM_THRESHOLDS
+        if len(th) < 4:
+            return  # misconfigured thresholds: stay put instead of crashing
+        score = self._state.get("score", 0.0)
+        while (self.curriculum_stage < 3
+               and score >= th[self.curriculum_stage + 1]):
+            self.curriculum_stage += 1
+
     def _action_to_cmd(self, action):
         s = self._state
+        if self._curriculum_gated(action):
+            return None
         if action.startswith("move_"):
             # Only exits that actually exist here; walking into walls would
             # just bounce off a server error.
