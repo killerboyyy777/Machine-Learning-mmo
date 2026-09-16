@@ -38,6 +38,13 @@ jobs:
       - run: sleep 5
       - run: python tests/test_live.py
       - run: python tests/test_env.py
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: live-failure-logs
+          path: |
+            server.ci.log
+            scores.json
 
   persistence:
     name: Checkpoint save/load round-trip (needs torch)
