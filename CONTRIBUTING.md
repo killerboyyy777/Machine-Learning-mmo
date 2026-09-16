@@ -60,10 +60,11 @@ No code required:
 
 ## Branch protection
 
-`master` requires 1 review + green CI, no force pushes, no deletions
-(enabled when the repo goes public / Pro; until then this is convention,
-enforced by review). To (re)apply the rule programmatically after repo
-creation or transfer, run:
+`master` requires a PR with green CI, no force pushes, no deletions
+(see the "Master Branch Protection" ruleset). Solo-dev note: the ruleset
+requires 0 approvals, because the owner cannot approve their own PRs --
+raise the count when collaborators join. To (re)apply the rule
+programmatically after repo creation or transfer, run:
 
 ```bash
 bash scripts/enable-protection.sh
