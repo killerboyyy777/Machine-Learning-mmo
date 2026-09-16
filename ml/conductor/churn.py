@@ -79,6 +79,9 @@ class ChurnManager:
 
         # Prune lifetime rows for dead/gone agents (crashed tasks never
         # report episodes, so without this their rows grow forever).
+        # NOTE: O(rows) registry lookups per tick; trivial at current
+        # caps, but snapshot aliveness once outside the loop if
+        # max_agents ever grows 10x.
         for aid in list(self._lifetimes):
             entry = self.registry.get(aid)
             if entry is None or not entry.alive:

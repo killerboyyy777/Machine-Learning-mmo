@@ -48,16 +48,13 @@ def checkpoint_version(obs_size, n_actions):
 
 def version_notes(saved, obs_size, n_actions):
     """Human-readable drift notes between a saved version dict and the
-    live build (dims, git, config)."""
+    live build (git, config). Dims are deliberately absent: both loaders
+    enforce them structurally before this is ever called, so a dims note
+    could never print."""
     if not saved:
         return []
     cur = checkpoint_version(obs_size, n_actions)
     notes = []
-    if saved.get("obs_size") != obs_size or saved.get("n_actions") != n_actions:
-        notes.append(
-            f"dims {saved.get('obs_size')}/{saved.get('n_actions')} "
-            f"vs current {obs_size}/{n_actions}"
-        )
     if saved.get("git_sha") != cur["git_sha"]:
         notes.append(
             f"git {str(saved.get('git_sha'))[:8]} " f"vs current {cur['git_sha'][:8]}"
