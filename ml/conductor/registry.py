@@ -10,7 +10,6 @@ When experimental outperforms stable over a window, it gets promoted.
 import os
 import json
 import time
-import shutil
 import threading
 from pathlib import Path
 

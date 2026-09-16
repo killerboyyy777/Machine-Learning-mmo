@@ -5,7 +5,6 @@ holdout-gated promotion, market-volume hour soak.
 """
 import asyncio
 import time
-import os
 from pathlib import Path
 
 from .registry import Registry

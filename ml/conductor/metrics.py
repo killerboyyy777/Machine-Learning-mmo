@@ -17,7 +17,7 @@ class MetricsLogger:
         self.path = path
         self.buffer_size = buffer_size
         self._buffer = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
     def _write_line(self, event):
