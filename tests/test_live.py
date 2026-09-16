@@ -118,6 +118,7 @@ async def main():
     for m in await recv(A, timeout=5.0):
         ent.setdefault(m["type"], m)
     assert ent.get("room", {}).get("id") == "town_square"
+    assert ent.get("welcome", {}).get("protocol_version") == 1, ent.get("welcome")
     msgs = await gm_send("gm_reward", player="LiveA", gold=30)
     assert any("Treasury now 670.0" in m.get("text", "") for m in msgs), msgs
     print("LOGIN_GM_SEED_OK")

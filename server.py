@@ -28,6 +28,12 @@ PORT = 8765
 GM_HOST = "127.0.0.1"
 GM_PORT = 8767
 
+# Wire-protocol version, echoed in every `welcome` event (#72). Bump on any
+# breaking protocol change. Clients SHOULD send their version on login;
+# mismatches only warn (see ml_env version_match) -- old version-less
+# clients keep working unchanged.
+PROTOCOL_VERSION = 1
+
 # Scoring anti-grind tuning
 ACTION_WINDOW = 20
 MIN_HISTORY_FOR_VARIETY = 5
@@ -1290,7 +1296,9 @@ async def cmd_login(player, msg):
     name_owners[name.lower()] = player.id
     add_member(player)
     lvl = entry["level"]
-    await send(player, {"type": "welcome", "text": f"Welcome, {name} (level {lvl})."})
+    await send(player, {"type": "welcome", "text": f"Welcome, {name} (level {lvl}).",
+                        "protocol_version": PROTOCOL_VERSION,
+                        "client_version": msg.get("protocol_version")})
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
     await broadcast_room(player.room, {"type": "message", "text": f"{name} appears."}, exclude=player)

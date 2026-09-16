@@ -133,6 +133,12 @@ import server as srv  # reuses the already-loaded world data for vocab
 
 DEFAULT_URL = "ws://localhost:8765"
 
+# Wire-protocol version this client speaks (mirrors server.PROTOCOL_VERSION).
+# Sent on login; the server echoes its own version in `welcome`. Mismatches
+# only warn (see version_match in step info) -- old version-less clients
+# keep working unchanged.
+PROTOCOL_VERSION = 1
+
 # --- Fixed vocab, built once from world.json --------------------------------
 # Room ids come straight from room events, but NPCs/items are reported by
 # display name over the protocol, so we need name -> id lookups to turn
@@ -584,6 +590,9 @@ class TextMMOEnv:
             # these only let action mapping see what events already said).
             "room_gold": 0, "gatherables": [],
             "market_slots": 3, "open_commissions": [],
+            # Protocol handshake (#72): server's version from the welcome
+            # event (None until login lands).
+            "server_version": None,
         }
         self._pending_reward = 0.0
         self._pending_xp = 0.0  # accumulated "xp" event gains (for "xp" mode)
@@ -599,7 +608,9 @@ class TextMMOEnv:
             async for raw in self.ws:
                 event = json.loads(raw)
                 t = event.get("type")
-                if t == "room":
+                if t == "welcome":
+                    self._state["server_version"] = event.get("protocol_version")
+                elif t == "room":
                     self._state["room_id"] = event["id"]
                     self._state["exits"] = event["exits"]
                     self._state["npc_names"] = event["npcs"]
@@ -718,7 +729,8 @@ class TextMMOEnv:
                 f"{self.name}: connect failed after {self.connect_retries} tries: {last_error}")
 
         self._reader_task = asyncio.create_task(self._reader())
-        await self._send("login", name=self.name)
+        await self._send("login", name=self.name,
+                         protocol_version=PROTOCOL_VERSION)
         await self._send("stats")
         await self._send("market_list")
         await asyncio.sleep(self.step_delay * 2)  # let the initial snapshot land
@@ -832,8 +844,16 @@ class TextMMOEnv:
             },
         }
         done = episode_done or (self.max_steps is not None and self._step_count >= self.max_steps)
+        info.update(self._version_info())
         info["action_mask"] = 1 if cmd is not None else 0
         return next_obs, reward, done, info
+
+    def _version_info(self):
+        """Protocol handshake status (pure, unit-testable)."""
+        server = self._state.get("server_version")
+        return {"protocol_version": PROTOCOL_VERSION,
+                "server_version": server,
+                "version_match": server in (None, PROTOCOL_VERSION)}
 
     def _compute_reward(self, score_gain, xp_gain, levels, gold_delta,
                           inv_delta, party_before):
