@@ -41,8 +41,11 @@ def wave_startup(count, wave_size, wave_delay_seconds):
     for i in range(count):
         wave = i // wave_size
         delay = wave * wave_delay_seconds + random.uniform(0, wave_delay_seconds * 0.3)
+        # Baseline tracks the max so far, not the last value: intra-wave
+        # jitter can decrease, and resetting to it would overshoot the
+        # promised last-wave total.
         yield max(0.0, delay - prev)
-        prev = delay
+        prev = max(prev, delay)
 
 
 class ChurnManager:
@@ -73,6 +76,13 @@ class ChurnManager:
                     arrived.append(self._spawn_one())
                 except RuntimeError:
                     pass  # filled between check and spawn; retry next tick
+
+        # Prune lifetime rows for dead/gone agents (crashed tasks never
+        # report episodes, so without this their rows grow forever).
+        for aid in list(self._lifetimes):
+            entry = self.registry.get(aid)
+            if entry is None or not entry.alive:
+                self._lifetimes.pop(aid, None)
 
         return arrived
 

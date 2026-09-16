@@ -29,11 +29,13 @@ import os
 import random
 
 try:
-    from .ml_env import TextMMOEnv, ACTIONS, N_ACTIONS, OBS_SIZE, flatten_obs
+    from .ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
+    from .versioning import checkpoint_version, version_notes
 except ImportError:
     # Running as a script (python ml/ml_client.py) or imported as a
     # top-level module (tests/test_persistence.py): no parent package.
-    from ml_env import TextMMOEnv, ACTIONS, N_ACTIONS, OBS_SIZE, flatten_obs
+    from ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
+    from versioning import checkpoint_version, version_notes
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS_FILE = os.path.join(_HERE, "ml_weights.json")
@@ -119,52 +121,12 @@ class LinearQAgent:
             self.bias = data["bias"]
             self.training_steps = int(data.get("training_steps", 0))
             self.ckpt_version = data.get("version")
-            if self.ckpt_version:
-                v = self.ckpt_version
-                cur = checkpoint_version(self.obs_size, self.n_actions)
-                notes = []
-                if v.get("git_sha") != cur["git_sha"]:
-                    notes.append(f"git {str(v.get('git_sha'))[:8]} "
-                                 f"vs current {cur['git_sha'][:8]}")
-                if v.get("config_hash") != cur["config_hash"]:
-                    notes.append("config differs")
-                if notes:
-                    print(f"Checkpoint {path} version notes: " + "; ".join(notes))
+            notes = version_notes(self.ckpt_version, self.obs_size, self.n_actions)
+            if notes:
+                print(f"Checkpoint {path} version notes: " + "; ".join(notes))
             return True
         print(f"Warning: {path} doesn't match current obs/action size, starting fresh.")
         return False
-
-
-def checkpoint_version(obs_size, n_actions):
-    """Reproducibility metadata for linear checkpoints (torch got this in
-    #53): git SHA, config hash, obs/action dims, timestamp. Best effort
-    -- "unknown"/"missing" markers instead of crashes."""
-    import hashlib
-    import subprocess
-    import time as _time
-    sha = "unknown"
-    try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
-                             text=True, timeout=5, check=False)
-        sha = out.stdout.strip() or "unknown"
-    except (OSError, subprocess.SubprocessError) as e:
-        print(f"checkpoint_version: git lookup failed ({e}); using 'unknown'")
-    here = os.path.dirname(os.path.abspath(__file__))
-    h = hashlib.sha256()
-    for p in (os.path.join(os.path.dirname(here), "server_config.json"),
-              os.path.join(here, "ml_config.json")):
-        try:
-            with open(p, "rb") as f:
-                h.update(f.read())
-        except OSError:
-            h.update(f"missing:{os.path.basename(p)}".encode())
-    return {
-        "git_sha": sha,
-        "config_hash": h.hexdigest()[:16],
-        "obs_size": obs_size,
-        "n_actions": n_actions,
-        "saved_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
 
 
 async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, epsilon_decay_steps):

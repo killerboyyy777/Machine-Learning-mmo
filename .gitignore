@@ -8,8 +8,10 @@ __pycache__/
 venv/
 env/
 
-# Runtime game state (regenerated at runtime, never commit)
-scores.json
+# Runtime game state (regenerated at runtime, never commit).
+# The wildcard covers rotated backups (scores.json.1, .2, ...) too --
+# one careless git add -A must never commit world state.
+scores.json*
 
 # ML / Torch training checkpoints (local training progress, never commit)
 ml/ml_weights.json
