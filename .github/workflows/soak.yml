@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -27,7 +27,7 @@ jobs:
       - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.soak.log 2>&1 &
       - run: sleep 5
       - run: python ml/conductor/soak.py --agents ${{ inputs.agents || 50 }} --duration ${{ inputs.duration || 3600 }} --min-agents 40
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: soak-metrics
