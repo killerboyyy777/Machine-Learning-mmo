@@ -25,15 +25,15 @@ class Conductor:
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
         self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d_10_f1"])
+        self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
         self.supervisor = Supervisor(self.registry, max_concurrent=max_agents,
-                                     mixer=self.mixer)
+                                     mixer=self.mixer, metrics=self.metrics)
         # Runner (#52/#60): {"env_factory": f, "policy_fn": p} (+ optional
         # "step_timeout"). When set, run() starts a supervised task per
         # spawned agent and reaps tasks of churn-killed agents -- without
         # it the conductor only tracks the population without running it.
         self._runner = runner
         self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
-        self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
         # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
         # enable exploit/explore rounds, or None to run without a population.
         self.pbt = PBTManager(self.registry, self.metrics, **pbt) if pbt is not None else None

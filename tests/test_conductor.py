@@ -152,7 +152,8 @@ print("SUPERVISOR_STEPS_OK")
 
 # --- churn arrivals skip a full registry instead of raising ---
 r_full = Registry(os.path.join(tmpdir, "full"), max_agents=1)
-cm_full = ChurnManager(r_full, arrivals_per_minute=1000000)
+cm_full = ChurnManager(r_full, arrivals_per_minute=1000000,
+                       mean_lifetime_episodes=10000)
 cm_full._next_arrival = 0
 assert len(cm_full.tick(1.0)) == 1  # fills the single slot
 cm_full._next_arrival = 0
@@ -225,6 +226,65 @@ async def _stop_check():
 
 asyncio.run(_stop_check())
 print("STOP_CLOSES_ENV_OK")
+
+# --- #135 death accounting: crashes log agent_death with traceback ---
+import json as _json
+
+
+class _CrashEnv(_FakeEnv):
+    async def step(self, action):
+        await asyncio.sleep(0)
+        raise RuntimeError("synthetic crash")
+
+
+async def _crash_check():
+    r = Registry(os.path.join(tmpdir, "crash"), max_agents=5)
+    mlog = MetricsLogger(os.path.join(tmpdir, "crash.jsonl"))
+    sup = Supervisor(r, metrics=mlog)
+    r.register("boom", "linear")
+    await sup.start_agent("boom", lambda aid: _CrashEnv(), lambda obs, aid: 0)
+    for _ in range(50):
+        if "boom" not in sup._tasks:
+            break
+        await asyncio.sleep(0.05)
+    assert "boom" not in sup._tasks
+    assert r.get("boom").alive is False
+    mlog.flush()
+    with open(os.path.join(tmpdir, "crash.jsonl")) as f:
+        evs = [_json.loads(line) for line in f]
+    deaths = [e for e in evs if e["event"] == "agent_death"]
+    assert len(deaths) == 1 and deaths[0]["agent_id"] == "boom", evs
+    assert "synthetic crash" in deaths[0].get("error", ""), deaths[0]
+    return True
+
+
+assert asyncio.run(_crash_check())
+print("DEATH_CRASH_OK")
+
+
+async def _reap_death_check():
+    r = Registry(os.path.join(tmpdir, "reapdeath"), max_agents=5)
+    mlog = MetricsLogger(os.path.join(tmpdir, "reapdeath.jsonl"))
+    sup = Supervisor(r, metrics=mlog)
+    r.register("old", "torch")
+    env = _FakeEnv()
+    env._state = {"room_id": "town_square", "is_dungeon": False,
+                  "dungeon_floor": 0}
+    await sup.start_agent("old", lambda aid: env, lambda obs, aid: 0)
+    await asyncio.sleep(0.2)
+    r.get("old").alive = False
+    assert await sup.reap() == 1
+    mlog.flush()
+    with open(os.path.join(tmpdir, "reapdeath.jsonl")) as f:
+        evs = [_json.loads(line) for line in f]
+    deaths = [e for e in evs if e["event"] == "agent_death"]
+    assert len(deaths) == 1 and deaths[0]["agent_id"] == "old", evs
+    assert "error" not in deaths[0], deaths[0]  # churn, not crash
+    return True
+
+
+assert asyncio.run(_reap_death_check())
+print("DEATH_REAP_OK")
 
 # --- assign_one spreads single arrivals across floors ---
 _mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),

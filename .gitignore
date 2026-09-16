@@ -27,3 +27,9 @@ output.txt
 .DS_Store
 Thumbs.db
 TODO.md
+
+# Local run output (soak/validation runs, wiki staging) - never commit
+val_soak/
+soak_logs/
+soak_run/
+wiki/
