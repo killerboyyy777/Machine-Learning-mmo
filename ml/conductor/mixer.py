@@ -44,7 +44,13 @@ class Mixer:
         """Reallocate agents across floors based on performance.
 
         Returns list of (agent_id, old_floor, new_floor) moves.
-        """
+
+        Donors give down to (never below) their target, receivers take up
+        to (never above) theirs, paired off in a single bounded pass: every
+        step moves >= 1 agent and shrinks the remaining surplus, so this
+        always terminates. (The old move-while-over loop could pop an agent
+        onto its own floor when it held the smallest surplus and spin
+        forever, starving the conductor's event loop.)"""
         moves = []
         floor_means = {}
         for f in self.floor_ids:
@@ -63,16 +69,26 @@ class Mixer:
             target[f] = max(self.min_per_floor,
                             min(self.max_per_floor, int(prop * total_agents)))
 
-        # Move agents from overpopulated to underpopulated floors
-        for f in self.floor_ids:
-            while len(self._floor_agents[f]) > target[f]:
-                agent_id = self._floor_agents[f].pop()
-                # Find the floor with the most deficit
-                dest = min(self.floor_ids,
-                          key=lambda x: len(self._floor_agents[x]) - target.get(x, 0))
-                self._floor_agents[dest].append(agent_id)
-                moves.append((agent_id, f, dest))
-
+        counts = {f: len(self._floor_agents[f]) for f in self.floor_ids}
+        donors = [[f, counts[f] - target[f]] for f in self.floor_ids
+                  if counts[f] > target[f]]
+        receivers = [[f, target[f] - counts[f]] for f in self.floor_ids
+                     if counts[f] < target[f]]
+        di, ri = 0, 0
+        while di < len(donors) and ri < len(receivers):
+            df, ds = donors[di]
+            rf, rd = receivers[ri]
+            n = min(ds, rd)
+            for _ in range(n):
+                agent_id = self._floor_agents[df].pop()
+                self._floor_agents[rf].append(agent_id)
+                moves.append((agent_id, df, rf))
+            donors[di][1] -= n
+            receivers[ri][1] -= n
+            if donors[di][1] <= 0:
+                di += 1
+            if receivers[ri][1] <= 0:
+                ri += 1
         return moves
 
     def snapshot(self):

@@ -166,6 +166,36 @@ assert len(cm_full.tick(1.0)) == 1
 assert len(r_full.alive_agents()) == 1 and r_full.snapshot()["total"] == 2
 print("CHURN_FULL_OK")
 
+# --- rebalance always terminates: uniform no-signal hung the old loop ---
+import threading as _th
+
+mxu = Mixer(Registry(os.path.join(tmpdir, "mxu"), max_agents=50),
+            ["f1", "f2", "f3"])
+mxu._floor_rewards = {"f1": [0, 0], "f2": [0, 0], "f3": [0, 0]}
+mxu._floor_agents = {"f1": ["a", "b", "c"], "f2": ["d", "e", "f"],
+                     "f3": ["g", "h", "i"]}
+_out = []
+_t = _th.Thread(target=lambda: _out.append(mxu.rebalance()), daemon=True)
+_t.start()
+_t.join(timeout=5)
+assert not _t.is_alive(), "rebalance hung on uniform input"
+assert _out[0] == []  # nowhere to go: every floor is a donor, none a receiver
+assert sum(len(v) for v in mxu._floor_agents.values()) == 9  # conserved
+print("MIXER_NO_HANG_OK")
+
+# --- rebalance moves respect donor/receiver bounds ---
+mxb = Mixer(Registry(os.path.join(tmpdir, "mxb"), max_agents=50),
+            ["f1", "f2"])
+mxb._floor_rewards = {"f1": [10, 10, 10], "f2": [0, 0, 0]}
+mxb._floor_agents = {"f1": ["a"], "f2": ["b", "c", "d", "e", "f"]}
+moves = mxb.rebalance()
+assert sum(len(v) for v in mxb._floor_agents.values()) == 6  # conserved
+assert len(moves) == 4  # f2 surplus 4 -> f1 deficit
+assert all(m[1] == "f2" and m[2] == "f1" for m in moves)
+assert len(mxb._floor_agents["f1"]) == 5  # took up toward (not past) target
+assert len(mxb._floor_agents["f2"]) == 1  # gave down to (not below) target
+print("MIXER_BOUNDS_OK")
+
 # --- assign_one spreads single arrivals across floors ---
 _mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),
              ["f1", "f2", "f3"])
