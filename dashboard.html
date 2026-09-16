@@ -157,6 +157,13 @@
                <tbody id="scores"></tbody></table>
       </div>
       <div class="panel">
+        <h2>History</h2>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><canvas id="histPlayers" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><canvas id="histScore" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+        </div>
+      </div>
+      <div class="panel">
         <h2>Live activity</h2>
         <div id="activity"></div>
       </div>
@@ -485,6 +492,40 @@ function renderScores(scores) {
     <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${s.score.toFixed(1)}</b></td></tr>`).join("");
 }
 
+function drawLineChart(canvasId, values, color) {
+  const c = document.getElementById(canvasId);
+  if (!c || !values.length) return;
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = (max - min) || 1;
+  const pad = 4;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = (i / (values.length - 1)) * (W - pad * 2) + pad;
+    const y = H - pad - ((v - min) / span) * (H - pad * 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.15;
+  ctx.lineTo(W - pad, H - pad);
+  ctx.lineTo(pad, H - pad);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function renderHistory(history) {
+  if (!history || history.length < 2) return;
+  drawLineChart("histPlayers", history.map(h => h.players_online), "#79c0ff");
+  const topScore = history.map(h => (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0);
+  drawLineChart("histScore", topScore, "#d2a8ff");
+}
+
 function renderActivity(activity) {
   $("activity").innerHTML = activity.map(a => `
     <div class="row">
@@ -601,6 +642,7 @@ function renderAll(s) {
     ["rooms", () => renderRooms(s.rooms || [])],
     ["performance", () => renderPerf(s.players || [])],
     ["scores", () => renderScores(s.scores || [])],
+    ["history", () => renderHistory(s.history || [])],
     ["activity", () => renderActivity(s.activity || [])],
     ["character tracker", () => renderTracker(s.players || [])],
     ["market", () => renderMarket(s.market || {orders: [], history: []})],
