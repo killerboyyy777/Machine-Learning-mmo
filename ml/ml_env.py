@@ -961,9 +961,12 @@ class TextMMOEnv:
         """Promote through score thresholds when curriculum_auto is on."""
         if not self.curriculum_auto:
             return
+        th = CURRICULUM_THRESHOLDS
+        if len(th) < 4:
+            return  # misconfigured thresholds: stay put instead of crashing
         score = self._state.get("score", 0.0)
         while (self.curriculum_stage < 3
-               and score >= CURRICULUM_THRESHOLDS[self.curriculum_stage + 1]):
+               and score >= th[self.curriculum_stage + 1]):
             self.curriculum_stage += 1
 
     def _action_to_cmd(self, action):

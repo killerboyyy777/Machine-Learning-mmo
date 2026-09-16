@@ -154,6 +154,14 @@ assert cm_full.tick(1.0) == []  # full: skipped, no RuntimeError
 assert len(r_full.alive_agents()) == 1
 print("CHURN_FULL_OK")
 
+# --- assign_one spreads single arrivals across floors ---
+_mx2 = Mixer(Registry(os.path.join(tmpdir, "mx2"), max_agents=10),
+             ["f1", "f2", "f3"])
+for _aid in ["x", "y", "z", "w"]:
+    _mx2.assign_one(_aid)
+assert [_mx2._floor_agents[f] for f in ["f1", "f2", "f3"]] == [["x", "w"], ["y"], ["z"]]
+print("MIXER_ASSIGN_ONE_OK")
+
 # --- #48 wave_fill is awaitable and fills without blocking ---
 async def _fill():
     r = Registry(os.path.join(tmpdir, "wf"), max_agents=5)

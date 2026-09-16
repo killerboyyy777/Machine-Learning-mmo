@@ -87,4 +87,18 @@ manual._maybe_advance_curriculum()
 assert manual.curriculum_stage == 0
 print("CURR_AUTO_OK")
 
+# --- misconfigured thresholds never crash auto-advance ---
+import ml.ml_env as _envmod
+
+_saved = _envmod.CURRICULUM_THRESHOLDS
+_envmod.CURRICULUM_THRESHOLDS = (0, 10)
+try:
+    short = TextMMOEnv("CurrShort", curriculum_stage=0, curriculum_auto=True)
+    short._state["score"] = 100.0
+    short._maybe_advance_curriculum()
+    assert short.curriculum_stage == 0
+finally:
+    _envmod.CURRICULUM_THRESHOLDS = _saved
+print("CURR_SHORT_THRESHOLDS_OK")
+
 print("ALL_CURRICULUM_OK")

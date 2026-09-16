@@ -17,12 +17,20 @@ class Mixer:
         self.max_per_floor = max_per_floor
         self._floor_rewards = {f: [] for f in floor_ids}  # recent rewards per floor
         self._floor_agents = {f: [] for f in floor_ids}   # agent_ids per floor
+        self._cursor = 0  # round-robin cursor shared by assign calls
+
+    def assign_one(self, agent_id):
+        """Assign one agent, continuing round-robin across calls (so single
+        arrivals spread over floors instead of piling on floor zero)."""
+        floor = self.floor_ids[self._cursor % len(self.floor_ids)]
+        self._cursor += 1
+        self._floor_agents[floor].append(agent_id)
+        return floor
 
     def assign_initial(self, agent_ids):
         """Round-robin assign agents to floors."""
-        for i, aid in enumerate(agent_ids):
-            floor = self.floor_ids[i % len(self.floor_ids)]
-            self._floor_agents[floor].append(aid)
+        for aid in agent_ids:
+            self.assign_one(aid)
 
     def record_reward(self, floor_id, agent_id, reward):
         """Record an episode reward for a specific floor."""

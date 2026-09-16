@@ -82,7 +82,7 @@ class Conductor:
             entry = self.registry.get(agent_id)
             if entry:
                 self.metrics.log_agent_spawn(agent_id, entry.agent_type, entry.branch)
-                self.mixer.assign_initial([agent_id])
+                self.mixer.assign_one(agent_id)
                 await self._maybe_start(agent_id)
             wave_count += 1
             if wave_count % wave_size == 0:
