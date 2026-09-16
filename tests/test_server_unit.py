@@ -465,6 +465,59 @@ async def main():
             f"Recipe {rid} (T{tier}) destroys value: inputs={input_value}, output={output_value}")
     print("CRAFT_PROFITABILITY_OK")
 
-    print("ALL_OK")
+    # --- Quest system: list, accept, turn_in, giver check, repeat ---
+    srv.send = fake_send  # re-patch after GM tests restored orig_send
+    inbox.clear()
+    qtester = srv.Player(ws=FakeWS(), id=10010, name="Quester", logged_in=True)
+    qtester.room = "town_square"
+    srv.add_member(qtester)
+    qentry = srv.get_score_entry("Quester")
+
+    # List shows all quests
+    await srv.cmd_quest(qtester, {"action": "list"})
+    quest_list_msg = [m for m in inbox if "guard_charm" in m.get("text", "") and "delver" in m.get("text", "")]
+    assert quest_list_msg, "quest list should show guard_charm and delver"
+
+    # Accept requires giver present
+    qtester.room = "lumber_camp"  # no guard here
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    err_msgs = [m for m in inbox if m.get("type") == "error"]
+    assert err_msgs and "isn't here" in err_msgs[-1]["text"]
+    assert not qentry.get("quest_guard_active")
+
+    # Accept with giver present
+    qtester.room = "town_square"
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    assert qentry.get("quest_guard_active")
+    ok_msgs = [m for m in inbox if m.get("type") == "message" and "Ah" in m.get("text", "")]
+    assert ok_msgs
+
+    # Cannot accept same quest twice
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    dup_msgs = [m for m in inbox if m.get("type") == "message" and "already have" in m.get("text", "")]
+    assert dup_msgs
+
+    # Turn_in without conditions fails
+    await srv.cmd_quest(qtester, {"action": "turn_in", "quest": "guard_charm"})
+    fail_msgs = [m for m in inbox if m.get("type") == "message" and "haven't crafted" in m.get("text", "")]
+    assert fail_msgs
+
+    # Simulate charm crafted, turn_in succeeds
+    qentry["guard_charm_crafted"] = True
+    qtester.inventory.append(srv.QUEST_CHARM_RESULT)
+    old_xp = qentry["xp"]
+    old_gold = qtester.gold
+    await srv.cmd_quest(qtester, {"action": "turn_in", "quest": "guard_charm"})
+    assert not qentry.get("quest_guard_active")
+    assert qentry["quest_guard_completions"] == 1
+    assert qentry["xp"] > old_xp
+    assert qtester.gold > old_gold
+    assert srv.QUEST_CHARM_RESULT not in qtester.inventory
+
+    # Can repeat: accept again
+    await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
+    assert qentry.get("quest_guard_active")
+    qentry["guard_charm_crafted"] = False
+    print("QUEST_OK")
 
 asyncio.run(main())
