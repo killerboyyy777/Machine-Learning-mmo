@@ -3,6 +3,12 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Soak lifecycle fixes: churn lifetimes count completed episodes
+  (supervisor hook) instead of wall-clock ticks; wave startup sleeps
+  differential delays (50 agents in ~9s, was 212s); mixer drops dead ids
+  on task end; spawn failures log and skip instead of killing the run;
+  linear checkpoints version-stamped like torch (shared
+  `ml/versioning.py`); metrics rotation caps (`rotate_mb`/`keep_files`).
 - Server bind flags (#173): `--host`/`--port`/`--http-port`/`--gm-port`
   (localhost training without firewall prompts; GM stays loopback-only).
 - Scores backup rotation (#166): `scores.json.1`/`.2` rotate on every
