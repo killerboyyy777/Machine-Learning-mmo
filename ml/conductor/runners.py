@@ -20,7 +20,6 @@ try:
 except ImportError:
     from ml_env import TextMMOEnv
     from plugins import instantiate
-    from ml_env import N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
 
 
 def make_env_factory(
@@ -57,6 +56,7 @@ def make_torch_policy(checkpoint=None, epsilon=0.0, **agent_kwargs):
     if agent_kwargs:
         raise ValueError(
             "make_torch_policy no longer takes agent kwargs; use "
-            "ml.plugins.instantiate('torch', ...) directly")
+            "ml.plugins.instantiate('torch', ...) directly"
+        )
     plugin = instantiate("torch", checkpoint=checkpoint, epsilon=epsilon)
     return plugin.make_policy()

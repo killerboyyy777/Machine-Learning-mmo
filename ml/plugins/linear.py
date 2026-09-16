@@ -1,4 +1,5 @@
 """Linear-Q agent plugin (moved from ml/conductor/runners.py)."""
+
 try:
     from ..ml_client import LinearQAgent
     from ..ml_env import N_ACTIONS, OBS_SIZE, flatten_obs
@@ -19,10 +20,12 @@ class LinearPlugin(AgentPlugin):
     @classmethod
     def config_schema(cls):
         return {
-            "checkpoint": {"type": str, "default": None,
-                           "help": "weights file (fresh zeroed policy if unset)"},
-            "epsilon": {"type": float, "default": 0.0,
-                        "help": "exploration rate"},
+            "checkpoint": {
+                "type": str,
+                "default": None,
+                "help": "weights file (fresh zeroed policy if unset)",
+            },
+            "epsilon": {"type": float, "default": 0.0, "help": "exploration rate"},
         }
 
     def __init__(self, **config):

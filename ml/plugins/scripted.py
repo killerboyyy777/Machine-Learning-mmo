@@ -5,6 +5,7 @@ Each role is a registered plugin (``gather``/``dungeon``/``market``/
 learning, just behavior trees over the env's valid-action mask -- the
 fixed comparison point for RL runs.
 """
+
 import random
 
 try:
@@ -55,8 +56,7 @@ class ScriptedPolicy(AgentPlugin):
         pick = self._first_valid(env, prefer, mask)
         if pick is not None:
             return pick
-        moves = [i for i, a in enumerate(ACTIONS)
-                 if a.startswith("move_") and mask[i]]
+        moves = [i for i, a in enumerate(ACTIONS) if a.startswith("move_") and mask[i]]
         if moves:
             return random.choice(moves)
         return None
@@ -87,6 +87,7 @@ class ScriptedPolicy(AgentPlugin):
 class GatherPlugin(ScriptedPolicy):
     """Gather -> sell loop: pick up gold/loot, gather nodes, quicksell to
     the merchant, gear up when barehanded."""
+
     name = "gather"
 
     def plan(self, env, mask):
@@ -102,6 +103,7 @@ class GatherPlugin(ScriptedPolicy):
 class DungeonPlugin(ScriptedPolicy):
     """Combat specialist: attack hostiles, loot, push into the dungeon,
     work the delver quest when the giver is present."""
+
     name = "dungeon"
 
     def plan(self, env, mask):
@@ -121,6 +123,7 @@ class DungeonPlugin(ScriptedPolicy):
 class MarketPlugin(ScriptedPolicy):
     """Economic specialist: keep the market snapshot fresh, list high-margin
     holdings, buy fills, merchant-sell the rest."""
+
     name = "market"
 
     def plan(self, env, mask):
@@ -142,6 +145,7 @@ class MakerPlugin(ScriptedPolicy):
     the maker buys on the market every chance it gets, posts whatever
     the book takes, merchants the rest, and deepens its own stall --
     spread income over volume, not cherry-picked arbitrage."""
+
     name = "maker"
 
     def plan(self, env, mask):
