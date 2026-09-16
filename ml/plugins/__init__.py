@@ -42,8 +42,15 @@ REGISTRY = {}  # plugin name -> AgentPlugin subclass
 
 _BUILTINS = ("linear", "torch_plugin", "scripted")
 
-__all__ = ["AgentPlugin", "REGISTRY", "register", "discover", "get",
-           "instantiate", "parse_slot"]
+__all__ = [
+    "REGISTRY",
+    "AgentPlugin",
+    "discover",
+    "get",
+    "instantiate",
+    "parse_slot",
+    "register",
+]
 
 
 class AgentPlugin:
@@ -63,17 +70,22 @@ class AgentPlugin:
         if unknown:
             raise ValueError(
                 f"unknown config for plugin {self.name!r}: {sorted(unknown)} "
-                f"(schema: {sorted(schema)})")
+                f"(schema: {sorted(schema)})"
+            )
         for key, spec in schema.items():
             value = config.get(key, spec.get("default"))
             coerce = spec.get("type")
-            if value is not None and coerce is not None and not isinstance(value, coerce):
+            if (
+                value is not None
+                and coerce is not None
+                and not isinstance(value, coerce)
+            ):
                 try:
                     value = coerce(value)
                 except (TypeError, ValueError) as e:
                     raise ValueError(
-                        f"bad config {key}={value!r} for plugin "
-                        f"{self.name!r}: {e}")
+                        f"bad config {key}={value!r} for plugin " f"{self.name!r}: {e}"
+                    )
             setattr(self, key, value)
 
     def on_episode_end(self, info):
@@ -133,8 +145,8 @@ def get(name):
         return REGISTRY[name]
     except KeyError:
         raise KeyError(
-            f"unknown agent plugin {name!r} "
-            f"(available: {sorted(REGISTRY)})")
+            f"unknown agent plugin {name!r} " f"(available: {sorted(REGISTRY)})"
+        )
 
 
 def instantiate(name, **config):
@@ -179,14 +191,15 @@ def parse_slot(spec):
         if not chunk:
             continue
         if "=" not in chunk:
-            raise ValueError(f"bad slot param {chunk!r} in {spec!r} "
-                             "(want key=value)")
+            raise ValueError(
+                f"bad slot param {chunk!r} in {spec!r} " "(want key=value)"
+            )
         key, _, value = chunk.partition("=")
         key, value = key.strip(), _coerce_value(value)
         if not key:
             raise ValueError(f"empty key in slot {spec!r}")
         if key.startswith("env_"):
-            env[key[len("env_"):]] = value
+            env[key[len("env_") :]] = value
         else:
             config[key] = value
     return {"plugin": name, "config": config, "env": env, "weight": 1}

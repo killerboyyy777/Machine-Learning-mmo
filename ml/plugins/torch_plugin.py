@@ -3,6 +3,7 @@
 Torch stays a lazy import so the plugin package (and discovery) works
 without it; instantiating this plugin without torch raises a clear error.
 """
+
 try:
     from ..ml_env import flatten_obs
 except ImportError:
@@ -21,10 +22,12 @@ class TorchPlugin(AgentPlugin):
     @classmethod
     def config_schema(cls):
         return {
-            "checkpoint": {"type": str, "default": None,
-                           "help": "weights file (fresh network if unset)"},
-            "epsilon": {"type": float, "default": 0.0,
-                        "help": "exploration rate"},
+            "checkpoint": {
+                "type": str,
+                "default": None,
+                "help": "weights file (fresh network if unset)",
+            },
+            "epsilon": {"type": float, "default": 0.0, "help": "exploration rate"},
         }
 
     def __init__(self, **config):
@@ -32,8 +35,7 @@ class TorchPlugin(AgentPlugin):
         try:
             from torch_agents.dqn_agent import TorchDQNAgent
         except ImportError as e:
-            raise ImportError(
-                f"torch plugin needs torch + torch_agents: {e}")
+            raise ImportError(f"torch plugin needs torch + torch_agents: {e}")
         self._agent = TorchDQNAgent()
         if self.checkpoint:
             self._agent.load_weights(self.checkpoint)

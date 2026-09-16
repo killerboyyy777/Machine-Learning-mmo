@@ -4,21 +4,25 @@ Run from the repo root:  python tests/test_plugins.py
 Covers #62/#152: registry + discovery, config validation, policy arity,
 slot specs, weighted conductor slots, 4-arg supervisor delivery.
 """
+
 import asyncio
 import inspect
-import json
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ml.plugins import (
-    AgentPlugin, REGISTRY, discover, get, instantiate, parse_slot, register,
-)
 from ml.conductor.conductor import Conductor
-from ml.conductor.supervisor import AgentTask, Supervisor
 from ml.conductor.registry import Registry
+from ml.conductor.supervisor import AgentTask
+from ml.plugins import (
+    REGISTRY,
+    discover,
+    get,
+    instantiate,
+    parse_slot,
+)
 
 # --- built-ins registered ---
 discover()
@@ -51,13 +55,15 @@ print("ARITY_OK")
 # --- external discovery from a plugin dir ---
 with tempfile.TemporaryDirectory() as tmp:
     with open(os.path.join(tmp, "mybots.py"), "w") as f:
-        f.write("from ml.plugins import AgentPlugin, register\n"
-                "@register\n"
-                "class Ext(AgentPlugin):\n"
-                "    name = 'ext'\n"
-                "    agent_type = 'custom'\n"
-                "    def act(self, obs, aid, mask=None):\n"
-                "        return 0\n")
+        f.write(
+            "from ml.plugins import AgentPlugin, register\n"
+            "@register\n"
+            "class Ext(AgentPlugin):\n"
+            "    name = 'ext'\n"
+            "    agent_type = 'custom'\n"
+            "    def act(self, obs, aid, mask=None):\n"
+            "        return 0\n"
+        )
     before = set(REGISTRY)
     discover(tmp)
     assert "ext" in REGISTRY and set(REGISTRY) - before == {"ext"}
@@ -66,12 +72,21 @@ with tempfile.TemporaryDirectory() as tmp:
 print("DISCOVERY_OK")
 
 # --- slot spec parsing ---
-assert parse_slot("gather") == {"plugin": "gather", "config": {},
-                                "env": {}, "weight": 1}
-s = parse_slot("torch:checkpoint=X.pt,epsilon=0.1,env_reward_mode=econ,env_max_steps=200")
-assert s == {"plugin": "torch",
-             "config": {"checkpoint": "X.pt", "epsilon": 0.1},
-             "env": {"reward_mode": "econ", "max_steps": 200}, "weight": 1}, s
+assert parse_slot("gather") == {
+    "plugin": "gather",
+    "config": {},
+    "env": {},
+    "weight": 1,
+}
+s = parse_slot(
+    "torch:checkpoint=X.pt,epsilon=0.1,env_reward_mode=econ,env_max_steps=200"
+)
+assert s == {
+    "plugin": "torch",
+    "config": {"checkpoint": "X.pt", "epsilon": 0.1},
+    "env": {"reward_mode": "econ", "max_steps": 200},
+    "weight": 1,
+}, s
 for bad in ("", ":epsilon=1", "gather:epsilon", "gather:=1"):
     try:
         parse_slot(bad)
@@ -82,16 +97,22 @@ print("SLOT_PARSE_OK")
 
 # --- weighted slots cycle deterministically ---
 with tempfile.TemporaryDirectory() as tmp:
-    cond = Conductor(os.path.join(tmp, "c"), max_agents=6, runners=[
-        {"plugin": "gather", "weight": 2},
-        {"plugin": "dungeon", "weight": 1},
-    ])
+    cond = Conductor(
+        os.path.join(tmp, "c"),
+        max_agents=6,
+        runners=[
+            {"plugin": "gather", "weight": 2},
+            {"plugin": "dungeon", "weight": 1},
+        ],
+    )
     order = [cond._next_slot()["label"] for _ in range(6)]
     assert order == ["gather", "gather", "dungeon"] * 2, order
     # legacy single-runner dict still works
-    cond2 = Conductor(os.path.join(tmp, "c2"), max_agents=2,
-                      runner={"env_factory": lambda aid: None,
-                              "policy_fn": lambda o, a: 0})
+    cond2 = Conductor(
+        os.path.join(tmp, "c2"),
+        max_agents=2,
+        runner={"env_factory": lambda aid: None, "policy_fn": lambda o, a: 0},
+    )
     assert cond2._next_slot()["label"] == "custom"
     assert Conductor(os.path.join(tmp, "c3"), max_agents=2)._next_slot() is None
 print("SLOTS_OK")
@@ -107,18 +128,26 @@ with tempfile.TemporaryDirectory() as tmp:
     cond = Conductor(os.path.join(tmp, "c"), max_agents=5)
     cond.registry = reg  # point at the hand-built registry
     by_type = cond.status()["by_type"]
-    assert by_type["linear"] == {"alive": 1, "episodes": 2, "mean_reward": 15.0}, by_type
+    assert by_type["linear"] == {
+        "alive": 1,
+        "episodes": 2,
+        "mean_reward": 15.0,
+    }, by_type
     assert by_type["torch"] == {"alive": 1, "episodes": 1, "mean_reward": 4.0}, by_type
 print("BY_TYPE_OK")
 
 
 class _Env:
     def __init__(self):
-        self._state = {"room_id": "town_square", "is_dungeon": False,
-                       "dungeon_floor": 0}
+        self._state = {
+            "room_id": "town_square",
+            "is_dungeon": False,
+            "dungeon_floor": 0,
+        }
 
     def valid_action_mask(self):
         from ml.ml_env import N_ACTIONS
+
         return [1] * N_ACTIONS
 
     async def reset(self):

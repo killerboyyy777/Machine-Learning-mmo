@@ -3,6 +3,12 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Repo automation: release versioning from labels (enhancement=minor,
+  default patch), Dependabot automerge for patch/minor on green CI,
+  failure-log artifacts, test_dashboard/test_env_reset/test_eval_stats
+  wired into CI, canonical Apache-2.0 LICENSE (detected), branch
+  protection (4 green CI checks, no force-push/deletion), dependency
+  action bumps (checkout/upload-artifact/gh-release majors).
 - Dashboard Phase 2 (#128): Overview health status (Healthy/Idle),
   market-orders trend chart (new additive history fields), 10-item
   activity feed; canvas world map v2 (pan/zoom/click, room drawer) --

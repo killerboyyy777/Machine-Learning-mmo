@@ -4,6 +4,7 @@ Run from the repo root:  python tests/test_eval_stats.py
 Covers #69 (exact paired t-test, Cohen's d, CI, guards, JSON output)
 and #72 (version constants match, handshake status helper).
 """
+
 import json
 import os
 import sys
@@ -13,10 +14,12 @@ sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 sys.path.insert(0, ROOT)
 
-from ml_env import TextMMOEnv, PROTOCOL_VERSION as ENV_PROTO  # noqa: E402
 from dqn_agent import TorchDQNAgent  # noqa: F401  (import shape check only)
-from eval import compare, _t_crit, _beta_reg  # noqa: E402
-import server as srv  # noqa: E402
+from eval import _beta_reg, _t_crit, compare
+from ml_env import PROTOCOL_VERSION as ENV_PROTO
+from ml_env import TextMMOEnv
+
+import server as srv
 
 # --- #72: client and server speak the same version ---
 assert ENV_PROTO == srv.PROTOCOL_VERSION == 1
@@ -24,8 +27,7 @@ print("PROTO_CONSTANTS_OK")
 
 env = TextMMOEnv("VerTest")
 vi = env._version_info()
-assert vi == {"protocol_version": 1, "server_version": None,
-              "version_match": True}, vi
+assert vi == {"protocol_version": 1, "server_version": None, "version_match": True}, vi
 env._state["server_version"] = 1
 assert env._version_info()["version_match"] is True
 env._state["server_version"] = 2
@@ -40,8 +42,9 @@ assert abs(_t_crit(0.01, 9) - 3.250) < 1e-3
 print("T_TABLE_OK")
 
 # --- #69: clear gap is significant with a sane CI ---
-c = compare([27, 25, 29, 26, 28, 30, 24, 27, 26, 29],
-            [22, 21, 23, 20, 22, 24, 19, 21, 20, 23])
+c = compare(
+    [27, 25, 29, 26, 28, 30, 24, 27, 26, 29], [22, 21, 23, 20, 22, 24, 19, 21, 20, 23]
+)
 assert c["verdict"] == "SIGNIFICANT" and c["p_value"] < 1e-6, c
 assert abs(c["mean_diff"] - 5.6) < 1e-9
 lo, hi = c["ci95"]
