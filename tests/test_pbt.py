@@ -4,6 +4,7 @@ Run from the repo root:  python tests/test_pbt.py
 Covers #38: exploit copies winner weights + mutated hparams to the loser,
 no-op on tied fitness, min_episodes gating, Conductor wiring.
 """
+
 import json
 import os
 import sys
@@ -11,10 +12,10 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ml.conductor.registry import Registry
+from ml.conductor.conductor import Conductor
 from ml.conductor.metrics import MetricsLogger
 from ml.conductor.pbt import PBTManager
-from ml.conductor.conductor import Conductor
+from ml.conductor.registry import Registry
 
 tmpdir = tempfile.mkdtemp()
 reg = Registry(os.path.join(tmpdir, "reg"), max_agents=10)

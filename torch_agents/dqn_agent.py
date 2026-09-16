@@ -72,6 +72,37 @@ def _fmt_loss(v) -> str:
     """Format a loss component that is None while the replay buffer warms up."""
     return f"{v:.3f}" if v is not None else "warmup"
 
+
+def checkpoint_version() -> dict:
+    """Reproducibility metadata embedded in every checkpoint (#53): git
+    SHA, config hash (server_config.json + ml/ml_config.json), obs/action
+    dims, timestamp. All steps best-effort -- "unknown"/"missing" markers
+    instead of crashes when git or the files are absent."""
+    import hashlib
+    import subprocess
+    import time as _time
+    sha = "unknown"
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                             text=True, timeout=5, check=False)
+        sha = out.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"checkpoint_version: git lookup failed ({e}); using 'unknown'")
+    here = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for p in (here.parent / "server_config.json", here.parent / "ml" / "ml_config.json"):
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            h.update(f"missing:{p.name}".encode())
+    return {
+        "git_sha": sha,
+        "config_hash": h.hexdigest()[:16],
+        "obs_size": OBS_SIZE,
+        "n_actions": N_ACTIONS,
+        "saved_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
 # ---------------------------------------------------------------------------
 # Random Network Distillation (curiosity) -- see TorchDQNAgent below
 # ---------------------------------------------------------------------------
@@ -249,6 +280,7 @@ class TorchDQNAgent:
         self.t_step = 0
         self.learn_step = 0
         self.best_score: float = -float("inf")
+        self.ckpt_version = None  # version dict of the loaded checkpoint
 
         # Tracking per-episode for auxiliary supervision
         self._prev_gold: float = 0.0
@@ -489,6 +521,7 @@ class TorchDQNAgent:
             "best_score": self.best_score,
             "obs_size": OBS_SIZE,
             "n_actions": N_ACTIONS,
+            "version": checkpoint_version(),
         }, tmp)
         import os
         os.replace(tmp, path)
@@ -523,6 +556,21 @@ class TorchDQNAgent:
                     pass
             self._rnd_mean = float(ckpt.get("rnd_mean", 0.0))
             self._rnd_var = float(ckpt.get("rnd_var", 1.0))
+            self.ckpt_version = ckpt.get("version")
+            if self.ckpt_version:
+                v = self.ckpt_version
+                cur = checkpoint_version()
+                notes = []
+                if v.get("obs_size") != OBS_SIZE or v.get("n_actions") != N_ACTIONS:
+                    notes.append(f"dims {v.get('obs_size')}/{v.get('n_actions')} "
+                                 f"vs current {OBS_SIZE}/{N_ACTIONS}")
+                if v.get("git_sha") != cur["git_sha"]:
+                    notes.append(f"git {str(v.get('git_sha'))[:8]} "
+                                 f"vs current {cur['git_sha'][:8]}")
+                if v.get("config_hash") != cur["config_hash"]:
+                    notes.append("config differs")
+                if notes:
+                    print(f"Checkpoint {path} version notes: " + "; ".join(notes))
             self.t_step = int(ckpt.get("training_steps", 0))
             self.learn_step = int(ckpt.get("learn_step", 0))
             self.best_score = float(ckpt.get("best_score", self.best_score))

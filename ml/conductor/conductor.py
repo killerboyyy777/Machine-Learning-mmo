@@ -19,14 +19,20 @@ class Conductor:
     """Top-level orchestrator for large-scale agent management."""
 
     def __init__(self, base_dir, max_agents=50, arrivals_per_minute=2.0,
-                 mean_lifetime_episodes=100, floors=None, pbt=None):
+                 mean_lifetime_episodes=100, floors=None, pbt=None, runner=None):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
-        self.supervisor = Supervisor(self.registry, max_concurrent=max_agents)
-        self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
         self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d_10_f1"])
+        self.supervisor = Supervisor(self.registry, max_concurrent=max_agents,
+                                     mixer=self.mixer)
+        # Runner (#52/#60): {"env_factory": f, "policy_fn": p} (+ optional
+        # "step_timeout"). When set, run() starts a supervised task per
+        # spawned agent and reaps tasks of churn-killed agents -- without
+        # it the conductor only tracks the population without running it.
+        self._runner = runner
+        self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
         self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
         # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
         # enable exploit/explore rounds, or None to run without a population.
@@ -34,6 +40,16 @@ class Conductor:
 
         self._running = False
         self._start_time = None
+
+    async def _maybe_start(self, agent_id):
+        """Start a supervised task for a fresh agent when a runner is set."""
+        if self._runner is None:
+            return
+        await self.supervisor.start_agent(
+            agent_id,
+            self._runner["env_factory"],
+            self._runner["policy_fn"],
+            step_timeout=self._runner.get("step_timeout"))
 
     def report_fitness(self, agent_id, fitness, episodes=1):
         """Feed an evaluation result into the PBT population (no-op when
@@ -67,6 +83,7 @@ class Conductor:
             if entry:
                 self.metrics.log_agent_spawn(agent_id, entry.agent_type, entry.branch)
                 self.mixer.assign_initial([agent_id])
+                await self._maybe_start(agent_id)
             wave_count += 1
             if wave_count % wave_size == 0:
                 alive = len(self.registry.alive_agents())
@@ -92,6 +109,8 @@ class Conductor:
                 entry = self.registry.get(aid)
                 if entry:
                     self.metrics.log_agent_spawn(aid, entry.agent_type, entry.branch)
+                    await self._maybe_start(aid)
+            await self.supervisor.reap()
 
             # Periodic rebalance
             if now - last_rebalance >= rebalance_interval:

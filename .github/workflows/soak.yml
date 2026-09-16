@@ -1,0 +1,36 @@
+name: Nightly soak
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      agents:
+        description: "Concurrent agents"
+        default: "50"
+      duration:
+        description: "Soak duration in seconds"
+        default: "3600"
+
+jobs:
+  soak:
+    name: Conductor soak (50 agents, 1hr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install websockets==17.1
+      - run: echo '{}' > scores.json
+      - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.soak.log 2>&1 &
+      - run: sleep 5
+      - run: python ml/conductor/soak.py --agents ${{ inputs.agents || 50 }} --duration ${{ inputs.duration || 3600 }} --min-agents 40
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-metrics
+          path: |
+            soak_run/metrics.jsonl
+            server.soak.log

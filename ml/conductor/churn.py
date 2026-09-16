@@ -4,6 +4,7 @@ Agents arrive according to a Poisson process (rate = arrivals_per_minute).
 Each agent's lifetime is drawn from a geometric distribution (mean = mean_lifetime_episodes).
 Wave startup batches arrivals into waves for faster initial fill.
 """
+import asyncio
 import random
 import time
 
@@ -48,10 +49,15 @@ class ChurnManager:
         now = time.time()
         arrived = []
 
-        # Check for arrivals
+        # Check for arrivals (skipped while the registry is full -- the
+        # Poisson clock still advances so pressure resumes on room).
         if now >= self._next_arrival:
-            arrived.append(self._spawn_one())
             self._next_arrival = now + poisson_interval(self.arrivals_per_minute)
+            if len(self.registry.alive_agents()) < self.registry.max_agents:
+                try:
+                    arrived.append(self._spawn_one())
+                except RuntimeError:
+                    pass  # filled between check and spawn; retry next tick
 
         # Check for deaths (lifetime expired)
         dead = []
@@ -76,12 +82,14 @@ class ChurnManager:
         self._lifetimes[agent_id] = geometric_lifetime(self.mean_lifetime_episodes)
         return agent_id
 
-    def wave_fill(self, target_count, wave_size=10, wave_delay=5.0):
-        """Fill up to target_count agents using wave startup."""
+    async def wave_fill(self, target_count, wave_size=10, wave_delay=5.0):
+        """Fill up to target_count agents using wave startup.
+
+        Async (awaitable) so it never blocks the event loop -- the old
+        blocking time.sleep version is gone (see #48)."""
         current = len(self.registry.alive_agents())
         needed = max(0, target_count - current)
-        delays = list(wave_startup(needed, wave_size, wave_delay))
-        for delay in delays:
-            time.sleep(delay)
-            aid = self._spawn_one()
+        for delay in wave_startup(needed, wave_size, wave_delay):
+            await asyncio.sleep(delay)
+            self._spawn_one()
         return needed

@@ -11,3 +11,25 @@ Architecture:
   - PBT: population-based training (exploit best weights, explore hparams)
   - Metrics: JSONL event stream for offline analysis
 """
+from .churn import ChurnManager, geometric_lifetime, poisson_interval, wave_startup
+from .conductor import Conductor
+from .metrics import MetricsLogger
+from .mixer import Mixer
+from .pbt import PBTManager
+from .registry import AgentEntry, Registry
+from .supervisor import AgentTask, Supervisor
+
+__all__ = [
+    "AgentEntry",
+    "AgentTask",
+    "ChurnManager",
+    "Conductor",
+    "MetricsLogger",
+    "Mixer",
+    "PBTManager",
+    "Registry",
+    "Supervisor",
+    "geometric_lifetime",
+    "poisson_interval",
+    "wave_startup",
+]

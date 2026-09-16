@@ -7,5 +7,9 @@
     "FORMATION_COOLDOWN_STEPS": 500,
     "XP_LEVEL_BONUS": 5.0,
     "ECON_INV_LAMBDA": 1.0
+  },
+
+  "curriculum": {
+    "CURRICULUM_THRESHOLDS": [0, 10, 30, 60]
   }
 }

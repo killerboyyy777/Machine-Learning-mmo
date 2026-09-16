@@ -4,6 +4,7 @@ Run from the repo root:  python tests/test_scripted_bots.py
 Covers #34: role policies pick the expected action from crafted states,
 and --scripted=mixed assigns roles round-robin.
 """
+
 import os
 import sys
 import types
@@ -11,11 +12,15 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server as srv
-from ml.ml_env import TextMMOEnv, ACTIONS
 from ml.ml_botfarm import (
-    SCRIPTED_POLICIES, GatherSellPolicy, DungeonClearerPolicy,
-    MarketFlipperPolicy, BotRunner,
+    SCRIPTED_POLICIES,
+    BotRunner,
+    DungeonClearerPolicy,
+    GatherSellPolicy,
+    MarketFlipperPolicy,
+    MarketMakerPolicy,
 )
+from ml.ml_env import ACTIONS, TextMMOEnv
 
 
 def fresh_env():
@@ -27,6 +32,7 @@ def fresh_env():
 
 def selected(policy, env):
     return ACTIONS[policy.select(env)]
+
 
 # --- gather role: nodes present -> gather ---
 env = fresh_env()
@@ -65,8 +71,25 @@ env._state["market_state"] = {"orders": []}
 assert selected(MarketFlipperPolicy(), env) == "market_buy"
 print("MARKET_BUY_OK")
 
+# --- maker role: fresh snapshot, nothing to post -> buys (bid side) ---
+env = fresh_env()
+env._state["market_state"] = {"orders": []}
+assert selected(MarketMakerPolicy(), env) == "market_buy"
+print("MAKER_BUY_OK")
+
+# --- maker role: stale snapshot -> list first ---
+env = fresh_env()
+env._state["market_state"] = None
+assert selected(MarketMakerPolicy(), env) == "market_list"
+print("MAKER_LIST_OK")
+
 # --- hurt bot heals first regardless of role ---
-for cls in (GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy):
+for cls in (
+    GatherSellPolicy,
+    DungeonClearerPolicy,
+    MarketFlipperPolicy,
+    MarketMakerPolicy,
+):
     env = fresh_env()
     env._state["hp"] = 2
     env._state["inv_names"] = ["Healing Herb"]
@@ -76,14 +99,15 @@ print("HEAL_FIRST_OK")
 
 # --- mixed assignment round-robins roles ---
 farm = types.SimpleNamespace(
-    args=types.SimpleNamespace(name_prefix="T", url="ws://x", scripted="mixed"))
-roles = [BotRunner(i, farm).policy.name for i in range(4)]
-assert roles == ["gather", "dungeon", "market", "gather"], roles
+    args=types.SimpleNamespace(name_prefix="T", url="ws://x", scripted="mixed")
+)
+roles = [BotRunner(i, farm).policy.name for i in range(5)]
+assert roles == ["gather", "dungeon", "market", "maker", "gather"], roles
 farm.args.scripted = "dungeon"
 assert BotRunner(0, farm).policy.name == "dungeon"
 farm.args.scripted = "none"
 assert BotRunner(0, farm).policy is None
 print("MIXED_ASSIGN_OK")
 
-assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market"}
+assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market", "maker"}
 print("ALL_SCRIPTED_OK")

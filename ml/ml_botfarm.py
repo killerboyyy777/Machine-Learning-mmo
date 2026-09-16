@@ -184,10 +184,31 @@ class MarketFlipperPolicy(ScriptedPolicy):
         yield self._first_valid(env, self.WANDER, mask)
 
 
+class MarketMakerPolicy(ScriptedPolicy):
+    """Liquidity provider: keeps two-sided flow up so economic agents
+    always have a counterparty. Unlike the flipper (waits for margin),
+    the maker buys on the market every chance it gets, posts whatever
+    the book takes, merchants the rest, and deepens its own stall --
+    spread income over volume, not cherry-picked arbitrage."""
+    name = "maker"
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("take",), mask)
+        if not s.get("market_state"):
+            yield self._first_valid(env, ("market_list",), mask)
+        yield self._first_valid(env, ("market_buy", "market_post"), mask)
+        yield self._first_valid(env, ("sell", "market_expand"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
 SCRIPTED_POLICIES = {
     "gather": GatherSellPolicy,
     "dungeon": DungeonClearerPolicy,
     "market": MarketFlipperPolicy,
+    "maker": MarketMakerPolicy,
 }
 SCRIPTED_NAMES = tuple(SCRIPTED_POLICIES)
 
@@ -315,7 +336,7 @@ class BotRunner:
                 self.farm.stop.set()
                 break
             action = self.policy.select(self.env)
-            next_obs, reward, done, info = await self.env.step(action)
+            next_obs, reward, done, _info = await self.env.step(action)
             self.features = flatten_obs(next_obs)
             self.score = next_obs["score_raw"]
             self.recent_rewards.append(reward)
@@ -359,7 +380,7 @@ def parse_args():
     p.add_argument("--reward-window", type=int, default=200, help="rolling reward window for fitness")
     p.add_argument("--weights", default=WEIGHTS_FILE)
     p.add_argument("--scripted", default="none",
-                   choices=("none", "gather", "dungeon", "market", "mixed"),
+                   choices=("none", "gather", "dungeon", "market", "maker", "mixed"),
                    help="run fixed behavior-tree baselines instead of training "
                         "(one role each, or round-robin with 'mixed')")
     p.add_argument("--epsilon-start", type=float, default=1.0)
