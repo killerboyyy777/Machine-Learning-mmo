@@ -10,8 +10,9 @@ lanes follow the same workflow and [Code of Conduct](CODE_OF_CONDUCT.md).
    forms (`.github/ISSUE_TEMPLATE/`): fill in repro steps, logs, and the
    area/priority/effort dropdowns so triage is one click.
 2. **Branch per change** from `master` (`feature/...`, `fix/...`), one
-   concern per branch. `master` is protected: PRs need 1 review and green
-   CI (see "Branch protection" below) -- direct pushes are for nobody.
+   concern per branch. `master` is protected: PR merges need the 4 green
+   CI checks on an up-to-date branch (see "Branch protection" below).
+   Prefer the PR flow even though direct pushes are technically allowed.
 3. **Prove it like CI does.** Before opening a PR, run at least:
    ```bash
    python tests/test_server_unit.py
