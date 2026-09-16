@@ -157,12 +157,31 @@ async def main():
     print("DUNGEON_ENTER_OK")
 
     await send(A, {"cmd": "move", "dir": "down"})
-    errs = [m for m in await recv(A, timeout=3.0) if m.get("type") == "error"]
-    assert errs and "sealed" in errs[-1]["text"].lower()
+    # First error only (no full-window drain): every idle second in the
+    # dungeon is a combat round tanked without fighting back.
+    err = await recv(A, want_type="error", timeout=5.0)
+    assert err is not None and "sealed" in err.get("text", "").lower(), err
     print("SEALED_DOWN_BLOCKED")
 
-    # floor 1 retreat is allowed even while sealed
-    room = await move_for_room(A, "up")
+    # Floor 1 retreat is allowed even while sealed. Resilient to dying
+    # while idle: a death respawns in town_square, so re-sync with `look`
+    # and, if respawned, walk back and re-enter before retrying.
+    room = None
+    for _ in range(4):
+        await send(A, {"cmd": "look"})
+        cur = await recv(A, want_type="room", timeout=5.0)
+        if cur is None:
+            continue
+        if cur["id"] == "graveyard":
+            room = cur
+            break
+        if cur.get("is_dungeon"):
+            room = await move_for_room(A, "up")
+            if room is not None and room["id"] == "graveyard":
+                break
+            continue  # died mid-retreat; loop re-syncs
+        await fight_until_room(A, "graveyard", "south")
+        await move_for_room(A, "enter")
     assert room is not None and room["id"] == "graveyard", room
     print("FLOOR1_RETREAT_OK")
 
