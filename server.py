@@ -112,6 +112,14 @@ MARKET_SLOT_PRICE_BASE = 50
 # item bank, and voiding player property is worse than listing it.
 MARKET_ORDER_TTL_SECONDS = 86400
 
+# Starting purse for brand-new characters (#258): 0 starting gold plus
+# unprovoked attrition forms a circular poverty trap (nothing affordable
+# -> barehanded income only -> death drops strip trickles -> still broke).
+# 10g breaks the trap -- cheapest market orders (2g) and merchant herbs
+# (5g) become reachable -- while keeping the 15g sword gate earned.
+# Granted once per score entry (see cmd_login), never topped up.
+STARTING_GOLD = 10
+
 # Commission bounds (also overridable via server_config.json "commissions").
 # XP is minted, not escrowed: 500 ~= 10x the richest quest payout (guard,
 # 50 XP), so one bounty can never exceed ~an hour of top-end grinding; the
@@ -1549,6 +1557,20 @@ async def cmd_login(player, msg):
         player.gold += entry["gold_bank"]
         entry["gold_bank"] = 0
         mark_scores_dirty()
+    if not entry.get("starting_purse_claimed"):
+        # First-ever login only (flag persists in scores.json): returning
+        # characters keep whatever they hold. TTL-evicted entries re-grant
+        # on return -- a ~10g/week welcome-back stipend at most.
+        player.gold += STARTING_GOLD
+        entry["starting_purse_claimed"] = True
+        mark_scores_dirty()
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": f"The town stakes you {STARTING_GOLD} gold to get started.",
+            },
+        )
     player.name = name
     player.logged_in = True
     player.room = START_ROOM if dungeon_for_room(player.room) else player.room

@@ -1282,4 +1282,30 @@ async def main():
     assert any(m.get("type") == "error" for m in spam_ws.sent)
     print("LOG_SPAM_OK")
 
+    # --- Starting purse (#258): granted once at first login, never topped up ---
+    purse_name = "PurseTester"
+    p1 = srv.Player(ws=FakeWS(), id=70001, name="", logged_in=False)
+    await srv.cmd_login(p1, {"name": purse_name})
+    assert p1.gold == srv.STARTING_GOLD, p1.gold
+    assert srv.get_score_entry(purse_name).get("starting_purse_claimed") is True
+    assert any("stakes you" in m.get("text", "") for m in inbox), inbox[-3:]
+    # relog with an empty pack: same entry, no second purse
+    p1.gold = 0
+    srv.remove_member(p1)
+    srv.name_owners.pop(purse_name.lower(), None)
+    p2 = srv.Player(ws=FakeWS(), id=70002, name="", logged_in=False)
+    await srv.cmd_login(p2, {"name": purse_name})
+    assert p2.gold == 0, p2.gold
+    # evicted entry (7d TTL path): counts as new again, re-grants once
+    srv.remove_member(p2)
+    srv.name_owners.pop(purse_name.lower(), None)
+    srv.SCORES.pop(purse_name.lower(), None)
+    p3 = srv.Player(ws=FakeWS(), id=70003, name="", logged_in=False)
+    await srv.cmd_login(p3, {"name": purse_name})
+    assert p3.gold == srv.STARTING_GOLD, p3.gold
+    srv.remove_member(p3)
+    srv.name_owners.pop(purse_name.lower(), None)
+    srv.SCORES.pop(purse_name.lower(), None)
+    print("STARTING_PURSE_OK")
+
 asyncio.run(main())
