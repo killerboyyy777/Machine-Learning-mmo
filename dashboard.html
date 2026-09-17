@@ -861,7 +861,10 @@ function renderAll(s) {
   const sections = TAB_SECTIONS[activeTab] || [];
   const failed = [];
   for (const [name, render] of sections) {
-    try { render(); }
+    // Every TAB_SECTIONS entry is an `s => ...` arrow: the snapshot must
+    // be passed through (calling bare render() leaves s undefined and
+    // every section on every tab throws).
+    try { render(s); }
     catch (e) { failed.push(name); console.error(`Dashboard ${name} failed`, e); }
   }
   if (failed.length) {
