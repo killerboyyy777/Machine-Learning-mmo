@@ -281,7 +281,7 @@
       <span id="g-status">ws: disconnected</span>
     </div>
     <div style="margin-top:10px;margin-bottom:8px;color:var(--dim);font-size:11px;">
-      GM stream connects to <code>ws://127.0.0.1:<span id="g-gm-port">-</span></code> (loopback-only)
+      GM stream connects to <code>ws://&lt;dashboard-host&gt;:<span id="g-gm-port">-</span></code> (same host as this page)
     </div>
 
     <datalist id="gm-players"></datalist>
@@ -946,9 +946,12 @@ function gmOpen() {
   try {
     if (!lastState) return;
     const port = lastState.server.gm_port || 8767;
-    gmws = new WebSocket(`ws://127.0.0.1:${port}`);
+    // Follow the page origin (#236): hardcoded 127.0.0.1 broke GM for any
+    // remote dashboard. Loopback serving still resolves to 127.0.0.1.
+    const host = location.hostname || "127.0.0.1";
+    gmws = new WebSocket(`ws://${host}:${port}`);
     gmws.onopen = () => {
-      $("g-status").textContent = `ws: connected to 127.0.0.1:${port}`;
+      $("g-status").textContent = `ws: connected to ${host}:${port}`;
       $("g-status").style.color = "var(--good)";
       for (const m of gmBuf.splice(0)) gmws.send(JSON.stringify(m));
     };

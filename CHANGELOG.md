@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Dashboard GM origin (#236): the console dialed hardcoded 127.0.0.1, so
+  GM failed on any remote dashboard; now follows location.hostname.
 - Dashboard market defaults (#246): `renderMarket` crashed on partial
   snapshots; now defaults like the Overview panel (node-verified).
 - Quest config actually applies (#251): the `quests` section (plus other

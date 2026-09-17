@@ -61,4 +61,11 @@ assert "m.trade_count ?? 0" in body or "trade_count ?? 0" in body
 assert "m.orders || []" in body or "orders || []" in body
 print("MARKET_DEFAULTS_OK")
 
+# --- GM console follows the page origin, not hardcoded loopback (#236) ---
+gm = re.search(r"function gmOpen\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert gm, "gmOpen not found"
+assert "location.hostname" in gm.group(1), "gmOpen ignores page origin"
+assert "ws://127.0.0.1" not in gm.group(1), "gmOpen still hardcodes loopback"
+print("GM_ORIGIN_OK")
+
 print("ALL_DASHBOARD_OK")
