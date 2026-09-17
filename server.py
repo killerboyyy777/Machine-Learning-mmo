@@ -1552,6 +1552,14 @@ async def cmd_attack(player, msg):
     if not npc:
         await send(player, {"type": "error", "text": f"No '{target_name}' here to attack."})
         return
+    # Quest givers are immune to player attacks (#193): both givers are
+    # 40-HP non-hostiles, and a dead giver fails every accept/turn-in
+    # server-wide until its 30s respawn -- permanent content denial for
+    # one cheap kill every 30s, against a -0.5 penalty no griefer feels.
+    # (GM slay stays available: trusted loopback, needed for stuck NPCs.)
+    if is_quest_giver(npc["id"]):
+        await send(player, {"type": "error", "text": f"{npc['name']} is under the town's protection and cannot be attacked."})
+        return
     # Ranged weapons declare their ammo family root (e.g. Oak Longbow
     # needs "arrow"). Any family member fires, best variant first, adding
     # its flat bonus damage to the shot.
