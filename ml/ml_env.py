@@ -201,8 +201,15 @@ NON_HOSTILE_NAMES = {v["name"] for v in srv.WORLD["npcs"].values() if not v.get(
 
 # Open-commission list lines look like:
 #   #12: slay 5x Giant Rat -- reward 25g + 50xp (posted by Alice)
+# with an optional discounted-rate tag inserted before the poster:
+#   #13: slay 5x Giant Rat -- reward 25g + 50xp (your rate: x0.5) (posted by Alice)
+# Anchor on #id (not the reward-adjacent "(posted by"): the old pattern
+# required the poster tag immediately after the reward, so discounted
+# lines -- exactly the collusion-shaped traffic agents must see -- parsed
+# to nothing and the bounties vanished from agent state (#191).
 _COMMISSION_RE = re.compile(
-    r"#(\d+):\s*slay\s+(\d+)\s*x\s+(.+?)\s*[-\u2013\u2014]+\s*reward\s+(\d+)\s*g\s*\+\s*(\d+)\s*xp\s*\(\s*posted by\s+([^)]+)\)",
+    r"#(\d+):\s*slay\s+(\d+)\s*x\s+(.+?)\s*[-\u2013\u2014]+\s*reward\s+(\d+)\s*g\s*\+\s*(\d+)\s*xp"
+    r"(?:\s*\(\s*your rate:\s*x([\d.]+)\s*\))?\s*\(\s*posted by\s+([^)]+)\)",
     re.IGNORECASE,
 )
 
@@ -211,9 +218,11 @@ def _parse_commissions(text):
     """Best-effort parse of a commission_list message; [] when unparseable."""
     out = []
     for m in _COMMISSION_RE.finditer(text or ""):
-        cid, kills, target, gold, xp, poster = m.groups()
+        cid, kills, target, gold, xp, rate, poster = m.groups()
         out.append({"id": int(cid), "kills": int(kills), "target": target.strip(),
-                    "gold": int(gold), "xp": int(xp), "poster": poster.strip()})
+                    "gold": int(gold), "xp": int(xp),
+                    "rate": float(rate) if rate else None,
+                    "poster": poster.strip()})
     return out
 
 # Market tax terms, mirroring server.py so the env (and any importer) can
@@ -444,7 +453,13 @@ AMMO_EXEMPT_COUNT = getattr(srv, "AMMO_EXEMPT_COUNT", 5)
 
 
 def pack_units(state):
-    """Pack load in units, mirroring the server's exemptions."""
+    """Pack load in units. Prefer the server's own count from the stats
+    event (state["pack_units"]): the 20-name inv list truncates near the
+    cap, so counting names under-reports 21-24-unit packs and leaves
+    take/gather/buy mask-valid when the server will reject them (#191).
+    Falls back to name-counting when no stats has landed yet."""
+    if state.get("pack_units") is not None:
+        return max(0, int(state["pack_units"]))
     inv = state.get("inv_names") or []
     units = len(inv)
     for slot in (state.get("equipped"), state.get("armor"), state.get("offhand")):
@@ -456,7 +471,8 @@ def pack_units(state):
 
 
 def pack_full(state):
-    return pack_units(state) >= INVENTORY_CAP
+    cap = state.get("pack_max") or INVENTORY_CAP
+    return pack_units(state) >= cap
 ACTIONS = (
     [f"move_{d}" for d in DIRECTIONS]
     + ["attack", "take", "rest", "look",
@@ -578,6 +594,10 @@ class TextMMOEnv:
             "level": 1, "xp": 0.0, "xp_to_next": 100.0,
             "equipped": None, "armor": None, "offhand": None, "defense": 0,
             "inv_names": [],
+            # Server-authoritative pack load + cap from the stats event
+            # (None until the first stats lands; pack_units() falls back
+            # to counting inv_names meanwhile).
+            "pack_units": None, "pack_max": INVENTORY_CAP,
             "market_orders": 0, "market_state": None,
             "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
             "other_players": 0,
@@ -633,6 +653,12 @@ class TextMMOEnv:
                     self._state["xp_to_next"] = event.get("xp_to_next", 100.0)
                     self._state["party_size"] = event.get("party_size", self._state["party_size"])
                     self._state["inv_names"] = event.get("inv", [])
+                    # The name list truncates at 20 while the cap is 24, so
+                    # masks must use the server's own unit count (#191).
+                    if event.get("pack") is not None:
+                        self._state["pack_units"] = event["pack"]
+                    if event.get("pack_max") is not None:
+                        self._state["pack_max"] = event["pack_max"]
                     self._state["equipped"] = event.get("equipped")
                     self._state["armor"] = event.get("armor")
                     self._state["offhand"] = event.get("offhand")

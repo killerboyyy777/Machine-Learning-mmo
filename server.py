@@ -82,6 +82,9 @@ WARDEN_ATK = 28
 WARDEN_GOLD = 150
 WARDEN_RESPAWN_SECONDS = 600
 PARTY_MAX_MEMBERS = 4
+# Party invites unanswered after 5 minutes are stale (longer than any real
+# accept delay, shorter than a session).
+PARTY_INVITE_TTL_SECONDS = 300
 
 TAX_RATE = 0.10
 TAX_MINIMUM = 1
@@ -92,6 +95,11 @@ TAX_MINIMUM = 1
 # is cheap early and a real late-game gold sink.
 MARKET_ORDER_SLOTS_BASE = 3
 MARKET_SLOT_PRICE_BASE = 50
+# Stale market listings: shelves, not storage. A day is generous for a live
+# game and bounds forgotten listings. Expired items go back to online
+# sellers; offline sellers keep listings until they return -- there is no
+# item bank, and voiding player property is worse than listing it.
+MARKET_ORDER_TTL_SECONDS = 86400
 
 # Commission bounds (also overridable via server_config.json "commissions").
 # XP is minted, not escrowed: 500 ~= 10x the richest quest payout (guard,
@@ -103,6 +111,14 @@ COMMISSION_MAX_XP = 500
 # escrow forever and pollutes the list. 100 kills ~= a long grinding
 # session; anything above is grief-shaped, not a real bounty.
 COMMISSION_MAX_KILLS = 100
+# Max open bounties per poster: open listings hold real escrow and are
+# never pruned, so without a cap one poster grows the table (and fragments
+# escrow) without bound. Five is plenty -- post, fill-or-cancel, post again.
+COMMISSION_MAX_OPEN_PER_POSTER = 5
+# Distinct-filler history per poster is append-only; cap it, evicting the
+# least-frequent pairs first (count-1 pairs pay full rate either way, so
+# eviction is behavior-preserving where it matters).
+COMMISSION_COLLAB_CAP = 200
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -133,7 +149,12 @@ def _apply_config():
             if key not in g:
                 continue
             try:
-                g[key] = type(g[key])(val)  # coerce to original type
+                # bool("false") is True: parse bools explicitly so a string
+                # "false" for e.g. AUTH_TOKEN_REQUIRED doesn't enable the gate.
+                if isinstance(g[key], bool) and isinstance(val, str):
+                    g[key] = val.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    g[key] = type(g[key])(val)  # coerce to original type
             except (TypeError, ValueError) as e:
                 print(f"Warning: {os.path.basename(CONFIG_FILE)}: "
                       f"skipping {key}={val!r} ({e}); keeping default {g[key]!r}")
@@ -380,6 +401,59 @@ def prune_commissions(now=None):
         latest = max(c.get("created_ts", now), c.get("filled_ts", 0) or 0)
         if now - latest > COMMISSION_TTL_SECONDS:
             del _commissions[cid]
+            pruned += 1
+    return pruned
+
+
+_last_market_prune = 0.0
+_last_invite_prune = 0.0
+
+
+async def prune_market_orders(now=None):
+    """Expire stale market listings (MARKET_ORDER_TTL_SECONDS).
+
+    Expired items go back to online sellers with a notice. Offline sellers
+    keep their listings until they return: there is no item bank, and
+    voiding player property is worse than listing it.
+    """
+    global _last_market_prune
+    now = now if now is not None else time.time()
+    if now - _last_market_prune < 60:
+        return 0
+    _last_market_prune = now
+    pruned = 0
+    for o in list(market_orders):
+        if now - o.get("ts", now) <= MARKET_ORDER_TTL_SECONDS:
+            continue
+        seller = None
+        for p in players_by_name.get(str(o.get("seller", "")).lower(), ()):
+            if p.logged_in:
+                seller = p
+                break
+        if seller is None:
+            continue
+        market_orders.remove(o)
+        seller.inventory.append(o["item"])
+        mark_scores_dirty()
+        pruned += 1
+        name = ITEM_DEFS.get(o["item"], {}).get("name", o["item"])
+        await send(seller, {"type": "message",
+                            "text": f"Your market order #{o['id']} ({name}) expired after a day unfilled; the item is back in your pack."})
+        await send(seller, stats_view(seller))
+    return pruned
+
+
+def prune_invites(now=None):
+    """Drop unanswered party invites older than PARTY_INVITE_TTL_SECONDS."""
+    global _last_invite_prune
+    now = now if now is not None else time.time()
+    if now - _last_invite_prune < 60:
+        return 0
+    _last_invite_prune = now
+    pruned = 0
+    for pid, inv in list(_pending_party_invites.items()):
+        if now - (inv or {}).get("ts", now) > PARTY_INVITE_TTL_SECONDS:
+            del _pending_party_invites[pid]
             pruned += 1
     return pruned
 
@@ -1285,6 +1359,12 @@ def _auto_create_party(player):
 def _delete_party(party):
     if party.dungeon_id and party.dungeon_id in dungeons:
         del dungeons[party.dungeon_id]
+        # Instance gold piles die with their dungeon: room ids look like
+        # d_<id>_f<floor>, and without this the keys (and phantom gold)
+        # outlive the instance forever.
+        prefix = f"d_{party.dungeon_id}_f"
+        for rid in [rid for rid in room_gold if rid.startswith(prefix)]:
+            del room_gold[rid]
     for mid in list(party.member_ids):
         p = players.get(mid)
         if p and p.party_id == party.id:
@@ -1878,6 +1958,15 @@ async def cmd_commission_post(player, msg):
     if reward_xp > COMMISSION_MAX_XP:
         await send(player, {"type": "error", "text": f"XP reward capped at {COMMISSION_MAX_XP} per bounty (asked {reward_xp})."})
         return
+    # Open listings are never pruned, so cap each poster's concurrent
+    # bounties: without this the table (and fragmented escrow) grows
+    # without bound. Case-insensitive like every other poster check.
+    open_mine = sum(1 for c in _commissions.values()
+                    if c.get("status") == "open"
+                    and str(c.get("poster", "")).lower() == player.name.lower())
+    if open_mine >= COMMISSION_MAX_OPEN_PER_POSTER:
+        await send(player, {"type": "error", "text": f"You already have {open_mine} open commissions (max {COMMISSION_MAX_OPEN_PER_POSTER}). Fill or cancel one first."})
+        return
     # True escrow: the poster locks the gold up front. Posting what you
     # cannot cover is rejected instead of minting gold at fill time.
     if player.gold < reward_gold:
@@ -1970,6 +2059,9 @@ async def cmd_commission_fill(player, msg):
     collab = poster_entry.setdefault("collab_fills", {})
     filler_key = player.name.lower()
     collab[filler_key] = collab.get(filler_key, 0) + 1
+    while len(collab) > COMMISSION_COLLAB_CAP:
+        victim = min(collab, key=lambda k: collab[k])
+        del collab[victim]
     mark_scores_dirty()
     collab_note = "" if mult >= 1.0 else f" (collab penalty x{mult:.1f})"
     await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{eff_gold}g, +{eff_xp}xp.{collab_note}"})
@@ -2216,7 +2308,9 @@ def _quest_ready(entry, player, qid):
     if not _quest_active(entry, qid):
         return False
     if qid == "guard_charm":
-        return bool(entry.get("guard_charm_crafted"))
+        # Flag AND charm in hand: the crafted flag alone survives the charm
+        # being dropped/sold, and the list state must agree with turn-in.
+        return bool(entry.get("guard_charm_crafted")) and QUEST_CHARM_RESULT in player.inventory
     if qid == "delver":
         return quest_delver_ready(entry)
     return _quest_has_inputs(player, QUESTS[qid].get("inputs", {}))
@@ -2288,8 +2382,11 @@ async def cmd_quest(player, msg):
             await send(player, {"type": "message", "text": "You don't have that quest active."})
             return
         if qid == "guard_charm":
-            if not entry.get("guard_charm_crafted"):
-                await send(player, {"type": "message", "text": "You haven't crafted the Ancient Guardian Charm yet. "
+            # Gate on the charm itself, like remedy/tonic gate on their
+            # inputs: the crafted flag alone survives dropping/selling the
+            # charm, which used to allow turning in what you don't hold.
+            if not entry.get("guard_charm_crafted") or QUEST_CHARM_RESULT not in player.inventory:
+                await send(player, {"type": "message", "text": "You haven't crafted the Ancient Guardian Charm yet (or it's no longer in your pack). "
                       "Gather 1 Treant Bark, 1 Troll Hide, and 1 Ectoplasm, then craft it."})
                 return
         elif qid == "delver":
@@ -2309,8 +2406,8 @@ async def cmd_quest(player, msg):
             await send(player, {"type": "error", "text": f"The {quest['giver_name']} isn't here. Return to {ROOMS[quest['room']]['name']} to turn in."})
             return
         if qid == "guard_charm":
-            if QUEST_CHARM_RESULT in player.inventory:
-                player.inventory.remove(QUEST_CHARM_RESULT)
+            # Guaranteed present by the gate above: unconditional consume.
+            player.inventory.remove(QUEST_CHARM_RESULT)
             entry["guard_charm_crafted"] = False
             entry["quest_guard_active"] = False
         elif qid == "delver":
@@ -2377,15 +2474,19 @@ async def cmd_party_invite(player, msg):
     if len(party.member_ids) >= PARTY_MAX_MEMBERS:
         await send(player, {"type": "error", "text": "Your party is full."})
         return
-    _pending_party_invites[target.id] = party
+    _pending_party_invites[target.id] = {"party": party, "ts": time.time()}
     await send(target, {"type": "message", "text": f"{player.name} invites you to a party. Send party_accept to join."})
     await send(player, {"type": "message", "text": f"Invitation sent to {target.name}."})
 
 
 async def cmd_party_accept(player, msg):
-    party = _pending_party_invites.pop(player.id, None)
+    inv = _pending_party_invites.pop(player.id, None)
+    party = (inv or {}).get("party")
     if not party or party.id not in parties:
         await send(player, {"type": "error", "text": "No pending party invitation."})
+        return
+    if time.time() - (inv or {}).get("ts", 0) > PARTY_INVITE_TTL_SECONDS:
+        await send(player, {"type": "error", "text": "That party invitation expired. Ask for a fresh one."})
         return
     if len(party.member_ids) >= PARTY_MAX_MEMBERS:
         await send(player, {"type": "error", "text": "That party is full."})
@@ -2466,7 +2567,9 @@ async def cmd_market_post(player, msg):
         price = item_suggested_price(iid)
     entry = get_score_entry(player.name)
     slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
-    own_open = sum(1 for o in market_orders if o["seller"] == player.name)
+    # Case-insensitive: variants share one score entry, so they share one
+    # stall too (otherwise "Alice"+"alice" doubles the slot cap for free).
+    own_open = sum(1 for o in market_orders if o["seller"].lower() == player.name.lower())
     if own_open >= slots:
         nxt = market_slot_price(slots)
         await send(player, {"type": "error", "text": f"Market stall full ({own_open}/{slots}). Use market_expand (next slot {nxt} gold) or cancel an order."})
@@ -2492,7 +2595,9 @@ async def cmd_market_cancel(player, msg):
         await send(player, {"type": "error", "text": "market_cancel needs an 'id'."})
         return
     for o in list(market_orders):
-        if o["id"] == oid and o["seller"] == player.name:
+        # Case-insensitive (same shared-identity reason as the fill check):
+        # otherwise a variant-case seller's items strand un-cancellable.
+        if o["id"] == oid and o["seller"].lower() == player.name.lower():
             market_orders.remove(o)
             player.inventory.append(o["item"])
             mark_scores_dirty()
@@ -2567,7 +2672,10 @@ async def cmd_market_buy(player, msg):
     seller_entry = get_score_entry(choice["seller"])
     buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
     seller_entry["tax_paid"] = seller_entry.get("tax_paid", 0.0) + tax
-    seller_entry["gold_bank"] = seller_entry.get("gold_bank", 0) + seller_payout
+    # credit_gold pays live sellers directly (spendable immediately) and
+    # banks it for offline ones -- previously every payout parked in
+    # gold_bank until next login, so online sellers couldn't spend proceeds.
+    await credit_gold(choice["seller"], seller_payout)
     market_history.append({
         "time": time.strftime("%H:%M:%S"), "ts": time.time(),
         "buyer": player.name, "seller": choice["seller"],
@@ -2582,7 +2690,6 @@ async def cmd_market_buy(player, msg):
     await award_xp(player.name, 3, "made a market purchase")
     await award_points_to_name(choice["seller"], 2, "made a market sale")
     await award_xp(choice["seller"], 3, "made a market sale")
-    await credit_gold(choice["seller"], 0)
     await send(player, stats_view(player))
 
 # ---------------------------------------------------------------------------
@@ -3212,6 +3319,8 @@ async def npc_ai_loop():
         await asyncio.sleep(NPC_TICK_SECONDS)
         now = time.time()
         prune_commissions(now)
+        await prune_market_orders(now)
+        prune_invites(now)
         for node in list(gather_nodes.values()):
             if not node["available"] and node["respawn_at"] and now >= node["respawn_at"]:
                 node["available"] = True
