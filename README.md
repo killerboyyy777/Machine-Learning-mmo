@@ -28,6 +28,21 @@ python3 server.py          # world on ws://0.0.0.0:8765
 On Windows you can also just run `start.bat`. Edit `world.json` for your
 own rooms/NPCs/items (loaded once at startup).
 
+## Docker (full stack, zero install)
+
+```bash
+docker compose up                  # server + dashboard + 4 scripted bots
+# open http://localhost:8766/ (game on ws://localhost:8765)
+docker compose --profile soak up soak        # one-shot conductor soak
+docker compose --profile torch up --build    # torch farm (builds CPU torch)
+```
+
+`compose.yaml` builds one lean image (`python:3.12-slim` + `requirements.txt`;
+torch only in the `torch` profile). The GM stream stays inside the compose
+network (`TEXTMMO_GM_HOST=0.0.0.0` so `soak` can snapshot tables) and is not
+published to the host — GM has no auth, so publish `8767` only on trusted
+machines. Protocol unchanged (`PROTOCOL_VERSION = 1`).
+
 ## Quickstart
 
 ```bash

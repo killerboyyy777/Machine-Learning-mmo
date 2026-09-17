@@ -26,7 +26,12 @@ SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
 NPC_TICK_SECONDS = 3
 HOST = "0.0.0.0"
 PORT = 8765
-GM_HOST = "127.0.0.1"
+# GM stream bind: loopback-only by default (no auth -- see SECURITY.md).
+# Compose sets TEXTMMO_GM_HOST=0.0.0.0 so the `soak` service can reach
+# ws://server:8767 inside the docker network (#71); the GM port is NOT
+# published to the host by default, so the loopback-only posture holds
+# for non-compose runs unchanged.
+GM_HOST = os.environ.get("TEXTMMO_GM_HOST", "127.0.0.1")
 GM_PORT = 8767
 
 # Wire-protocol version, echoed in every `welcome` event (#72). Bump on any
@@ -3555,7 +3560,8 @@ async def main():
 
 def parse_args(argv=None):
     """CLI flags (#173). Host covers the game port and the dashboard HTTP
-    server together; the GM stream stays loopback-only regardless."""
+    server together; the GM stream stays loopback-only by default
+    (TEXTMMO_GM_HOST=0.0.0.0 opts into docker-network reachability, #71)."""
     import argparse
     ap = argparse.ArgumentParser(description="Text MMO engine.")
     ap.add_argument("--host", default=HOST,
