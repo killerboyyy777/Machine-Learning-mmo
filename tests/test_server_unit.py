@@ -1197,6 +1197,44 @@ async def main():
     del srv.SCORES["unversioned"]
     print("VERSION_WARN_OK")
 
+    # failed GM bind closes the game listener, propagates (#242)
+    import socket as _socket
+    squat = _socket.socket()
+    squat.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    squat.bind(("127.0.0.1", 0))
+    squat.listen(1)
+    squat_port = squat.getsockname()[1]
+    saved_ports = (srv.PORT, srv.GM_PORT, srv.HTTP_PORT)
+    saved_scores = {}
+    for _sfx in ("", ".1", ".2"):
+        _p = srv.SCORES_FILE + _sfx
+        saved_scores[_sfx] = open(_p, "rb").read() if _os.path.exists(_p) else None
+    try:
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18771, squat_port, 18772
+        try:
+            await srv.main()  # already inside the suite's event loop
+            raised = False
+        except OSError:
+            raised = True
+        assert raised, "main() must propagate the GM bind failure"
+        probe = _socket.socket()
+        try:
+            probe.bind(("127.0.0.1", 18771))  # free again: listener closed
+        finally:
+            probe.close()
+    finally:
+        squat.close()
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = saved_ports
+        for _sfx, _data in saved_scores.items():
+            _p = srv.SCORES_FILE + _sfx
+            if _data is None:
+                if _os.path.exists(_p):
+                    _os.remove(_p)
+            else:
+                with open(_p, "wb") as f:
+                    f.write(_data)
+    print("STARTUP_LEAK_OK")
+
     # /health reads the cached snapshot, never the live dict (#224)
     import json as _json2
     hp1 = mkplayer("HealthOne", 52002)

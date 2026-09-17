@@ -3637,7 +3637,13 @@ async def main():
             print(f"Server 0.5 (instanced dungeon, parties, market, GM) on ws://{HOST}:{PORT}")
             print(f"GM stream on ws://{GM_HOST}:{GM_PORT}")
         game_server = await websockets.serve(handle_connection, HOST, PORT)
-        gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
+        try:
+            gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
+        except Exception:
+            # Don't leak the game listener when the GM bind fails (#242).
+            game_server.close()
+            await game_server.wait_closed()
+            raise
         try:
             await stop.wait()
         finally:
