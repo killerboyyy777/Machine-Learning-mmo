@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Torch farm reward parity (#234): transitions carried count-loot,
+  buy-only P&L, zero intrinsic and no curiosity while learn() shaped on
+  those keys. Now mirrors single-agent targets (value loot, fill P&L,
+  accept/progress intrinsic, per-step RND).
 - Torch warmup gate (#222): learning waited for the FULL 10k replay
   buffer, so default --steps runs did zero gradient steps behind warmup
   logs. Now keys on a fillable minibatch (32) in solo + farm paths.

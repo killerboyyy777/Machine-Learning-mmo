@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml"))
 
 from dqn_agent import TorchDQNAgent
 from ml_env import (ACTIONS, N_ACTIONS, QUEST_DELVER_REWARD_POINTS,
-                    QUEST_REWARD_POINTS, QUESTS, TextMMOEnv, flatten_obs)
+                    QUEST_REWARD_POINTS, QUESTS, TextMMOEnv, flatten_obs,
+                    market_net, quest_charm_net)
 
 
 class TorchFarm:
@@ -80,20 +81,38 @@ class Runner:
         self.prev_inventory = set(self.obs.get("inv_names", []) or [])
         self.prev_orders = []
 
-    def transition_targets(self, next_obs, info, action_name):
+    def transition_targets(self, next_obs, next_features, info, action_name):
+        """Auxiliary targets mirroring single-agent train() (#234): the
+        farm used to store count-loot, buy-only P&L, zero intrinsic and no
+        curiosity, silently training a dumber objective."""
+        agent = self.farm.agent
         gold = float(next_obs.get("gold_raw", self.prev_gold))
         gold_delta = gold - self.prev_gold
         self.prev_gold = gold
 
-        inventory = set(next_obs.get("inv_names", []) or [])
-        loot_delta = float(len(inventory - self.prev_inventory))
-        self.prev_inventory = inventory
+        cur_inv = set(next_obs.get("inv_names", []) or [])
+        new_items = cur_inv - self.prev_inventory
+        qinfo = (info or {}).get("quest") or {}
+        if qinfo.get("crafted_charm"):
+            loot_delta = float(quest_charm_net())
+        else:
+            loot_delta = 0.0
+            if new_items:
+                loot_delta = min(1.0, gold) / max(1.0, len(new_items))
+        self.prev_inventory = cur_inv
 
         fill = (info or {}).get("market_fill") or {}
-        market_pnl = -float(fill.get("cost", 0.0)) if action_name == "market_buy" else 0.0
+        if action_name == "market_buy" and fill.get("cost", 0.0) > 0:
+            market_pnl = -float(fill["cost"])
+        else:
+            prev_ids = {o["id"]: o for o in (self.prev_orders or [])}
+            cur_ids = {o["id"]: o for o in (info.get("own_orders") or [])}
+            market_pnl = sum(
+                market_net(o["price"]) for i, o in prev_ids.items() if i not in cur_ids
+            )
+        self.prev_orders = info.get("own_orders") or []
 
-        quest = (info or {}).get("quest") or {}
-        by_quest = quest.get("by_quest") or {}
+        by_quest = qinfo.get("by_quest") or {}
         quest_reward = 0.0
         if (by_quest.get("guard_charm") or {}).get("turned_in"):
             quest_reward += float(QUEST_REWARD_POINTS)
@@ -103,8 +122,17 @@ class Runner:
             quest_reward += float(QUESTS["remedy"]["reward_points"])
         if (by_quest.get("tonic") or {}).get("turned_in"):
             quest_reward += float(QUESTS["tonic"]["reward_points"])
+        quest_intrinsic = 0.0
+        if any((by_quest.get(q) or {}).get("accepted")
+               for q in ("guard_charm", "delver", "remedy", "tonic")):
+            quest_intrinsic += agent.intrinsic_accept
+        if qinfo.get("crafted_charm") or qinfo.get("delver_became_ready"):
+            quest_intrinsic += agent.intrinsic_progress
 
-        return gold_delta, loot_delta, market_pnl, quest_reward
+        rnd_bonus = agent.rnd_bonus(next_features) if agent.rnd_lambda else 0.0
+
+        return (gold_delta, loot_delta, market_pnl, quest_reward,
+                quest_intrinsic, rnd_bonus)
 
     async def run(self):
         await self.reset()
@@ -115,8 +143,9 @@ class Runner:
                 action_name = ACTIONS[action_index]
                 next_obs, reward, done, info = await self.env.step(action_index)
                 next_features = flatten_obs(next_obs)
-                gold_delta, loot_delta, market_pnl, quest_reward = self.transition_targets(
-                    next_obs, info, action_name
+                (gold_delta, loot_delta, market_pnl, quest_reward,
+                 quest_intrinsic, rnd_bonus) = self.transition_targets(
+                    next_obs, next_features, info, action_name
                 )
 
                 self.farm.agent.store({
@@ -129,7 +158,8 @@ class Runner:
                     "loot_delta": loot_delta,
                     "market_pnl": market_pnl,
                     "quest_reward": quest_reward,
-                    "quest_intrinsic": 0.0,
+                    "quest_intrinsic": quest_intrinsic,
+                    "rnd_bonus": rnd_bonus,
                 })
                 self.farm.agent.t_step += 1
                 # learn() self-gates on minibatch fill (#222).
