@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Login room cap (#227): fresh connections could overflow a full start
+  room; logins now refuse like moves when the destination is at cap.
 - Config unknown-key warning (#241): typo'd/wrong-nesting keys vanished
   silently; now logged like bad values.
 - Market expand accounting (#240): the stall-slot fee hit `tax_treasury`

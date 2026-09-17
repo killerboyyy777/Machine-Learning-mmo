@@ -1030,6 +1030,21 @@ async def main():
     srv.send = _patched_send
     print("MALFORMED_OK")
 
+    # login obeys room capacity like moves do (#227)
+    fillers = [mkplayer(f"CapFill{i}", 51000 + i, room=srv.START_ROOM)
+               for i in range(srv.MAX_PLAYERS_PER_ROOM)]
+    assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
+    newcomer = srv.Player(ws=FakeWS(), id=51999, name="", logged_in=False)
+    srv.players[51999] = newcomer
+    await srv.cmd_login(newcomer, {"name": "CrowdedOut"})
+    assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
+    assert not newcomer.logged_in
+    assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
+    for f in fillers:
+        unplayer(f)
+    srv.players.pop(51999, None)
+    print("LOGIN_CAP_OK")
+
     # safety net logs one line, never a traceback (disk-fill vector when
     # TEXTMMO_LOG_FILE is set): capture stdout through a real dispatch
     import io as _io

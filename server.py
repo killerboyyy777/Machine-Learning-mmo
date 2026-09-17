@@ -1495,13 +1495,20 @@ async def cmd_login(player, msg):
         if token:
             entry["auth_token"] = token
             mark_scores_dirty()
+    # Room capacity applies to logins like moves (#227): no sneaking into
+    # a full room through a fresh connection. Checked before any state
+    # mutation (bank credit, token claim) so rejection loses nothing.
+    dest = START_ROOM if dungeon_for_room(player.room) else player.room
+    if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
+        await send(player, {"type": "error", "text": f"{ROOMS[dest]['name']} is too crowded. Try again shortly."})
+        return
     if entry.get("gold_bank", 0):
         player.gold += entry["gold_bank"]
         entry["gold_bank"] = 0
         mark_scores_dirty()
     player.name = name
     player.logged_in = True
-    player.room = START_ROOM if dungeon_for_room(player.room) else player.room
+    player.room = dest
     if player.room not in entry["rooms_visited"]:
         entry["rooms_visited"].append(player.room)
     sync_player_level(player)
