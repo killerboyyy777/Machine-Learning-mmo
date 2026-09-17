@@ -172,7 +172,9 @@ def _apply_config():
                       f"skipping {key}={val!r} ({e}); keeping default {g[key]!r}")
     print(f"Config loaded from {os.path.basename(CONFIG_FILE)}")
 
-_apply_config()
+# NOTE: _apply_config() is CALLED once at the bottom of the module (after
+# QUESTS), not here: every overridable global must exist before the single
+# apply pass, or whole config sections silently miss (#251).
 
 GM_BUFF_COST_PER_MINUTE = 50
 GM_BOSS_COST_PER_STRENGTH = 100
@@ -2343,6 +2345,29 @@ QUESTS = {
 }
 
 
+def _refresh_quests():
+    """Sync catalog copies from (possibly tuned) globals (#251)."""
+    QUESTS["guard_charm"].update({
+        "reward_xp": QUEST_GUARD_XP, "reward_gold": QUEST_GUARD_GOLD,
+        "reward_points": QUEST_GUARD_POINTS})
+    QUESTS["delver"].update({
+        "floors_required": QUEST_DELVER_FLOORS, "reward_xp": QUEST_DELVER_XP,
+        "reward_gold": QUEST_DELVER_GOLD, "reward_points": QUEST_DELVER_POINTS})
+    QUESTS["remedy"].update({
+        "reward_xp": QUEST_REMEDY_XP, "reward_gold": QUEST_REMEDY_GOLD,
+        "reward_points": QUEST_REMEDY_POINTS})
+    QUESTS["tonic"].update({
+        "reward_xp": QUEST_TONIC_XP, "reward_gold": QUEST_TONIC_GOLD,
+        "reward_points": QUEST_TONIC_POINTS})
+
+
+# Single config pass, HERE at module bottom: every overridable global
+# (including the QUEST_* block above) exists by now, so no config section
+# misses (#251). Then sync the catalog copies from the tuned values.
+_apply_config()
+_refresh_quests()
+
+
 def quest_delver_ready(entry):
     """True when an accepted Depth Delver quest has enough new clears."""
     return (entry.get("dungeon_floors_cleared", 0)
@@ -3663,9 +3688,11 @@ if __name__ == "__main__":
     if _args.config:
         # Config also loads at import (before flags exist); re-apply here so
         # the flag wins. All tunables are read at runtime, so late override
-        # is equivalent to an early one.
+        # is equivalent to an early one -- plus a catalog sync, since QUESTS
+        # holds value copies (#251).
         CONFIG_FILE = _args.config
         _apply_config()
+        _refresh_quests()
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, OSError) as e:

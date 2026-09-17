@@ -1048,6 +1048,30 @@ async def main():
             _os.remove(cfg_path2)
     print("UNKNOWN_CONFIG_OK")
 
+    # quest config section applies to globals AND catalog (#251)
+    cfg_path3 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_quest_cfg_tmp.json")
+    real_cfg4 = srv.CONFIG_FILE
+    saved_q = (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP,
+               srv.QUESTS["delver"]["floors_required"])
+    try:
+        with open(cfg_path3, "w") as f:
+            _json.dump({"quests": {"QUEST_DELVER_FLOORS": 5,
+                                   "QUEST_DELVER_XP": 99}}, f)
+        srv.CONFIG_FILE = cfg_path3
+        srv._apply_config()
+        srv._refresh_quests()
+        assert srv.QUEST_DELVER_FLOORS == 5, srv.QUEST_DELVER_FLOORS
+        assert srv.QUESTS["delver"]["floors_required"] == 5
+        assert srv.QUESTS["delver"]["reward_xp"] == 99
+    finally:
+        srv.CONFIG_FILE = real_cfg4
+        (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP) = saved_q[:2]
+        srv._refresh_quests()
+        assert srv.QUESTS["delver"]["floors_required"] == saved_q[2]
+        if _os.path.exists(cfg_path3):
+            _os.remove(cfg_path3)
+    print("QUEST_CONFIG_OK")
+
     # --config overlay: short TTLs apply, untouched keys keep prod defaults
     import os as _os2
     overlay = _os2.path.join(_os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))),

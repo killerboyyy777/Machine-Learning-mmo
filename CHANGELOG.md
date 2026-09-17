@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Quest config actually applies (#251): the `quests` section (plus other
+  late-defined tunables) never took effect -- `_apply_config` ran before
+  those globals existed. Single apply pass at module bottom + catalog
+  sync; covered by QUEST_CONFIG_OK.
 - Scripted delver gating (#235): DungeonPlugin ordered ungated turn_in
   before accept, making accept unreachable; now ordered by quest state.
 - GM reward validation (#223): `gm_reward` spent treasury gold before
