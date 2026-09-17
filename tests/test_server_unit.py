@@ -609,6 +609,128 @@ async def main():
     unplayer(killer)
     print("COMMISSION_CAP_OK")
 
+    # impossible-bounty escrow lock: kill counts no session could reach are
+    # rejected before any escrow is taken (open bounties are never pruned)
+    cap_poster = mkplayer("CapPoster", 50006)
+    cap_poster.gold = 1000000
+    n_comms = len(srv._commissions)
+    await srv.cmd_commission_post(cap_poster, {"target": "rat", "required_kills": srv.COMMISSION_MAX_KILLS + 1,
+                                               "reward_gold": 10, "reward_xp": 1})
+    assert inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower(), inbox[-1]
+    assert len(srv._commissions) == n_comms
+    assert cap_poster.gold == 1000000
+    # at-cap bounty posts fine (0g so the later cancel is treasury-neutral)
+    await srv.cmd_commission_post(cap_poster, {"target": "rat", "required_kills": srv.COMMISSION_MAX_KILLS,
+                                               "reward_gold": 0, "reward_xp": 0})
+    cid_cap = max(srv._commissions)
+    await srv.cmd_commission_cancel(cap_poster, {"commission_id": cid_cap})
+    assert srv._commissions[cid_cap]["status"] == "cancelled"
+    unplayer(cap_poster)
+    print("COMMISSION_KILL_CAP_OK")
+
+    # case-variant self-deal: score entries are shared across case variants,
+    # so "CaseAlice"/"casealice" are one economic actor everywhere
+    calice = mkplayer("CaseAlice", 50007)
+    calice.gold = 1000
+    await srv.cmd_commission_post(calice, {"target": "rat", "required_kills": 1,
+                                           "reward_gold": 100, "reward_xp": 10})
+    cid_case = max(srv._commissions)
+    calice_lower = mkplayer("casealice", 50008)
+    srv.record_npc_kill("casealice", "Giant Rat")
+    await srv.cmd_commission_fill(calice_lower, {"commission_id": cid_case})
+    assert inbox[-1]["type"] == "error" and "own commission" in inbox[-1]["text"], inbox[-1]
+    assert srv._commissions[cid_case]["status"] == "open"
+    # ...but the same variant MAY cancel (it is the poster)
+    inbox.clear()
+    await srv.cmd_commission_cancel(calice_lower, {"commission_id": cid_case})
+    assert srv._commissions[cid_case]["status"] == "cancelled", inbox[-1]
+    # market self-deal, same rule
+    calice.inventory.append("healing_herb")
+    await srv.cmd_market_post(calice, {"item": herb_name, "price": 10})
+    coid = max(o["id"] for o in srv.market_orders if o["seller"] == "CaseAlice")
+    await srv.cmd_market_buy(calice_lower, {"id": coid})
+    assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[-1]
+    assert any(o["id"] == coid for o in srv.market_orders)
+    srv.market_orders[:] = [o for o in srv.market_orders if o["id"] != coid]
+    unplayer(calice)
+    unplayer(calice_lower)
+    print("CASE_VARIANT_OK")
+
+    # zero bounty pays zero (floors must not mint from an empty bounty);
+    # collusion remainder + cancel forfeit land in the treasury instead of
+    # sitting on dead records forever
+    t_saved = (srv.tax_treasury, srv.tax_collected_lifetime)
+    srv.tax_treasury = 0.0
+    srv.tax_collected_lifetime = 0.0
+    zposter = mkplayer("ZeroPoster", 50009)
+    zposter.gold = 1000
+    zentry = srv.get_score_entry("ZeroPoster")
+    zscore0, zxp0 = zentry["score"], zentry["xp"]
+    await srv.cmd_commission_post(zposter, {"target": "rat", "required_kills": 1,
+                                            "reward_gold": 0, "reward_xp": 0})
+    cid_z = max(srv._commissions)
+    zfill = mkplayer("ZeroFiller", 50010)
+    zfill_gold0 = zfill.gold
+    zfentry = srv.get_score_entry("ZeroFiller")
+    zfscore0 = zfentry["score"]
+    srv.record_npc_kill("ZeroFiller", "Giant Rat")
+    inbox.clear()
+    await srv.cmd_commission_fill(zfill, {"commission_id": cid_z})
+    assert srv._commissions[cid_z]["status"] == "completed"
+    assert zfill.gold == zfill_gold0  # no 1g mint
+    assert zfentry["score"] == zfscore0
+    assert "+0g, +0xp" in inbox[0]["text"], inbox[0]
+    filled_note = next(m["text"] for m in inbox if "was filled by" in m.get("text", ""))
+    assert "+0 score, +0xp" in filled_note, filled_note
+    assert zentry["score"] == zscore0 and zentry["xp"] == zxp0  # no poster mint
+    assert srv.tax_treasury == 0.0
+    # repeat-pair collusion: first fill full (no remainder), second fill
+    # halved with the other half sunk to the treasury
+    tposter = mkplayer("TreasPoster", 50011)
+    tposter.gold = 100000
+    tfill = mkplayer("TreasFiller", 50012)
+    tfill_gold0 = tfill.gold
+    for round_ in (1, 2):
+        await srv.cmd_commission_post(tposter, {"target": "rat", "required_kills": 1,
+                                                "reward_gold": 100, "reward_xp": 0})
+        cid_t = max(srv._commissions)
+        srv.record_npc_kill("TreasFiller", "Giant Rat")
+        await srv.cmd_commission_fill(tfill, {"commission_id": cid_t})
+        assert srv._commissions[cid_t]["status"] == "completed"
+        assert srv._commissions[cid_t]["escrow"] == 0
+    assert tfill.gold == tfill_gold0 + 150  # 100 + 50 (collab penalty)
+    assert srv.tax_treasury == 50.0 and srv.tax_collected_lifetime == 50.0
+    # cancel: half refunded live, half forfeited to the treasury
+    await srv.cmd_commission_post(tposter, {"target": "rat", "required_kills": 1,
+                                            "reward_gold": 100, "reward_xp": 0})
+    cid_c = max(srv._commissions)
+    gold_before_cancel = tposter.gold
+    inbox.clear()
+    await srv.cmd_commission_cancel(tposter, {"commission_id": cid_c})
+    assert tposter.gold == gold_before_cancel + 50
+    assert srv.tax_treasury == 100.0 and srv.tax_collected_lifetime == 100.0
+    assert srv._commissions[cid_c]["escrow"] == 0
+    assert "forfeited to the treasury" in inbox[-2]["text"], inbox[-2]
+    unplayer(zposter)
+    unplayer(zfill)
+    unplayer(tposter)
+    unplayer(tfill)
+    srv.tax_treasury, srv.tax_collected_lifetime = t_saved
+    print("COMMISSION_ECON_OK")
+
+    # world validator: live data clean, bad refs reported, dynamic shards ok
+    assert srv.validate_world(srv.WORLD) == []
+    bad_world = {"rooms": {"a": {"exits": {"north": "nowhere"}}}, "items": {},
+                 "start_room": "a",
+                 "room_items": {"a": ["ghost_item"]},
+                 "gather_nodes": {"n": {"room": "a", "item": "ghost_item"}},
+                 "npcs": {"b": {"room": "nowhere"}},
+                 "recipes": {"r": {"result": "ghost", "inputs": {"dungeon_shard_10": 1}}}}
+    errs = srv.validate_world(bad_world)
+    assert len(errs) == 5, errs  # exit, room_item, node yield, npc room, recipe result (shard input passes)
+    assert srv.validate_world({"rooms": {}, "items": {}}) == ["no rooms defined"]
+    print("VALIDATE_WORLD_OK")
+
     # relic craft with ungenerated dynamic mats errors cleanly (#190)
     crafter = mkplayer("Crafter", 50005, room="town_square")
     await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
@@ -657,5 +779,21 @@ async def main():
     assert len(srv.players) == n_players_before
     srv.send = _patched_send
     print("MALFORMED_OK")
+
+    # safety net logs one line, never a traceback (disk-fill vector when
+    # TEXTMMO_LOG_FILE is set): capture stdout through a real dispatch
+    import io as _io
+    from contextlib import redirect_stdout as _redirect_stdout
+    srv.send = orig_send
+    spam_ws = ScriptWS([json.dumps({"cmd": "login", "name": 123})])
+    buf = _io.StringIO()
+    with _redirect_stdout(buf):
+        await srv.handle_connection(spam_ws)
+    srv.send = _patched_send
+    logged = buf.getvalue()
+    assert "Traceback" not in logged, logged
+    assert "handler error on login: AttributeError" in logged, logged
+    assert any(m.get("type") == "error" for m in spam_ws.sent)
+    print("LOG_SPAM_OK")
 
 asyncio.run(main())

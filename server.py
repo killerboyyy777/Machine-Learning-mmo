@@ -11,6 +11,7 @@ import random
 import signal
 import sys
 import time
+import traceback
 import itertools
 from collections import deque
 from dataclasses import dataclass, field
@@ -91,6 +92,17 @@ TAX_MINIMUM = 1
 # is cheap early and a real late-game gold sink.
 MARKET_ORDER_SLOTS_BASE = 3
 MARKET_SLOT_PRICE_BASE = 50
+
+# Commission bounds (also overridable via server_config.json "commissions").
+# XP is minted, not escrowed: 500 ~= 10x the richest quest payout (guard,
+# 50 XP), so one bounty can never exceed ~an hour of top-end grinding; the
+# poster's 10% coordination cut then stays <= 50 XP by construction (#189).
+COMMISSION_MAX_XP = 500
+# Open bounties hold real escrow and are never pruned, so an unfillable
+# bounty (required_kills:999999 against a 2000-entry kill log) locks its
+# escrow forever and pollutes the list. 100 kills ~= a long grinding
+# session; anything above is grief-shaped, not a real bounty.
+COMMISSION_MAX_KILLS = 100
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -180,6 +192,66 @@ for nid, tmpl in WORLD["npcs"].items():
     npcs[nid] = {**tmpl, "id": nid, "alive": True, "respawn_at": None, "contributors": {}}
 
 RECIPES = WORLD.get("recipes", {})
+
+
+def validate_world(data):
+    """Check world.json cross-references; return a list of error strings.
+
+    Bad node/NPC/recipe references used to surface as confusing room-wide
+    runtime errors. Fail fast at startup instead, so broken data is fixed
+    where it lives rather than debugged from player symptoms.
+    """
+
+    errors = []
+    rooms = data.get("rooms") or {}
+    items = data.get("items") or {}
+
+    def _known_item(iid):
+        # Dungeon shards register on demand when their floor is first built
+        # (ITEM_DEFS.setdefault in _build_floor), so dungeon_shard_{n} ids
+        # are valid before floor n exists.
+        return iid in items or (
+            isinstance(iid, str) and iid.startswith("dungeon_shard_")
+            and iid[len("dungeon_shard_"):].isdigit())
+    if not rooms:
+        return ["no rooms defined"]
+    start = data.get("start_room")
+    if start not in rooms:
+        errors.append(f"start_room {start!r} is not a room")
+    for rid, room in rooms.items():
+        for direction, dest in (room.get("exits") or {}).items():
+            if dest not in rooms and dest != "dungeon_entrance":
+                errors.append(f"room {rid!r} exit {direction!r} points at unknown room {dest!r}")
+    for rid, ids in (data.get("room_items") or {}).items():
+        if rid not in rooms:
+            errors.append(f"room_items for unknown room {rid!r}")
+        for iid in ids or []:
+            if not _known_item(iid):
+                errors.append(f"room {rid!r} holds unknown item {iid!r}")
+    for nid, node in (data.get("gather_nodes") or {}).items():
+        if node.get("room") not in rooms:
+            errors.append(f"gather node {nid!r} sits in unknown room {node.get('room')!r}")
+        if not _known_item(node.get("item")):
+            errors.append(f"gather node {nid!r} yields unknown item {node.get('item')!r}")
+    for nid, npc in (data.get("npcs") or {}).items():
+        if npc.get("room") not in rooms:
+            errors.append(f"npc {nid!r} sits in unknown room {npc.get('room')!r}")
+    for rname, rec in (data.get("recipes") or {}).items():
+        rec = rec if isinstance(rec, dict) else {}
+        if not _known_item(rec.get("result")):
+            errors.append(f"recipe {rname!r} produces unknown item {rec.get('result')!r}")
+        for iid in rec.get("inputs") or {}:
+            if not _known_item(iid):
+                errors.append(f"recipe {rname!r} needs unknown item {iid!r}")
+    return errors
+
+
+_WORLD_ERRORS = validate_world(WORLD)
+if _WORLD_ERRORS:
+    print("world.json failed validation:")
+    for _e in _WORLD_ERRORS:
+        print(f"  - {_e}")
+    sys.exit(f"Refusing to start with invalid world data ({len(_WORLD_ERRORS)} errors).")
 
 _id_counter = itertools.count(1)
 
@@ -541,10 +613,6 @@ def record_action(name, signature):
 # Cap per NPC-name kill timestamp log (commission verification window).
 COMMISSION_KILL_LOG_CAP = 2000
 
-# Cap per-bounty XP: XP is minted (not escrowed like gold), so uncapped
-# reward_xp is an infinite-XP mint for poster+filler pairs (#189).
-COMMISSION_MAX_XP = 500
-
 
 def record_npc_kill(name, npc_name):
     """Log one killing blow for commission verification."""
@@ -605,8 +673,12 @@ def collusion_multiplier(poster_name, filler_name):
     still get *something* (avoiding feel-bad zero-reward completions).
     The escrow remainder (posted gold minus reduced payout) is sunk to
     the treasury as an additional collusion deterrent."""
+    # Case-normalised: score entries are keyed by lower-cased name, so
+    # "Alice" and "alice" are the same economic actor. Exact-case keys
+    # here would let case variants reset the collusion curve for free.
+    # (Pre-fix mixed-case keys simply age out unused.)
     poster = get_score_entry(poster_name)
-    prev = poster.get("collab_fills", {}).get(filler_name, 0)
+    prev = poster.get("collab_fills", {}).get((filler_name or "").lower(), 0)
     return max(0.1, 1.0 / (1 + prev))
 
 
@@ -1794,6 +1866,11 @@ async def cmd_commission_post(player, msg):
         required_kills = required_kills or 1
     if required_kills <= 0:
         required_kills = 1
+    # Unfillable bounties lock escrow forever (open listings are never
+    # pruned), so reject kill counts no session could realistically reach.
+    if required_kills > COMMISSION_MAX_KILLS:
+        await send(player, {"type": "error", "text": f"Bounties are capped at {COMMISSION_MAX_KILLS} kills (asked {required_kills}). Split it into smaller bounties."})
+        return
     if reward_gold < 0 or reward_xp < 0:
         await send(player, {"type": "error", "text": "Rewards cannot be negative."})
         return
@@ -1840,6 +1917,7 @@ async def cmd_commission_list(player, msg):
 
 
 async def cmd_commission_fill(player, msg):
+    global tax_treasury, tax_collected_lifetime
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -1858,7 +1936,10 @@ async def cmd_commission_fill(player, msg):
         await send(player, {"type": "error", "text": f"Commission #{cid} is already {commission['status']}."})
         return
     # No self-dealing: filling your own bounty would mint score for nothing.
-    if commission["poster"] == player.name:
+    # Compared case-insensitively -- score entries (kills, collab history)
+    # are shared across case variants, so "Alice" filling "alice"'s bounty
+    # is the same actor paying itself.
+    if commission["poster"].lower() == player.name.lower():
         await send(player, {"type": "error", "text": f"You cannot fill your own commission #{cid}."})
         return
     # No free payouts: the filler must have slain the required kills of the
@@ -1875,36 +1956,54 @@ async def cmd_commission_fill(player, msg):
     # Any escrow remainder (posted gold minus reduced payout) is sunk to the
     # treasury as an additional collusion deterrent.
     mult = collusion_multiplier(commission["poster"], player.name)
-    eff_gold = max(1, int(commission["reward_gold"] * mult))
-    eff_xp = max(0, int(commission["reward_xp"] * mult))
+    # The max(1, ...) floors keep collusion-discounted payouts from
+    # feel-bad zeroing -- but ONLY when the bounty actually offers that
+    # reward. A 0g/0xp bounty must pay 0, not mint 1g/1xp from nothing
+    # while its message claims a cut of a bounty that never existed.
+    offered_gold = commission["reward_gold"]
+    offered_xp = commission["reward_xp"]
+    eff_gold = max(1, int(offered_gold * mult)) if offered_gold > 0 else 0
+    eff_xp = max(0, int(offered_xp * mult))
     commission["status"] = "filled"
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
     poster_entry = get_score_entry(commission["poster"])
     collab = poster_entry.setdefault("collab_fills", {})
-    collab[player.name] = collab.get(player.name, 0) + 1
+    filler_key = player.name.lower()
+    collab[filler_key] = collab.get(filler_key, 0) + 1
     mark_scores_dirty()
     collab_note = "" if mult >= 1.0 else f" (collab penalty x{mult:.1f})"
     await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{eff_gold}g, +{eff_xp}xp.{collab_note}"})
     await award_points(player, eff_xp + eff_gold, f"completed commission #{cid}")
     await award_xp(player.name, eff_xp, f"completed commission #{cid}")
-    player.gold += min(commission.get("escrow", commission["reward_gold"]), eff_gold)
-    commission["escrow"] = max(0, commission.get("escrow", commission["reward_gold"]) - eff_gold)
+    # Escrow remainder (posted gold minus reduced payout) is sunk to the
+    # treasury as documented -- previously it sat on the completed record
+    # forever and never arrived.
+    escrow = commission.get("escrow", offered_gold)
+    player.gold += min(escrow, eff_gold)
+    remainder = max(0, escrow - eff_gold)
+    commission["escrow"] = 0
+    if remainder:
+        tax_treasury += remainder
+        tax_collected_lifetime += remainder
     commission["status"] = "completed"
     # Poster reward: 10% of the bounty as score + XP for coordinating.
-    poster_score = max(1, int(commission["reward_gold"] * 0.1))
-    poster_xp = max(1, int(commission["reward_xp"] * 0.1))
+    # Gated like the filler floors: no mint from a zero bounty.
+    poster_score = max(1, int(offered_gold * 0.1)) if offered_gold > 0 else 0
+    poster_xp = max(1, int(offered_xp * 0.1)) if offered_xp > 0 else 0
     poster_name = commission["poster"]
     await award_points_to_name(poster_name, poster_score, f"commission #{cid} filled by {player.name}")
     await award_xp(poster_name, poster_xp, f"commission #{cid} filled by {player.name}")
     for pp in players_by_name.get(poster_name.lower(), ()):
         if pp.logged_in:
-            await send(pp, {"type": "message", "text": f"Your commission #{cid} was filled by {player.name}! +{poster_score} score, +{poster_xp}xp."})
+            treasury_note = f" {remainder}g collusion remainder sunk to treasury." if remainder else ""
+            await send(pp, {"type": "message", "text": f"Your commission #{cid} was filled by {player.name}! +{poster_score} score, +{poster_xp}xp.{treasury_note}"})
     mark_scores_dirty()
     await send(player, stats_view(player))
 
 
 async def cmd_commission_cancel(player, msg):
+    global tax_treasury, tax_collected_lifetime
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -1920,17 +2019,25 @@ async def cmd_commission_cancel(player, msg):
         return
     # Only the poster may cancel: otherwise anyone could grief bounties and
     # force the poster to forfeit half their escrow for nothing.
-    if commission["poster"] != player.name:
+    # Case-insensitive (same shared-identity reason as the fill check).
+    if commission["poster"].lower() != player.name.lower():
         await send(player, {"type": "error", "text": f"Only {commission['poster']} can cancel commission #{cid}."})
         return
     commission["status"] = "cancelled"
     # Refund half of the actually-escrowed gold (credit_gold pays live
-    # characters directly and banks it for offline ones).
-    refund = commission.get("escrow", commission["reward_gold"]) // 2
-    commission["escrow"] = commission.get("escrow", commission["reward_gold"]) - refund
+    # characters directly and banks it for offline ones). The forfeited
+    # half is the cancellation fee: sink it to the treasury instead of
+    # leaving it on the dead record, where it silently left the economy.
+    escrow = commission.get("escrow", commission["reward_gold"])
+    refund = escrow // 2
+    forfeit = escrow - refund
+    commission["escrow"] = 0
+    if forfeit:
+        tax_treasury += forfeit
+        tax_collected_lifetime += forfeit
     await credit_gold(commission["poster"], refund)
     mark_scores_dirty()
-    await send(player, {"type": "message", "text": f"Commission #{cid} cancelled. Half the escrow ({refund}g) returned to poster."})
+    await send(player, {"type": "message", "text": f"Commission #{cid} cancelled. Half the escrow ({refund}g) returned; {forfeit}g forfeited to the treasury."})
     await send(player, stats_view(player))
 
 
@@ -2432,12 +2539,13 @@ async def cmd_market_buy(player, msg):
             return
         # Same self-deal rule as auto-buy: buying your own listing would
         # mint score/XP to yourself for just the tax cost (#188).
-        if choice["seller"] == player.name:
+        # Case-insensitive: "Alice" and "alice" share one score entry.
+        if choice["seller"].lower() == player.name.lower():
             await send(player, {"type": "error",
                                 "text": f"Order #{oid} is your own listing."})
             return
     else:
-        affordable = [o for o in market_orders if o["seller"] != player.name and player.gold >= o["price"]]
+        affordable = [o for o in market_orders if o["seller"].lower() != player.name.lower() and player.gold >= o["price"]]
         if not affordable:
             await send(player, {"type": "error", "text": "No affordable orders."})
             return
@@ -3201,9 +3309,15 @@ async def handle_connection(ws):
                 if player.logged_in:
                     _tick_player_buffs(player)
                 await handler(player, msg)
-            except Exception:
-                import traceback
-                print(f"handler error on {cmd}: {traceback.format_exc(limit=3)}", flush=True)
+            except Exception as e:
+                # Untrusted input reaches this net on EVERY malformed message,
+                # so a traceback here is a disk-fill vector (stdout/stderr go
+                # to TEXTMMO_LOG_FILE when set): one line always, full
+                # traceback only in verbose mode for real debugging.
+                if VERBOSE:
+                    traceback.print_exc()
+                else:
+                    print(f"handler error on {cmd}: {type(e).__name__}: {e}", flush=True)
                 await send(player, {"type": "error", "text": f"command '{cmd}' failed on that input"})
     except websockets.ConnectionClosed:
         pass

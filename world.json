@@ -42,7 +42,7 @@
     "graveyard": {
       "name": "Old Graveyard",
       "description": "Crooked headstones lean at odd angles. The air is cold.",
-      "exits": {"north": "town_square", "up": "mountain_pass", "enter": "dungeon_1", "down": "crypt_hall"}
+      "exits": {"north": "town_square", "up": "mountain_pass", "enter": "dungeon_entrance", "down": "crypt_hall"}
     },
     "harbor_lane": {
       "name": "Harbor Lane",
