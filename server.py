@@ -2786,10 +2786,15 @@ async def cmd_gm_reward(player, msg):
         if gold <= 0:
             await send(player, {"type": "error", "text": "gm_reward needs a positive 'gold' amount."})
             return
+        # Validate the recipient BEFORE spending (#223): an empty target
+        # used to burn treasury gold with nobody credited.
+        target = msg.get("player", "")
+        if not target:
+            await send(player, {"type": "error", "text": "gm_reward needs a 'player' for gold."})
+            return
         if not await _spend_tax(player, gold, f"reward {gold}g"):
             return
-        target = msg.get("player", "")
-        p = find_player_anywhere(target) if target else None
+        p = find_player_anywhere(target)
         if p:
             p.gold += gold
             await send(p, stats_view(p))
@@ -2806,10 +2811,19 @@ async def cmd_gm_reward(player, msg):
             await send(player, {"type": "error", "text": f"Unknown item '{item}'."})
             return
         cost = ITEM_DEFS.get(iid, {}).get("value", 1) or 1
-        if not await _spend_tax(player, cost, f"reward item {iid}"):
-            return
+        # Resolve the destination BEFORE spending (#223): offline/nowhere
+        # targets used to burn the item value with nothing delivered.
         target = msg.get("player", "")
         room = msg.get("room", "")
+        if target:
+            if not find_player_anywhere(target):
+                await send(player, {"type": "error", "text": f"Player '{target}' not found."})
+                return
+        elif not (room and room in ROOMS):
+            await send(player, {"type": "error", "text": "gm_reward needs a 'player' or 'room' for items."})
+            return
+        if not await _spend_tax(player, cost, f"reward item {iid}"):
+            return
         if target:
             p = find_player_anywhere(target)
             if p:

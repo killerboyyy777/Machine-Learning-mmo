@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- GM reward validation (#223): `gm_reward` spent treasury gold before
+  resolving the recipient (empty/offline targets burned funds); now
+  validates first for both gold and items.
 - Buff tick gating (#237): read-only commands (look/stats/inventory/who/
   leaderboard/help, list views, login, quest list) no longer consume
   action-based buffs.
