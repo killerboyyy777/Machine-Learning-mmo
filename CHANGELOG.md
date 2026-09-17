@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Gather cap truncation (#232): multi-yield harvests truncated to the
+  remaining pack space instead of overflowing past 24 units.
 - Party-switch relocation (#226): accepting a new invite while standing
   in the old party's dungeon now relocates to the entrance like
   party_leave, instead of haunting the wrong instance.

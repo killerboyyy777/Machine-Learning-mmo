@@ -180,6 +180,21 @@ async def main():
     assert gatherer.inventory.count("pine_timber") >= 2  # second harvest lands
     print("GATHER_OK")
 
+    # multi-yield truncates to remaining pack space, never overflows (#232)
+    from unittest import mock as _mock
+    capper = srv.Player(ws=FakeWS(), id=10006, name="CapGatherer", logged_in=True)
+    capper.room = "lumber_camp"
+    srv.add_member(capper)
+    capper.inventory = ["iron_ore"] * (srv.INVENTORY_CAP - 1)
+    node["available"] = True
+    node["respawn_at"] = None
+    with _mock.patch.object(srv.random, "randint", return_value=3):
+        await srv.cmd_gather(capper, {"node": "pine timber"})
+    assert srv._inventory_units(capper) == srv.INVENTORY_CAP, srv._inventory_units(capper)
+    assert capper.inventory.count("pine_timber") == 1  # truncated 3 -> 1
+    srv.remove_member(capper)
+    print("GATHER_CAP_OK")
+
     # --- Buff duration, replacement (no stacking), and expiry ---
     juicer = srv.Player(ws=FakeWS(), id=10005, name="BuffTester", logged_in=True)
     srv.add_member(juicer)

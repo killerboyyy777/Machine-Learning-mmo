@@ -1773,6 +1773,9 @@ async def cmd_gather(player, msg):
     node["available"] = False
     node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
     quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+    # Multi-yield must not overflow the pack (#232): truncate to the
+    # remaining space (a full pack already refused above, so >= 1 fits).
+    quantity = min(quantity, INVENTORY_CAP - _inventory_units(player))
     player.inventory.extend([node["item"]] * quantity)
     item_name = ITEM_DEFS[node["item"]]["name"]
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
