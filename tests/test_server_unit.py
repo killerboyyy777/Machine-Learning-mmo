@@ -347,6 +347,251 @@ async def main():
     unplayer(shopper)
     print("GIVER_IMMUNITY_OK")
 
+    # --- Same-tick double-kill pays once (#195.1): B's full attack runs
+    # inside A's hit-send; A must then see alive=False and skip its block.
+    racer_a = mkplayer("RacerA", 60004, room="town_square")
+    racer_b = mkplayer("RacerB", 60005, room="town_square")
+    racer_a.gold = 0
+    racer_b.gold = 0
+    srv.npcs["race_dummy"] = {
+        "id": "race_dummy", "name": "Race Dummy", "room": "town_square",
+        "hp": 1, "max_hp": 20, "attack": 0, "hostile": True, "behavior": "idle",
+        "loot": ["rat_tail"], "gold": 10, "respawn_seconds": 60,
+        "alive": True, "respawn_at": None, "contributors": {},
+    }
+    tails_before = srv.room_items["town_square"].count("rat_tail")
+    saved_send = srv.send
+    interleaved = {}
+
+    async def send_then_b(p, payload):
+        await saved_send(p, payload)
+        if (payload.get("type") == "combat" and "You hit" in payload.get("text", "")
+                and "b_ran" not in interleaved):
+            interleaved["b_ran"] = True
+            await srv.cmd_attack(racer_b, {"target": "race dummy"})
+
+    srv.send = send_then_b
+    await srv.cmd_attack(racer_a, {"target": "race dummy"})
+    srv.send = saved_send
+    assert interleaved.get("b_ran")  # the race actually happened
+    # Exactly one kill block ran: one loot drop, one split payout.
+    assert srv.room_items["town_square"].count("rat_tail") == tails_before + 1
+    srv.room_items["town_square"].remove("rat_tail")
+    assert racer_a.gold + racer_b.gold == 10  # single payout split, not doubled
+    assert racer_a.gold == 5 and racer_b.gold == 5
+    del srv.npcs["race_dummy"]
+    unplayer(racer_a)
+    unplayer(racer_b)
+    print("DOUBLE_KILL_OK")
+
+    # --- Floor-1 reset farming delay (#195.2): leaving an uncleared
+    # descent stamps re-entry delay; cleared/unstamped leaves don't.
+    farmer = mkplayer("Farmer", 60006, room="graveyard")
+    await srv._enter_dungeon(farmer)
+    assert srv.dungeon_for_room(farmer.room) is not None
+    await srv.cmd_party_leave(farmer, {})
+    fentry = srv.get_score_entry("Farmer")
+    assert fentry.get("dungeon_left_ts", 0) > 0  # live guards: stamped
+    room_before = farmer.room
+    await srv._enter_dungeon(farmer)
+    assert inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"], inbox[-1]
+    assert farmer.room == room_before  # not moved
+    fentry["dungeon_left_ts"] -= (srv.DUNGEON_REENTER_DELAY_SECONDS + 1)
+    await srv._enter_dungeon(farmer)
+    assert srv.dungeon_for_room(farmer.room) is not None
+    # Leaving a party with no dungeon stamps nothing.
+    host = mkplayer("HostA", 60007)
+    guest = mkplayer("GuestA", 60008)
+    await srv.cmd_party_invite(host, {"target": "GuestA"})
+    await srv.cmd_party_accept(guest, {})
+    await srv.cmd_party_leave(host, {})
+    assert "dungeon_left_ts" not in srv.get_score_entry("HostA")
+    # Tidy every party touched above.
+    for p in list(srv.parties.values()):
+        if farmer.id in p.member_ids or host.id in p.member_ids or guest.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(farmer)
+    unplayer(host)
+    unplayer(guest)
+    print("REENTER_DELAY_OK")
+
+    # --- Contribution-gated clear credit (#195.3): the killer earns the
+    # floor + delver readiness; the idle witness present at the clear
+    # earns nothing and its baseline never advances.
+    killer = mkplayer("Killer", 60009, hp=200, max_hp=200)
+    leecher = mkplayer("Leecher", 60010, hp=200, max_hp=200)
+    await srv.cmd_party_invite(killer, {"target": "Leecher"})
+    await srv.cmd_party_accept(leecher, {})
+    await srv.cmd_quest(killer, {"action": "accept", "quest": "delver"})
+    await srv.cmd_quest(leecher, {"action": "accept", "quest": "delver"})
+    await srv.cmd_move(killer, {"dir": "south"})
+    await srv.cmd_move(leecher, {"dir": "south"})
+    await srv._enter_dungeon(killer)  # leecher at the entrance comes along
+    assert srv.dungeon_for_room(leecher.room) is not None
+    assert killer.room == leecher.room
+    for _ in range(60):
+        guard = next((g for g in srv.npcs_in_room(killer.room) if g["alive"]), None)
+        if guard is None:
+            break
+        await srv.cmd_attack(killer, {"target": guard["id"]})
+    assert not any(g["alive"] for g in srv.npcs_in_room(killer.room))
+    kentry = srv.get_score_entry("Killer")
+    lentry = srv.get_score_entry("Leecher")
+    assert kentry.get("dungeon_floors_cleared", 0) == 1, kentry.get("dungeon_floors_cleared")
+    assert lentry.get("dungeon_floors_cleared", 0) == 0
+    assert srv.quest_delver_ready(kentry) and not srv.quest_delver_ready(lentry)
+    for p in list(srv.parties.values()):
+        if killer.id in p.member_ids or leecher.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(killer)
+    unplayer(leecher)
+    print("CLEAR_CREDIT_OK")
+
+    # --- Level-up heals gained max HP only, never to full (#195.4) ---
+    leveler = mkplayer("Leveler", 60011, hp=5, max_hp=20)
+    lentry = srv.get_score_entry("Leveler")
+    lentry["level"] = 1
+    lentry["xp"] = 0.0
+    lentry["xp_to_next"] = srv.xp_to_next(1)
+    leveled = await srv.award_xp("Leveler", 100000, "test surge")
+    assert len(leveled) >= 2, leveled  # multi-level surge
+    assert leveler.max_hp == 20 + srv.LEVEL_HP_PER_LEVEL * len(leveled)
+    assert leveler.hp == 5 + srv.LEVEL_HP_PER_LEVEL * len(leveled)
+    assert leveler.hp < leveler.max_hp  # the old full-heal is gone
+    unplayer(leveler)
+    print("LEVEL_HEAL_OK")
+
+    # --- Sheltered wealth counts toward the death penalty (#195.5) ---
+    shelter = mkplayer("Shelter", 60012)
+    shelter.gold = 1000
+    await srv.cmd_commission_post(shelter, {"target": "rat", "required_kills": 1,
+                                            "reward_gold": 100, "reward_xp": 0})
+    shelter.gold = 0  # everything sheltered or spent: carried is empty
+    sentry = srv.get_score_entry("Shelter")
+    sentry["score"] = 1000.0
+    await srv.respawn_player(shelter)
+    expect = srv.DEATH_PENALTY + srv.DEATH_SCORE_PER_GOLD_LOST * 100
+    assert sentry["score"] == 1000.0 - expect, (sentry["score"], expect)
+    assert any(c["status"] == "open" and c.get("escrow", 0) == 100
+               for c in srv._commissions.values())  # escrow itself untouched
+    broke = mkplayer("Broke", 60013)
+    broke.gold = 0
+    bentry = srv.get_score_entry("Broke")
+    bentry["score"] = 1000.0
+    await srv.respawn_player(broke)
+    assert bentry["score"] == 1000.0 - srv.DEATH_PENALTY
+    for c in list(srv._commissions.values()):
+        if c["poster"] == "Shelter" and c["status"] == "open":
+            await srv.cmd_commission_cancel(shelter, {"commission_id": c["id"]})
+    unplayer(shelter)
+    unplayer(broke)
+    print("SHELTER_PENALTY_OK")
+
+    # --- XP grind decays like score (#195.6): repeat loops earn strictly
+    # less per iteration as variety collapses and score climbs.
+    grinder = mkplayer("Grinder", 60014)
+    gentry = srv.get_score_entry("Grinder")
+    gentry["history"] = []
+    gains = []
+    for _ in range(30):
+        gentry["history"].append(("farm", "loop"))
+        x0 = gentry["xp"]
+        await srv.award_points(grinder, 10, "farm loop")
+        await srv.award_xp("Grinder", 100, "farm loop")
+        gains.append(gentry["xp"] - x0)
+    assert gains[-1] < gains[0]
+    assert sum(gains) < 30 * 100
+    assert gentry["level"] < 1 + 30
+    unplayer(grinder)
+    print("XP_GRIND_OK")
+
+    # --- Invite overwrite notifies the old leader (#195.7a) ---
+    inv_a = mkplayer("InvA", 60015)
+    inv_b = mkplayer("InvB", 60016)
+    inv_c = mkplayer("InvC", 60017)
+    await srv.cmd_party_invite(inv_a, {"target": "InvC"})
+    inbox.clear()
+    await srv.cmd_party_invite(inv_b, {"target": "InvC"})
+    assert any(m.get("type") == "message" and "replaced" in m.get("text", "")
+               for m in inbox), inbox[-3:]
+    for p in list(srv.parties.values()):
+        if inv_a.id in p.member_ids or inv_b.id in p.member_ids or inv_c.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(inv_a)
+    unplayer(inv_b)
+    unplayer(inv_c)
+    print("INVITE_OVERWRITE_OK")
+
+    # --- Accept relocates out of the old dungeon (#195.7b) ---
+    diver = mkplayer("Diver", 60018, room="graveyard")
+    await srv._enter_dungeon(diver)
+    assert srv.dungeon_for_room(diver.room) is not None
+    import time as _time
+    shore = mkplayer("Shore", 60019)
+    shore_party = srv._auto_create_party(shore)
+    srv._pending_party_invites[diver.id] = {"party": shore_party, "ts": _time.time()}
+    await srv.cmd_party_accept(diver, {})
+    assert diver.room == srv.DUNGEON_ENTRANCE_ROOM  # not stranded in d_X_fY
+    assert srv.dungeon_for_room(diver.room) is None
+    for p in list(srv.parties.values()):
+        if diver.id in p.member_ids or shore.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(diver)
+    unplayer(shore)
+    print("ACCEPT_RELOCATE_OK")
+
+    # --- Move-gap gold forfeits to the present split (#195.7c) ---
+    striker = mkplayer("Striker", 60020, room="town_square")
+    drifter = mkplayer("Drifter", 60021, room="town_square")
+    striker.gold = 0
+    drifter.gold = 0
+    srv.npcs["share_dummy"] = {
+        "id": "share_dummy", "name": "Share Dummy", "room": "town_square",
+        "hp": 20, "max_hp": 20, "attack": 0, "hostile": True, "behavior": "idle",
+        "loot": [], "gold": 10, "respawn_seconds": 60,
+        "alive": True, "respawn_at": None, "contributors": {},
+    }
+    await srv.cmd_attack(drifter, {"target": "share dummy"})  # contributor...
+    await srv.cmd_move(drifter, {"dir": "east"})  # ...then leaves before the kill
+    for _ in range(60):
+        dummy = srv.npcs.get("share_dummy")
+        if dummy is None or not dummy["alive"]:
+            break
+        await srv.cmd_attack(striker, {"target": "share dummy"})
+    assert not srv.npcs["share_dummy"]["alive"]
+    assert striker.gold == 10 and drifter.gold == 0  # faucet-neutral forfeit
+    del srv.npcs["share_dummy"]
+    unplayer(striker)
+    unplayer(drifter)
+    print("GOLD_SHARE_OK")
+
+    # --- Commercial tax rounding + 1g payouts (#195.8) ---
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
+    from ml_env import market_tax as _env_tax
+    assert _env_tax(1) == 0
+    assert _env_tax(2) == 1
+    assert _env_tax(10) == 1
+    assert _env_tax(25) == 3  # half-up: banker's round(2.5) would say 2
+    assert _env_tax(100) == 10
+    t_saved = (srv.tax_treasury, srv.tax_collected_lifetime)
+    srv.tax_treasury = 0.0
+    srv.tax_collected_lifetime = 0.0
+    penny = mkplayer("Penny", 60022, room="market")
+    penny.inventory.append("healing_herb")
+    await srv.cmd_market_post(penny, {"item": "Healing Herb", "price": 1})
+    poid = max(o["id"] for o in srv.market_orders if o["seller"] == "Penny")
+    dime = mkplayer("Dime", 60023, room="market")
+    dime.gold = 200
+    penny_gold0 = penny.gold
+    await srv.cmd_market_buy(dime, {"id": poid})
+    assert penny.gold == penny_gold0 + 1  # full 1g payout, 0 tax (was 0)
+    assert srv.tax_treasury == 0.0 and srv.tax_collected_lifetime == 0.0
+    assert dime.gold == 199  # conservation: 1 + 0 == price
+    srv.tax_treasury, srv.tax_collected_lifetime = t_saved
+    unplayer(penny)
+    unplayer(dime)
+    print("TAX_ROUND_OK")
+
     # announce: empty text rejected, real text charged + broadcast
     srv.tax_treasury = 100.0
     n0 = len(inbox)
@@ -599,8 +844,10 @@ async def main():
     seller_xp0 = srv.get_score_entry("Wash")["xp"]
     await srv.cmd_market_buy(patsy, {"id": oid})
     assert not any(o["id"] == oid for o in srv.market_orders)
-    assert srv.get_score_entry("Patsy")["xp"] - patsy_xp0 == 3.0
-    assert srv.get_score_entry("Wash")["xp"] - seller_xp0 == 3.0
+    # XP diminish (#195.6) scales the fixed 3 XP by each side's curve, so
+    # assert one payment each (no double mint), not exact equality.
+    assert srv.get_score_entry("Patsy")["xp"] > patsy_xp0
+    assert srv.get_score_entry("Wash")["xp"] > seller_xp0
     unplayer(wash)
     unplayer(patsy)
     print("WASH_TRADE_OK")
