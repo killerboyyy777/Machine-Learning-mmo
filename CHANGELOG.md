@@ -72,6 +72,12 @@ All notable changes to the text MMO engine are recorded here.
   resetting `training_steps` (and the epsilon schedule) on every restart.
   Now saves the full LinearQAgent format; covered by
   `tests/test_farm_resume.py`.
+- New unit suites (#252): training loops, conductor run, and GM treasury
+  coverage in CI; `gm_reward` validates the destination before spending,
+  so failed rewards no longer debit the treasury with nothing delivered.
+- Quest-giver immunity (#193): player attacks on quest givers rejected
+  pre-damage (GM slay untouched); repeated attempts, merchant control,
+  and untouched quest flow covered by tests.
 - Combat/party/dungeon balance + race pass (#195): same-tick double-kill
   guard (one payout split among contributors, never two); 60s dungeon
   re-entry delay after abandoning an uncleared descent (kills Floor-1
