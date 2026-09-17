@@ -1,0 +1,15 @@
+{
+  "_comment": "SOAK OVERLAY -- short TTLs so expiry/prune paths fire inside a run. NEVER point a prod or training server at this file. Use: python server.py --config ml/conductor/soak_server_config.json. Caps intentionally match prod (soak tests the limits prod enforces); only time is compressed.",
+
+  "commissions": {
+    "COMMISSION_TTL_SECONDS": 600
+  },
+
+  "economy": {
+    "MARKET_ORDER_TTL_SECONDS": 300
+  },
+
+  "dungeon": {
+    "PARTY_INVITE_TTL_SECONDS": 60
+  }
+}

@@ -119,6 +119,9 @@ COMMISSION_MAX_OPEN_PER_POSTER = 5
 # least-frequent pairs first (count-1 pairs pay full rate either way, so
 # eviction is behavior-preserving where it matters).
 COMMISSION_COLLAB_CAP = 200
+# Terminal (completed/cancelled) commissions older than this are pruned.
+# Open bounties hold real escrow and are never pruned.
+COMMISSION_TTL_SECONDS = 3600
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -381,9 +384,8 @@ _party_counter = itertools.count(1)
 _pending_party_invites = {}   # invitee player.id -> Party (invitation)
 _commission_counter = itertools.count(1)
 
-# Terminal (completed/cancelled) commissions older than this are pruned.
-# Open bounties hold real escrow and are never pruned.
-COMMISSION_TTL_SECONDS = 3600
+# (COMMISSION_TTL_SECONDS lives with the other commission tunables above
+# _apply_config so server_config.json -- and --config overlays -- can set it.)
 _last_commission_prune = 0.0
 
 
@@ -2946,6 +2948,25 @@ class GMStream:
         self.outbound_event = asyncio.Event()
 
 
+async def cmd_gm_tables(player, msg):
+    """Snapshot of server table sizes + treasury for soak correctness gates
+    (loopback GM stream only; game clients never see this)."""
+    open_c = sum(1 for c in _commissions.values() if c.get("status") == "open")
+    term_c = sum(1 for c in _commissions.values()
+                 if c.get("status") in ("completed", "cancelled"))
+    dungeon_gold = sum(1 for rid in room_gold
+                       if isinstance(rid, str) and rid.startswith("d_"))
+    await send(player, {"type": "tables",
+                        "commissions_open": open_c,
+                        "commissions_terminal": term_c,
+                        "market_orders": len(market_orders),
+                        "pending_invites": len(_pending_party_invites),
+                        "dungeon_gold_keys": dungeon_gold,
+                        "treasury": round(tax_treasury, 2),
+                        "treasury_lifetime": round(tax_collected_lifetime, 2),
+                        "players_online": len(players)})
+
+
 GM_HANDLERS = {
     "gm_reward": cmd_gm_reward,
     "gm_buff": cmd_gm_buff,
@@ -2955,6 +2976,7 @@ GM_HANDLERS = {
     "gm_teleport": cmd_gm_teleport,
     "gm_slay": cmd_gm_slay,
     "gm_kick": cmd_gm_kick,
+    "gm_tables": cmd_gm_tables,
 }
 
 
@@ -3536,6 +3558,11 @@ def parse_args(argv=None):
     ap.add_argument("--http-port", type=int, default=HTTP_PORT,
                     help="dashboard port")
     ap.add_argument("--gm-port", type=int, default=GM_PORT, help="GM port")
+    ap.add_argument("--config", default=None,
+                    help="server config file (default: server_config.json next to "
+                         "server.py). Applied on top of the import-time defaults, "
+                         "so soak/test runs can point at an overlay without "
+                         "touching the prod file.")
     return ap.parse_args(argv)
 
 
@@ -3544,6 +3571,12 @@ if __name__ == "__main__":
     HOST, PORT = _args.host, _args.port
     HTTP_HOST, HTTP_PORT = _args.host, _args.http_port
     GM_PORT = _args.gm_port
+    if _args.config:
+        # Config also loads at import (before flags exist); re-apply here so
+        # the flag wins. All tunables are read at runtime, so late override
+        # is equivalent to an early one.
+        CONFIG_FILE = _args.config
+        _apply_config()
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, OSError) as e:
