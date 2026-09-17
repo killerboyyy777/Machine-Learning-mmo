@@ -877,6 +877,34 @@ async def main():
     unplayer(joiner)
     print("INVITE_DISCONNECT_OK")
 
+    # party switch relocates out of the old dungeon instance (#226)
+    import time as _time
+    leadA = mkplayer("LeadA", 50030)
+    leadB = mkplayer("LeadB", 50031)
+    switcher = mkplayer("Switcher", 50032)
+    partyA = srv._auto_create_party(leadA)
+    dA = srv.Dungeon(party_id=partyA.id)
+    srv.dungeons[dA.id] = dA
+    partyA.dungeon_id = dA.id
+    partyA.member_ids.add(switcher.id)
+    switcher.party_id = partyA.id
+    srv.remove_member(switcher)
+    switcher.room = dA.room_id(2)
+    srv.add_member(switcher)
+    partyB = srv._auto_create_party(leadB)
+    srv._pending_party_invites[switcher.id] = {"party": partyB, "ts": _time.time(),
+                                               "inviter": leadB.id}
+    await srv.cmd_party_accept(switcher, {})
+    assert switcher.party_id == partyB.id
+    assert switcher.room == srv.DUNGEON_ENTRANCE_ROOM, switcher.room
+    assert switcher.id not in partyA.member_ids
+    for p in (partyA, partyB):
+        if p.id in srv.parties:
+            srv._delete_party(p)
+    for p in (leadA, leadB, switcher):
+        unplayer(p)
+    print("PARTY_SWITCH_RELOCATE_OK")
+
     # collusion cap: seeded history evicts least-frequent first, keeps newcomer
     clposter = mkplayer("CollabPoster", 50026)
     clposter.gold = 100000

@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Party-switch relocation (#226): accepting a new invite while standing
+  in the old party's dungeon now relocates to the entrance like
+  party_leave, instead of haunting the wrong instance.
 - Health probe thread-safety (#224): `/health` iterated the live players
   dict from the HTTP thread (intermittent RuntimeError); now served from
   the cached snapshot like `/api/state`.

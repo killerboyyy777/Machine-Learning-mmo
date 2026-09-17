@@ -2537,6 +2537,10 @@ async def cmd_party_accept(player, msg):
         old.member_ids.discard(player.id)
         if not old.member_ids:
             _delete_party(old)
+        # Switching parties abandons the old instance (#226): relocate like
+        # party_leave does, or the switcher keeps standing in (and acting
+        # on) the old party's dungeon.
+        _relocate_from_dungeon(player)
     party.member_ids.add(player.id)
     player.party_id = party.id
     leader = players.get(party.leader_id)
