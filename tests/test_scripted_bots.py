@@ -66,15 +66,25 @@ env._state["market_state"] = None
 assert selected(MarketFlipperPolicy(), env) == "market_list"
 print("MARKET_LIST_OK")
 
-# --- market role: snapshot fresh, nothing to post -> buy ---
+# --- market role: empty book -> buy masked, re-lists instead ---
 env = fresh_env()
 env._state["market_state"] = {"orders": []}
+assert selected(MarketFlipperPolicy(), env) == "market_list"
+print("MARKET_BUY_MASKED_OK")
+
+# --- market role: affordable order on the book -> buy ---
+env = fresh_env()
+env._state["gold"] = 100
+env._state["market_state"] = {"orders": [{"item": "Healing Herb", "price": 10,
+                                           "seller": "Other"}]}
 assert selected(MarketFlipperPolicy(), env) == "market_buy"
 print("MARKET_BUY_OK")
 
 # --- maker role: fresh snapshot, nothing to post -> buys (bid side) ---
 env = fresh_env()
-env._state["market_state"] = {"orders": []}
+env._state["gold"] = 100
+env._state["market_state"] = {"orders": [{"item": "Healing Herb", "price": 10,
+                                           "seller": "Other"}]}
 assert selected(MarketMakerPolicy(), env) == "market_buy"
 print("MAKER_BUY_OK")
 

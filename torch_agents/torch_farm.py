@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml"))
 
 from dqn_agent import TorchDQNAgent
 from ml_env import (ACTIONS, N_ACTIONS, QUEST_DELVER_REWARD_POINTS,
-                    QUEST_REWARD_POINTS, TextMMOEnv, flatten_obs)
+                    QUEST_REWARD_POINTS, QUESTS, TextMMOEnv, flatten_obs)
 
 
 class TorchFarm:
@@ -99,6 +99,10 @@ class Runner:
             quest_reward += float(QUEST_REWARD_POINTS)
         if (by_quest.get("delver") or {}).get("turned_in"):
             quest_reward += float(QUEST_DELVER_REWARD_POINTS)
+        if (by_quest.get("remedy") or {}).get("turned_in"):
+            quest_reward += float(QUESTS["remedy"]["reward_points"])
+        if (by_quest.get("tonic") or {}).get("turned_in"):
+            quest_reward += float(QUESTS["tonic"]["reward_points"])
 
         return gold_delta, loot_delta, market_pnl, quest_reward
 

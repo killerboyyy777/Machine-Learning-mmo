@@ -639,8 +639,14 @@ class TorchDQNAgent:
             delver_turned = bool((byq.get("delver") or {}).get("turned_in"))
             guard_accepted = bool((byq.get("guard_charm") or {}).get("accepted"))
             delver_accepted = bool((byq.get("delver") or {}).get("accepted"))
+            remedy_turned = bool((byq.get("remedy") or {}).get("turned_in"))
+            tonic_turned = bool((byq.get("tonic") or {}).get("turned_in"))
+            remedy_accepted = bool((byq.get("remedy") or {}).get("accepted"))
+            tonic_accepted = bool((byq.get("tonic") or {}).get("accepted"))
             quest_reward = ((float(QUEST_REWARD_POINTS) if guard_turned else 0.0)
-                            + (float(QUEST_DELVER_REWARD_POINTS) if delver_turned else 0.0))
+                            + (float(QUEST_DELVER_REWARD_POINTS) if delver_turned else 0.0)
+                            + (float(QUESTS["remedy"]["reward_points"]) if remedy_turned else 0.0)
+                            + (float(QUESTS["tonic"]["reward_points"]) if tonic_turned else 0.0))
             if guard_turned:
                 quest_turnins += 1
             if delver_turned:
@@ -656,7 +662,7 @@ class TorchDQNAgent:
             # re-craft while flagged), so the bonus bootstraps chains
             # without becoming a farmable substitute for turn-ins.
             quest_intrinsic = 0.0
-            if guard_accepted or delver_accepted:
+            if guard_accepted or delver_accepted or remedy_accepted or tonic_accepted:
                 quest_intrinsic += self.intrinsic_accept
             if qinfo.get("crafted_charm") or qinfo.get("delver_became_ready"):
                 quest_intrinsic += self.intrinsic_progress
