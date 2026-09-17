@@ -25,6 +25,7 @@ jobs:
       - run: python tests/test_curriculum.py
       - run: python tests/test_plugins.py
       - run: python tests/test_env_reset.py
+      - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
       - run: python tests/test_scores_backup.py
 

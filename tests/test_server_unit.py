@@ -731,6 +731,178 @@ async def main():
     assert srv.validate_world({"rooms": {}, "items": {}}) == ["no rooms defined"]
     print("VALIDATE_WORLD_OK")
 
+    # online sellers spend proceeds immediately (#192.1)
+    seller = mkplayer("OnlineSeller", 50020, room="market")
+    seller.inventory.append("healing_herb")
+    await srv.cmd_market_post(seller, {"item": herb_name, "price": 10})
+    soid = max(o["id"] for o in srv.market_orders if o["seller"] == "OnlineSeller")
+    buyer2 = mkplayer("SpenderBuyer", 50021, room="market")
+    buyer2.gold = 200
+    seller_gold0 = seller.gold
+    await srv.cmd_market_buy(buyer2, {"id": soid})
+    payout = 10 - max(srv.TAX_MINIMUM, round(10 * srv.TAX_RATE))
+    assert seller.gold == seller_gold0 + payout, (seller.gold, seller_gold0, payout)
+    assert srv.get_score_entry("OnlineSeller").get("gold_bank", 0) == 0
+    unplayer(seller)
+    unplayer(buyer2)
+    print("SELLER_PAYOUT_OK")
+
+    # per-poster open cap, market/invite TTL sweeps, collusion cap (#192.2)
+    t_saved2 = (srv.tax_treasury, srv.tax_collected_lifetime)
+    capper = mkplayer("OpenCapper", 50022)
+    capper.gold = 100000
+    inbox.clear()
+    for _ in range(srv.COMMISSION_MAX_OPEN_PER_POSTER):
+        await srv.cmd_commission_post(capper, {"target": "rat", "required_kills": 1,
+                                               "reward_gold": 1, "reward_xp": 0})
+    assert not any(m.get("type") == "error" for m in inbox), inbox[-1]
+    n_open_total = len(srv._commissions)
+    await srv.cmd_commission_post(capper, {"target": "rat", "required_kills": 1,
+                                           "reward_gold": 1, "reward_xp": 0})
+    assert inbox[-1]["type"] == "error" and "max" in inbox[-1]["text"].lower(), inbox[-1]
+    assert len(srv._commissions) == n_open_total
+    my_open = [c for c in srv._commissions.values()
+               if c["status"] == "open" and c["poster"] == "OpenCapper"]
+    await srv.cmd_commission_cancel(capper, {"commission_id": my_open[0]["id"]})
+    inbox.clear()
+    await srv.cmd_commission_post(capper, {"target": "rat", "required_kills": 1,
+                                           "reward_gold": 1, "reward_xp": 0})
+    assert any(m.get("type") == "message" and "posted" in m.get("text", "") for m in inbox), inbox[-1]
+    for c in list(srv._commissions.values()):
+        if c["poster"] == "OpenCapper" and c["status"] == "open":
+            await srv.cmd_commission_cancel(capper, {"commission_id": c["id"]})
+    unplayer(capper)
+    print("OPEN_CAP_OK")
+
+    # market TTL: aged order returns to the online seller, stays for offline
+    ager = mkplayer("AgedSeller", 50023, room="market")
+    ager.inventory.append("healing_herb")
+    await srv.cmd_market_post(ager, {"item": herb_name, "price": 10})
+    aoid = max(o["id"] for o in srv.market_orders if o["seller"] == "AgedSeller")
+    assert "healing_herb" not in ager.inventory
+    for o in srv.market_orders:
+        if o["id"] == aoid:
+            o["ts"] -= (srv.MARKET_ORDER_TTL_SECONDS + 1)
+    srv._last_market_prune = 0.0
+    assert await srv.prune_market_orders() == 1
+    assert not any(o["id"] == aoid for o in srv.market_orders)
+    assert "healing_herb" in ager.inventory
+    ager.inventory.append("healing_herb")
+    await srv.cmd_market_post(ager, {"item": herb_name, "price": 10})
+    boid = max(o["id"] for o in srv.market_orders if o["seller"] == "AgedSeller")
+    for o in srv.market_orders:
+        if o["id"] == boid:
+            o["ts"] -= (srv.MARKET_ORDER_TTL_SECONDS + 1)
+    unplayer(ager)  # goes offline holding a live listing
+    srv._last_market_prune = 0.0
+    assert await srv.prune_market_orders() == 0
+    assert any(o["id"] == boid for o in srv.market_orders)
+    srv.market_orders[:] = [o for o in srv.market_orders if o["id"] != boid]
+    print("MARKET_TTL_OK")
+
+    # invite TTL: stale accept rejected, sweep drops non-responder rows
+    inviter = mkplayer("Inviter", 50024)
+    invitee = mkplayer("Invitee", 50025)
+    await srv.cmd_party_invite(inviter, {"target": "Invitee"})
+    assert invitee.id in srv._pending_party_invites
+    srv._pending_party_invites[invitee.id]["ts"] -= (srv.PARTY_INVITE_TTL_SECONDS + 1)
+    inbox.clear()
+    await srv.cmd_party_accept(invitee, {})
+    assert inbox[-1]["type"] == "error" and "expired" in inbox[-1]["text"].lower(), inbox[-1]
+    await srv.cmd_party_invite(inviter, {"target": "Invitee"})
+    srv._pending_party_invites[invitee.id]["ts"] -= (srv.PARTY_INVITE_TTL_SECONDS + 1)
+    srv._last_invite_prune = 0.0
+    assert srv.prune_invites() == 1
+    assert invitee.id not in srv._pending_party_invites
+    for p in list(srv.parties.values()):
+        if inviter.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(inviter)
+    unplayer(invitee)
+    print("INVITE_TTL_OK")
+
+    # collusion cap: seeded history evicts least-frequent first, keeps newcomer
+    clposter = mkplayer("CollabPoster", 50026)
+    clposter.gold = 100000
+    clentry = srv.get_score_entry("CollabPoster")
+    clentry["collab_fills"] = {f"filler{i}": 1 for i in range(srv.COMMISSION_COLLAB_CAP)}
+    await srv.cmd_commission_post(clposter, {"target": "rat", "required_kills": 1,
+                                             "reward_gold": 10, "reward_xp": 0})
+    cid_cl = max(srv._commissions)
+    clfiller = mkplayer("CollabNew", 50027)
+    srv.record_npc_kill("CollabNew", "Giant Rat")
+    await srv.cmd_commission_fill(clfiller, {"commission_id": cid_cl})
+    assert srv._commissions[cid_cl]["status"] == "completed"
+    collab = clentry["collab_fills"]
+    assert len(collab) == srv.COMMISSION_COLLAB_CAP, len(collab)
+    assert "collabnew" in collab
+    unplayer(clposter)
+    unplayer(clfiller)
+    srv.tax_treasury, srv.tax_collected_lifetime = t_saved2
+    print("COLLAB_CAP_OK")
+
+    # charm turn-in requires the charm in hand, not just the flag (#192.4)
+    charmer = mkplayer("Charmer", 50028, room="town_square")
+    chentry = srv.get_score_entry("Charmer")
+    await srv.cmd_quest(charmer, {"action": "accept", "quest": "guard_charm"})
+    assert chentry.get("quest_guard_active")
+    chentry["guard_charm_crafted"] = True  # flag set, charm dropped/sold
+    assert srv.QUEST_CHARM_RESULT not in charmer.inventory
+    inbox.clear()
+    await srv.cmd_quest(charmer, {"action": "turn_in", "quest": "guard_charm"})
+    assert inbox[-1]["type"] == "message" and "no longer in your pack" in inbox[-1]["text"], inbox[-1]
+    assert chentry.get("quest_guard_active")  # still active, nothing consumed
+    charmer.inventory.append(srv.QUEST_CHARM_RESULT)
+    await srv.cmd_quest(charmer, {"action": "turn_in", "quest": "guard_charm"})
+    assert not chentry.get("quest_guard_active")
+    assert srv.QUEST_CHARM_RESULT not in charmer.inventory
+    unplayer(charmer)
+    print("CHARM_GATE_OK")
+
+    # bool coercion: string "false" must not enable boolean gates (#192.3)
+    import json as _json
+    import os as _os
+    cfg_path = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_bool_cfg_tmp.json")
+    real_cfg, real_val = srv.CONFIG_FILE, srv.AUTH_TOKEN_REQUIRED
+    try:
+        with open(cfg_path, "w") as f:
+            _json.dump({"flags": {"AUTH_TOKEN_REQUIRED": "false"}}, f)
+        srv.CONFIG_FILE = cfg_path
+        srv._apply_config()
+        assert srv.AUTH_TOKEN_REQUIRED is False, srv.AUTH_TOKEN_REQUIRED
+        with open(cfg_path, "w") as f:
+            _json.dump({"flags": {"AUTH_TOKEN_REQUIRED": "yes"}}, f)
+        srv._apply_config()
+        assert srv.AUTH_TOKEN_REQUIRED is True, srv.AUTH_TOKEN_REQUIRED
+        with open(cfg_path, "w") as f:
+            _json.dump({"flags": {"AUTH_TOKEN_REQUIRED": "0"}}, f)
+        srv._apply_config()
+        assert srv.AUTH_TOKEN_REQUIRED is False, srv.AUTH_TOKEN_REQUIRED
+    finally:
+        srv.CONFIG_FILE = real_cfg
+        srv.AUTH_TOKEN_REQUIRED = real_val
+        if _os.path.exists(cfg_path):
+            _os.remove(cfg_path)
+    print("BOOL_CONFIG_OK")
+
+    # market stall + cancel share one case-insensitive identity (#192 market)
+    caseseller = mkplayer("CaseSeller", 50029, room="market")
+    caseseller.inventory.extend(["healing_herb"] * 4)
+    for _ in range(3):
+        await srv.cmd_market_post(caseseller, {"item": herb_name, "price": 10})
+    caseseller_low = mkplayer("caseseller", 50030, room="market")
+    caseseller_low.inventory.append("healing_herb")
+    await srv.cmd_market_post(caseseller_low, {"item": herb_name, "price": 10})
+    assert inbox[-1]["type"] == "error" and "stall full" in inbox[-1]["text"].lower(), inbox[-1]
+    void = max(o["id"] for o in srv.market_orders if o["seller"] == "CaseSeller")
+    await srv.cmd_market_cancel(caseseller_low, {"id": void})
+    assert not any(o["id"] == void for o in srv.market_orders)
+    assert "healing_herb" in caseseller_low.inventory  # item returns to the cancelling variant
+    srv.market_orders[:] = [o for o in srv.market_orders if o["seller"].lower() != "caseseller"]
+    unplayer(caseseller)
+    unplayer(caseseller_low)
+    print("MARKET_CASE_OK")
+
     # relic craft with ungenerated dynamic mats errors cleanly (#190)
     crafter = mkplayer("Crafter", 50005, room="town_square")
     await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
