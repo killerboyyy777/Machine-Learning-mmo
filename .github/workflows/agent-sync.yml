@@ -1,0 +1,90 @@
+name: Agent branch sync + CI
+
+# The contributor behind agent/* cannot open PRs or file issues, and
+# push-triggered CI only reads workflow files from the pushed branch --
+# so nothing on master can give his pushes CI, and the review mirror
+# (review/bughunt-batch, PR #253) goes stale when he pushes. This
+# scheduled workflow does both from master's side; no action needed on
+# his branch. Delete this file once the agent branch is merged or gone
+# (the sync job then exits cleanly on its own).
+#
+# Cost note: daily, not per-push -- a 20-minute cron would burn ~1000
+# free-tier minutes/month on sync alone. Use workflow_dispatch for
+# on-demand runs before review sessions.
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        description: "Agent branch to sync and test"
+        default: "agent/proxmox-221-item-presence"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  AGENT_REF: ${{ inputs.agent_ref || 'agent/proxmox-221-item-presence' }}
+
+jobs:
+  sync-mirror:
+    name: Fast-forward review mirror to agent tip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync review/bughunt-batch (fast-forward only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          AGENT_SHA=$(gh api "repos/${{ github.repository }}/git/refs/heads/${AGENT_REF}" --jq .object.sha) || { echo "no ${AGENT_REF} branch (merged/deleted?) -- nothing to sync"; exit 0; }
+          MIRROR_SHA=$(gh api "repos/${{ github.repository }}/git/refs/heads/review/bughunt-batch" --jq .object.sha) || MIRROR_SHA=""
+          if [ "$AGENT_SHA" = "$MIRROR_SHA" ]; then echo "mirror already at $AGENT_SHA"; exit 0; fi
+          gh api -X PATCH "repos/${{ github.repository }}/git/refs/heads/review/bughunt-batch" -f sha="$AGENT_SHA" --silent
+          echo "mirror synced to $AGENT_SHA"
+
+  agent-tests:
+    name: Unit, grind, conductor (agent head, no server/torch needed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.AGENT_REF }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python tests/test_server_unit.py
+      - run: python tests/test_quest_grind.py
+      - run: python tests/test_conductor.py
+      - run: python tests/test_conductor_run.py
+      - run: python tests/test_training_loops.py
+      - run: python tests/test_gm_unit.py
+
+  agent-live:
+    name: Live protocol + ML env on agent head (fresh server, seed 700)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.AGENT_REF }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install websockets==17.1
+      - run: echo '{}' > scores.json
+      - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.ci.log 2>&1 &
+      - run: sleep 5
+      - run: python tests/test_live.py
+      - run: python tests/test_env.py
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: agent-live-failure-logs
+          path: |
+            server.ci.log
+            scores.json
