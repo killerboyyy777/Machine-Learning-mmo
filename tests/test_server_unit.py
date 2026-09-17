@@ -415,6 +415,25 @@ async def main():
     unplayer(guest)
     print("REENTER_DELAY_OK")
 
+    # --- Disconnect stamps like leave (#195.2 review): quitting to title
+    # with live guards in the instance delays re-entry after relog.
+    quitter = mkplayer("Quitter", 60024, room="graveyard")
+    await srv._enter_dungeon(quitter)
+    assert srv.dungeon_for_room(quitter.room) is not None
+    await srv._leave_party_on_disconnect(quitter)
+    qentry = srv.get_score_entry("Quitter")
+    assert qentry.get("dungeon_left_ts", 0) > 0
+    # Relog state: fresh party, town room -- the gate still holds.
+    quitter.party_id = None
+    quitter.room = "graveyard"
+    await srv._enter_dungeon(quitter)
+    assert inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"], inbox[-1]
+    for p in list(srv.parties.values()):
+        if quitter.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(quitter)
+    print("DISCONNECT_STAMP_OK")
+
     # --- Contribution-gated clear credit (#195.3): the killer earns the
     # floor + delver readiness; the idle witness present at the clear
     # earns nothing and its baseline never advances.

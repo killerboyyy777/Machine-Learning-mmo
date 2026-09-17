@@ -3505,6 +3505,11 @@ async def _leave_party_on_disconnect(player):
     party = parties.get(player.party_id) if player.party_id else None
     if not party:
         return
+    # Same stamp as leave/accept-switch (#195.2): quitting to title and
+    # relogging must not mint a fresh Floor 1 unstamped. Disconnects cost
+    # carried loot either way, so this closes the XP-farm bypass, not
+    # ordinary relogs (no dungeon, or cleared, stamps nothing).
+    _stamp_dungeon_leave(player, party)
     party.member_ids.discard(player.id)
     player.party_id = None
     if not party.member_ids:
