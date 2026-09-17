@@ -90,6 +90,12 @@ PARTY_MAX_MEMBERS = 4
 # Party invites unanswered after 5 minutes are stale (longer than any real
 # accept delay, shorter than a session).
 PARTY_INVITE_TTL_SECONDS = 300
+# Leaving a party whose dungeon still has live guards stamps a re-entry
+# delay on the leaver (#195.2): without it, leave (instance deleted) +
+# re-enter mints a fresh Floor 1 on demand, evading dungeon scaling to
+# farm the safest floor forever. 60s breaks the loop's cadence while a
+# legit regroup barely notices it.
+DUNGEON_REENTER_DELAY_SECONDS = 60
 
 TAX_RATE = 0.10
 TAX_MINIMUM = 1
@@ -294,6 +300,10 @@ class DungeonFloor:
     guards: list = field(default_factory=list)
     items: list = field(default_factory=list)
     cleared: bool = False
+    # Lower-cased names that damaged guards on this floor. Fed by every
+    # dungeon kill before its per-NPC dict is wiped, so floor-clear credit
+    # (and delver progress) can require contribution (#195.3).
+    contributors: set = field(default_factory=set)
 
 
 class Dungeon:
@@ -845,6 +855,10 @@ def sync_player_level(player):
 
 
 async def _apply_level_up(entry, levels):
+    # Heal only the gained max HP, not to full (#195.4): a full heal
+    # applied mid-combat (XP lands before retaliation resolves) negates
+    # incoming damage for free, once per level. Out of combat the
+    # difference is one rest tick. Login sync still fully heals.
     total = sum(levels)
     for p in players_by_name.get(entry["display_name"].lower(), ()):
         if not p.logged_in:
@@ -852,14 +866,14 @@ async def _apply_level_up(entry, levels):
         for new_level in levels:
             p.max_hp += LEVEL_HP_PER_LEVEL
             p.base_attack += LEVEL_ATK_PER_LEVEL
-        p.hp = p.max_hp
+        p.hp = min(p.max_hp, p.hp + LEVEL_HP_PER_LEVEL * len(levels))
         await send(p, {
             "type": "level_up",
             "level": entry["level"],
             "max_hp": p.max_hp,
             "attack": p.base_attack,
             "text": f"You reach level {entry['level']}! +{LEVEL_HP_PER_LEVEL} max HP, "
-                    f"+{LEVEL_ATK_PER_LEVEL} attack, and you feel fully healed."
+                    f"+{LEVEL_ATK_PER_LEVEL} attack, and you feel refreshed."
         })
         await broadcast_room(p.room, {
             "type": "message",
@@ -869,11 +883,17 @@ async def _apply_level_up(entry, levels):
 
 
 async def award_xp(name, amount, reason):
-    """Award XP (works offline). Runs the closed-form level curve."""
+    """Award XP (works offline). Runs the closed-form level curve.
+
+    Gains scale by the same variety x diminish curve as score (#195.6):
+    without it, repeat-loop XP farms level unboundedly while score floors
+    under grind decay. The reported gain is the diminished value.
+    """
     if amount <= 0:
         return []
     amount *= _buff_mult("xp")
     entry = get_score_entry(name)
+    amount *= compute_variety(entry) * compute_diminish(entry)
     entry["xp"] += amount
     leveled = []
     while entry["xp"] >= entry["xp_to_next"]:
@@ -1301,13 +1321,27 @@ async def sync_room(room_id):
         await send(p, view)
 
 
+def _sheltered_gold(name):
+    """Gold that escapes the death split: open-commission escrow plus any
+    banked gold. Posting a bounty (or banking) before a risky fight must
+    not shrink the death penalty to the broke-character floor (#195.5)."""
+    entry = get_score_entry(name)
+    escrow = sum(c.get("escrow", 0) for c in _commissions.values()
+                 if c.get("status") == "open"
+                 and str(c.get("poster", "")).lower() == name.lower())
+    return escrow + entry.get("gold_bank", 0)
+
+
 async def respawn_player(player):
     # Death drop: 40% of carried gold stays as a floor pile where you died,
-    # 10% vanishes permanently, the rest stays with you.
+    # 10% vanishes permanently, the rest stays with you. Sheltered wealth
+    # (escrow, bank) can't be split -- it isn't carried -- but it counts
+    # toward the score penalty, so offloading gold pre-death buys no
+    # discount on dying.
     dropped = (player.gold * DEATH_GOLD_DROP_PCT) // 100
     lost = (player.gold * DEATH_GOLD_LOST_PCT) // 100
     player.gold -= (dropped + lost)
-    await apply_death_penalty(player, dropped + lost)
+    await apply_death_penalty(player, dropped + lost + _sheltered_gold(player.name))
     death_room = player.room
     if dropped > 0:
         room_gold[death_room] = room_gold.get(death_room, 0) + dropped
@@ -1394,7 +1428,27 @@ def _dungeon_move(player, dungeon, floor_no):
     add_member(player)
 
 
+def _dungeon_has_live_guards(party):
+    """True when the party's instance still has live guards anywhere."""
+    d = dungeons.get(party.dungeon_id) if party and party.dungeon_id else None
+    if not d:
+        return False
+    return any(g.get("alive") for f in d.floors.values() for g in f.guards)
+
+
+def _stamp_dungeon_leave(player, party):
+    """Stamp a re-entry delay when abandoning an uncleared descent."""
+    if _dungeon_has_live_guards(party):
+        get_score_entry(player.name)["dungeon_left_ts"] = time.time()
+        mark_scores_dirty()
+
+
 async def _enter_dungeon(player):
+    entry = get_score_entry(player.name)
+    wait = DUNGEON_REENTER_DELAY_SECONDS - (time.time() - entry.get("dungeon_left_ts", 0))
+    if wait > 0:
+        await send(player, {"type": "error", "text": f"The archway rejects you for {int(wait)}s more (you abandoned an uncleared descent)."})
+        return
     party = _auto_create_party(player)
     if party.dungeon_id not in dungeons:
         d = Dungeon(party_id=party.id)
@@ -1583,31 +1637,46 @@ async def cmd_attack(player, msg):
     npc["contributors"][player.name] = npc["contributors"].get(player.name, 0) + dmg
     await send(player, {"type": "combat", "text": f"You hit {npc['name']} for {dmg}."})
     await broadcast_room(player.room, {"type": "combat", "text": f"{player.name} hits {npc['name']} for {dmg}."}, exclude=player)
-    if npc["hp"] <= 0:
+    # Same-tick double-kill guard (#195.1): two attackers' damage can
+    # interleave at the sends above, so both see hp <= 0. The first block
+    # to run claims the kill by flipping alive first (same sync stretch,
+    # no await between check and claim); the loser lands here with
+    # alive already False and pays nothing. Its damage still counts as a
+    # contribution if it landed while alive (teamwork credit is earned,
+    # not minted -- one payout split, never two).
+    if npc["hp"] <= 0 and npc.get("alive", True):
         npc["alive"] = False
         respawn_secs = npc.get("respawn_seconds", 30)
         npc["respawn_at"] = time.time() + respawn_secs if respawn_secs else None
         for loot_id in npc.get("loot", []):
             _add_ground(player.room, loot_id)
         contributors = npc["contributors"]
+        # Quest-NPC kills pay no gold, ever (unreachable via player attacks
+        # since #193 immunity, but the invariant holds regardless).
+        npc_is_quest_npc = is_quest_giver(npc["id"])
+        # Accumulate floor contributors before the per-NPC dict is wiped
+        # at the end of this block: idle walk-ins must earn no clear
+        # credit or delver progress for floors others cleared (#195.3).
+        if npc.get("dungeon_id"):
+            _dd = dungeons.get(npc["dungeon_id"])
+            _ff = _dd.floors.get(floor_from_room(player.room)) if _dd else None
+            if _ff is not None:
+                _ff.contributors.update(k.lower() for k in contributors)
         total_dmg = sum(contributors.values()) or 1
         num_contributors = len(contributors)
         teamwork_multiplier = 1.0 + TEAMWORK_BONUS_PER_EXTRA_CONTRIBUTOR * min(
             num_contributors - 1, TEAMWORK_BONUS_CAP_CONTRIBUTORS
         )
         pool = (npc["max_hp"] * 0.5 + npc["attack"] * 3) * teamwork_multiplier
-        gold_share = round(npc.get("gold", 0) * _buff_mult("gold") / max(1, num_contributors))
         for cname, dmg_dealt in contributors.items():
             share = dmg_dealt / total_dmg
             pts = pool * share
             xp = pts
             # Registered quest-giving NPCs penalize: killing them is never
             # worth it.  Score goes negative; XP and gold stay at zero.
-            is_quest_npc = is_quest_giver(npc["id"])
-            if is_quest_npc:
+            if npc_is_quest_npc:
                 pts = -0.5
                 xp = 0
-                gold_share = 0
                 reason = f"defeated {npc['name']} (quest NPC - penalty)"
             elif cname == player.name:
                 reason = f"defeated {npc['name']}"
@@ -1626,10 +1695,19 @@ async def cmd_attack(player, msg):
             "type": "combat",
             "text": f"{npc['name']} dies! Loot drops on the ground.{team_note}"
         })
-        for cname in contributors:
-            for p in players_by_name.get(cname.lower(), ()):
-                if p.logged_in:
-                    p.gold += gold_share
+        # Move-gap gold share (#195.7c): only contributors standing in the
+        # kill room collect. Hit-once-then-leave leeching forfeits its cut
+        # back into the split, keeping the faucet neutral (total out still
+        # ~= the NPC's gold). Score/XP still credit offline by design --
+        # offline earning is a feature, not a leak.
+        present = sorted({c.lower() for c in contributors
+                          for p in players_by_name.get(c.lower(), ())
+                          if p.logged_in and p.room == player.room})
+        share_each = 0 if npc_is_quest_npc else round(npc.get("gold", 0) * _buff_mult("gold") / max(1, len(present)))
+        for cname in present:
+            for p in players_by_name.get(cname, ()):
+                if p.logged_in and p.room == player.room:
+                    p.gold += share_each
                     await send(p, stats_view(p))
         if str(npc["id"]).startswith("boss_"):
             npcs.pop(npc["id"], None)
@@ -1639,7 +1717,15 @@ async def cmd_attack(player, msg):
             floor_no = floor_from_room(player.room)
             clear_pts = 15 + 5 * floor_no
             clear_xp = 20 + 15 * floor_no
+            _dd = dungeon_for_room(player.room)
+            _ff = _dd.floors.get(floor_no) if _dd else None
+            _earned = _ff.contributors if _ff is not None else set()
+            # Contribution-gated: only present contributors earn the clear
+            # (floors counter, score, XP). Idle walk-ins get the room view
+            # and nothing else; their delver baselines never advance (#195.3).
             for p in players_in_room(player.room):
+                if not p.name or p.name.lower() not in _earned:
+                    continue
                 get_score_entry(p.name)["dungeon_floors_cleared"] += 1
                 await award_points(p, clear_pts, f"cleared Dungeon Floor {floor_no}")
                 await award_xp(p.name, clear_xp, f"cleared Dungeon Floor {floor_no}")
@@ -2489,6 +2575,15 @@ async def cmd_party_invite(player, msg):
     if len(party.member_ids) >= PARTY_MAX_MEMBERS:
         await send(player, {"type": "error", "text": "Your party is full."})
         return
+    # Single-slot overwrite notice (#195.7a): a pending invite from another
+    # party is silently replaced below -- tell that party's leader so the
+    # old invitation doesn't die without anyone knowing.
+    old_inv = _pending_party_invites.get(target.id) or {}
+    old_party = old_inv.get("party")
+    if old_party is not None and old_party.id in parties and old_party.id != party.id:
+        old_leader = players.get(old_party.leader_id)
+        if old_leader and old_leader.logged_in and old_leader is not player:
+            await send(old_leader, {"type": "message", "text": f"Your invitation to {target.name} was replaced by {player.name}."})
     _pending_party_invites[target.id] = {"party": party, "ts": time.time()}
     await send(target, {"type": "message", "text": f"{player.name} invites you to a party. Send party_accept to join."})
     await send(player, {"type": "message", "text": f"Invitation sent to {target.name}."})
@@ -2508,6 +2603,12 @@ async def cmd_party_accept(player, msg):
         return
     if player.party_id and player.party_id in parties:
         old = parties[player.party_id]
+        _stamp_dungeon_leave(player, old)
+        # Relocate BEFORE discard/delete, while the old instance still
+        # resolves (same order as cmd_party_leave): otherwise the acceptor
+        # strands in a deleted d_X_fY room and the wipe takes the loot out
+        # from under them (#195.7b).
+        _relocate_from_dungeon(player)
         old.member_ids.discard(player.id)
         if not old.member_ids:
             _delete_party(old)
@@ -2525,6 +2626,7 @@ async def cmd_party_leave(player, msg):
     if not party:
         await send(player, {"type": "error", "text": "You are not in a party."})
         return
+    _stamp_dungeon_leave(player, party)
     party.member_ids.discard(player.id)
     player.party_id = None
     _relocate_from_dungeon(player)
@@ -2676,7 +2778,14 @@ async def cmd_market_buy(player, msg):
         await send(player, {"type": "error", "text": _pack_full_error()})
         return
     price = choice["price"]
-    tax = max(TAX_MINIMUM, round(price * TAX_RATE))
+    # Commercial rounding, documented (#195.8): half away from zero, not
+    # Python's banker's half-even (round(2.5) == 2 surprises sellers), and
+    # the tax never eats the whole price -- 1g trades used to pay the
+    # seller 0. Conservation holds: tax + payout == price, always.
+    if price > 1:
+        tax = max(TAX_MINIMUM, min(int(price * TAX_RATE + 0.5), price - 1))
+    else:
+        tax = 0
     seller_payout = price - tax
     player.gold -= price
     tax_treasury += tax
@@ -3396,6 +3505,11 @@ async def _leave_party_on_disconnect(player):
     party = parties.get(player.party_id) if player.party_id else None
     if not party:
         return
+    # Same stamp as leave/accept-switch (#195.2): quitting to title and
+    # relogging must not mint a fresh Floor 1 unstamped. Disconnects cost
+    # carried loot either way, so this closes the XP-farm bypass, not
+    # ordinary relogs (no dungeon, or cleared, stamps nothing).
+    _stamp_dungeon_leave(player, party)
     party.member_ids.discard(player.id)
     player.party_id = None
     if not party.member_ids:

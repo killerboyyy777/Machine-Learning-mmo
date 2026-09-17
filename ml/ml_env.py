@@ -311,8 +311,12 @@ _apply_ml_config()
 
 def market_tax(price):
     """Gold taken by the treasury on a sale at `price` (server formula:
-    10% with a minimum of 1 gold)."""
-    return max(TAX_MINIMUM, round(price * TAX_RATE))
+    commercial half-up rounding, minimum 1 gold, never the whole price --
+    1g trades pay out in full with 0 tax). Mirrors cmd_market_buy exactly.
+    """
+    if price > 1:
+        return max(TAX_MINIMUM, min(int(price * TAX_RATE + 0.5), price - 1))
+    return 0
 
 
 def market_net(price):

@@ -3,6 +3,17 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Combat/party/dungeon balance + race pass (#195): same-tick double-kill
+  guard (one payout split among contributors, never two); 60s dungeon
+  re-entry delay after abandoning an uncleared descent (kills Floor-1
+  reset farming); floor-clear credit + delver progress require
+  contribution (idle walk-ins earn nothing); level-ups heal gained max HP
+  only (no mid-combat full reset); sheltered escrow/bank wealth counts
+  toward the death score penalty (movement unchanged); XP scales by the
+  score variety x diminish curve; party-invite overwrite notifies the old
+  leader, accept relocates out of the old dungeon, kill gold splits among
+  present contributors only; commercial half-up tax rounding with 1g
+  trades paying out in full.
 - Docker full stack (#71): `Dockerfile` (lean `python:3.12-slim`,
   torch only via `INSTALL_TORCH=1`) + `compose.yaml` -- `docker compose up`
   runs server (8765) + dashboard (8766) + 4 scripted bots, with `soak`
