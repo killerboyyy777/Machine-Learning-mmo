@@ -3,6 +3,18 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- P0 exploit closures (#188/#189/#190): explicit-id market self-buys
+  rejected like auto-buys (listing survives, nothing minted); per-bounty
+  XP capped at 500 with verified kills consumed on fill (one kill fills
+  exactly one bounty); malformed input gets a one-line log + error reply
+  instead of a traceback dump or a dropped connection. Follow-ups (#191/
+  #192): commission regex anchored on `#id` with discounted-rate capture;
+  env pack masks use the server's `stats` count (20-name list no longer
+  desyncs near-cap packs); sellers paid out directly when online;
+  per-poster open cap (5), per-bounty kill cap (100), collusion-history
+  cap; market/invite TTL sweeps with dungeon-gold teardown; charm turn-in
+  requires the charm in hand; explicit bool parsing in `_apply_config`;
+  all bounds tunable via `server_config.json`.
 - Soak readiness (#201): `server.py --config <path>` runs on an overlay
   config without touching the prod file (`COMMISSION_TTL_SECONDS` moved
   above the config load so overlays can set it); short-TTL soak overlay
