@@ -1077,6 +1077,28 @@ async def main():
     srv.players.pop(51999, None)
     print("LOGIN_CAP_OK")
 
+    # version mismatch warns, matching versions stay quiet (#243)
+    versioned = srv.Player(ws=FakeWS(), id=52000, name="", logged_in=False)
+    srv.players[52000] = versioned
+    inbox.clear()
+    await srv.cmd_login(versioned, {"name": "Versioned", "protocol_version": 999})
+    welcome = [m for m in inbox if m.get("type") == "welcome"]
+    assert welcome and "version_mismatch" in welcome[0], inbox
+    assert versioned.logged_in
+    srv.remove_member(versioned)
+    srv.players.pop(52000, None)
+    del srv.SCORES["versioned"]
+    unversioned = srv.Player(ws=FakeWS(), id=52001, name="", logged_in=False)
+    srv.players[52001] = unversioned
+    inbox.clear()
+    await srv.cmd_login(unversioned, {"name": "Unversioned"})
+    welcome = [m for m in inbox if m.get("type") == "welcome"]
+    assert welcome and "version_mismatch" not in welcome[0], inbox
+    srv.remove_member(unversioned)
+    srv.players.pop(52001, None)
+    del srv.SCORES["unversioned"]
+    print("VERSION_WARN_OK")
+
     # safety net logs one line, never a traceback (disk-fill vector when
     # TEXTMMO_LOG_FILE is set): capture stdout through a real dispatch
     import io as _io

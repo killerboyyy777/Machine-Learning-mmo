@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Login version warning (#243): `welcome` now carries `version_mismatch`
+  when the client sent a different protocol version (additive field;
+  old clients unaffected). (Wiki Protocol doc to follow.)
 - Guard-charm pre-farm (#239): accepting with an already-crafted charm no
   longer wipes the crafted flag (no forced double craft).
 - Party invite hygiene (#248): invites record the inviter and are purged

@@ -1515,9 +1515,17 @@ async def cmd_login(player, msg):
     name_owners[name.lower()] = player.id
     add_member(player)
     lvl = entry["level"]
-    await send(player, {"type": "welcome", "text": f"Welcome, {name} (level {lvl}).",
-                        "protocol_version": PROTOCOL_VERSION,
-                        "client_version": msg.get("protocol_version")})
+    client_version = msg.get("protocol_version")
+    welcome = {"type": "welcome", "text": f"Welcome, {name} (level {lvl}).",
+               "protocol_version": PROTOCOL_VERSION,
+               "client_version": client_version}
+    if client_version is not None and client_version != PROTOCOL_VERSION:
+        # Promised warn-on-mismatch (#72, #243): additive field, old
+        # version-less clients unaffected.
+        welcome["version_mismatch"] = (
+            f"Server speaks protocol {PROTOCOL_VERSION}; "
+            f"you sent {client_version}. Update your client.")
+    await send(player, welcome)
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
     await broadcast_room(player.room, {"type": "message", "text": f"{name} appears."}, exclude=player)
