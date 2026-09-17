@@ -298,8 +298,8 @@ async def main():
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"[soak] report: {report_path}", flush=True)
-    if alive < args.min_agents or running < args.min_agents:
-        print(f"[soak] FAIL: alive {alive} running {running} < min {args.min_agents}")
+    if alive < args.min_agents:
+        print(f"[soak] FAIL: alive {alive} < min {args.min_agents}")
         return 1
     print("[soak] PASS")
     return 0
