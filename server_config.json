@@ -23,6 +23,11 @@
     "AMMO_EXEMPT_COUNT": 5
   },
 
+  "commissions": {
+    "COMMISSION_MAX_XP": 500,
+    "COMMISSION_MAX_KILLS": 100
+  },
+
   "leveling": {
     "XP_BASE": 100,
     "XP_GROWTH": 1.5,
