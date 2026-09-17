@@ -3348,11 +3348,19 @@ def start_dashboard():
                 state = world_snapshot_json if world_snapshot_json is not None else "{}"
                 self._send(state.encode(), "application/json")
             elif path == "/health":
-                # Liveness probe for CI/Docker/monitoring (#56).
+                # Liveness probe for CI/Docker/monitoring (#56). Served
+                # from the cached snapshot (#224): iterating live `players`
+                # from this HTTP thread raced logins/disconnects and raised
+                # RuntimeError, failing probes under exactly the load that
+                # matters. The snapshot string is immutable once built.
+                try:
+                    snap = json.loads(world_snapshot_json) if world_snapshot_json else {}
+                except (TypeError, ValueError):
+                    snap = {}
                 body = json.dumps({
                     "status": "ok",
                     "uptime": round(time.time() - START_TIME, 1),
-                    "players_online": sum(1 for p in players.values() if p.logged_in),
+                    "players_online": (snap.get("server") or {}).get("players_online", 0),
                     "memory_mb": _memory_mb(),
                 })
                 self._send(body.encode(), "application/json")

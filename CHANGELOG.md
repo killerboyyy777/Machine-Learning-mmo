@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Health probe thread-safety (#224): `/health` iterated the live players
+  dict from the HTTP thread (intermittent RuntimeError); now served from
+  the cached snapshot like `/api/state`.
 - Login version warning (#243): `welcome` now carries `version_mismatch`
   when the client sent a different protocol version (additive field;
   old clients unaffected). (Wiki Protocol doc to follow.)

@@ -1099,6 +1099,18 @@ async def main():
     del srv.SCORES["unversioned"]
     print("VERSION_WARN_OK")
 
+    # /health reads the cached snapshot, never the live dict (#224)
+    import json as _json2
+    hp1 = mkplayer("HealthOne", 52002)
+    hp2 = mkplayer("HealthTwo", 52003)
+    srv.refresh_snapshot_json()
+    snap = _json2.loads(srv.world_snapshot_json)
+    live = sum(1 for p in srv.players.values() if p.logged_in)
+    assert snap["server"]["players_online"] == live >= 2, snap["server"]
+    unplayer(hp1)
+    unplayer(hp2)
+    print("HEALTH_SNAPSHOT_OK")
+
     # safety net logs one line, never a traceback (disk-fill vector when
     # TEXTMMO_LOG_FILE is set): capture stdout through a real dispatch
     import io as _io
