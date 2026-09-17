@@ -390,7 +390,7 @@ parties = {}      # party_id -> Party
 dungeons = {}     # dungeon_id -> Dungeon
 _commissions = {}  # commission_id -> Commission data
 _party_counter = itertools.count(1)
-_pending_party_invites = {}   # invitee player.id -> Party (invitation)
+_pending_party_invites = {}   # invitee player.id -> {"party", "ts", "inviter"} (invitation)
 _commission_counter = itertools.count(1)
 
 # (COMMISSION_TTL_SECONDS lives with the other commission tunables above
@@ -2500,7 +2500,8 @@ async def cmd_party_invite(player, msg):
     if len(party.member_ids) >= PARTY_MAX_MEMBERS:
         await send(player, {"type": "error", "text": "Your party is full."})
         return
-    _pending_party_invites[target.id] = {"party": party, "ts": time.time()}
+    _pending_party_invites[target.id] = {"party": party, "ts": time.time(),
+                                             "inviter": player.id}
     await send(target, {"type": "message", "text": f"{player.name} invites you to a party. Send party_accept to join."})
     await send(player, {"type": "message", "text": f"Invitation sent to {target.name}."})
 
@@ -3403,8 +3404,13 @@ async def npc_ai_loop():
 
 async def _leave_party_on_disconnect(player):
     # A pending invitation can never be accepted after disconnect, so drop
-    # it instead of leaking one dict entry per abandoned invite.
+    # it instead of leaking one dict entry per abandoned invite. Invites
+    # the leaver SENT are keyed by invitee (#248): drop those too, or the
+    # invitee could still join a party whose inviter is offline.
     _pending_party_invites.pop(player.id, None)
+    for pid in [k for k, v in _pending_party_invites.items()
+                if isinstance(v, dict) and v.get("inviter") == player.id]:
+        _pending_party_invites.pop(pid, None)
     party = parties.get(player.party_id) if player.party_id else None
     if not party:
         return

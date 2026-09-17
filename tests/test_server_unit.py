@@ -859,6 +859,24 @@ async def main():
     unplayer(invitee)
     print("INVITE_TTL_OK")
 
+    # disconnect purges invites the leaver sent (#248): no joining a party
+    # whose inviter is offline
+    leaver = mkplayer("Leaver", 50026)
+    joiner = mkplayer("Joiner", 50027)
+    await srv.cmd_party_invite(leaver, {"target": "Joiner"})
+    assert joiner.id in srv._pending_party_invites
+    await srv._leave_party_on_disconnect(leaver)
+    assert joiner.id not in srv._pending_party_invites
+    inbox.clear()
+    await srv.cmd_party_accept(joiner, {})
+    assert inbox[-1]["type"] == "error" and "no pending" in inbox[-1]["text"].lower(), inbox[-1]
+    for p in list(srv.parties.values()):
+        if leaver.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(leaver)
+    unplayer(joiner)
+    print("INVITE_DISCONNECT_OK")
+
     # collusion cap: seeded history evicts least-frequent first, keeps newcomer
     clposter = mkplayer("CollabPoster", 50026)
     clposter.gold = 100000

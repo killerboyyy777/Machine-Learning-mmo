@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Party invite hygiene (#248): invites record the inviter and are purged
+  when the inviter disconnects, so nobody joins a leaderless party.
 - Login room cap (#227): fresh connections could overflow a full start
   room; logins now refuse like moves when the destination is at cap.
 - Config unknown-key warning (#241): typo'd/wrong-nesting keys vanished
