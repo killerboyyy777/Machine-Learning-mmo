@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Soak arrivals default 2.0 → 5.0/min (#214, part 1): post-#198 deaths
+  are episode-driven (~2.2/min at 50 agents) while arrivals were a fixed
+  wall-clock trickle, so the nightly converged to ~35/50 under a 40 gate.
+  5/min holds the cap with headroom; part 2 is rate-capped
+  spawn-to-target in `ChurnManager.tick`.
 - P0 exploit closures (#188/#189/#190): explicit-id market self-buys
   rejected like auto-buys (listing survives, nothing minted); per-bounty
   XP capped at 500 with verified kills consumed on fill (one kill fills

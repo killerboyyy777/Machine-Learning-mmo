@@ -80,7 +80,10 @@ def parse_args():
         help="env steps per episode (episodes drive mixer/PBT/status)",
     )
     p.add_argument("--step-timeout", type=float, default=30.0)
-    p.add_argument("--arrivals", type=float, default=2.0, help="arrivals per minute")
+    p.add_argument("--arrivals", type=float, default=5.0,
+                   help="arrivals per minute (default 5: episode-driven deaths "
+                        "run ~2.2/min at 50 agents, so 2/min bleeds -- 5 holds "
+                        "the cap with headroom for churn dips; see #214)")
     p.add_argument("--lifetime", type=int, default=15,
                    help="mean lifetime in completed episodes (episode-based "
                         "churn: ~15 episodes sustains turnover in an hour)")
