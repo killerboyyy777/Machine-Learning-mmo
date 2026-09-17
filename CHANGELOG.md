@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Scripted delver gating (#235): DungeonPlugin ordered ungated turn_in
+  before accept, making accept unreachable; now ordered by quest state.
 - GM reward validation (#223): `gm_reward` spent treasury gold before
   resolving the recipient (empty/offline targets burned funds); now
   validates first for both gold and items.

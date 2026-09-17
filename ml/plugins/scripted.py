@@ -113,7 +113,13 @@ class DungeonPlugin(ScriptedPolicy):
         yield self._first_valid(env, ("equip", "buy", "take"), mask)
         giver_here = QUEST_GIVER_NAME in (s.get("npc_names") or [])
         if giver_here:
-            yield self._first_valid(env, ("quest2_turn_in", "quest2_accept"), mask)
+            # Both delver actions are mask-ungated, so order by quest state
+            # (#235): turn_in-first made accept unreachable, starving the
+            # quest the specialist exists to work.
+            if s.get("quest_delver_active"):
+                yield self._first_valid(env, ("quest2_turn_in", "quest2_accept"), mask)
+            else:
+                yield self._first_valid(env, ("quest2_accept", "quest2_turn_in"), mask)
         yield self._first_valid(env, ("move_enter", "move_down"), mask)
         yield self._random_move(env, mask)
         yield self._first_valid(env, self.WANDER, mask)
