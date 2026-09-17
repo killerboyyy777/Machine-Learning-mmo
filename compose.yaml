@@ -55,7 +55,7 @@ services:
       - "${BOTFARM_SCRIPTED:-mixed}"
     environment:
       BOTFARM_BOTS: "${BOTFARM_BOTS:-4}"
-    restart: "no"   # training runs end; `docker compose up` shows their summary then idles on server
+    restart: "no"   # not restarted if it exits; default botfarm (--steps 0) runs until stopped, server keeps serving
 
   soak:
     build: .
@@ -75,7 +75,7 @@ services:
       - "--duration"
       - "${SOAK_DURATION:-120}"
       - "--min-agents"
-      - "${SOAK_MIN_AGENTS:-1}"
+      - "${SOAK_MIN_AGENTS:-4}"
       - "--base-dir"
       - "/tmp/soak_run"
     restart: "no"
