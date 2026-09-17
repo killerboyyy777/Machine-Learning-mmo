@@ -541,6 +541,10 @@ def record_action(name, signature):
 # Cap per NPC-name kill timestamp log (commission verification window).
 COMMISSION_KILL_LOG_CAP = 2000
 
+# Cap per-bounty XP: XP is minted (not escrowed like gold), so uncapped
+# reward_xp is an infinite-XP mint for poster+filler pairs (#189).
+COMMISSION_MAX_XP = 500
+
 
 def record_npc_kill(name, npc_name):
     """Log one killing blow for commission verification."""
@@ -563,6 +567,32 @@ def verified_npc_kills(name, target, since_ts):
     if not frag:
         return 0
     return sum(1 for key, tss in log.items() if frag in key for ts in tss if ts >= since_ts)
+
+
+def consume_npc_kills(name, target, since_ts, count):
+    """Remove the oldest `count` verified kill timestamps (same matching
+    as verified_npc_kills) so one kill can satisfy exactly one bounty
+    fill instead of unlimited repeat fills (#189)."""
+    entry = get_score_entry(name)
+    log = entry.get("kills_by_npc", {})
+    frag = (target or "").lower()
+    if not frag or count <= 0:
+        return 0
+    # Oldest first across all matching NPC-name buckets.
+    hits = sorted(
+        (ts, key) for key, tss in log.items() if frag in key for ts in tss
+        if ts >= since_ts)
+    used = hits[:max(0, count)]
+    for _, key in used:
+        tss = log.get(key, [])
+        # Remove one occurrence: the consumed timestamp itself.
+        for i, ts in enumerate(tss):
+            if ts >= since_ts:
+                del tss[i]
+                break
+    if used:
+        mark_scores_dirty()
+    return len(used)
 
 
 def collusion_multiplier(poster_name, filler_name):
@@ -1709,7 +1739,10 @@ async def cmd_craft(player, msg):
     have = {iid: player.inventory.count(iid) for iid in set(player.inventory)}
     for iid, qty in recipe["inputs"].items():
         if have.get(iid, 0) < qty:
-            await send(player, {"type": "error", "text": f"You need {qty}x {ITEM_DEFS[iid]['name']} to craft that."})
+            # .get fallback: dynamic ids (e.g. dungeon_shard_10 pre-Floor-10)
+            # aren't in ITEM_DEFS yet -- name the id instead of KeyError.
+            need = ITEM_DEFS.get(iid, {}).get("name", iid)
+            await send(player, {"type": "error", "text": f"You need {qty}x {need} to craft that."})
             return
     for iid, qty in recipe["inputs"].items():
         for _ in range(qty):
@@ -1720,7 +1753,8 @@ async def cmd_craft(player, msg):
     except (TypeError, ValueError):
         output_qty = 1
     player.inventory.extend([result] * output_qty)
-    output_text = f"{output_qty}x {ITEM_DEFS[result]['name']}" if output_qty > 1 else ITEM_DEFS[result]["name"]
+    result_name = ITEM_DEFS.get(result, {}).get("name", result)
+    output_text = f"{output_qty}x {result_name}" if output_qty > 1 else result_name
     await send(player, {"type": "message", "text": f"You craft {output_text}!"})
     entry = get_score_entry(player.name)
     input_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) * qty for iid, qty in recipe["inputs"].items())
@@ -1762,6 +1796,11 @@ async def cmd_commission_post(player, msg):
         required_kills = 1
     if reward_gold < 0 or reward_xp < 0:
         await send(player, {"type": "error", "text": "Rewards cannot be negative."})
+        return
+    # XP is minted, not escrowed: cap per-bounty XP so posters can't print
+    # arbitrary amounts for fillers (and their own 10% cut) to harvest.
+    if reward_xp > COMMISSION_MAX_XP:
+        await send(player, {"type": "error", "text": f"XP reward capped at {COMMISSION_MAX_XP} per bounty (asked {reward_xp})."})
         return
     # True escrow: the poster locks the gold up front. Posting what you
     # cannot cover is rejected instead of minting gold at fill time.
@@ -1828,6 +1867,10 @@ async def cmd_commission_fill(player, msg):
     if have < commission["required_kills"]:
         await send(player, {"type": "error", "text": f"Commission #{cid} needs {commission['required_kills']}x {commission['target']} slain since posting ({have} verified)."})
         return
+    # Consume the kills this fill uses: without this, one kill's timestamps
+    # satisfy unlimited repeat fills of matching bounties.
+    consume_npc_kills(player.name, commission["target"], commission["created_ts"],
+                      commission["required_kills"])
     # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
     # Any escrow remainder (posted gold minus reduced payout) is sunk to the
     # treasury as an additional collusion deterrent.
@@ -2386,6 +2429,12 @@ async def cmd_market_buy(player, msg):
                 break
         if not choice:
             await send(player, {"type": "error", "text": f"No order #{oid}."})
+            return
+        # Same self-deal rule as auto-buy: buying your own listing would
+        # mint score/XP to yourself for just the tax cost (#188).
+        if choice["seller"] == player.name:
+            await send(player, {"type": "error",
+                                "text": f"Order #{oid} is your own listing."})
             return
     else:
         affordable = [o for o in market_orders if o["seller"] != player.name and player.gold >= o["price"]]
@@ -3124,8 +3173,18 @@ async def handle_connection(ws):
             except json.JSONDecodeError:
                 await send(player, {"type": "error", "text": "invalid JSON"})
                 continue
+            # Top guard (#190): malformed input must error, never drop the
+            # connection. Non-dict JSON dies on .get(); non-string cmd dies
+            # on startswith()/dict lookup (unhashable); wrong-type fields
+            # die inside handlers (.strip() on 123 etc.).
+            if not isinstance(msg, dict):
+                await send(player, {"type": "error", "text": "message must be a JSON object"})
+                continue
             cmd = msg.get("cmd")
-            if isinstance(cmd, str) and cmd.startswith("gm_"):
+            if not isinstance(cmd, str):
+                await send(player, {"type": "error", "text": "missing command 'cmd'"})
+                continue
+            if cmd.startswith("gm_"):
                 await send(player, {"type": "error", "text": f"GM actions are only available through the dashboard's GM stream (ws://127.0.0.1:{GM_PORT})."})
                 continue
             if not player.logged_in and cmd != "login":
@@ -3135,12 +3194,17 @@ async def handle_connection(ws):
             if not handler:
                 await send(player, {"type": "error", "text": f"Unknown command '{cmd}'."})
                 continue
-            log_command(player.name, cmd, msg)
-            if cmd in SCORE_ARG_EXTRACTORS:
-                record_action(player.name, (cmd, SCORE_ARG_EXTRACTORS[cmd](msg)))
-            if player.logged_in:
-                _tick_player_buffs(player)
-            await handler(player, msg)
+            try:
+                log_command(player.name, cmd, msg)
+                if cmd in SCORE_ARG_EXTRACTORS:
+                    record_action(player.name, (cmd, SCORE_ARG_EXTRACTORS[cmd](msg)))
+                if player.logged_in:
+                    _tick_player_buffs(player)
+                await handler(player, msg)
+            except Exception:
+                import traceback
+                print(f"handler error on {cmd}: {traceback.format_exc(limit=3)}", flush=True)
+                await send(player, {"type": "error", "text": f"command '{cmd}' failed on that input"})
     except websockets.ConnectionClosed:
         pass
     finally:
