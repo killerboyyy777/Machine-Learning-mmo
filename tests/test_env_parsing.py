@@ -13,10 +13,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
 
 import ml_env
-from ml_env import (MERCHANT_NAMES, OBS_SIZE, QUESTS, TextMMOEnv,
-                    _parse_commissions, best_market_ask, flatten_obs,
-                    flip_margin, inventory_value, merchant_value,
-                    pack_full, pack_units, quest_stage, quest_transitions)
+from ml_env import (ITEM_ID_TO_NAME, ITEM_LIST, MERCHANT_NAMES, OBS_SIZE,
+                    QUESTS, TextMMOEnv, _parse_commissions, best_market_ask,
+                    flatten_obs, flip_margin, inventory_value,
+                    merchant_value, pack_full, pack_units, quest_stage,
+                    quest_transitions)
 import server as srv  # noqa: E402  (ml_env extends sys.path on import)
 
 
@@ -211,6 +212,27 @@ def test_maren_obs_features():
     print("MAREN_OBS_OK")
 
 
+def test_item_presence_vectors():
+    # #221: presence looked up ids in a name->id map, so both vectors were
+    # all-zeros forever. Ground/inventory display names must light up.
+    e = TextMMOEnv("ParsePresence")
+    ground_id, held_id = ITEM_LIST[0], ITEM_LIST[1]
+    e._state["item_names"] = [ITEM_ID_TO_NAME[ground_id]]
+    e._state["inv_names"] = [ITEM_ID_TO_NAME[held_id]]
+    obs = e._build_obs()
+    assert obs["item_presence"][ITEM_LIST.index(ground_id)] == 1.0
+    assert obs["inv_presence"][ITEM_LIST.index(held_id)] == 1.0
+    assert sum(obs["item_presence"]) == 1.0, sum(obs["item_presence"])
+    assert sum(obs["inv_presence"]) == 1.0, sum(obs["inv_presence"])
+    e._state["item_names"] = []
+    e._state["inv_names"] = []
+    obs = e._build_obs()
+    assert sum(obs["item_presence"]) == 0.0
+    assert sum(obs["inv_presence"]) == 0.0
+    assert len(flatten_obs(obs)) == OBS_SIZE
+    print("ITEM_PRESENCE_OK")
+
+
 def test_dynamic_shard_valuation():
     # dungeon_shard_{n} ids register at floor build, after import: they must
     # still value through live ITEM_DEFS and flag inv_unknown (#194).
@@ -237,5 +259,6 @@ test_maren_mirror_and_stages()
 test_quest_transitions_all_four()
 test_event_parsing_maren_combat_inventory()
 test_maren_obs_features()
+test_item_presence_vectors()
 test_dynamic_shard_valuation()
 print("ALL_ENV_PARSE_OK")

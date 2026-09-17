@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Env item presence fix (#221): `item_presence` / `inv_presence` looked
+  ids up in a name->id map, so both 39-dim vectors were all-zeros forever
+  -- policies were blind to ground loot and inventory. Now resolved via
+  `ITEM_ID_TO_NAME` like the NPC line. Same dims (no checkpoint break),
+  but inputs change distribution: retraining recommended.
 - Docker full stack (#71): `Dockerfile` (lean `python:3.12-slim`,
   torch only via `INSTALL_TORCH=1`) + `compose.yaml` -- `docker compose up`
   runs server (8765) + dashboard (8766) + 4 scripted bots, with `soak`
