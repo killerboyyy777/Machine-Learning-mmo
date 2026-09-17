@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Eval run tags (#233): challenger/baseline shared `Eval{seed}` names, so
+  persisted score entries contaminated the paired comparison. Names now
+  carry a per-checkpoint tag; seeds (pairing) unchanged.
 - Eval sample std (#247): `report()` used population std, understating
   spread vs `compare()`; now sample std with test cover.
 - PBT exploit reload (#228): the winner-copy never reached live losers;

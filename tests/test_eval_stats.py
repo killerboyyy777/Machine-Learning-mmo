@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 sys.path.insert(0, ROOT)
 
 from dqn_agent import TorchDQNAgent  # noqa: F401  (import shape check only)
-from eval import _beta_reg, _t_crit, compare, report
+from eval import _beta_reg, _run_tag, _t_crit, compare, report
 from ml_env import PROTOCOL_VERSION as ENV_PROTO
 from ml_env import TextMMOEnv
 
@@ -71,5 +71,12 @@ _mean, _std = report("probe", [3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
 assert _std == _statistics.stdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3]), _std
 assert _std > _statistics.pstdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
 print("REPORT_STDEV_OK")
+
+# --- #233: rival runs get distinct character-name tags ---
+assert _run_tag("ml_best.json") == "mlbest"
+assert _run_tag("champ.pt") != _run_tag("base.pt")
+assert len(_run_tag("a" * 50 + ".pt")) <= 12
+assert _run_tag("...") == "run"
+print("EVAL_TAG_OK")
 
 print("ALL_EVAL_STATS_OK")
