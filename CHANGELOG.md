@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- RND novelty ordering (#245): the test never compared novel vs seen, so
+  a dead novelty signal passed; now asserts raw-error ordering.
 - Eval run tags (#233): challenger/baseline shared `Eval{seed}` names, so
   persisted score entries contaminated the paired comparison. Names now
   carry a per-checkpoint tag; seeds (pairing) unchanged.
