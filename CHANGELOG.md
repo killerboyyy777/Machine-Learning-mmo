@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Buff tick gating (#237): read-only commands (look/stats/inventory/who/
+  leaderboard/help, list views, login, quest list) no longer consume
+  action-based buffs.
 - Gather cap truncation (#232): multi-yield harvests truncated to the
   remaining pack space instead of overflowing past 24 units.
 - Party-switch relocation (#226): accepting a new invite while standing

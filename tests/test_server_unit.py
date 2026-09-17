@@ -212,6 +212,16 @@ async def main():
     assert srv._player_buff_amount(juicer, "attack") == 0
     print("BUFF_STACK_OK")
 
+    # read-only commands never consume action buffs (#237)
+    for cmd in ("look", "stats", "inventory", "who", "leaderboard", "help",
+                "commission_list", "party_info", "market_list", "login"):
+        assert srv._command_ticks_buffs(cmd, {}) is False, cmd
+    assert srv._command_ticks_buffs("quest", {"action": "list"}) is False
+    for cmd in ("move", "attack", "take", "quest", "craft", "rest",
+                "market_buy", "party_leave", "commission_fill"):
+        assert srv._command_ticks_buffs(cmd, {"action": "accept"}) is True, cmd
+    print("BUFF_TICK_GATE_OK")
+
     # --- Dungeon instance ---
     d = srv.Dungeon(party_id=1)
     srv.dungeons[d.id] = d

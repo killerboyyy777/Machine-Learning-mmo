@@ -910,6 +910,20 @@ def _player_buff_amount(player, category):
     return int(value.get("amount", 0)) if value.get("remaining", 0) > 0 else 0
 
 
+# Commands with no game effect never consume action-based buffs (#237).
+# quest is mixed: only its list sub-action is read-only.
+NO_BUFF_TICK = frozenset({
+    "login", "look", "inventory", "stats", "who", "leaderboard", "help",
+    "commission_list", "party_info", "market_list",
+})
+
+
+def _command_ticks_buffs(cmd, msg):
+    """Pure gate for buff consumption (unit-testable without dispatch)."""
+    return (cmd not in NO_BUFF_TICK
+            and not (cmd == "quest" and (msg or {}).get("action") == "list"))
+
+
 def _tick_player_buffs(player):
     """Advance action-based crafted buffs once for an accepted command."""
     expired = []
@@ -3496,7 +3510,7 @@ async def handle_connection(ws):
                 log_command(player.name, cmd, msg)
                 if cmd in SCORE_ARG_EXTRACTORS:
                     record_action(player.name, (cmd, SCORE_ARG_EXTRACTORS[cmd](msg)))
-                if player.logged_in:
+                if player.logged_in and _command_ticks_buffs(cmd, msg):
                     _tick_player_buffs(player)
                 await handler(player, msg)
             except Exception as e:
