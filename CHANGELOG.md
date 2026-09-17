@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- PBT exploit reload (#228): the winner-copy never reached live losers;
+  the supervisor now restarts loser tasks with fresh envs/policies that
+  reload the checkpoint (dead entries refused, shutdown hardened to join
+  tasks).
 - Conductor ghost agents (#230): failed starts stayed alive forever
   (episode-aged lifetimes never expire taskless entries); now marked dead
   at failed start, and the soak gate also requires running tasks.

@@ -336,6 +336,27 @@ asyncio.run(_start_status())
 print("START_STATUS_OK")
 
 
+async def _restart_reloads():
+    # PBT exploit restarts the loser so copied weights take effect (#228);
+    # dead entries are never resurrected by a restart.
+    r = Registry(os.path.join(tmpdir, "rst"), max_agents=5)
+    r.register("ok", "linear")
+    sup = Supervisor(r, max_concurrent=1)
+    assert await sup.start_agent("ok", lambda aid: _FakeEnv(), lambda o, a: 0) is True
+    old = sup._tasks["ok"]
+    assert await sup.restart_agent("ok") is True
+    assert sup._tasks["ok"] is not old
+    assert old.task.done()
+    r.mark_dead("ok")
+    assert await sup.restart_agent("ok") is False
+    assert sup._tasks["ok"].agent_id == "ok"  # running task untouched
+    assert await sup.restart_agent("ghost") is False
+    await sup.stop_all()
+
+asyncio.run(_restart_reloads())
+print("RESTART_OK")
+
+
 async def _maybe_start_check():
     import tempfile as _tf
 

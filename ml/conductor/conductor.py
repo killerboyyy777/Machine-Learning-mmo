@@ -196,6 +196,15 @@ class Conductor:
             # Periodic PBT exploit/explore (no-op when disabled)
             if self.pbt is not None and now - last_pbt >= pbt_interval:
                 ops = self.pbt.step()
+                for op in ops:
+                    # Reload the loser's task so the copied weights +
+                    # hparams actually take effect at runtime (#228).
+                    restarted = await self.supervisor.restart_agent(op["loser"])
+                    try:
+                        self.metrics.log("pbt_reload", agent_id=op["loser"],
+                                         restarted=restarted)
+                    except Exception:
+                        pass
                 if ops:
                     print(f"[conductor] PBT: {len(ops)} exploit(s) "
                           + ", ".join(f"{o['loser']}<-{o['winner']}" for o in ops))
