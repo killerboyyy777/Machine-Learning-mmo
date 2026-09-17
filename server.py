@@ -2387,6 +2387,12 @@ async def cmd_quest(player, msg):
         _set_quest_active(entry, qid, True)
         mark_scores_dirty()
         if qid == "guard_charm":
+            # Pre-farmed charms count (#239): accepting must not wipe a
+            # charm crafted before the quest was active.
+            if QUEST_CHARM_RESULT in player.inventory:
+                entry["guard_charm_crafted"] = True
+                mark_scores_dirty()
+        if qid == "guard_charm":
             await send(player, {"type": "message", "text": "Town Guard: Ah, adventurer! We need protectors for our walls. "
                   "Bring me an Ancient Guardian Charm, crafted from Treant Bark, Troll Hide, and Ectoplasm. "
                   f"Return it to me for a reward of {QUEST_GUARD_XP} XP and {QUEST_GUARD_GOLD} gold. This quest can be repeated."})

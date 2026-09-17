@@ -915,6 +915,20 @@ async def main():
     unplayer(charmer)
     print("CHARM_GATE_OK")
 
+    # pre-crafted charm survives accept (#239): no double craft
+    prefarm = mkplayer("PreFarmer", 50029, room="town_square")
+    pfentry = srv.get_score_entry("PreFarmer")
+    prefarm.inventory.append(srv.QUEST_CHARM_RESULT)  # crafted before accepting
+    await srv.cmd_quest(prefarm, {"action": "accept", "quest": "guard_charm"})
+    assert pfentry.get("quest_guard_active")
+    assert pfentry.get("guard_charm_crafted") is True
+    inbox.clear()
+    await srv.cmd_quest(prefarm, {"action": "turn_in", "quest": "guard_charm"})
+    assert not pfentry.get("quest_guard_active")
+    assert srv.QUEST_CHARM_RESULT not in prefarm.inventory
+    unplayer(prefarm)
+    print("CHARM_PREFARM_OK")
+
     # bool coercion: string "false" must not enable boolean gates (#192.3)
     import json as _json
     import os as _os

@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Guard-charm pre-farm (#239): accepting with an already-crafted charm no
+  longer wipes the crafted flag (no forced double craft).
 - Party invite hygiene (#248): invites record the inviter and are purged
   when the inviter disconnects, so nobody joins a leaderless party.
 - Login room cap (#227): fresh connections could overflow a full start
