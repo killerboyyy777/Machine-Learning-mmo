@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Config unknown-key warning (#241): typo'd/wrong-nesting keys vanished
+  silently; now logged like bad values.
 - Market expand accounting (#240): the stall-slot fee hit `tax_treasury`
   but skipped `tax_collected_lifetime` like every other sink; now both.
 - Farm checkpoint resume (#231): `save_weights` wrote weights+bias only,

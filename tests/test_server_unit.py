@@ -923,6 +923,25 @@ async def main():
             _os.remove(cfg_path)
     print("BOOL_CONFIG_OK")
 
+    # unknown keys warn instead of vanishing (#241)
+    import io as _io
+    import contextlib as _ctx
+    cfg_path2 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_unknown_cfg_tmp.json")
+    real_cfg3 = srv.CONFIG_FILE
+    try:
+        with open(cfg_path2, "w") as f:
+            _json.dump({"scoring": {"DUNGEON_MAX_FLOORs": 60}}, f)
+        srv.CONFIG_FILE = cfg_path2
+        buf = _io.StringIO()
+        with _ctx.redirect_stdout(buf):
+            srv._apply_config()
+        assert "DUNGEON_MAX_FLOORs" in buf.getvalue(), buf.getvalue()
+    finally:
+        srv.CONFIG_FILE = real_cfg3
+        if _os.path.exists(cfg_path2):
+            _os.remove(cfg_path2)
+    print("UNKNOWN_CONFIG_OK")
+
     # --config overlay: short TTLs apply, untouched keys keep prod defaults
     import os as _os2
     overlay = _os2.path.join(_os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))),

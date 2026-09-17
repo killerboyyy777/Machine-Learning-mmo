@@ -155,6 +155,10 @@ def _apply_config():
             continue
         for key, val in section.items():
             if key not in g:
+                # Typo'd/wrong-nesting keys used to vanish silently (#241):
+                # warn like bad values do so operators notice.
+                print(f"Warning: {os.path.basename(CONFIG_FILE)}: "
+                      f"unknown key {key!r} ignored (check spelling/nesting)")
                 continue
             try:
                 # bool("false") is True: parse bools explicitly so a string
