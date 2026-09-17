@@ -146,6 +146,12 @@ PROTOCOL_VERSION = 1
 ITEM_ID_TO_NAME = {k: v["name"] for k, v in srv.WORLD["items"].items()}
 NPC_ID_TO_NAME = {k: v["name"] for k, v in srv.WORLD["npcs"].items()}
 NPC_LIST = sorted(NPC_ID_TO_NAME.keys())
+# Frozen at import from world.json: dynamic ids (dungeon_shard_{n},
+# registered on demand at floor build) never enter this vocab. They still
+# resolve through live ITEM_DEFS in valuation/holdings
+# (merchant_value/inventory_value/_refresh_holdings all read the live
+# dict), and surface as inv_unknown in obs -- presence features just
+# don't get per-shard bits, by design (#194).
 ITEM_LIST = sorted(ITEM_ID_TO_NAME.keys())
 ROOM_LIST = sorted(srv.ROOMS.keys())
 
@@ -263,8 +269,9 @@ ECON_INV_LAMBDA = 1.0  # weight of inventory-value delta in "econ" mode
 
 # Curriculum stages (progressive action-space unlock, #59): 0 = surface
 # rats (combat/loot/rest/heal/shop/party only), 1 adds dungeon travel and
-# the delver quest, 2 adds gathering/crafting and the guard charm quest,
-# 3 unlocks the full economy (market + commissions). Gating is mask-level
+# the delver quest, 2 adds gathering/crafting and the quest chains (guard
+# charm, remedy, tonic), 3 unlocks the full economy (market +
+# commissions). Gating is mask-level
 # (locked actions map to None like any other invalid action), so the same
 # policy architecture trains through every stage. Auto-advance promotes on
 # score thresholds when curriculum_auto is on; default is stage 3 / manual
@@ -370,6 +377,38 @@ QUESTS = {
     },
 }
 
+# Sister Maren's chains (server QUEST_GIVERS["healer"]); same mirror pattern
+# as the guard quests so trainers can price all four chains (#183).
+_HEALER = getattr(srv, "QUEST_GIVERS", {}).get("healer", {})
+MAREN_ID = "healer"
+MAREN_NAME = _HEALER.get("name", "Sister Maren")
+MAREN_ROOM = _HEALER.get("room", "healing_spring")
+
+QUESTS.update({
+    "remedy": {
+        "giver_id": MAREN_ID,
+        "giver_name": MAREN_NAME,
+        "room": MAREN_ROOM,
+        "inputs": list(getattr(srv, "QUEST_REMEDY_INPUTS", {"healing_herb": 3}).keys()),
+        "result": None,
+        "reward_xp": getattr(srv, "QUEST_REMEDY_XP", 20),
+        "reward_gold": getattr(srv, "QUEST_REMEDY_GOLD", 10),
+        "reward_points": getattr(srv, "QUEST_REMEDY_POINTS", 8),
+        "repeatable": True,
+    },
+    "tonic": {
+        "giver_id": MAREN_ID,
+        "giver_name": MAREN_NAME,
+        "room": MAREN_ROOM,
+        "inputs": list(getattr(srv, "QUEST_TONIC_INPUTS", {"fortitude_tonic": 1}).keys()),
+        "result": None,
+        "reward_xp": getattr(srv, "QUEST_TONIC_XP", 40),
+        "reward_gold": getattr(srv, "QUEST_TONIC_GOLD", 20),
+        "reward_points": getattr(srv, "QUEST_TONIC_POINTS", 12),
+        "repeatable": True,
+    },
+})
+
 QUEST_DELVER_REWARD_XP = QUESTS["delver"]["reward_xp"]
 QUEST_DELVER_REWARD_GOLD = QUESTS["delver"]["reward_gold"]
 QUEST_DELVER_REWARD_POINTS = QUESTS["delver"]["reward_points"]
@@ -394,6 +433,30 @@ def quest_charm_net():
     return QUEST_REWARD_GOLD - quest_charm_cost()
 
 
+# Stats-flag keys per quest: (quest id, active-flag, ready-flag). Guard
+# readiness is the crafted flag; the other three use server ready flags.
+_QUEST_FLAG_SPECS = (
+    ("guard_charm", "quest_guard_active", "guard_charm_crafted"),
+    ("delver", "quest_delver_active", "quest_delver_ready"),
+    ("remedy", "quest_remedy_active", "quest_remedy_ready"),
+    ("tonic", "quest_tonic_active", "quest_tonic_ready"),
+)
+
+
+def quest_transitions(before, after):
+    """Pure per-quest accept/turn_in/ready transitions from stats-flag
+    snapshots (dicts of flag -> bool, as step() reads them). Extracted so
+    the transition matrix is unit-testable without a connection (#183)."""
+    out = {}
+    for qid, akey, rkey in _QUEST_FLAG_SPECS:
+        ab, aa = bool(before.get(akey)), bool(after.get(akey))
+        rb, ra = bool(before.get(rkey)), bool(after.get(rkey))
+        out[qid] = {"accepted": (not ab) and aa,
+                    "turned_in": ab and (not aa),
+                    "became_ready": (not rb) and ra}
+    return out
+
+
 def quest_stage(obs, quest="guard_charm"):
     """Human-readable quest stage for a structured obs dict (debug/logs).
 
@@ -406,6 +469,16 @@ def quest_stage(obs, quest="guard_charm"):
     if quest == "delver":
         active = bool(obs.get("quest2_active"))
         ready = bool(obs.get("quest2_ready"))
+        if active and ready:
+            return "ready_turn_in"
+        if active:
+            return "collect"
+        return "no_quest"
+    if quest in ("remedy", "tonic"):
+        # quest3_* = remedy, quest4_* = tonic (quest2_* = delver pattern).
+        pre = "quest3" if quest == "remedy" else "quest4"
+        active = bool(obs.get(pre + "_active"))
+        ready = bool(obs.get(pre + "_ready"))
         if active and ready:
             return "ready_turn_in"
         if active:
@@ -497,13 +570,19 @@ ACTIONS = (
         # Ammo variant crafts (feed the ammo family) + mid-tier blade.
         "craft_iron_arrow", "craft_steel_arrow", "craft_serpentbrand",
         # Shedding load: only valid with a full pack (server rule).
-        "drop"]
+        "drop",
+        # Sister Maren's chains (#183): accept/turn_in mirror the guard and
+        # delver actions. Appended last (never-shift rule); pre-#194
+        # checkpoints restart fresh.
+        "quest3_accept", "quest3_turn_in", "quest4_accept", "quest4_turn_in"]
 )
 N_ACTIONS = len(ACTIONS)
 
 # Curriculum unlock sets (action names gated below their stage).
 STAGE1_UNLOCK = {"move_enter", "move_down", "quest2_accept", "quest2_turn_in"}
-STAGE2_UNLOCK = ({"gather", "quest_accept", "quest_turn_in"}
+STAGE2_UNLOCK = ({"gather", "quest_accept", "quest_turn_in",
+                  "quest3_accept", "quest3_turn_in",
+                  "quest4_accept", "quest4_turn_in"}
                  | {a for a in ACTIONS if a == "craft" or a.startswith("craft_")})
 STAGE3_UNLOCK = {"market_post", "market_buy", "market_cancel", "market_expand",
                  "commission_post", "commission_list", "commission_fill",
@@ -534,6 +613,11 @@ def flatten_obs(obs):
            obs["quest_mat_bark"], obs["quest_mat_hide"], obs["quest_mat_ecto"],
            obs["quest_giver_here"]]
         + [obs["quest2_active"], obs["quest2_ready"], obs["quest2_giver_here"]]
+        # Maren chains (#183) appended last, same never-shift rule.
+        # Breaks pre-#194 checkpoints (fixed-size input); they restart
+        # fresh like the 44->45 market_expand growth did.
+        + [obs["quest3_active"], obs["quest3_ready"], obs["quest3_giver_here"]]
+        + [obs["quest4_active"], obs["quest4_ready"], obs["quest4_giver_here"]]
         + [obs["arrows_norm"]]
         + [obs["buff_attack"], obs["buff_dr"]]
         + [obs["ammo_best_norm"], obs["defense_norm"]]
@@ -551,6 +635,7 @@ OBS_SIZE = (
                                            # own_net_norm, flip_margin_norm, inv_value_norm)
     + 7                                    # quest block (active/ready/has_charm/3 mats/giver_here)
     + 3                                    # delver quest block (active/ready/giver_here)
+    + 6                                    # Maren chains (remedy + tonic active/ready/giver_here)
     + 1                                    # arrows_norm (ammo-family count; bows eat one per shot)
     + 2                                    # buff block (attack active, damage-reduction active)
     + 2                                    # gear block (best ammo bonus, worn defense)
@@ -605,6 +690,10 @@ class TextMMOEnv:
             # first stats lands these stay False (no quest assumed).
             "quest_guard_active": False, "guard_charm_crafted": False,
             "quest_delver_active": False, "quest_delver_ready": False,
+            "quest_remedy_active": False, "quest_remedy_ready": False,
+            "quest_tonic_active": False, "quest_tonic_ready": False,
+            # Last combat text seen (trainer signal; empty until first hit).
+            "last_combat": "",
             "buff_attack_amount": 0, "buff_damage_reduction_amount": 0,
             # Market/gathering/commission mirrors (server is authoritative;
             # these only let action mapping see what events already said).
@@ -626,98 +715,124 @@ class TextMMOEnv:
     async def _reader(self):
         try:
             async for raw in self.ws:
-                event = json.loads(raw)
-                t = event.get("type")
-                if t == "welcome":
-                    self._state["server_version"] = event.get("protocol_version")
-                elif t == "room":
-                    self._state["room_id"] = event["id"]
-                    self._state["exits"] = event["exits"]
-                    self._state["npc_names"] = event["npcs"]
-                    self._state["item_names"] = event["items"]
-                    self._state["room_gold"] = event.get("gold", 0) or 0
-                    self._state["gatherables"] = event.get("gatherables") or []
-                    self._state["player_names"] = event["players"]
-                    self._state["is_dungeon"] = event.get("is_dungeon", False)
-                    self._state["dungeon_floor"] = event.get("dungeon_floor") or 0
-                    self._state["party_size"] = event.get("party_size", 1)
-                    self._state["other_players"] = max(0, len(event["players"]) - 1)
-                elif t == "stats":
-                    self._state["hp"] = event["hp"]
-                    self._state["max_hp"] = event["max_hp"]
-                    self._state["gold"] = event["gold"]
-                    self._state["score"] = event["score"]
-                    self._state["variety"] = event.get("variety", 1.0) or 1.0
-                    self._state["level"] = event.get("level", 1)
-                    self._state["xp"] = event.get("xp", 0.0)
-                    self._state["xp_to_next"] = event.get("xp_to_next", 100.0)
-                    self._state["party_size"] = event.get("party_size", self._state["party_size"])
-                    self._state["inv_names"] = event.get("inv", [])
-                    # The name list truncates at 20 while the cap is 24, so
-                    # masks must use the server's own unit count (#191).
-                    if event.get("pack") is not None:
-                        self._state["pack_units"] = event["pack"]
-                    if event.get("pack_max") is not None:
-                        self._state["pack_max"] = event["pack_max"]
-                    self._state["equipped"] = event.get("equipped")
-                    self._state["armor"] = event.get("armor")
-                    self._state["offhand"] = event.get("offhand")
-                    self._state["defense"] = event.get("defense", 0)
-                    self._state["market_orders"] = event.get("market_orders", 0)
-                    self._state["market_slots"] = event.get("market_slots", self._state.get("market_slots", 3))
-                    # Quest flags ride along on every stats event (server's
-                    # stats_view always includes them now).
-                    if "quest_guard_active" in event:
-                        self._state["quest_guard_active"] = bool(event["quest_guard_active"])
-                    if "guard_charm_crafted" in event:
-                        self._state["guard_charm_crafted"] = bool(event["guard_charm_crafted"])
-                    if "quest_delver_active" in event:
-                        self._state["quest_delver_active"] = bool(event["quest_delver_active"])
-                    if "quest_delver_ready" in event:
-                        self._state["quest_delver_ready"] = bool(event["quest_delver_ready"])
-                    # Crafted buffs ride along on every stats event as a
-                    # {category: {amount, remaining}} dict (server's
-                    # stats_view always includes it now).
-                    buffs = event.get("buffs") or {}
-                    atk = buffs.get("attack") or {}
-                    dr = buffs.get("damage_reduction") or {}
-                    self._state["buff_attack_amount"] = int(atk.get("amount", 0)) if atk.get("remaining", 0) > 0 else 0
-                    self._state["buff_damage_reduction_amount"] = int(dr.get("amount", 0)) if dr.get("remaining", 0) > 0 else 0
-                elif t == "score":
-                    # Covers assist payouts from other players' kills too --
-                    # those can arrive at any time, not just right after our
-                    # own action, which is why reward is accumulated here
-                    # rather than only diffed inside step().
-                    self._pending_reward += event["gained"]
-                    self._state["score"] = event["total"]
-                elif t == "market":
-                    self._state["market_state"] = event
-                    self._state["tax_rate"] = event.get("tax_rate", self._state["tax_rate"])
-                    self._state["tax_min"] = event.get("tax_min", self._state["tax_min"])
-                elif t == "party":
-                    self._state["party_info"] = event
-                elif t == "message":
-                    # Only structured use: commission_list replies, parsed
-                    # best-effort into the open-bounty list (stale until the
-                    # next list call; fill/cancel treat it as advisory).
-                    text = event.get("text", "")
-                    if "Open commissions:" in text:
-                        self._state["open_commissions"] = _parse_commissions(text)
-                    elif "No open commissions" in text:
-                        self._state["open_commissions"] = []
-                elif t == "xp":
-                    self._pending_xp += event.get("gained", 0.0) or 0.0
-                    self._state["level"] = event.get("level", self._state["level"])
-                    self._state["xp"] = event.get("total", self._state["xp"])
-                    self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
-                elif t == "level_up":
-                    self._pending_levels += 1
-                    self._state["level"] = event.get("level", self._state["level"])
-                elif t == "death":
-                    self._state["hp"] = self._state["max_hp"]
-                elif t == "error":
-                    pass
+                self._apply_event(json.loads(raw))
         except websockets.ConnectionClosed:
+            pass
+
+    def _apply_event(self, event):
+        """Fold one server event into state. Split out of _reader so event
+        parsing (flags, commissions, combat, inventory) is unit-testable
+        without a socket (#194)."""
+        t = event.get("type")
+        if t == "welcome":
+            self._state["server_version"] = event.get("protocol_version")
+        elif t == "room":
+            self._state["room_id"] = event["id"]
+            self._state["exits"] = event["exits"]
+            self._state["npc_names"] = event["npcs"]
+            self._state["item_names"] = event["items"]
+            self._state["room_gold"] = event.get("gold", 0) or 0
+            self._state["gatherables"] = event.get("gatherables") or []
+            self._state["player_names"] = event["players"]
+            self._state["is_dungeon"] = event.get("is_dungeon", False)
+            self._state["dungeon_floor"] = event.get("dungeon_floor") or 0
+            self._state["party_size"] = event.get("party_size", 1)
+            self._state["other_players"] = max(0, len(event["players"]) - 1)
+        elif t == "stats":
+            self._state["hp"] = event["hp"]
+            self._state["max_hp"] = event["max_hp"]
+            self._state["gold"] = event["gold"]
+            self._state["score"] = event["score"]
+            self._state["variety"] = event.get("variety", 1.0) or 1.0
+            self._state["level"] = event.get("level", 1)
+            self._state["xp"] = event.get("xp", 0.0)
+            self._state["xp_to_next"] = event.get("xp_to_next", 100.0)
+            self._state["party_size"] = event.get("party_size", self._state["party_size"])
+            self._state["inv_names"] = event.get("inv", [])
+            # The name list truncates at 20 while the cap is 24, so
+            # masks must use the server's own unit count (#191).
+            if event.get("pack") is not None:
+                self._state["pack_units"] = event["pack"]
+            if event.get("pack_max") is not None:
+                self._state["pack_max"] = event["pack_max"]
+            self._state["equipped"] = event.get("equipped")
+            self._state["armor"] = event.get("armor")
+            self._state["offhand"] = event.get("offhand")
+            self._state["defense"] = event.get("defense", 0)
+            self._state["market_orders"] = event.get("market_orders", 0)
+            self._state["market_slots"] = event.get("market_slots", self._state.get("market_slots", 3))
+            # Quest flags ride along on every stats event (server's
+            # stats_view always includes them now).
+            if "quest_guard_active" in event:
+                self._state["quest_guard_active"] = bool(event["quest_guard_active"])
+            if "guard_charm_crafted" in event:
+                self._state["guard_charm_crafted"] = bool(event["guard_charm_crafted"])
+            if "quest_delver_active" in event:
+                self._state["quest_delver_active"] = bool(event["quest_delver_active"])
+            if "quest_delver_ready" in event:
+                self._state["quest_delver_ready"] = bool(event["quest_delver_ready"])
+            if "quest_remedy_active" in event:
+                self._state["quest_remedy_active"] = bool(event["quest_remedy_active"])
+            if "quest_remedy_ready" in event:
+                self._state["quest_remedy_ready"] = bool(event["quest_remedy_ready"])
+            if "quest_tonic_active" in event:
+                self._state["quest_tonic_active"] = bool(event["quest_tonic_active"])
+            if "quest_tonic_ready" in event:
+                self._state["quest_tonic_ready"] = bool(event["quest_tonic_ready"])
+            # Crafted buffs ride along on every stats event as a
+            # {category: {amount, remaining}} dict (server's
+            # stats_view always includes it now).
+            buffs = event.get("buffs") or {}
+            atk = buffs.get("attack") or {}
+            dr = buffs.get("damage_reduction") or {}
+            self._state["buff_attack_amount"] = int(atk.get("amount", 0)) if atk.get("remaining", 0) > 0 else 0
+            self._state["buff_damage_reduction_amount"] = int(dr.get("amount", 0)) if dr.get("remaining", 0) > 0 else 0
+        elif t == "combat":
+            # Trainer signal only: last combat text (hits, deaths).
+            # Reward still flows through score/xp/gold events.
+            self._state["last_combat"] = event.get("text", "")
+        elif t == "inventory":
+            # Full (untruncated) pack list -- complements stats.inv's
+            # 20-name cap for pack math (#191); slots ride along.
+            items = event.get("items")
+            if isinstance(items, list):
+                self._state["inv_names"] = list(items)
+            for slot in ("equipped", "armor", "offhand"):
+                if event.get(slot) is not None:
+                    self._state[slot] = event[slot]
+        elif t == "score":
+            # Covers assist payouts from other players' kills too --
+            # those can arrive at any time, not just right after our
+            # own action, which is why reward is accumulated here
+            # rather than only diffed inside step().
+            self._pending_reward += event["gained"]
+            self._state["score"] = event["total"]
+        elif t == "market":
+            self._state["market_state"] = event
+            self._state["tax_rate"] = event.get("tax_rate", self._state["tax_rate"])
+            self._state["tax_min"] = event.get("tax_min", self._state["tax_min"])
+        elif t == "party":
+            self._state["party_info"] = event
+        elif t == "message":
+            # Only structured use: commission_list replies, parsed
+            # best-effort into the open-bounty list (stale until the
+            # next list call; fill/cancel treat it as advisory).
+            text = event.get("text", "")
+            if "Open commissions:" in text:
+                self._state["open_commissions"] = _parse_commissions(text)
+            elif "No open commissions" in text:
+                self._state["open_commissions"] = []
+        elif t == "xp":
+            self._pending_xp += event.get("gained", 0.0) or 0.0
+            self._state["level"] = event.get("level", self._state["level"])
+            self._state["xp"] = event.get("total", self._state["xp"])
+            self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
+        elif t == "level_up":
+            self._pending_levels += 1
+            self._state["level"] = event.get("level", self._state["level"])
+        elif t == "death":
+            self._state["hp"] = self._state["max_hp"]
+        elif t == "error":
             pass
 
     async def _send(self, cmd, **kwargs):
@@ -772,10 +887,9 @@ class TextMMOEnv:
         gold_before = self._state["gold"]
         inv_before = list(self._state["inv_names"] or [])
         inv_value_before = inventory_value(inv_before)
-        quest_active_before = bool(self._state.get("quest_guard_active"))
-        quest_crafted_before = bool(self._state.get("guard_charm_crafted"))
-        delver_active_before = bool(self._state.get("quest_delver_active"))
-        delver_ready_before = bool(self._state.get("quest_delver_ready"))
+        flags_before = {k: bool(self._state.get(k))
+                        for _, akey, rkey in _QUEST_FLAG_SPECS
+                        for k in (akey, rkey)}
         party_before = self._state.get("party_size", 1)
         episode_done = False
         if cmd:
@@ -806,16 +920,30 @@ class TextMMOEnv:
         else:
             done = self.max_steps is not None and self._step_count >= self.max_steps
             obs = self._build_obs()
-        quest_active_after = bool(self._state.get("quest_guard_active"))
-        quest_crafted_after = bool(self._state.get("guard_charm_crafted"))
-        delver_active_after = bool(self._state.get("quest_delver_active"))
-        delver_ready_after = bool(self._state.get("quest_delver_ready"))
-        guard_accepted = (not quest_active_before) and quest_active_after
-        guard_turned = quest_active_before and (not quest_active_after)
-        guard_crafted = (not quest_crafted_before) and quest_crafted_after
-        delver_accepted = (not delver_active_before) and delver_active_after
-        delver_turned = delver_active_before and (not delver_active_after)
-        delver_became_ready = (not delver_ready_before) and delver_ready_after
+        flags_after = {k: bool(self._state.get(k))
+                       for _, akey, rkey in _QUEST_FLAG_SPECS
+                       for k in (akey, rkey)}
+        qt = quest_transitions(flags_before, flags_after)
+        guard_accepted = qt["guard_charm"]["accepted"]
+        guard_turned = qt["guard_charm"]["turned_in"]
+        guard_crafted = qt["guard_charm"]["became_ready"]
+        delver_accepted = qt["delver"]["accepted"]
+        delver_turned = qt["delver"]["turned_in"]
+        delver_became_ready = qt["delver"]["became_ready"]
+        remedy_accepted = qt["remedy"]["accepted"]
+        remedy_turned = qt["remedy"]["turned_in"]
+        remedy_became_ready = qt["remedy"]["became_ready"]
+        tonic_accepted = qt["tonic"]["accepted"]
+        tonic_turned = qt["tonic"]["turned_in"]
+        tonic_became_ready = qt["tonic"]["became_ready"]
+        quest_active_after = flags_after["quest_guard_active"]
+        quest_crafted_after = flags_after["guard_charm_crafted"]
+        delver_active_after = flags_after["quest_delver_active"]
+        delver_ready_after = flags_after["quest_delver_ready"]
+        remedy_active_after = flags_after["quest_remedy_active"]
+        remedy_ready_after = flags_after["quest_remedy_ready"]
+        tonic_active_after = flags_after["quest_tonic_active"]
+        tonic_ready_after = flags_after["quest_tonic_ready"]
         next_obs = self._build_obs()
         info = {
             "action": action,
@@ -846,14 +974,20 @@ class TextMMOEnv:
             # Top-level keys are any-quest (backward compatible); by_quest
             # breaks them out per quest id for multi-quest shaping.
             "quest": {
-                "accepted": guard_accepted or delver_accepted,
-                "turned_in": guard_turned or delver_turned,
+                "accepted": (guard_accepted or delver_accepted
+                             or remedy_accepted or tonic_accepted),
+                "turned_in": (guard_turned or delver_turned
+                              or remedy_turned or tonic_turned),
                 "crafted_charm": guard_crafted,
                 "delver_became_ready": delver_became_ready,
-                "active": quest_active_after or delver_active_after,
-                "ready": quest_crafted_after or delver_ready_after,
+                "active": (quest_active_after or delver_active_after
+                           or remedy_active_after or tonic_active_after),
+                "ready": (quest_crafted_after or delver_ready_after
+                          or remedy_ready_after or tonic_ready_after),
                 "stage": quest_stage(next_obs),
                 "stage2": quest_stage(next_obs, "delver"),
+                "stage3": quest_stage(next_obs, "remedy"),
+                "stage4": quest_stage(next_obs, "tonic"),
                 "by_quest": {
                     "guard_charm": {
                         "accepted": guard_accepted,
@@ -864,6 +998,16 @@ class TextMMOEnv:
                         "accepted": delver_accepted,
                         "turned_in": delver_turned,
                         "became_ready": delver_became_ready,
+                    },
+                    "remedy": {
+                        "accepted": remedy_accepted,
+                        "turned_in": remedy_turned,
+                        "became_ready": remedy_became_ready,
+                    },
+                    "tonic": {
+                        "accepted": tonic_accepted,
+                        "turned_in": tonic_turned,
+                        "became_ready": tonic_became_ready,
                     },
                 },
             },
@@ -1125,8 +1269,11 @@ class TextMMOEnv:
             return None
         if action == "buy_arrows":
             # Stock ammunition for bows (Oak Longbow consumes 1 arrow per
-            # shot; attacking empty-handed errors). Pack-full buys bounce
-            # server-side; merchant presence and gold still validated there.
+            # shot; attacking empty-handed errors). Merchant-gated like buy
+            # (#194): without a merchant in view this always errors.
+            # Pack-full buys bounce server-side; gold validated there.
+            if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+                return None
             if pack_full(s):
                 return None
             return {"cmd": "buy", "item": "arrow"}
@@ -1134,7 +1281,10 @@ class TextMMOEnv:
             # Quicksell the lowest-margin holding: when nothing carries a
             # market premium, merchant gold now beats waiting on a listing.
             # Keep rules: worn gear, the quest charm, a last healing herb,
-            # and bow arrows while low never quicksell.
+            # and bow arrows while low never quicksell. Merchant-gated like
+            # buy (#194): selling needs the merchant in the room.
+            if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+                return None
             cands = [r for r in self._holdings() if self._sellable(r)]
             if not cands:
                 return None
@@ -1300,7 +1450,18 @@ class TextMMOEnv:
                 return {"cmd": "gather"}
             return None
         if action == "commission_post":
-            return {"cmd": "commission_post"}
+            # Real bounty, parameterized from state (#194): target the first
+            # hostile in view (server matches substrings case-insensitively),
+            # falling back to the server's own "rat" default when blind; 1
+            # kill, escrow up to 10g of carried gold (0g when broke is still
+            # a valid listing). Never masked: affordability is priced in,
+            # not gated, and the server defaults an empty target.
+            hostiles = [n for n in (s.get("npc_names") or [])
+                        if n not in NON_HOSTILE_NAMES]
+            escrow = max(0, min(s.get("gold", 0), 10))
+            return {"cmd": "commission_post",
+                    "target": hostiles[0] if hostiles else "rat",
+                    "required_kills": 1, "reward_gold": escrow, "reward_xp": 0}
         if action == "commission_list":
             return {"cmd": "commission_list"}
         if action == "commission_fill":
@@ -1332,6 +1493,17 @@ class TextMMOEnv:
         if action == "quest2_turn_in":
             # Turn in cleared floors for the fixed XP + gold + score.
             return {"cmd": "quest", "action": "turn_in", "quest": "delver"}
+        if action == "quest3_accept":
+            # Accept Sister Maren's remedy quest (bring 3 Healing Herbs).
+            # Ungated like the other accepts: wrong-room errors are signal.
+            return {"cmd": "quest", "action": "accept", "quest": "remedy"}
+        if action == "quest3_turn_in":
+            return {"cmd": "quest", "action": "turn_in", "quest": "remedy"}
+        if action == "quest4_accept":
+            # Accept Sister Maren's tonic quest (brew 1 Fortitude Tonic).
+            return {"cmd": "quest", "action": "accept", "quest": "tonic"}
+        if action == "quest4_turn_in":
+            return {"cmd": "quest", "action": "turn_in", "quest": "tonic"}
         if action == "quest_list":
             # Read the unified quest catalog (what/where/state).
             return {"cmd": "quest", "action": "list"}
@@ -1340,6 +1512,8 @@ class TextMMOEnv:
             # market beats the merchant (margin > 0) or the item is unlisted
             # (nominal +1: first listings do price discovery). Stall cap
             # respected -- expand instead once full. Same keep rules as sell.
+            # Priced, not zero (#194): undercut the best ask by 1 when the
+            # book prices the item, else merchant value + 1.
             own_open = sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
                            if o.get("seller") == self.name)
             if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
@@ -1350,11 +1524,27 @@ class TextMMOEnv:
             if not cands:
                 return None
             cands.sort(key=lambda c: (-c[0], -c[1]))
-            return {"cmd": "market_post", "item": cands[0][2], "price": 0}
+            best = next((r for r in self._holdings() if r["name"] == cands[0][2]), None)
+            ask = best_market_ask((s.get("market_state") or {}).get("orders"),
+                                  best["iid"], exclude_seller=self.name) if best else None
+            price = max(1, ask - 1) if ask else max(1, cands[0][1] + 1)
+            return {"cmd": "market_post", "item": cands[0][2], "price": price}
         if action == "market_buy":
             # A full pack bounces server-side (gold never charged), so skip.
             if pack_full(s):
                 return None
+            # Affordability-aware (#194): when the book is fresh enough to
+            # verify, mask out guaranteed "No affordable orders" errors --
+            # no non-own asks, or gold below the cheapest one. Blind (no
+            # snapshot yet) still goes through; the server decides.
+            ms = s.get("market_state") or {}
+            if ms.get("orders") is not None:
+                others = [o for o in ms["orders"] if o.get("seller") != self.name]
+                if not others:
+                    return None
+                cheapest = min(o.get("price", 0) for o in others)
+                if s.get("gold", 0) < cheapest:
+                    return None
             return {"cmd": "market_buy"}
         if action == "market_cancel":
             # Cancel our own cheapest standing order if we have any.
@@ -1384,10 +1574,19 @@ class TextMMOEnv:
                     return {"cmd": "party_invite", "target": pname}
             return None
         if action == "party_accept":
+            # Ungated: no pending-invite state is tracked, so verifiability
+            # fails open here (a stale accept just errors as signal).
             return {"cmd": "party_accept"}
         if action == "party_leave":
+            # Deliberately ungated: membership isn't client-verifiable.
+            # party_size arrives on room events, which lag membership
+            # changes -- gating on it blocks the valid leave/info right
+            # after joining (stale size 1), which is exactly how the live
+            # env test broke. Partyless errors stay server-side signal.
             return {"cmd": "party_leave"}
         if action == "party_info":
+            # Same reasoning: info must follow accept to observe the party,
+            # and no snapshot tracks membership tightly enough to gate on.
             return {"cmd": "party_info"}
         return None
 
@@ -1450,6 +1649,14 @@ class TextMMOEnv:
         quest2_active = 1.0 if s.get("quest_delver_active") else 0.0
         quest2_ready = 1.0 if s.get("quest_delver_ready") else 0.0
         quest2_giver_here = quest_giver_here
+        # Sister Maren's chains (#183): same active/ready/giver pattern.
+        # quest3_* = remedy, quest4_* = tonic.
+        quest3_active = 1.0 if s.get("quest_remedy_active") else 0.0
+        quest3_ready = 1.0 if s.get("quest_remedy_ready") else 0.0
+        quest3_giver_here = 1.0 if MAREN_NAME in (s.get("npc_names") or []) else 0.0
+        quest4_active = 1.0 if s.get("quest_tonic_active") else 0.0
+        quest4_ready = 1.0 if s.get("quest_tonic_ready") else 0.0
+        quest4_giver_here = quest3_giver_here
         # Arrow count matters (bows eat one per shot), unlike other items
         # where binary presence suffices -- hence a scalar, not just the
         # inv_presence flag. Counts the whole ammo family (any variant
@@ -1498,6 +1705,12 @@ class TextMMOEnv:
             "quest2_active": quest2_active,
             "quest2_ready": quest2_ready,
             "quest2_giver_here": quest2_giver_here,
+            "quest3_active": quest3_active,
+            "quest3_ready": quest3_ready,
+            "quest3_giver_here": quest3_giver_here,
+            "quest4_active": quest4_active,
+            "quest4_ready": quest4_ready,
+            "quest4_giver_here": quest4_giver_here,
             "arrows_norm": arrows_norm,
             # Buff features
             "buff_attack": 1.0 if s.get("buff_attack_amount", 0) > 0 else 0.0,
@@ -1519,6 +1732,14 @@ class TextMMOEnv:
                 "quest2_active": quest2_active,
                 "quest2_ready": quest2_ready,
             }, "delver"),
+            "quest3_stage": quest_stage({
+                "quest3_active": quest3_active,
+                "quest3_ready": quest3_ready,
+            }, "remedy"),
+            "quest4_stage": quest_stage({
+                "quest4_active": quest4_active,
+                "quest4_ready": quest4_ready,
+            }, "tonic"),
         }
         # Refresh per-observation caches for the mask below (holdings table
         # is already fresh from the disposition features above).
