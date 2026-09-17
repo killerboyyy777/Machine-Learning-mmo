@@ -1,4 +1,4 @@
-# Pre-commit hooks (#57): black, ruff, mypy, pytest (fast subset).
+# Pre-commit hooks (#57): black, ruff, mypy, fast test scripts.
 #
 # Hooks run on staged files only, so legacy files get cleaned incrementally
 # as they are touched -- no flag day. ruff uses the full default ruleset;
