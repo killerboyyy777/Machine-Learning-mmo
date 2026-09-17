@@ -212,6 +212,19 @@ def test_maren_obs_features():
     print("MAREN_OBS_OK")
 
 
+def test_equip_mask_excludes_worn_weapon():
+    # #229: id-vs-display-name compare never excluded the worn weapon.
+    e = TextMMOEnv("ParseEquip")
+    e._state["inv_names"] = ["Rusty Sword"]
+    e._state["equipped"] = "Rusty Sword"
+    e._build_obs()  # refreshes the per-observation type cache, as in live flow
+    assert e._first_inv_typed("weapon") is None
+    e._state["equipped"] = "Oak Longbow"
+    e._build_obs()
+    assert e._first_inv_typed("weapon") == "Rusty Sword"
+    print("EQUIP_MASK_OK")
+
+
 def test_item_presence_vectors():
     # #221: presence looked up ids in a name->id map, so both vectors were
     # all-zeros forever. Ground/inventory display names must light up.
@@ -259,6 +272,7 @@ test_maren_mirror_and_stages()
 test_quest_transitions_all_four()
 test_event_parsing_maren_combat_inventory()
 test_maren_obs_features()
+test_equip_mask_excludes_worn_weapon()
 test_item_presence_vectors()
 test_dynamic_shard_valuation()
 print("ALL_ENV_PARSE_OK")

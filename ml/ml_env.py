@@ -1136,7 +1136,9 @@ class TextMMOEnv:
                 continue
             if srv.ITEM_DEFS[iid].get("type") != item_type:
                 continue
-            if exclude_equipped and iid == self._state["equipped"]:
+            # state["equipped"] is a display name (server stats_view), so
+            # compare names, not ids (#229: id == name was never true).
+            if exclude_equipped and name == self._state["equipped"]:
                 continue
             if exclude_equipped:
                 self._inv_type_cache[item_type] = name

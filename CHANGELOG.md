@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Env equip-mask fix (#229): the worn-weapon exclusion compared an item
+  id against a display name, so it never fired and `equip` stayed valid
+  after equipping. Now compares display names. Same dims.
 - Env item presence fix (#221): `item_presence` / `inv_presence` looked
   ids up in a name->id map, so both 39-dim vectors were all-zeros forever
   -- policies were blind to ground loot and inventory. Now resolved via
