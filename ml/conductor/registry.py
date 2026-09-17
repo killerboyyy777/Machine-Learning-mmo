@@ -126,6 +126,14 @@ class Registry:
                 return entry
             return None
 
+    def mark_dead(self, agent_id):
+        """Kill an entry that will never run (failed starts, #230)."""
+        with self._lock:
+            entry = self._agents.get(agent_id)
+            if entry:
+                entry.alive = False
+            return entry
+
     def snapshot(self):
         """Return a JSON-serializable snapshot of the registry."""
         with self._lock:

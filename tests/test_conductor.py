@@ -458,4 +458,21 @@ async def _sup_episodes():
 asyncio.run(_sup_episodes())
 print("EPISODE_METRICS_OK")
 
+
+async def _no_ghosts():
+    # Failed starts die instead of lingering alive without tasks (#230):
+    # a slotless conductor must end with alive == running == 0.
+    cpath = os.path.join(tmpdir, "ghost")
+    cond = Conductor(cpath, max_agents=4)
+    await cond.run(duration_seconds=3, wave_size=4, wave_delay=0.1)
+    st = cond.status()
+    assert st["registry"]["alive"] == 0, st["registry"]
+    assert st["supervisor"]["running"] == 0, st["supervisor"]
+    # mark_dead is safe on unknown ids and keeps history rows.
+    assert cond.registry.mark_dead("nope") is None
+    await cond.supervisor.stop_all()
+
+asyncio.run(_no_ghosts())
+print("NO_GHOSTS_OK")
+
 print("ALL_CONDUCTOR_OK")

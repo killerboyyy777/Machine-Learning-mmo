@@ -95,26 +95,33 @@ class Conductor:
 
         Returns True when a task is running afterwards. Never raises: a
         bad spawn is logged as spawn_error and skipped, so one raising
-        factory can't end the whole run.
+        factory can't end the whole run. Failed starts are marked dead
+        (#230): without a task their episode-based lifetime never ages,
+        so alive-without-task ghosts would inflate `alive` forever.
         """
         try:
             slot = self._next_slot()
             if slot is None:
+                self.registry.mark_dead(agent_id)
                 return False
             entry = self.registry.get(agent_id)
             if entry is not None:
                 entry.agent_type = slot["agent_type"]
-            return await self.supervisor.start_agent(
+            started = await self.supervisor.start_agent(
                 agent_id,
                 slot["env_factory"],
                 slot["policy_fn"],
                 step_timeout=slot.get("step_timeout"))
+            if not started:
+                self.registry.mark_dead(agent_id)
+            return started
         except Exception as e:
             try:
                 self.metrics.log("spawn_error", agent_id=agent_id,
                                  error=str(e)[-300:])
             except Exception:
                 pass
+            self.registry.mark_dead(agent_id)
             return False
 
     def report_fitness(self, agent_id, fitness, episodes=1):
@@ -146,8 +153,8 @@ class Conductor:
             await asyncio.sleep(delay)
             agent_id = self.churn._spawn_one()
             entry = self.registry.get(agent_id)
-            # Log + assign only for agents that actually started: anything
-            # else is an alive-without-task ghost until churn reaps it.
+            # Log + assign only for agents that actually started
+            # (_maybe_start kills failed starts outright, #230).
             if entry and await self._maybe_start(agent_id):
                 self.metrics.log_agent_spawn(agent_id, entry.agent_type, entry.branch)
                 self.mixer.assign_one(agent_id)

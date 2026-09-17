@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Conductor ghost agents (#230): failed starts stayed alive forever
+  (episode-aged lifetimes never expire taskless entries); now marked dead
+  at failed start, and the soak gate also requires running tasks.
 - Shutdown task lifecycle (#244): background loops are tracked and
   cancelled before the final scores save (no concurrent save_scores);
   they also start only after both listeners bind (refines #242).
