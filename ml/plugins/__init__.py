@@ -10,8 +10,8 @@ Built-ins (all usable from ``--slot`` today, no extra installs):
 
 - ``linear`` -- linear-Q checkpoint, epsilon-greedy
 - ``torch`` -- DQN checkpoint, epsilon-greedy (needs torch)
-- ``gather`` / ``dungeon`` / ``market`` / ``maker`` -- scripted
-  behavior-tree baselines (no learning)
+- ``gather`` / ``dungeon`` / ``market`` / ``maker`` / ``commissioner``
+  -- scripted behavior-tree baselines (no learning)
 
 External plugins live in ``--plugin-dir``: any ``*.py`` file defining
 ``AgentPlugin`` subclasses decorated with :func:`register` is picked up

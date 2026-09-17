@@ -1,15 +1,18 @@
 """Nightly soak driver (#60): run the conductor with N agents for T seconds.
 
-Builds a Conductor with a live env_factory + linear policy (ml_best.json
-when present, fresh weights otherwise), runs it, then applies the
-pass/fail gates: alive >= --min-agents at the end. Prints a verdict line
-for CI logs and exits nonzero on failure.
+Builds a Conductor from --slot specs (default: one linear slot using
+ml_best.json when present, fresh weights otherwise; repeat a slot to
+weight it), runs it, then writes soak_report.json (server table sizes
+via gm_tables, treasury values, log error counts, per-type rewards) and
+applies the pass/fail gate: alive >= --min-agents at the end. Prints a
+verdict line for CI logs and exits nonzero on failure.
 
 Smoke test (needs the server)::
 
     python ml/conductor/soak.py --agents 2 --duration 20 --min-agents 1
 
-Nightly (CI):: see .github/workflows/soak.yml (50 agents, 1 hour).
+Nightly (CI):: see .github/workflows/soak.yml (server on the short-TTL
+overlay ml/conductor/soak_server_config.json, mixed role slots, 1 hour).
 """
 
 import argparse
