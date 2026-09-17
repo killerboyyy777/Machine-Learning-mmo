@@ -71,6 +71,17 @@ All notable changes to the text MMO engine are recorded here.
   resetting `training_steps` (and the epsilon schedule) on every restart.
   Now saves the full LinearQAgent format; covered by
   `tests/test_farm_resume.py`.
+- Combat/party/dungeon balance + race pass (#195): same-tick double-kill
+  guard (one payout split among contributors, never two); 60s dungeon
+  re-entry delay after abandoning an uncleared descent (kills Floor-1
+  reset farming); floor-clear credit + delver progress require
+  contribution (idle walk-ins earn nothing); level-ups heal gained max HP
+  only (no mid-combat full reset); sheltered escrow/bank wealth counts
+  toward the death score penalty (movement unchanged); XP scales by the
+  score variety x diminish curve; party-invite overwrite notifies the old
+  leader, accept relocates out of the old dungeon, kill gold splits among
+  present contributors only; commercial half-up tax rounding with 1g
+  trades paying out in full.
 - Env equip-mask fix (#229): the worn-weapon exclusion compared an item
   id against a display name, so it never fired and `equip` stayed valid
   after equipping. Now compares display names. Same dims.
