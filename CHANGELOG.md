@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Farm checkpoint resume (#231): `save_weights` wrote weights+bias only,
+  resetting `training_steps` (and the epsilon schedule) on every restart.
+  Now saves the full LinearQAgent format; covered by
+  `tests/test_farm_resume.py`.
 - Env equip-mask fix (#229): the worn-weapon exclusion compared an item
   id against a display name, so it never fired and `equip` stayed valid
   after equipping. Now compares display names. Same dims.
