@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 sys.path.insert(0, ROOT)
 
 from dqn_agent import TorchDQNAgent  # noqa: F401  (import shape check only)
-from eval import _beta_reg, _t_crit, compare
+from eval import _beta_reg, _t_crit, compare, report
 from ml_env import PROTOCOL_VERSION as ENV_PROTO
 from ml_env import TextMMOEnv
 
@@ -64,5 +64,12 @@ assert c["verdict"] == "INCONCLUSIVE" and "small" in c["reason"], c
 c = compare([1, 2, 3, 4, 5, 6], [1, 2, 3])
 assert c["verdict"] == "INCONCLUSIVE" and "mismatch" in c["reason"], c
 print("GUARDS_OK")
+
+# --- #247: report uses sample std, matching compare() ---
+import statistics as _statistics
+_mean, _std = report("probe", [3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
+assert _std == _statistics.stdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3]), _std
+assert _std > _statistics.pstdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
+print("REPORT_STDEV_OK")
 
 print("ALL_EVAL_STATS_OK")

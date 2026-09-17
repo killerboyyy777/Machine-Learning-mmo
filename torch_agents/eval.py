@@ -73,7 +73,7 @@ async def evaluate(checkpoint, policy, url, seeds, steps, reward_mode):
 
 def report(name, scores):
     mean = statistics.fmean(scores)
-    std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+    std = statistics.stdev(scores) if len(scores) > 1 else 0.0
     print(
         f"{name}: n={len(scores)} mean={mean:.2f} std={std:.2f} "
         f"min={min(scores):.2f} max={max(scores):.2f}"

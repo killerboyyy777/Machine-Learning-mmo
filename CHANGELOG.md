@@ -3,6 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Eval sample std (#247): `report()` used population std, understating
+  spread vs `compare()`; now sample std with test cover.
 - PBT exploit reload (#228): the winner-copy never reached live losers;
   the supervisor now restarts loser tasks with fresh envs/policies that
   reload the checkpoint (dead entries refused, shutdown hardened to join
