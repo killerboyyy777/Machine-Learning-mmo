@@ -132,8 +132,8 @@ class Runner:
                     "quest_intrinsic": 0.0,
                 })
                 self.farm.agent.t_step += 1
-                if self.farm.agent.t_step >= self.farm.agent.replay_size:
-                    self.farm.agent.learn()
+                # learn() self-gates on minibatch fill (#222).
+                self.farm.agent.learn()
 
                 self.features = next_features
                 self.obs = next_obs

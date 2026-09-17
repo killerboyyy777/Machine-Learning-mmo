@@ -362,11 +362,9 @@ class TorchDQNAgent:
         transition. Loss = L_TD + α * (L_gold + L_loot) + β * L_market
         + γq * L_quest, with α/β/γq = aux/market/quest lambdas.
         Returns a dict of loss components for logging."""
-        # Buffer warm-up
-        if self.t_step < self.replay_size:
-            return {"td": None, "gold": None, "loot": None, "market": None,
-                    "quest": None, "rnd": None}
-
+        # Buffer warm-up keys on a fillable minibatch (#222), not the full
+        # 10k buffer: gating on replay_size meant default --steps runs
+        # performed zero gradient steps while looking like training.
         # Sample minibatch
         available = [i for i, t in enumerate(self.replay) if t is not None]
         if len(available) < self.batch_size:
@@ -696,12 +694,8 @@ class TorchDQNAgent:
 
             features, obs = next_features, next_obs
 
-            # Learning step
-            if self.t_step >= self.replay_size:
-                losses = self.learn()
-            else:
-                losses = {"td": None, "gold": None, "loot": None, "market": None,
-                          "quest": None, "rnd": None}
+            # Learning step (learn() self-gates on minibatch fill, #222).
+            losses = self.learn()
 
             if self.t_step % 50 == 0:
                 avg_recent = sum(recent_rewards) / len(recent_rewards)
