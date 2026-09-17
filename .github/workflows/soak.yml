@@ -12,6 +12,10 @@ on:
         description: "Soak duration in seconds"
         default: "3600"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   soak:
     name: Conductor soak (50 agents, 1hr)

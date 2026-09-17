@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   offline:
     name: Unit, grind, conductor (no server/torch needed)
@@ -43,6 +47,8 @@ jobs:
       - run: sleep 5
       - run: python tests/test_live.py
       - run: python tests/test_env.py
+      - run: python ml/conductor/soak.py --agents 2 --duration 20 --min-agents 1 --base-dir soak_smoke
+      - run: python -c "import json; d=json.load(open('soak_smoke/soak_report.json')); assert 'tables' in d, d; print('SOAK_SMOKE_OK')"
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
