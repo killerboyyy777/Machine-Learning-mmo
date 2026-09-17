@@ -1,0 +1,105 @@
+# Full-stack compose for #71. Zero install for non-coders, reproducible env for CI.
+#
+#   docker compose up                  # server + dashboard + 4 scripted bots
+#   docker compose --profile soak up soak        # + one-shot conductor soak (6 agents, 2 min)
+#   docker compose --profile torch up --build    # + 2-agent shared-policy torch farm (builds torch CPU)
+#   docker compose up server                     # server/dashboard only (skip bots)
+#
+# Ports (host): 8765 game WS, 8766 dashboard HTTP + /api/state + /health.
+# GM stream (8767) stays INSIDE the compose network by default: the server
+# binds it to 0.0.0.0 via TEXTMMO_GM_HOST so `soak` can snapshot tables via
+# ws://server:8767, but it is NOT published to the host (GM has no auth --
+# see SECURITY.md). Publish it only on a trusted machine:
+#   uncomment the "8767:8767" line under server.ports.
+# Protocol is unchanged (PROTOCOL_VERSION = 1); images only package it.
+
+services:
+  server:
+    build: .
+    image: textmmo-server:local
+    command: ["python", "server.py"]
+    ports:
+      - "8765:8765"   # game WebSocket
+      - "8766:8766"   # dashboard + /api/state + /health
+      # - "8767:8767" # GM stream -- trusted hosts only (no auth, loopback-only upstream)
+    environment:
+      TEXTMMO_GM_HOST: "0.0.0.0"   # reachable as ws://server:8767 inside the network
+      TEXTMMO_GM_SEED: "${TEXTMMO_GM_SEED:-700}"
+      TEXTMMO_VERBOSE: "${TEXTMMO_VERBOSE:-}"
+    # Ephemeral world state by default (fresh scores.json each `up`).
+    # For persistence across restarts, uncomment:
+    # volumes:
+    #   - server-scores:/app/scores.json
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8766/health').read()"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
+  botfarm:
+    build: .
+    image: textmmo-server:local
+    depends_on:
+      server:
+        condition: service_healthy
+    command:
+      - "python"
+      - "ml/ml_botfarm.py"
+      - "--url"
+      - "ws://server:8765"
+      - "--bots"
+      - "${BOTFARM_BOTS:-4}"
+      - "--scripted"
+      - "${BOTFARM_SCRIPTED:-mixed}"
+    environment:
+      BOTFARM_BOTS: "${BOTFARM_BOTS:-4}"
+    restart: "no"   # not restarted if it exits; default botfarm (--steps 0) runs until stopped, server keeps serving
+
+  soak:
+    build: .
+    image: textmmo-server:local
+    depends_on:
+      server:
+        condition: service_healthy
+    command:
+      - "python"
+      - "ml/conductor/soak.py"
+      - "--url"
+      - "ws://server:8765"
+      - "--gm-url"
+      - "ws://server:8767"
+      - "--agents"
+      - "${SOAK_AGENTS:-6}"
+      - "--duration"
+      - "${SOAK_DURATION:-120}"
+      - "--min-agents"
+      - "${SOAK_MIN_AGENTS:-4}"
+      - "--base-dir"
+      - "/tmp/soak_run"
+    restart: "no"
+    profiles: ["soak"]
+
+  torch-farm:
+    build:
+      context: .
+      args:
+        INSTALL_TORCH: "1"
+    image: textmmo-torch:local
+    depends_on:
+      server:
+        condition: service_healthy
+    command:
+      - "python"
+      - "torch_agents/torch_farm.py"
+      - "--url"
+      - "ws://server:8765"
+      - "--agents"
+      - "${TORCH_AGENTS:-2}"
+    restart: "no"
+    profiles: ["torch"]
+
+# Uncomment with the server-scores volume above for persistent scores.json.
+# volumes:
+#   server-scores:

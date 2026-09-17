@@ -14,6 +14,13 @@ All notable changes to the text MMO engine are recorded here.
   leader, accept relocates out of the old dungeon, kill gold splits among
   present contributors only; commercial half-up tax rounding with 1g
   trades paying out in full.
+- Docker full stack (#71): `Dockerfile` (lean `python:3.12-slim`,
+  torch only via `INSTALL_TORCH=1`) + `compose.yaml` -- `docker compose up`
+  runs server (8765) + dashboard (8766) + 4 scripted bots, with `soak`
+  (conductor, 6 agents/2min) and `torch-farm` profiles. `TEXTMMO_GM_HOST`
+  env (default `127.0.0.1`) lets compose reach `ws://server:8767`
+  internally; GM stays unpublished to the host (no auth). Protocol
+  unchanged (`PROTOCOL_VERSION = 1`).
 - Env expressiveness (#194) + remedy/tonic quests (#183): `market_post`
   priced (undercut best ask, else merchant value + 1), `commission_post`
   parameterized from state (hostile target or `rat` default, escrow up to

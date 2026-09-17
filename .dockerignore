@@ -1,0 +1,21 @@
+# Build context hygiene: never bake local state, secrets, or caches (#71).
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+scores.json*
+ml/ml_weights.json
+ml/ml_best.json
+torch_agents/ml_weights.json
+torch_agents/ml_best.json
+*.pt
+*.pth
+*.log
+soak_run/
+soak_logs/
+val_soak/
+wiki/
+.DS_Store
