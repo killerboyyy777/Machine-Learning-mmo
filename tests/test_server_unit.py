@@ -320,6 +320,33 @@ async def main():
         srv.remove_member(pl)
         srv.players.pop(pl.id, None)
 
+    # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
+    griefer = mkplayer("Griefer", 60001, room="town_square")
+    guard_hp0 = srv.npcs["guard"]["hp"]
+    for _ in range(3):  # repeated attempts hold the rule
+        await srv.cmd_attack(griefer, {"target": "guard"})
+        assert inbox[-1]["type"] == "error" and "protection" in inbox[-1]["text"], inbox[-1]
+    assert srv.npcs["guard"]["alive"] and srv.npcs["guard"]["hp"] == guard_hp0
+    assert srv.npcs["guard"]["contributors"] == {}
+    assert srv.get_score_entry("Griefer")["score"] == 0  # not even the -0.5 fired
+    griefer2 = mkplayer("Griefer2", 60002, room="healing_spring")
+    await srv.cmd_attack(griefer2, {"target": "maren"})
+    assert inbox[-1]["type"] == "error" and "protection" in inbox[-1]["text"], inbox[-1]
+    assert srv.npcs["healer"]["alive"]
+    # Non-givers still take damage (no blanket pacifism; merchant can't retaliate).
+    shopper = mkplayer("Shopper", 60003, room="market")
+    merchant_hp0 = srv.npcs["merchant"]["hp"]
+    await srv.cmd_attack(shopper, {"target": "merchant"})
+    assert inbox[-1]["type"] == "combat", inbox[-1]
+    assert srv.npcs["merchant"]["hp"] < merchant_hp0
+    # Quest flow untouched: giver present, accept works after attempts.
+    await srv.cmd_quest(griefer, {"action": "accept", "quest": "guard_charm"})
+    assert srv.get_score_entry("Griefer").get("quest_guard_active")
+    unplayer(griefer)
+    unplayer(griefer2)
+    unplayer(shopper)
+    print("GIVER_IMMUNITY_OK")
+
     # announce: empty text rejected, real text charged + broadcast
     srv.tax_treasury = 100.0
     n0 = len(inbox)
