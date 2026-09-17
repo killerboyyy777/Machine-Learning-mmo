@@ -3,6 +3,15 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Soak readiness (#201): `server.py --config <path>` runs on an overlay
+  config without touching the prod file (`COMMISSION_TTL_SECONDS` moved
+  above the config load so overlays can set it); short-TTL soak overlay
+  at `ml/conductor/soak_server_config.json`; `commissioner` scripted
+  role (deterministic post → kill → fill → cancel cycle) in farm
+  `--scripted` choices and `--slot`; loopback `gm_tables` snapshot plus
+  `soak_report.json` (tables, treasury, log errors, per-type rewards)
+  with the verdict still liveness-based; nightly soak runs the overlay
+  with mixed role slots.
 - Launcher cleanup (#178): removed redundant `torch_bot_longterm.bat`
   (one-liner subsumed by `torch_bot.bat --steps N`) and `torch_bots.bat`
   (N processes, one checkpoint file — the last-writer-wins race
