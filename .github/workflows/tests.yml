@@ -32,6 +32,9 @@ jobs:
       - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
       - run: python tests/test_scores_backup.py
+      - run: python tests/test_training_loops.py
+      - run: python tests/test_conductor_run.py
+      - run: python tests/test_gm_unit.py
 
   live:
     name: Live protocol + ML env (fresh server, seed 700)
