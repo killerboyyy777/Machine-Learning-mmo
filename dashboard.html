@@ -694,16 +694,18 @@ function renderActivity(activity) {
 }
 
 function renderMarket(m) {
-  $("m-treasury").textContent = m.treasury.toFixed(1);
-  $("m-lifetime").textContent = m.collected_lifetime.toFixed(1);
-  $("m-trades").textContent = m.trade_count;
-  $("g-treasury").textContent = m.treasury.toFixed(1);
+  const treasury = m.treasury ?? 0;
+  $("m-treasury").textContent = treasury.toFixed(1);
+  $("m-lifetime").textContent = (m.collected_lifetime ?? 0).toFixed(1);
+  $("m-trades").textContent = m.trade_count ?? 0;
+  $("g-treasury").textContent = treasury.toFixed(1);
   if (typeof updateGMCosts === "function") updateGMCosts();
-  $("orders").innerHTML = m.orders.map((o, i) => `
+  const orders = m.orders || [];
+  $("orders").innerHTML = orders.map((o, i) => `
     <tr><td>${i+1}</td><td>${esc(o.id)}</td><td>${esc(o.item)}</td>
         <td><b>${o.price}</b></td><td class="sell">${esc(o.seller)}</td>
         <td>${esc(o.ts)}</td></tr>`).join("");
-  $("noOrders").style.display = m.orders.length ? "none" : "";
+  $("noOrders").style.display = orders.length ? "none" : "";
   const history = m.history || [];
   $("tradeHistory").innerHTML = history.map((h, i) => `
     <tr><td>${i+1}</td><td>${esc(h.time ?? h.ts)}</td><td class="buy">${esc(h.buyer)}</td>

@@ -51,4 +51,14 @@ stray = [line for line in html.splitlines()
 assert not stray, f"stray markers: {stray[:3]}"
 print("PLACEHOLDERS_OK")
 
+# --- renderMarket tolerates partial snapshots (#246) ---
+rm = re.search(r"function renderMarket\(m\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert rm, "renderMarket not found"
+body = rm.group(1)
+assert "m.treasury ?? 0" in body or "treasury ?? 0" in body, "treasury default missing"
+assert "m.collected_lifetime ?? 0" in body or "collected_lifetime ?? 0" in body
+assert "m.trade_count ?? 0" in body or "trade_count ?? 0" in body
+assert "m.orders || []" in body or "orders || []" in body
+print("MARKET_DEFAULTS_OK")
+
 print("ALL_DASHBOARD_OK")
