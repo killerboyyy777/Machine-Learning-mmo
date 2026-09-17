@@ -57,6 +57,11 @@ def parse_args():
     p.add_argument("--agents", type=int, default=50)
     p.add_argument("--duration", type=float, default=3600.0, help="seconds")
     p.add_argument("--url", default="ws://localhost:8765")
+    p.add_argument("--gm-url", default="ws://localhost:8767",
+                   help="loopback GM stream for the end-of-run tables snapshot")
+    p.add_argument("--server-log", default=None,
+                   help="server stdout log path; when given, the report counts "
+                        "handler-error lines and tracebacks in it")
     p.add_argument("--base-dir", default="soak_run")
     p.add_argument(
         "--min-agents",
@@ -147,6 +152,44 @@ async def status_logger(cond, path, interval):
     _append_jsonl(path, summarize(cond))
 
 
+async def gm_tables_snapshot(gm_url, timeout=10.0):
+    """One gm_tables reply from the loopback GM stream; {"error": ...} when
+    the server is gone or silent (report records it, verdict ignores it --
+    the snapshot is observability, not a gate)."""
+    try:
+        import websockets
+        ws = await asyncio.wait_for(websockets.connect(gm_url), timeout)
+        try:
+            await ws.send(json.dumps({"cmd": "gm_tables"}))
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout)
+                msg = json.loads(raw)
+                if msg.get("type") == "tables":
+                    return msg
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def count_server_errors(log_path):
+    """Cheap log scan: handler-error one-liners + tracebacks. Missing file
+    (or no --server-log) yields None, not zero -- absence of evidence is
+    not evidence of absence."""
+    if not log_path:
+        return None
+    try:
+        with open(log_path, errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    return {"handler_errors": text.count("handler error on"),
+            "tracebacks": text.count("Traceback (most recent call last)")}
+
+
 async def main():
     args = parse_args()
     logf = setup_file_logging(args.base_dir)
@@ -218,11 +261,37 @@ async def main():
     alive = st["registry"]["alive"]
     running = st["supervisor"]["running"]
     print(f"[soak] end: alive={alive}/{args.agents} running={running}")
-    for ptype, cell in sorted(st.get("by_type", {}).items()):
+    by_type = st.get("by_type", {})
+    for ptype, cell in sorted(by_type.items()):
         print(
             f"[soak]   {ptype}: alive={cell['alive']} "
             f"episodes={cell['episodes']} mean_reward={cell['mean_reward']}"
         )
+    # Snapshot report (phase 1 of the correctness gate): server table
+    # sizes, treasury values, and log error counts, plus per-type reward
+    # windows. Informational only -- the verdict stays liveness-based
+    # until the snapshot version catches a real drift.
+    tables = await gm_tables_snapshot(args.gm_url)
+    log_errors = count_server_errors(args.server_log)
+    print(f"[soak] tables: {tables}", flush=True)
+    print(f"[soak] server_log_errors: {log_errors}", flush=True)
+    report = {
+        "ts": time.time(),
+        "duration": args.duration,
+        "agents": args.agents,
+        "alive": alive,
+        "supervisor_running": running,
+        "episodes": sum(c.get("episodes", 0) for c in by_type.values()),
+        "by_type": {k: {"alive": c.get("alive"), "episodes": c.get("episodes"),
+                        "mean_reward": c.get("mean_reward")}
+                    for k, c in by_type.items()},
+        "tables": tables,
+        "server_log_errors": log_errors,
+    }
+    report_path = os.path.join(args.base_dir, "soak_report.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"[soak] report: {report_path}", flush=True)
     if alive < args.min_agents:
         print(f"[soak] FAIL: alive {alive} < min {args.min_agents}")
         return 1

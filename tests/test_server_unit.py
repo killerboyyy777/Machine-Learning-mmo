@@ -885,6 +885,27 @@ async def main():
             _os.remove(cfg_path)
     print("BOOL_CONFIG_OK")
 
+    # --config overlay: short TTLs apply, untouched keys keep prod defaults
+    import os as _os2
+    overlay = _os2.path.join(_os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))),
+                             "ml", "conductor", "soak_server_config.json")
+    real_cfg2 = srv.CONFIG_FILE
+    saved_ttls = (srv.MARKET_ORDER_TTL_SECONDS, srv.PARTY_INVITE_TTL_SECONDS,
+                  srv.COMMISSION_TTL_SECONDS)
+    try:
+        args = srv.parse_args(["--config", overlay])
+        srv.CONFIG_FILE = args.config
+        srv._apply_config()
+        assert srv.MARKET_ORDER_TTL_SECONDS == 300, srv.MARKET_ORDER_TTL_SECONDS
+        assert srv.PARTY_INVITE_TTL_SECONDS == 60, srv.PARTY_INVITE_TTL_SECONDS
+        assert srv.COMMISSION_TTL_SECONDS == 600, srv.COMMISSION_TTL_SECONDS
+        assert srv.COMMISSION_MAX_XP == 500  # not in overlay: prod default kept
+    finally:
+        srv.CONFIG_FILE = real_cfg2
+        (srv.MARKET_ORDER_TTL_SECONDS, srv.PARTY_INVITE_TTL_SECONDS,
+         srv.COMMISSION_TTL_SECONDS) = saved_ttls
+    print("CONFIG_FLAG_OK")
+
     # market stall + cancel share one case-insensitive identity (#192 market)
     caseseller = mkplayer("CaseSeller", 50029, room="market")
     caseseller.inventory.extend(["healing_herb"] * 4)

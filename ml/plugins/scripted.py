@@ -1,9 +1,9 @@
 """Scripted behavior-tree baselines as plugins (moved from ml_botfarm.py).
 
 Each role is a registered plugin (``gather``/``dungeon``/``market``/
-``maker``) sharing the ``ScriptedPolicy`` priority-list machinery. No
-learning, just behavior trees over the env's valid-action mask -- the
-fixed comparison point for RL runs.
+``maker``/``commissioner``) sharing the ``ScriptedPolicy`` priority-list
+machinery. No learning, just behavior trees over the env's valid-action
+mask -- the fixed comparison point for RL runs.
 """
 
 import random
@@ -160,16 +160,56 @@ class MakerPlugin(ScriptedPolicy):
         yield self._first_valid(env, self.WANDER, mask)
 
 
+@register
+class CommissionerPlugin(ScriptedPolicy):
+    """Bounty driver: deterministic post -> kill -> fill -> cancel cycle so
+    commission paths (caps, kill verification/consumption, collusion curve,
+    expiry) execute under load instead of by epsilon-accident. Attacks
+    anything hostile to earn verified kills, fills others' bounties when
+    able (server rejections are signal, not failure), and cancels its own
+    oldest when the board is full. Doubles as the regression driver for
+    every future commission change."""
+
+    name = "commissioner"
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("attack", "take"), mask)
+        if not s.get("open_commissions") and env._step_count % 2 == 0:
+            # Empty board: refresh on even steps, (re)stock on odd steps.
+            # Without the parity split the unconditional post below would
+            # starve list on a quiet board (or vice versa) -- state only
+            # changes on events, so a fixed priority would repeat one side
+            # forever.
+            yield self._first_valid(env, ("commission_list",), mask)
+        yield self._first_valid(env, ("commission_fill",), mask)
+        mine = [c for c in (s.get("open_commissions") or [])
+                if c.get("poster") == env.name]
+        if not mine:
+            yield self._first_valid(env, ("commission_post",), mask)
+        else:
+            # Rotate stock: cancel the oldest, repost on later steps. The
+            # churn feeds terminal-prune expiry as well as cancel paths.
+            yield self._first_valid(env, ("commission_cancel",), mask)
+        yield self._first_valid(env, ("commission_list",), mask)
+        yield self._first_valid(env, ("equip", "buy"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
 # Backward-compatible aliases (ml_botfarm and its tests import these).
 GatherSellPolicy = GatherPlugin
 DungeonClearerPolicy = DungeonPlugin
 MarketFlipperPolicy = MarketPlugin
 MarketMakerPolicy = MakerPlugin
+CommissionerPolicy = CommissionerPlugin
 
 SCRIPTED_POLICIES = {
     "gather": GatherSellPolicy,
     "dungeon": DungeonClearerPolicy,
     "market": MarketFlipperPolicy,
     "maker": MarketMakerPolicy,
+    "commissioner": CommissionerPolicy,
 }
 SCRIPTED_NAMES = tuple(SCRIPTED_POLICIES)

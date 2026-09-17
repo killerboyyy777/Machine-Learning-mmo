@@ -49,7 +49,7 @@ try:
     from .plugins.scripted import (
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
-        MarketMakerPolicy,
+        MarketMakerPolicy, CommissionerPolicy,
     )
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
@@ -58,7 +58,7 @@ except ImportError:
     from plugins.scripted import (
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
-        MarketMakerPolicy,
+        MarketMakerPolicy, CommissionerPolicy,
     )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
