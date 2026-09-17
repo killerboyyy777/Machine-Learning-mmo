@@ -149,6 +149,20 @@ class Supervisor:
         except Exception:
             pass
 
+    def _log_episode(self, agent_id, event):
+        # Every completed episode is logged, unsampled: at observed soak
+        # rates (~0.3 eps/s fleet-wide, ~120 bytes/row) this is tens of
+        # bytes/s -- a 50MB segment lasts ~2 weeks, six of them ~3 months.
+        # Rotation caps are the volume guard; revisit sampling if a run
+        # ever rotates twice (none has).
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.log_episode(agent_id, event["episode"],
+                                      event["reward"], event.get("steps", 0))
+        except Exception:
+            pass
+
     async def start_agent(self, agent_id, env_factory, policy_fn, max_steps=2000,
                           step_timeout=None):
         """Start an isolated task for one agent.
@@ -179,6 +193,7 @@ class Supervisor:
         try:
             async for event in at.run():
                 self.registry.record_episode(at.agent_id, event["reward"])
+                self._log_episode(at.agent_id, event)
                 if self._episode_hook is not None:
                     try:
                         self._episode_hook(at.agent_id, event)

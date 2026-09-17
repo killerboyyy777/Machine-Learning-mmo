@@ -438,4 +438,24 @@ async def _sup_mixer():
 asyncio.run(_sup_mixer())
 print("MIXER_AUTO_OK")
 
+# --- #210: completed episodes land in metrics.jsonl via the supervisor ---
+async def _sup_episodes():
+    mpath = os.path.join(tmpdir, "episodes.jsonl")
+    mlog = MetricsLogger(mpath, buffer_size=10000, flush_every=0)
+    r = Registry(os.path.join(tmpdir, "sup_ep"), max_agents=5)
+    sup = Supervisor(r, metrics=mlog)
+    await sup.start_agent("e1", lambda aid: _FakeEnv(), lambda obs, aid: 0)
+    await asyncio.sleep(0.3)
+    await sup.stop_all()
+    mlog.flush()
+    rows = [json.loads(line) for line in open(mpath) if line.strip()]
+    eps = [row for row in rows if row.get("event") == "episode"]
+    assert len(eps) >= 2, rows  # 1-step fake env completes many episodes
+    assert all(row["agent_id"] == "e1" for row in eps)
+    assert [row["episode"] for row in eps] == sorted(row["episode"] for row in eps)
+    assert all(row["reward"] == 1.0 for row in eps)  # fake env pays 1.0/step
+
+asyncio.run(_sup_episodes())
+print("EPISODE_METRICS_OK")
+
 print("ALL_CONDUCTOR_OK")
