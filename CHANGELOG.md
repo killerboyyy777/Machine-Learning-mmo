@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Shutdown task lifecycle (#244): background loops are tracked and
+  cancelled before the final scores save (no concurrent save_scores);
+  they also start only after both listeners bind (refines #242).
 - Startup listener hygiene (#242): a failed GM bind now closes the game
   listener before propagating instead of leaving it bound.
 - Dashboard GM origin (#236): the console dialed hardcoded 127.0.0.1, so

@@ -3618,9 +3618,12 @@ async def main():
         sys.stderr = _logf
         print(f"[server] logging to {log_file}", flush=True)
     start_dashboard()
-    asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop))
-    asyncio.create_task(_run_resilient("scores_save", scores_save_loop))
-    asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop))
+    # Background loops start only after BOTH listeners bind (#242): a GM
+    # bind failure then leaks nothing. Handles are kept + cancelled on
+    # shutdown (#244): an untracked scores_save_loop could otherwise enter
+    # save_scores() concurrently with the final save below (same tmp file
+    # + rotation).
+    bg_tasks = []
     # Graceful shutdown (#55): SIGTERM/SIGINT break the wait below so the
     # finally chain runs -- listeners close, player sockets close, scores
     # persist, exit 0. Platforms without handler support fall back to
@@ -3644,6 +3647,11 @@ async def main():
             game_server.close()
             await game_server.wait_closed()
             raise
+        bg_tasks.extend([
+            asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop)),
+            asyncio.create_task(_run_resilient("scores_save", scores_save_loop)),
+            asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop)),
+        ])
         try:
             await stop.wait()
         finally:
@@ -3659,6 +3667,13 @@ async def main():
                         await ws.close()
                     except Exception:
                         pass
+            for t in bg_tasks:
+                t.cancel()
+            for t in bg_tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
     finally:
         save_scores()
         print("Scores saved. Bye.", flush=True)

@@ -1235,6 +1235,46 @@ async def main():
                     f.write(_data)
     print("STARTUP_LEAK_OK")
 
+    # shutdown cancels background tasks before the final save (#244)
+    saved_ports2 = (srv.PORT, srv.GM_PORT, srv.HTTP_PORT)
+    saved_scores2 = {}
+    for _sfx in ("", ".1", ".2"):
+        _p = srv.SCORES_FILE + _sfx
+        saved_scores2[_sfx] = open(_p, "rb").read() if _os.path.exists(_p) else None
+    srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18781, 18782, 18783
+    try:
+        main_task = asyncio.create_task(srv.main())
+        for _ in range(100):
+            await asyncio.sleep(0.1)
+            try:
+                _probe2 = _socket.socket()
+                _probe2.connect(("127.0.0.1", 18781))
+                _probe2.close()
+                break
+            except OSError:
+                pass
+        else:
+            raise AssertionError("test server did not boot")
+        main_task.cancel()
+        try:
+            await main_task
+        except asyncio.CancelledError:
+            pass
+        lingering = [t for t in asyncio.all_tasks()
+                     if not t.done() and getattr(t.get_coro(), "__qualname__", "") == "_run_resilient"]
+        assert not lingering, f"background tasks survive shutdown: {lingering}"
+    finally:
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = saved_ports2
+        for _sfx, _data in saved_scores2.items():
+            _p = srv.SCORES_FILE + _sfx
+            if _data is None:
+                if _os.path.exists(_p):
+                    _os.remove(_p)
+            else:
+                with open(_p, "wb") as f:
+                    f.write(_data)
+    print("SHUTDOWN_TASKS_OK")
+
     # /health reads the cached snapshot, never the live dict (#224)
     import json as _json2
     hp1 = mkplayer("HealthOne", 52002)
