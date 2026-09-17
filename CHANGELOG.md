@@ -3,6 +3,22 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Env expressiveness (#194) + remedy/tonic quests (#183): `market_post`
+  priced (undercut best ask, else merchant value + 1), `commission_post`
+  parameterized from state (hostile target or `rat` default, escrow up to
+  10g), affordability-aware `market_buy`, merchant-gated `sell` /
+  `buy_arrows`; `combat` / `inventory` events parsed; dynamic shards
+  resolve through live `ITEM_DEFS`. Remedy/tonic join the QUESTS mirror,
+  stats flags, transitions, `by_quest`, quest3/4 obs (+6 dims → 181) and
+  four new stage-2 actions, with torch aux targets in both trainer paths.
+  Checkpoints restart fresh; no server changes. `party_leave` / `info`
+  deliberately ungated (room-event size lags joins).
+- Conductor episode metrics (#210): the supervisor logs every completed
+  episode to `metrics.jsonl` (unsampled; rotation caps are the volume
+  guard), so the reward non-collapse gate finally has input.
+- Dashboard render fix (#211): `renderAll` called bare `render()` while
+  every section is an `s => ...` arrow -- all tabs threw `s is undefined`
+  behind a `live` status. One-line pass-through.
 - Soak arrivals default 2.0 → 5.0/min (#214, part 1): post-#198 deaths
   are episode-driven (~2.2/min at 50 agents) while arrivals were a fixed
   wall-clock trickle, so the nightly converged to ~35/50 under a 40 gate.
