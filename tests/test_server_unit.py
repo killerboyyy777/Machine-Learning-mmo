@@ -726,27 +726,6 @@ async def main():
     unplayer(kickme)
     print("GM_KICK_OK")
 
-    # gm_reward validates before spending: no recipient, no debit (#223)
-    srv.tax_treasury = 500.0
-    inbox.clear()
-    await srv.cmd_gm_reward(p_gm, {"gold": 100})
-    assert inbox[-1]["type"] == "error" and "player" in inbox[-1]["text"].lower(), inbox[-1]
-    assert srv.tax_treasury == 500.0
-    await srv.cmd_gm_reward(p_gm, {"item": "arrow", "player": "NobodyOnline"})
-    assert inbox[-1]["type"] == "error" and "not found" in inbox[-1]["text"].lower(), inbox[-1]
-    assert srv.tax_treasury == 500.0
-    await srv.cmd_gm_reward(p_gm, {"item": "arrow"})
-    assert inbox[-1]["type"] == "error" and "player" in inbox[-1]["text"].lower(), inbox[-1]
-    assert srv.tax_treasury == 500.0
-    # valid deliveries still spend + land
-    gifted = mkplayer("Gifted", 40005)
-    g0 = gifted.gold
-    await srv.cmd_gm_reward(p_gm, {"gold": 100, "player": "Gifted"})
-    assert gifted.gold == g0 + 100
-    assert srv.tax_treasury == 400.0
-    unplayer(gifted)
-    print("GM_REWARD_VALIDATE_OK")
-
     # commissions: fill needs verified kills since posting, no self-dealing
     poster = mkplayer("Poster", 40005)
     poster.gold = 100

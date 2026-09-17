@@ -40,9 +40,10 @@ All notable changes to the text MMO engine are recorded here.
   sync; covered by QUEST_CONFIG_OK.
 - Scripted delver gating (#235): DungeonPlugin ordered ungated turn_in
   before accept, making accept unreachable; now ordered by quest state.
-- GM reward validation (#223): `gm_reward` spent treasury gold before
-  resolving the recipient (empty/offline targets burned funds); now
-  validates first for both gold and items.
+- GM reward validation (#223, implemented in #252): `gm_reward` spent
+  treasury gold before resolving the recipient (empty/offline targets
+  burned funds); now validates first for both gold and items, covered by
+  `tests/test_gm_unit.py`.
 - Buff tick gating (#237): read-only commands (look/stats/inventory/who/
   leaderboard/help, list views, login, quest list) no longer consume
   action-based buffs.
