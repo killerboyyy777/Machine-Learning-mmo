@@ -2624,7 +2624,7 @@ async def cmd_market_cancel(player, msg):
 
 async def cmd_market_expand(player, msg):
     """Buy +1 market stall slot. Fee goes to the GM treasury (gold sink)."""
-    global tax_treasury
+    global tax_treasury, tax_collected_lifetime
     entry = get_score_entry(player.name)
     slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
     price = market_slot_price(slots)
@@ -2633,6 +2633,7 @@ async def cmd_market_expand(player, msg):
         return
     player.gold -= price
     tax_treasury += price
+    tax_collected_lifetime += price
     entry["market_slots"] = slots + 1
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"Market stall expanded to {slots + 1} slots for {price} gold (next: {market_slot_price(slots + 1)} gold)."})

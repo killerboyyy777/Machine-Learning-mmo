@@ -286,6 +286,17 @@ async def main():
     assert srv.SCORES["seller"]["gold_bank"] == 90
     print("MARKET_TAX_OK")
 
+    # --- Market expand accounts lifetime (#240) ---
+    srv.tax_treasury = 0.0; srv.tax_collected_lifetime = 0.0
+    expander = srv.Player(ws=FakeWS(), id=20003, name="Expander", logged_in=True)
+    expander.gold = 1000
+    slots0 = srv.get_score_entry("Expander").get("market_slots", srv.MARKET_ORDER_SLOTS_BASE)
+    price0 = srv.market_slot_price(slots0)
+    await srv.cmd_market_expand(expander, {})
+    assert srv.tax_treasury == price0 and srv.tax_collected_lifetime == price0, (srv.tax_treasury, srv.tax_collected_lifetime)
+    assert srv.get_score_entry("Expander")["market_slots"] == slots0 + 1
+    print("MARKET_EXPAND_LIFETIME_OK")
+
     # --- GM spend from treasury ---
     p_gm = srv.Player(ws=FakeWS(), id=30001, name="GMBot", logged_in=True)
     assert srv._is_gm(p_gm)
