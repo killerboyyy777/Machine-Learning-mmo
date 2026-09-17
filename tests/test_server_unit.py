@@ -551,4 +551,111 @@ async def main():
     qentry["guard_charm_crafted"] = False
     print("QUEST_OK")
 
+    # wash trade (#188): explicit-id self-buy rejected, listing survives,
+    # legit buy pays score/XP exactly once per side
+    srv.buffs["xp"] = 0
+    srv.buffs["gold"] = 0
+    herb_name = srv.ITEM_DEFS["healing_herb"]["name"]
+    wash = mkplayer("Wash", 50001, room="market")
+    wash.gold = 200
+    wash.inventory.append("healing_herb")
+    wash_xp0 = srv.get_score_entry("Wash")["xp"]
+    await srv.cmd_market_post(wash, {"item": herb_name, "price": 10})
+    oid = max(o["id"] for o in srv.market_orders if o["seller"] == "Wash")
+    await srv.cmd_market_buy(wash, {"id": oid})
+    assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[-1]
+    assert any(o["id"] == oid for o in srv.market_orders)  # not consumed
+    assert srv.get_score_entry("Wash")["xp"] == wash_xp0  # nothing minted
+    patsy = mkplayer("Patsy", 50002, room="market")
+    patsy.gold = 200
+    patsy_xp0 = srv.get_score_entry("Patsy")["xp"]
+    seller_xp0 = srv.get_score_entry("Wash")["xp"]
+    await srv.cmd_market_buy(patsy, {"id": oid})
+    assert not any(o["id"] == oid for o in srv.market_orders)
+    assert srv.get_score_entry("Patsy")["xp"] - patsy_xp0 == 3.0
+    assert srv.get_score_entry("Wash")["xp"] - seller_xp0 == 3.0
+    unplayer(wash)
+    unplayer(patsy)
+    print("WASH_TRADE_OK")
+
+    # commission XP cap + kill consumption (#189)
+    rich = mkplayer("RichPoster", 50003)
+    rich.gold = 1000000
+    await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
+                                         "reward_gold": 10, "reward_xp": 999999})
+    assert inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower(), inbox[-1]
+    assert rich.gold == 1000000  # no escrow taken on rejection
+    before = set(srv._commissions)
+    await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
+                                         "reward_gold": 10, "reward_xp": 500})
+    cid_a = max(set(srv._commissions) - before)
+    assert srv._commissions[cid_a]["reward_xp"] == 500
+    before = set(srv._commissions)
+    await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
+                                         "reward_gold": 10, "reward_xp": 5})
+    cid_b = max(set(srv._commissions) - before)
+    killer = mkplayer("Killer", 50004, room="old_shop")
+    # kill recorded AFTER both postings, so both bounties can see it --
+    # the first fill must consume it, leaving the second one empty
+    srv.record_npc_kill("Killer", "Giant Rat")
+    assert srv.verified_npc_kills("Killer", "rat", 0) >= 1
+    await srv.cmd_commission_fill(killer, {"commission_id": cid_a})
+    assert srv._commissions[cid_a]["status"] == "completed"
+    # the single verified kill was consumed: second bounty can't reuse it
+    await srv.cmd_commission_fill(killer, {"commission_id": cid_b})
+    assert inbox[-1]["type"] == "error" and "verified" in inbox[-1]["text"], inbox[-1]
+    assert srv._commissions[cid_b]["status"] == "open"
+    unplayer(rich)
+    unplayer(killer)
+    print("COMMISSION_CAP_OK")
+
+    # relic craft with ungenerated dynamic mats errors cleanly (#190)
+    crafter = mkplayer("Crafter", 50005, room="town_square")
+    await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
+    assert inbox[-1]["type"] == "error" and "dungeon_shard_10" in inbox[-1]["text"], inbox[-1]
+    unplayer(crafter)
+    print("RELIC_CRAFT_OK")
+
+    # malformed input never drops the connection (#190): drive the real
+    # connection loop with a scripted socket, then check error replies
+    # landed and the player table has no residue. NOTE: the real send()
+    # path is required here (the fake_send patch bypasses the outbound
+    # queue + writer task this block exercises).
+    _patched_send = srv.send
+    srv.send = orig_send
+
+    class ScriptWS:
+        def __init__(self, raws):
+            self._raws = list(raws)
+            self.sent = []
+            self.remote_address = ("127.0.0.1", 1)
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for raw in self._raws:
+                yield raw
+            # let the outbound writer flush the queue before the loop
+            # ends (cleanup cancels it immediately after)
+            await asyncio.sleep(0.3)
+            for _ in range(20):
+                if len(self.sent) >= 5:
+                    break
+                await asyncio.sleep(0.1)
+
+        async def send(self, payload):
+            self.sent.append(payload if isinstance(payload, dict) else json.loads(payload))
+
+    n_players_before = len(srv.players)
+    sws = ScriptWS([json.dumps([]), json.dumps(42), json.dumps("hi"),
+                    json.dumps({"cmd": ["x"]}),
+                    json.dumps({"cmd": "login", "name": 123})])
+    await srv.handle_connection(sws)
+    errs = [m for m in sws.sent if m.get("type") == "error"]
+    assert len(errs) == 5, sws.sent
+    assert len(srv.players) == n_players_before
+    srv.send = _patched_send
+    print("MALFORMED_OK")
+
 asyncio.run(main())
