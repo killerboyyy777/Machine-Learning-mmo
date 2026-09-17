@@ -676,7 +676,6 @@ def collusion_multiplier(poster_name, filler_name):
     # Case-normalised: score entries are keyed by lower-cased name, so
     # "Alice" and "alice" are the same economic actor. Exact-case keys
     # here would let case variants reset the collusion curve for free.
-    # (Pre-fix mixed-case keys simply age out unused.)
     poster = get_score_entry(poster_name)
     prev = poster.get("collab_fills", {}).get((filler_name or "").lower(), 0)
     return max(0.1, 1.0 / (1 + prev))
