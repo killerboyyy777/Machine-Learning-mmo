@@ -19,7 +19,7 @@ on:
     inputs:
       agent_ref:
         description: "Agent branch to sync and test"
-        default: "agent/proxmox-221-item-presence"
+        default: "agent/221-item-presence"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 env:
-  AGENT_REF: ${{ inputs.agent_ref || 'agent/proxmox-221-item-presence' }}
+  AGENT_REF: ${{ inputs.agent_ref || 'agent/221-item-presence' }}
 
 jobs:
   sync-mirror:
