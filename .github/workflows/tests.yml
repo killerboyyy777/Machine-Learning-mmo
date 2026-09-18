@@ -2,7 +2,11 @@ name: Tests
 
 on:
   push:
-    branches: [master, "review/**"]
+    # agent/**: contributor pushes otherwise trigger nothing (push CI
+    # reads workflow files from the pushed branch, and agent branches
+    # predate every CI addition). Scheduled agent-sync remains the
+    # backstop for branches that never merge master in.
+    branches: [master, "review/**", "agent/**"]
   pull_request:
     branches: [master]
 
