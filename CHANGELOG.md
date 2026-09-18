@@ -9,7 +9,9 @@ All notable changes to the text MMO engine are recorded here.
   machines; soak `--arrivals` stays the healthy-state trickle.
 - Starting purse (#258): brand-new characters log in with `STARTING_GOLD`
   (10, tunable in `server_config.json` economy) to break the 0-gold
-  poverty trap; granted once per score entry, never topped up.
+  poverty trap; granted once per score entry (TTL-evicted entries re-grant
+  on return -- a ~10g/week welcome-back stipend at most), never topped up
+  otherwise.
 - New unit suites (#252): training loops, conductor run, and GM treasury
   coverage in CI; `gm_reward` validates the destination before spending,
   so failed rewards no longer debit the treasury with nothing delivered.

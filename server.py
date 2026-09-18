@@ -315,8 +315,9 @@ class DungeonFloor:
 
 
 class Dungeon:
-    """One private, infinitely-deep staircase owned by a party. Floors are
-    built lazily the first time anyone walks onto them."""
+    """One private staircase owned by a party, capped at DUNGEON_MAX_FLOOR
+    (the stairs crumble below). Floors are built lazily the first time
+    anyone walks onto them."""
 
     def __init__(self, party_id):
         self.id = next(_id_counter)
@@ -359,9 +360,7 @@ class Dungeon:
         gold = round(3 * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
         shard = f"dungeon_shard_{n}"
         # Relic items are registered on demand so loot scales with depth
-        # without pre-generating thousands of floors at startup. (There is no
-        # scaling blade anymore: the Warden's Blade is crafted from the
-        # floor-50 Warden's trophy at a fixed damage.)
+        # without pre-generating thousands of floors at startup.
         ITEM_DEFS.setdefault(shard, {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 2 + n * 4})
         for k in range(count):
             f.guards.append({
@@ -2194,8 +2193,7 @@ async def cmd_commission_fill(player, msg):
     await award_points(player, eff_xp + eff_gold, f"completed commission #{cid}")
     await award_xp(player.name, eff_xp, f"completed commission #{cid}")
     # Escrow remainder (posted gold minus reduced payout) is sunk to the
-    # treasury as documented -- previously it sat on the completed record
-    # forever and never arrived.
+    # treasury as a collusion deterrent.
     escrow = commission.get("escrow", offered_gold)
     player.gold += min(escrow, eff_gold)
     remainder = max(0, escrow - eff_gold)
@@ -2822,8 +2820,7 @@ async def cmd_market_buy(player, msg):
     buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
     seller_entry["tax_paid"] = seller_entry.get("tax_paid", 0.0) + tax
     # credit_gold pays live sellers directly (spendable immediately) and
-    # banks it for offline ones -- previously every payout parked in
-    # gold_bank until next login, so online sellers couldn't spend proceeds.
+    # banks it for offline ones.
     await credit_gold(choice["seller"], seller_payout)
     market_history.append({
         "time": time.strftime("%H:%M:%S"), "ts": time.time(),
@@ -2874,9 +2871,7 @@ async def cmd_gm_reward(player, msg):
             return
         target = msg.get("player", "")
         if not target:
-            # No one to pay: fail before spending, not after. Previously
-            # the treasury was debited and the gold vanished with a
-            # "rewarded ... to ?" message and no recipient.
+            # No one to pay: fail before spending, not after.
             await send(player, {"type": "error", "text": "gm_reward needs a 'player' for gold."})
             return
         if not await _spend_tax(player, gold, f"reward {gold}g"):
@@ -2901,9 +2896,7 @@ async def cmd_gm_reward(player, msg):
         target = msg.get("player", "")
         room = msg.get("room", "")
         p = find_player_anywhere(target) if target else None
-        # Validate the destination before spending: previously the treasury
-        # was debited first and unknown-player/missing-room errors left the
-        # spend with nothing delivered.
+        # Validate the destination before spending.
         if target and not p:
             await send(player, {"type": "error", "text": f"Player '{target}' not found."})
             return
