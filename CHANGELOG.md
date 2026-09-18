@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Dashboard hover tooltips (#76): every metric and GM-config label in
+  `dashboard.html` now carries a `title` tooltip explaining range and
+  impact (tax rates, treasury costs, death/level formulas, buff windows),
+  with a dotted-underline affordance and a `CARD_TIPS` map for the dynamic
+  overview cards. Covered by `tests/test_dashboard.py` (TOOLTIPS_OK).
 - Spawn-to-target churn (#214): each tick tops up toward the registry cap
   (at most `top_up_per_tick`, default 1) after the Poisson arrival, so
   episode-driven deaths can't bleed the population below cap on fast

@@ -51,4 +51,15 @@ stray = [line for line in html.splitlines()
 assert not stray, f"stray markers: {stray[:3]}"
 print("PLACEHOLDERS_OK")
 
+# --- #76: metric/config labels carry hover tooltips (range + impact) ---
+titled = re.findall(r'title="([^"]*)"', html)
+assert len(titled) >= 40, f"too few tooltips: {len(titled)}"
+assert not re.search(r'title=""', html), "empty title attribute"
+assert all(len(t) >= 20 for t in titled), "tooltip too short to explain range/impact"
+for probe in ('<div class="l" title="GM treasury',
+               '<label for="gm-action" title="',
+               "CARD_TIPS"):
+    assert probe in html, f"tooltip probe missing: {probe[:40]}"
+print(f"TOOLTIPS_OK ({len(titled)} titles, all non-empty)")
+
 print("ALL_DASHBOARD_OK")
