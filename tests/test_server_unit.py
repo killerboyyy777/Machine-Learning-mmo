@@ -420,6 +420,42 @@ async def main():
     unplayer(racer_b)
     print("DOUBLE_KILL_OK")
 
+    # --- Corpses don't retaliate (#265): whoever checks second skips the
+    # kill block AND the retaliation branch (50 attack would one-shot).
+    loser_a = mkplayer("LoserA", 60025, room="town_square", hp=20, max_hp=20)
+    loser_b = mkplayer("LoserB", 60026, room="town_square", hp=20, max_hp=20)
+    srv.npcs["corpse_dummy"] = {
+        "id": "corpse_dummy", "name": "Corpse Dummy", "room": "town_square",
+        "hp": 1, "max_hp": 20, "attack": 50, "hostile": True, "behavior": "idle",
+        "loot": [], "gold": 0, "respawn_seconds": 60,
+        "alive": True, "respawn_at": None, "contributors": {},
+    }
+    saved_send2 = srv.send
+    interleaved2 = {}
+
+    async def send_then_b2(p, payload):
+        await saved_send2(p, payload)
+        if (payload.get("type") == "combat" and "You hit" in payload.get("text", "")
+                and "b_ran" not in interleaved2):
+            interleaved2["b_ran"] = True
+            await srv.cmd_attack(loser_b, {"target": "corpse dummy"})
+
+    srv.send = send_then_b2
+    await srv.cmd_attack(loser_a, {"target": "corpse dummy"})
+    srv.send = saved_send2
+    assert interleaved2.get("b_ran")
+    assert not srv.npcs["corpse_dummy"]["alive"]
+    # No retaliation anywhere: hp untouched AND no death-respawn masking
+    # (a 50-attack retaliation that kills resets hp to full via respawn,
+    # so hp alone can't prove it -- deaths must stay zero too).
+    assert loser_a.hp == 20 and loser_b.hp == 20
+    assert srv.get_score_entry("LoserA")["deaths"] == 0
+    assert srv.get_score_entry("LoserB")["deaths"] == 0
+    del srv.npcs["corpse_dummy"]
+    unplayer(loser_a)
+    unplayer(loser_b)
+    print("CORPSE_NO_RETALIATION_OK")
+
     # --- Floor-1 reset farming delay (#195.2): leaving an uncleared
     # descent stamps re-entry delay; cleared/unstamped leaves don't.
     farmer = mkplayer("Farmer", 60006, room="graveyard")
@@ -1547,5 +1583,31 @@ async def main():
     assert "handler error on login: AttributeError" in logged, logged
     assert any(m.get("type") == "error" for m in spam_ws.sent)
     print("LOG_SPAM_OK")
+
+    # --- Starting purse (#258): granted once at first login, never topped up ---
+    purse_name = "PurseTester"
+    p1 = srv.Player(ws=FakeWS(), id=70001, name="", logged_in=False)
+    await srv.cmd_login(p1, {"name": purse_name})
+    assert p1.gold == srv.STARTING_GOLD, p1.gold
+    assert srv.get_score_entry(purse_name).get("starting_purse_claimed") is True
+    assert any("stakes you" in m.get("text", "") for m in inbox), inbox[-3:]
+    # relog with an empty pack: same entry, no second purse
+    p1.gold = 0
+    srv.remove_member(p1)
+    srv.name_owners.pop(purse_name.lower(), None)
+    p2 = srv.Player(ws=FakeWS(), id=70002, name="", logged_in=False)
+    await srv.cmd_login(p2, {"name": purse_name})
+    assert p2.gold == 0, p2.gold
+    # evicted entry (7d TTL path): counts as new again, re-grants once
+    srv.remove_member(p2)
+    srv.name_owners.pop(purse_name.lower(), None)
+    srv.SCORES.pop(purse_name.lower(), None)
+    p3 = srv.Player(ws=FakeWS(), id=70003, name="", logged_in=False)
+    await srv.cmd_login(p3, {"name": purse_name})
+    assert p3.gold == srv.STARTING_GOLD, p3.gold
+    srv.remove_member(p3)
+    srv.name_owners.pop(purse_name.lower(), None)
+    srv.SCORES.pop(purse_name.lower(), None)
+    print("STARTING_PURSE_OK")
 
 asyncio.run(main())

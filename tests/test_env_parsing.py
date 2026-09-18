@@ -13,11 +13,12 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
 
 import ml_env
-from ml_env import (ITEM_ID_TO_NAME, ITEM_LIST, MERCHANT_NAMES, OBS_SIZE,
-                    QUESTS, TextMMOEnv, _parse_commissions, best_market_ask,
-                    flatten_obs, flip_margin, inventory_value,
-                    merchant_value, pack_full, pack_units, quest_stage,
-                    quest_transitions)
+from ml_env import (GOAL_AXES, ITEM_ID_TO_NAME, ITEM_LIST,
+                    MERCHANT_NAMES, OBS_SIZE, QUESTS, TextMMOEnv,
+                    _parse_commissions, best_market_ask, flatten_obs,
+                    flip_margin, goal_reward, inventory_value, merchant_value,
+                    mutate_goal, pack_full, pack_units, quest_stage,
+                    quest_transitions, reward_vector, sample_goal)
 import server as srv  # noqa: E402  (ml_env extends sys.path on import)
 
 
@@ -263,6 +264,44 @@ def test_dynamic_shard_valuation():
     print("SHARD_VALUE_OK")
 
 
+def test_goal_vector_and_dot():
+    v = reward_vector(score_gain=1.0, gold_delta=5.0)
+    assert set(v) == set(GOAL_AXES) and v["score"] == 1.0 and v["xp"] == 0.0
+    assert goal_reward(v, {"w_score": 1.0, "w_gold": 0.5}) == 3.5
+    # Partial goals/vectors compose safely (missing keys read 0).
+    assert goal_reward({}, {"w_score": 1.0}) == 0.0
+    assert goal_reward(v, {}) == 0.0
+    print("GOAL_VECTOR_OK")
+
+
+def test_goal_sampling():
+    import random as _random
+    for seed in range(5):
+        _random.seed(seed)
+        g = sample_goal()
+        assert set(g) == {"w_" + a for a in GOAL_AXES}
+        assert abs(sum(g.values()) - 1.0) < 1e-9
+        assert all(x >= 0 for x in g.values())
+    _random.seed(7)
+    g = sample_goal()
+    m = mutate_goal(g)
+    assert abs(sum(m.values()) - 1.0) < 1e-9
+    assert all(x >= 0 for x in m.values())
+    assert m != g  # scale 0.2 moves a spread Dirichlet draw
+    assert mutate_goal({}) == {"w_" + a: 1.0 / len(GOAL_AXES) for a in GOAL_AXES}
+    print("GOAL_SAMPLE_OK")
+
+
+def test_env_goal_carriage():
+    import random as _random
+    _random.seed(3)
+    g = sample_goal()
+    e = TextMMOEnv("GoalT", goal=g)
+    assert e._state is not None and e.goal == g and e.goal is not g
+    assert TextMMOEnv("GoalFree").goal is None
+    print("GOAL_CARRIAGE_OK")
+
+
 test_discounted_commission_parses()
 test_pack_masks_from_server_count()
 test_priced_market_post()
@@ -275,4 +314,7 @@ test_maren_obs_features()
 test_equip_mask_excludes_worn_weapon()
 test_item_presence_vectors()
 test_dynamic_shard_valuation()
+test_goal_vector_and_dot()
+test_goal_sampling()
+test_env_goal_carriage()
 print("ALL_ENV_PARSE_OK")

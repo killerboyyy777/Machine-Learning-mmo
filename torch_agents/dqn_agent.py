@@ -6,32 +6,30 @@ diminishing-returns curve for free).
 
 Key design:
   - Observation: same flattened vector as flatten_obs() in ml_env.py,
-    including the 7-dim quest block (active/ready/has_charm/3 mats/giver_here)
-  - Action space: same N_ACTIONS as in ml_env.py (includes market AND quest
-    actions: quest_accept / quest_turn_in / craft_charm)
+    including the quest blocks (guard 7-dim, delver 3-dim, remedy/tonic
+    6-dim, plus arrows/buff/gear features)
+  - Action space: same N_ACTIONS as in ml_env.py (includes market, all
+    four quest chains' accept/turn_in, and crafting actions)
   - Reward: change in server score between steps (covers kills, room
     discovery, dungeon clears, crafting, market trades, quest turn-ins,
     assist payouts)
-  - Quest model: two Town Guard repeatable quests are first-class --
-    guard_charm (craft the Ancient Guardian Charm from 1x Treant Bark +
-    1x Troll Hide + 1x Ectoplasm) and delver (clear dungeon floors), both
-    accepted/turned in by the guard in Town Square for fixed XP + gold +
+  - Quest model: all four repeatable quests are first-class --
+    guard_charm and delver (Town Guard) plus remedy and tonic (Sister
+    Maren), each accepted/turned in by its giver for fixed XP + gold +
     score. The agent tracks each quest's stage from the observation,
     predicts imminent quest reward with its quest head, and gets a small
     intrinsic bonus the first time each stage transition fires per cycle
-    (accept/craft-or-ready) to bootstrap the long chains.
+    (accept/progress) to bootstrap the long chains.
   - Auxiliary heads: predict immediate gold gain, loot value, market P&L,
     and quest score from the observation, providing self-supervised
     representation learning. The loot target is quest-aware: charm-craft
     steps regress toward the charm's gold-terms net (turn-in gold minus
     mat merchant value -- negative, teaching the sell-mats-vs-quest
     profitability tradeoff) instead of the naive inventory proxy.
-  - Auxiliary heads: predict immediate gold gain, loot value, market P&L,
-    and quest score from the observation, providing self-supervised
-    representation learning
   - Market tracking: monitors posted/buy/cancel orders and computes
     trading profit/loss signals for auxiliary shaping, with exact
-    after-tax accounting (server takes TAX_RATE with a TAX_MINIMUM floor)
+    after-tax accounting (commercial half-up, minimum TAX_MINIMUM, never
+    the whole price)
   - Architecture: 3-layer MLP with shared trunk + 5 output heads
     (Q-values, gold, loot, market-value, quest-value)
   - Training: experience replay; online TD update per step with
@@ -40,9 +38,11 @@ Key design:
   (frozen random target vs trained predictor; normalized prediction error
   rides the TD target with weight rnd_lambda, predictor trains separately)
 - Save/load weights to torch_agents/ml_weights.json (torch.save format, separate
-     from the JSON weights used by ml_client.py). Note: adding quest dims
-     changed OBS_SIZE/N_ACTIONS, so checkpoints saved before quests need
-     retraining (load warns instead of crashing on shape mismatch).
+     from the JSON weights used by ml_client.py); torch_farm.py defaults to
+     ml_farm_weights.json / ml_farm_best.json instead. Note: obs/action
+     growth (quest blocks, new actions) changes OBS_SIZE/N_ACTIONS, so
+     older checkpoints need retraining (load warns instead of crashing on
+     shape mismatch).
 """
 
 import asyncio

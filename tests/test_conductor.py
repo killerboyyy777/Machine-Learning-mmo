@@ -77,7 +77,8 @@ print("CHURN_HELPERS_OK")
 
 # --- ChurnManager tick (arrivals only; deaths come from episodes) ---
 reg3 = Registry(os.path.join(tmpdir, "reg3"), max_agents=5)
-cm = ChurnManager(reg3, arrivals_per_minute=1000, mean_lifetime_episodes=2)
+cm = ChurnManager(reg3, arrivals_per_minute=1000, mean_lifetime_episodes=2,
+                  top_up_per_tick=0)  # Poisson character, no top-up
 cm._next_arrival = 0
 arrived = cm.tick(1.0)
 assert len(arrived) == 1
@@ -95,6 +96,21 @@ assert not reg3.get(aid).alive
 assert cm.report_episode(aid) is False  # unknown/gone ids are safe
 assert cm.report_episode("nobody") is False
 print("CHURN_TICK_OK")
+
+# --- spawn-to-target top-up (#214): multi-arrival ticks fill toward cap ---
+regt = Registry(os.path.join(tmpdir, "regt"), max_agents=5)
+cmt = ChurnManager(regt, arrivals_per_minute=0, mean_lifetime_episodes=100,
+                   top_up_per_tick=3)
+cmt._next_arrival = float("inf")  # Poisson off: top-up alone
+assert len(cmt.tick(1.0)) == 3
+assert len(cmt.tick(1.0)) == 2  # only room for 2 more: capped, not overfilled
+assert cmt.tick(1.0) == []  # at cap: nothing, no RuntimeError
+assert len(regt.alive_agents()) == 5 and regt.snapshot()["total"] == 5
+# top-up respects a dead slot the same way: kill one, next tick refills one
+regt.get(regt.alive_agents()[0].agent_id).alive = False
+assert len(cmt.tick(1.0)) == 1
+assert len(regt.alive_agents()) == 5
+print("CHURN_TOP_UP_OK")
 
 # --- Mixer ---
 reg4 = Registry(os.path.join(tmpdir, "reg4"), max_agents=10)
@@ -479,7 +495,6 @@ async def _sup_episodes():
 asyncio.run(_sup_episodes())
 print("EPISODE_METRICS_OK")
 
-
 async def _no_ghosts():
     # Failed starts die instead of lingering alive without tasks (#230):
     # a slotless conductor must end with alive == running == 0.
@@ -495,5 +510,66 @@ async def _no_ghosts():
 
 asyncio.run(_no_ghosts())
 print("NO_GHOSTS_OK")
+# --- #162 Phase 1: registry carries goals through save/load round-trip ---
+import random as _random
+_random.seed(11)
+from ml.ml_env import GOAL_AXES, sample_goal
+g_reg = sample_goal()
+reg_goal = Registry(os.path.join(tmpdir, "reg_goal"), max_agents=5)
+reg_goal.register("ga", "linear", goal=g_reg)
+snap = reg_goal.snapshot()
+assert snap["agents"][0]["goal"] == g_reg
+reg_goal.save()
+reg_goal2 = Registry(os.path.join(tmpdir, "reg_goal2"), max_agents=5)
+reg_goal2.load(os.path.join(tmpdir, "reg_goal", "registry.json"))
+assert reg_goal2.get("ga").goal == g_reg
+print("REGISTRY_GOAL_OK")
+
+# --- #162 Phase 1: churn spawns carry simplex goals (fresh + mutated) ---
+_random.seed(21)
+reg_ch = Registry(os.path.join(tmpdir, "reg_ch"), max_agents=50)
+cm_ch = ChurnManager(reg_ch, arrivals_per_minute=100000, mean_lifetime_episodes=10000)
+goals = []
+for _ in range(20):
+    cm_ch._next_arrival = 0  # Poisson due every tick...
+    # ...plus one top-up each (cap 50, never reached here): 2 per tick.
+    for aid in cm_ch.tick(1.0):
+        goals.append(reg_ch.get(aid).goal)
+assert len(goals) == 40, len(goals)
+for g in goals:
+    assert set(g) == {"w_" + a for a in GOAL_AXES}
+    assert abs(sum(g.values()) - 1.0) < 1e-9
+    assert all(x >= 0 for x in g.values())
+assert len({tuple(sorted(g.items())) for g in goals}) > 1  # diversified
+print("CHURN_GOALS_OK")
+
+# --- #162 Phase 1: supervisor wires registry goals to envs + metric rows ---
+async def _sup_goals():
+    mpath = os.path.join(tmpdir, "episodes_goal.jsonl")
+    mlog = MetricsLogger(mpath, buffer_size=10000, flush_every=0)
+    r = Registry(os.path.join(tmpdir, "sup_goal"), max_agents=5)
+    _random.seed(31)
+    g_sup = sample_goal()
+    r.register("sg1", "linear", goal=g_sup)
+    sup = Supervisor(r, metrics=mlog)
+    made = {}
+
+    def _factory(aid):
+        env = _FakeEnv()
+        made[aid] = env
+        return env
+
+    await sup.start_agent("sg1", _factory, lambda obs, aid: 0)
+    await asyncio.sleep(0.3)
+    assert made["sg1"].goal == g_sup  # env carries the registry goal
+    await sup.stop_all()
+    mlog.flush()
+    rows = [json.loads(line) for line in open(mpath) if line.strip()]
+    eps = [row for row in rows if row.get("event") == "episode"]
+    assert len(eps) >= 2, rows
+    assert all(row.get("goal") == g_sup for row in eps)
+
+asyncio.run(_sup_goals())
+print("SUPERVISOR_GOALS_OK")
 
 print("ALL_CONDUCTOR_OK")

@@ -2,8 +2,10 @@ name: Dependabot auto-merge
 
 # Auto-approve + auto-merge Dependabot patch/minor updates once CI is
 # green (#89). Major updates still need a human. Requires the repo
-# allow_auto_merge setting (public/Pro) and the master ruleset's
-# 1-review requirement, which the approve step below satisfies.
+# allow_auto_merge setting (public/Pro); the approve step below satisfies
+# review-gated branches, and is a harmless no-op where no approval is
+# required (this repo's ruleset currently requires none -- solo-dev
+# deadlock otherwise; see CONTRIBUTING and enable-protection.sh).
 on:
   pull_request_target
 

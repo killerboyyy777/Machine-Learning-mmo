@@ -72,6 +72,15 @@ All notable changes to the text MMO engine are recorded here.
   resetting `training_steps` (and the epsilon schedule) on every restart.
   Now saves the full LinearQAgent format; covered by
   `tests/test_farm_resume.py`.
+- Spawn-to-target churn (#214): each tick tops up toward the registry cap
+  (at most `top_up_per_tick`, default 1) after the Poisson arrival, so
+  episode-driven deaths can't bleed the population below cap on fast
+  machines; soak `--arrivals` stays the healthy-state trickle.
+- Starting purse (#258): brand-new characters log in with `STARTING_GOLD`
+  (10, tunable in `server_config.json` economy) to break the 0-gold
+  poverty trap; granted once per score entry (TTL-evicted entries re-grant
+  on return -- a ~10g/week welcome-back stipend at most), never topped up
+   otherwise.
 - New unit suites (#252): training loops, conductor run, and GM treasury
   coverage in CI; `gm_reward` validates the destination before spending,
   so failed rewards no longer debit the treasury with nothing delivered.

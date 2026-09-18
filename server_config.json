@@ -21,7 +21,8 @@
     "MARKET_SLOT_PRICE_BASE": 50,
     "MARKET_ORDER_TTL_SECONDS": 86400,
     "INVENTORY_CAP": 24,
-    "AMMO_EXEMPT_COUNT": 5
+    "AMMO_EXEMPT_COUNT": 5,
+    "STARTING_GOLD": 10
   },
 
   "commissions": {

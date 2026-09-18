@@ -267,6 +267,54 @@ REWARD_MODES = ("score", "xp", "econ")
 XP_LEVEL_BONUS = 5.0  # extra reward per level-up in "xp" mode
 ECON_INV_LAMBDA = 1.0  # weight of inventory-value delta in "econ" mode
 
+# Inheritable goal axes (#162 Phase 1): per-step reward *vector* components
+# a policy can weight. The step reward returned for training stays
+# mode-based (unchanged); the vector rides alongside in info so trainers,
+# selection, and analysis can shape from raw flows instead. Novelty is a
+# carried weight only -- trainers supply it (e.g. torch RND), the env
+# reports 0.0.
+GOAL_AXES = ("score", "xp", "gold", "inv", "social", "quest", "novelty")
+OFFSPRING_FRACTION = 0.5  # new spawns mutating a recent goal vs fresh Dirichlet
+
+
+def reward_vector(score_gain=0.0, xp_gain=0.0, gold_delta=0.0, inv_delta=0.0,
+                  social=0.0, quest=0.0, novelty=0.0):
+    """Per-step reward vector as a plain dict (pure, unit-testable)."""
+    return {"score": float(score_gain), "xp": float(xp_gain),
+            "gold": float(gold_delta), "inv": float(inv_delta),
+            "social": float(social), "quest": float(quest),
+            "novelty": float(novelty)}
+
+
+def goal_reward(vector, goal):
+    """Dot product of a reward vector with goal weights (missing keys read
+    0 on both sides, so partial goals and vectors compose safely)."""
+    return sum(float((vector or {}).get(k, 0.0)) * float((goal or {}).get("w_" + k, 0.0))
+               for k in GOAL_AXES)
+
+
+def sample_goal(rng=None):
+    """Fresh goal: Dirichlet(1, ..., 1) over GOAL_AXES via stdlib gamma
+    sampling (uniform over the simplex, no numpy). Weights sum to 1."""
+    r = rng or random
+    draws = [r.gammavariate(1.0, 1.0) for _ in GOAL_AXES]
+    total = sum(draws) or 1.0
+    return {"w_" + k: d / total for k, d in zip(GOAL_AXES, draws)}
+
+
+def mutate_goal(goal, scale=0.2, rng=None):
+    """Offspring goal: Gaussian perturbation, floored at 0, renormalized
+    to the simplex (uniform fallback for empty/all-floored parents)."""
+    if not goal:
+        return {"w_" + a: 1.0 / len(GOAL_AXES) for a in GOAL_AXES}
+    r = rng or random
+    vals = [max(0.0, float(goal.get("w_" + k, 0.0)) + r.gauss(0.0, scale))
+            for k in GOAL_AXES]
+    total = sum(vals)
+    if total <= 0:
+        return {"w_" + a: 1.0 / len(GOAL_AXES) for a in GOAL_AXES}
+    return {"w_" + k: v / total for k, v in zip(GOAL_AXES, vals)}
+
 # Curriculum stages (progressive action-space unlock, #59): 0 = surface
 # rats (combat/loot/rest/heal/shop/party only), 1 adds dungeon travel and
 # the delver quest, 2 adds gathering/crafting and the quest chains (guard
@@ -655,7 +703,8 @@ class TextMMOEnv:
 
     def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
                  reward_mode="score", curriculum_stage=3, curriculum_auto=False,
-                 connect_timeout=10.0, close_timeout=5.0, connect_retries=3):
+                 connect_timeout=10.0, close_timeout=5.0, connect_retries=3,
+                 goal=None):
         if reward_mode not in REWARD_MODES:
             raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
         if curriculum_stage not in (0, 1, 2, 3):
@@ -673,6 +722,10 @@ class TextMMOEnv:
         self.connect_timeout = connect_timeout
         self.close_timeout = close_timeout
         self.connect_retries = connect_retries
+        # Inheritable goal weights (#162 Phase 1): carried for info/metrics
+        # only in this phase (reward stays mode-based); the supervisor sets
+        # this from the registry at spawn.
+        self.goal = dict(goal) if goal else None
         self.ws = None
         self._reader_task = None
         self._state = {
@@ -908,6 +961,7 @@ class TextMMOEnv:
 
         xp_gained = self._pending_xp
         levels_gained = self._pending_levels
+        score_gain = self._pending_reward
         gold_delta = self._state["gold"] - gold_before
         inv_delta = inventory_value(self._state["inv_names"]) - inv_value_before
         reward = self._compute_reward(
@@ -949,9 +1003,24 @@ class TextMMOEnv:
         tonic_active_after = flags_after["quest_tonic_active"]
         tonic_ready_after = flags_after["quest_tonic_ready"]
         next_obs = self._build_obs()
+        # Reward vector (#162 Phase 1): raw per-step flows alongside (not
+        # instead of) the mode reward. Social mirrors the allies term only
+        # -- the one-shot formation bonus is excluded (a flow, not a flow
+        # rate), and computing it here would double-apply its cooldown.
+        # Novelty is always 0.0 from the env; trainers supply it.
+        _allies = self._state.get("party_size", 1) - 1
+        _social = (SOCIAL_PER_ALLY * _allies * diminish_factor(self._state.get("score", 0.0))
+                   if self._state.get("other_players", 0) > 0 and _allies > 0 else 0.0)
+        _quest_pts = sum(float(QUESTS[q]["reward_points"]) for q, t in
+                         (("guard_charm", guard_turned), ("delver", delver_turned),
+                          ("remedy", remedy_turned), ("tonic", tonic_turned)) if t)
+        vector = reward_vector(score_gain, xp_gained + XP_LEVEL_BONUS * levels_gained,
+                               gold_delta, inv_delta, _social, _quest_pts, 0.0)
         info = {
             "action": action,
             "gold_delta": gold_delta,
+            "reward_vector": vector,
+            "goal": dict(self.goal or {}),
             "reward_mode": self.reward_mode,
             "curriculum_stage": self.curriculum_stage,
             "xp_gained": xp_gained,
@@ -1350,8 +1419,9 @@ class TextMMOEnv:
                 return {"cmd": "craft", "recipe": "iron_plate"}
             return None
         if action == "craft_arrows":
-            # One Iron Ore produces one Arrow through the server's generic
-            # recipe system. Gate on ore so the agent avoids guaranteed errors.
+            # One Iron Ore produces five Arrows (recipe output_qty) through
+            # the server's generic recipe system. Gate on ore so the agent
+            # avoids guaranteed errors.
             if any(srv.find_item_by_name(list(srv.ITEM_DEFS), name) == "iron_ore"
                    for name in (s["inv_names"] or [])):
                 return {"cmd": "craft", "recipe": "arrows"}

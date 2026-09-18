@@ -161,8 +161,11 @@ class Supervisor:
         if self._metrics is None:
             return
         try:
+            entry = self.registry.get(agent_id)
+            goal = entry.goal if entry is not None else None
             self._metrics.log_episode(agent_id, event["episode"],
-                                      event["reward"], event.get("steps", 0))
+                                      event["reward"], event.get("steps", 0),
+                                      goal=goal)
         except Exception:
             pass
 
@@ -184,6 +187,17 @@ class Supervisor:
                 env = env_factory(agent_id)
             except Exception:
                 return False
+            # Carry the registry goal onto the env (#162 Phase 1): envs
+            # expose it in step info (no reward change in this phase).
+            # Plain assignment is the contract -- envs must tolerate it
+            # (TextMMOEnv takes goal= in its constructor; test fakes are
+            # plain objects).
+            try:
+                entry = self.registry.get(agent_id)
+                if entry is not None and entry.goal:
+                    env.goal = dict(entry.goal)
+            except Exception:
+                pass
             at = AgentTask(agent_id, env, policy_fn, max_steps,
                            step_timeout=step_timeout if step_timeout is not None
                            else self._step_timeout)
