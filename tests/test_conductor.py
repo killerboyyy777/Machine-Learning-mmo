@@ -373,6 +373,102 @@ asyncio.run(_restart_reloads())
 print("RESTART_OK")
 
 
+async def _restart_rebuilds_weights():
+    # The production plugin factory reloads the checkpoint file on every
+    # build (#228): pre-exploit weights never leak into the relaunched
+    # policy, and hparams overlay onto the live policy (unknown keys and
+    # missing files are tolerated, never fatal).
+    from ml.ml_client import LinearQAgent
+    from ml.ml_env import (OBS_SIZE, N_ACTIONS, ROOM_LIST, DIRECTIONS,
+                           NPC_LIST, ITEM_LIST, flatten_obs)
+    from ml.conductor.conductor import _plugin_policy_factory
+    r = Registry(os.path.join(tmpdir, "rstw"), max_agents=5)
+    entry = r.register("w", "linear")
+    ckpt = entry.checkpoint_path
+
+    def _obs():
+        z = lambda n: [0.0] * n
+        return {
+            "room_onehot": z(len(ROOM_LIST)), "is_dungeon": 0.0,
+            "floor_norm": 0.0, "exits_mask": z(len(DIRECTIONS)),
+            "npc_presence": z(len(NPC_LIST)), "npc_unknown_count": 0.0,
+            "item_presence": z(len(ITEM_LIST)),
+            "inv_presence": z(len(ITEM_LIST)), "equipped_flag": 0.0,
+            "inv_unknown_flag": 0.0, "hp_frac": 1.0, "gold_norm": 0.0,
+            "score_norm": 0.0, "variety": 0.0, "allies_norm": 0.0,
+            "party_norm": 0.0, "level_norm": 0.0, "xp_progress": 0.0,
+            "market_norm": 0.0, "market_any": 0.0, "tax_rate": 0.0,
+            "tax_min_norm": 0.0, "own_net_norm": 0.0,
+            "flip_margin_norm": 0.0, "inv_value_norm": 0.0,
+            "quest_active": 0.0, "quest_ready": 0.0,
+            "quest_has_charm": 0.0, "quest_mat_bark": 0.0,
+            "quest_mat_hide": 0.0, "quest_mat_ecto": 0.0,
+            "quest_giver_here": 0.0, "quest2_active": 0.0,
+            "quest2_ready": 0.0, "quest2_giver_here": 0.0,
+            "quest3_active": 0.0, "quest3_ready": 0.0,
+            "quest3_giver_here": 0.0, "quest4_active": 0.0,
+            "quest4_ready": 0.0, "quest4_giver_here": 0.0,
+            "arrows_norm": 0.0, "buff_attack": 0.0, "buff_dr": 0.0,
+            "ammo_best_norm": 0.0, "defense_norm": 0.0,
+        }
+
+    obs = _obs()
+    flat = flatten_obs(obs)
+    assert len(flat) == OBS_SIZE, (len(flat), OBS_SIZE)
+    hp_idx = flat.index(1.0)  # only hp_frac is nonzero
+
+    def _save(which):
+        a = LinearQAgent(OBS_SIZE, N_ACTIONS)
+        if which == 2:
+            a.weights[3][hp_idx] = 5.0
+        a.save(ckpt)
+
+    build = _plugin_policy_factory("linear", {"epsilon": 0.0})
+    _save(1)
+    assert build(ckpt, {})(obs, "w") == 0  # zeroed weights: ties -> 0
+    _save(2)  # PBT winner->loser checkpoint copy
+    assert build(ckpt, {"epsilon": 0.0})(obs, "w") == 3  # new weights live
+    # hparams reach the live policy: epsilon=1 explores, bogus keys ignored
+    wild = {build(ckpt, {"epsilon": 1.0, "bogus": 1})(obs, "w")
+            for _ in range(50)}
+    assert len(wild) > 1, wild
+    # missing checkpoint file: fresh policy, no raise
+    assert build(os.path.join(tmpdir, "nope.pt"), {})(obs, "w") == 0
+
+
+asyncio.run(_restart_rebuilds_weights())
+print("RESTART_WEIGHTS_OK")
+
+
+async def _restart_uses_factory_and_reassigns():
+    # restart_agent rebuilds via the stored factory with
+    # (entry.checkpoint_path, hparams), installs the result, and puts the
+    # agent back on exactly one floor (shutdown had dropped it).
+    r = Registry(os.path.join(tmpdir, "rstf"), max_agents=5)
+    entry = r.register("w2", "linear")
+    mx = Mixer(r, ["f1", "f2"])
+    sup = Supervisor(r, max_concurrent=1, mixer=mx)
+    calls = []
+
+    def factory(ckpt, hp):
+        calls.append((ckpt, dict(hp)))
+        return lambda o, a: 7
+
+    env = _FakeEnv()
+    assert await sup.start_agent("w2", lambda aid: env, lambda o, a: 0,
+                                 policy_factory=factory) is True
+    assert all("w2" not in v for v in mx._floor_agents.values())
+    assert await sup.restart_agent("w2", hparams={"epsilon": 0.5}) is True
+    assert calls == [(entry.checkpoint_path, {"epsilon": 0.5})], calls
+    assert sup._tasks["w2"].policy_fn({"obs": 0}, "w2") == 7
+    assert sum(v.count("w2") for v in mx._floor_agents.values()) == 1
+    await sup.stop_all()
+
+
+asyncio.run(_restart_uses_factory_and_reassigns())
+print("RESTART_FACTORY_OK")
+
+
 async def _maybe_start_check():
     import tempfile as _tf
 

@@ -20,7 +20,11 @@ All notable changes to the text MMO engine are recorded here.
 - PBT exploit reload (#228): the winner-copy never reached live losers;
   the supervisor now restarts loser tasks with fresh envs/policies that
   reload the checkpoint (dead entries refused, shutdown hardened to join
-  tasks).
+  tasks). Follow-up: the stored closure still ran stale in-memory weights
+  and mutated hparams never reached the live policy -- restart now
+  rebuilds the policy from the loser's checkpoint file with hparams
+  overlaid (schema keys only) and re-assigns the loser to the mixer
+  (covered by RESTART_WEIGHTS_OK / RESTART_FACTORY_OK).
 - Conductor ghost agents (#230): failed starts stayed alive forever
   (episode-aged lifetimes never expire taskless entries); now marked dead
   at failed start, which also makes the alive-based soak gate sound
@@ -64,6 +68,10 @@ All notable changes to the text MMO engine are recorded here.
   when the inviter disconnects, so nobody joins a leaderless party.
 - Login room cap (#227): fresh connections could overflow a full start
   room; logins now refuse like moves when the destination is at cap.
+  Follow-up: the crowded check ran after entry creation and the token
+  claim, so a rejected probe squatted the victim's `auth_token` (locking
+  out the real owner) and polluted SCORES toward the cap. The capacity
+  check now runs before any login state mutation.
 - Config unknown-key warning (#241): typo'd/wrong-nesting keys vanished
   silently; now logged like bad values.
 - Market expand accounting (#240): the stall-slot fee hit `tax_treasury`

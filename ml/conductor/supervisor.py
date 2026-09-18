@@ -140,7 +140,9 @@ class Supervisor:
         self._tasks = {}  # agent_id -> AgentTask
         # Launch specs per agent so PBT exploit can restart losers with
         # fresh envs/policies that reload the copied weights (#228).
-        self._specs = {}  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout)
+        # policy_factory(checkpoint_path, hparams) rebuilds the policy
+        # from the loser's checkpoint file; None keeps the stored closure.
+        self._specs = {}  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory)
         self._lock = asyncio.Lock()
 
     def _log_death(self, agent_id, episodes, total_reward, error=None):
@@ -170,7 +172,7 @@ class Supervisor:
             pass
 
     async def start_agent(self, agent_id, env_factory, policy_fn, max_steps=2000,
-                          step_timeout=None):
+                          step_timeout=None, policy_factory=None):
         """Start an isolated task for one agent.
 
         Returns True when a task is running afterwards, False when the
@@ -203,7 +205,7 @@ class Supervisor:
                            else self._step_timeout)
             self._tasks[agent_id] = at
             self._specs[agent_id] = (env_factory, policy_fn, max_steps,
-                                     step_timeout)
+                                     step_timeout, policy_factory)
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
             return True
 
@@ -265,13 +267,19 @@ class Supervisor:
             at = self._tasks.pop(agent_id, None)
         await self._shutdown(at)
 
-    async def restart_agent(self, agent_id):
+    async def restart_agent(self, agent_id, hparams=None):
         """Stop + relaunch with the stored specs (PBT exploit, #228).
 
-        A fresh env + fresh policy closure reloads the winner's weights
-        from the copied checkpoint file; without this the exploit only
-        ever changed bytes on disk. Returns True when a task runs after.
-        Refusals (unknown/dead entries) leave any running task untouched.
+        The stored policy closure is NOT reused: it closes over the
+        plugin instance that loaded the pre-exploit weights, so relaunching
+        it would train stale weights while the copied checkpoint file sits
+        untouched. Instead the stored policy_factory rebuilds the policy
+        from the agent's checkpoint file (now holding the winner's weights)
+        with the new hparams overlaid; a failing rebuild falls back to the
+        stored closure so the agent survives. A successful restart
+        re-assigns the agent to the mixer (shutdown dropped it). Returns
+        True when a task runs after. Refusals (unknown/dead entries) leave
+        any running task untouched.
         """
         async with self._lock:
             spec = self._specs.get(agent_id)
@@ -284,10 +292,26 @@ class Supervisor:
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
         await self._shutdown(at)
-        env_factory, policy_fn, max_steps, step_timeout = spec
-        return await self.start_agent(agent_id, env_factory, policy_fn,
-                                      max_steps=max_steps,
-                                      step_timeout=step_timeout)
+        env_factory, policy_fn, max_steps, step_timeout, policy_factory = spec
+        if policy_factory is not None:
+            try:
+                policy_fn = policy_factory(entry.checkpoint_path,
+                                           hparams or {})
+            except Exception:
+                policy_fn = spec[1]
+        started = await self.start_agent(agent_id, env_factory, policy_fn,
+                                         max_steps=max_steps,
+                                         step_timeout=step_timeout,
+                                         policy_factory=policy_factory)
+        if started and self._mixer is not None:
+            try:
+                # Shutdown already dropped the id from floor lists, but
+                # remove-then-add keeps this exact-once either way.
+                self._mixer.remove_agent(agent_id)
+                self._mixer.assign_one(agent_id)
+            except Exception:
+                pass
+        return started
 
     async def reap(self):
         """Stop tasks whose registry entry is dead or gone (churn deaths).

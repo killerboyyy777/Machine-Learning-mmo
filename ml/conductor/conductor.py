@@ -15,6 +15,31 @@ from .metrics import MetricsLogger
 from .pbt import PBTManager
 
 
+def _plugin_policy_factory(name, base_config):
+    """Build a restart-time policy rebuilder for a plugin slot.
+
+    Returns factory(checkpoint_path, hparams) -> policy_fn: a FRESH
+    plugin instance (never the shared slot instance, which serves every
+    agent on the slot) loading checkpoint_path when the file exists,
+    with hparams overlaid onto the slot config wherever they match the
+    plugin schema (e.g. epsilon); unknown hparams are ignored. A missing
+    checkpoint file keeps the slot's own checkpoint/fresh default.
+    """
+
+    def build(checkpoint_path, hparams):
+        from ml.plugins import get, instantiate
+        schema = get(name).config_schema()
+        config = dict(base_config)
+        for key, value in (hparams or {}).items():
+            if key in schema:
+                config[key] = value
+        if checkpoint_path and Path(checkpoint_path).is_file():
+            config["checkpoint"] = checkpoint_path
+        return instantiate(name, **config).make_policy()
+
+    return build
+
+
 def _materialize_slot(slot, url):
     """Turn a slot spec into a runnable slot.
 
@@ -22,7 +47,7 @@ def _materialize_slot(slot, url):
     "env": {...}}``, see :func:`ml.plugins.parse_slot`) or a legacy raw
     runner (``{"env_factory": f, "policy_fn": p}``). Returns
     ``{"weight", "agent_type", "env_factory", "policy_fn", "step_timeout",
-    "label"}``. The plugin instance is built once and shared across the
+    "label"}`` plus ``policy_factory`` (plugin slots only, else None). The plugin instance is built once and shared across the
     slot's agents (policies are stateless at act time)."""
     from .runners import make_env_factory
     weight = max(1, int(slot.get("weight", 1)))
@@ -37,6 +62,10 @@ def _materialize_slot(slot, url):
             "label": slot["plugin"],
             "env_factory": make_env_factory(**env_kwargs),
             "policy_fn": plugin.make_policy(),
+            # Fresh per-agent rebuilds on PBT restart (shared slot
+            # instance must never reload: it serves the whole slot).
+            "policy_factory": _plugin_policy_factory(
+                slot["plugin"], slot.get("config", {})),
             "step_timeout": slot.get("step_timeout"),
         }
     return {
@@ -45,6 +74,7 @@ def _materialize_slot(slot, url):
         "label": slot.get("label", "custom"),
         "env_factory": slot["env_factory"],
         "policy_fn": slot["policy_fn"],
+        "policy_factory": None,  # raw runners have no checkpoint to reload
         "step_timeout": slot.get("step_timeout"),
     }
 
@@ -111,7 +141,8 @@ class Conductor:
                 agent_id,
                 slot["env_factory"],
                 slot["policy_fn"],
-                step_timeout=slot.get("step_timeout"))
+                step_timeout=slot.get("step_timeout"),
+                policy_factory=slot.get("policy_factory"))
             if not started:
                 self.registry.mark_dead(agent_id)
             return started
@@ -199,7 +230,8 @@ class Conductor:
                 for op in ops:
                     # Reload the loser's task so the copied weights +
                     # hparams actually take effect at runtime (#228).
-                    restarted = await self.supervisor.restart_agent(op["loser"])
+                    restarted = await self.supervisor.restart_agent(
+                        op["loser"], hparams=op.get("hparams"))
                     try:
                         self.metrics.log("pbt_reload", agent_id=op["loser"],
                                          restarted=restarted)

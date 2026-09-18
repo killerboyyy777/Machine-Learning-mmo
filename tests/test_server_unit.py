@@ -1451,6 +1451,14 @@ async def main():
     assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
     assert not newcomer.logged_in
     assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
+    # rejected logins leave no entry/token state (#227 follow-up): a
+    # crowded probe carrying a token must not squat the name for its owner
+    squatter = srv.Player(ws=FakeWS(), id=51998, name="", logged_in=False)
+    srv.players[51998] = squatter
+    await srv.cmd_login(squatter, {"name": "Squatted", "token": "evil"})
+    assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
+    assert "squatted" not in srv.SCORES
+    srv.players.pop(51998, None)
     for f in fillers:
         unplayer(f)
     srv.players.pop(51999, None)
