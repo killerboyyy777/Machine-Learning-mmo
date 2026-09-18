@@ -9,10 +9,16 @@ ticks -- an idle agent that never finishes episodes never ages. The
 supervisor reports each completed episode via report_episode() (wired by
 the conductor); without supervised tasks, lifetimes never expire.
 Wave startup batches arrivals into waves for faster initial fill.
+New spawns carry inheritable goal weights (#162 Phase 1): half fresh
+Dirichlet samples, half mutations of recent goals (in-memory pool;
+lineage files arrive in Phase 2).
 """
 import asyncio
 import random
 import time
+from collections import deque
+
+from ml.ml_env import OFFSPRING_FRACTION, mutate_goal, sample_goal
 
 
 def poisson_interval(rate_per_minute):
@@ -66,6 +72,7 @@ class ChurnManager:
         self.top_up_per_tick = max(0, top_up_per_tick)
         self._next_arrival = time.time()
         self._lifetimes = {}  # agent_id -> episodes_remaining
+        self._recent_goals = deque(maxlen=50)  # parent pool for offspring
 
     def tick(self, dt):
         """Advance the Poisson arrival clock, then top up toward cap.
@@ -127,12 +134,24 @@ class ChurnManager:
             entry.alive = False
         return True
 
+    def _sample_goal(self):
+        """Fresh Dirichlet goal, or a mutation of a recent one (offspring).
+
+        The in-memory pool keeps this phase free of lineage files; Phase 2
+        persists parentage per lineage.
+        """
+        if self._recent_goals and random.random() < OFFSPRING_FRACTION:
+            return mutate_goal(random.choice(self._recent_goals))
+        return sample_goal()
+
     def _spawn_one(self):
-        """Spawn a single agent with a random lifetime."""
+        """Spawn a single agent with a random lifetime and goal weights."""
         agent_id = f"agent_{int(time.time() * 1000) % 100000}_{random.randint(0, 999)}"
         agent_type = random.choice(["linear", "torch"])
-        entry = self.registry.register(agent_id, agent_type)
+        goal = self._sample_goal()
+        entry = self.registry.register(agent_id, agent_type, goal=goal)
         self._lifetimes[agent_id] = geometric_lifetime(self.mean_lifetime_episodes)
+        self._recent_goals.append(goal)
         return agent_id
 
     async def wave_fill(self, target_count, wave_size=10, wave_delay=5.0):
