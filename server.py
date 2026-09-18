@@ -1756,7 +1756,10 @@ async def cmd_attack(player, msg):
                 "text": "The hall falls silent. The sealed exits grind open, revealing the way onward and a gleaming blade."
             })
             await sync_room(player.room)
-    else:
+    # Only the living retaliate (#265): the stale-check loser from the
+    # double-kill guard above (hp <= 0, alive already False) must not deal
+    # damage from beyond the grave, let alone kill via respawn_player.
+    elif npc.get("alive", True):
         if npc["attack"] > 0:
             retaliation = random.randint(1, npc["attack"])
             retaliation = max(0, retaliation - _player_damage_reduction(player))

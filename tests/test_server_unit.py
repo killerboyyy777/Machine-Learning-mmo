@@ -384,6 +384,42 @@ async def main():
     unplayer(racer_b)
     print("DOUBLE_KILL_OK")
 
+    # --- Corpses don't retaliate (#265): whoever checks second skips the
+    # kill block AND the retaliation branch (50 attack would one-shot).
+    loser_a = mkplayer("LoserA", 60025, room="town_square", hp=20, max_hp=20)
+    loser_b = mkplayer("LoserB", 60026, room="town_square", hp=20, max_hp=20)
+    srv.npcs["corpse_dummy"] = {
+        "id": "corpse_dummy", "name": "Corpse Dummy", "room": "town_square",
+        "hp": 1, "max_hp": 20, "attack": 50, "hostile": True, "behavior": "idle",
+        "loot": [], "gold": 0, "respawn_seconds": 60,
+        "alive": True, "respawn_at": None, "contributors": {},
+    }
+    saved_send2 = srv.send
+    interleaved2 = {}
+
+    async def send_then_b2(p, payload):
+        await saved_send2(p, payload)
+        if (payload.get("type") == "combat" and "You hit" in payload.get("text", "")
+                and "b_ran" not in interleaved2):
+            interleaved2["b_ran"] = True
+            await srv.cmd_attack(loser_b, {"target": "corpse dummy"})
+
+    srv.send = send_then_b2
+    await srv.cmd_attack(loser_a, {"target": "corpse dummy"})
+    srv.send = saved_send2
+    assert interleaved2.get("b_ran")
+    assert not srv.npcs["corpse_dummy"]["alive"]
+    # No retaliation anywhere: hp untouched AND no death-respawn masking
+    # (a 50-attack retaliation that kills resets hp to full via respawn,
+    # so hp alone can't prove it -- deaths must stay zero too).
+    assert loser_a.hp == 20 and loser_b.hp == 20
+    assert srv.get_score_entry("LoserA")["deaths"] == 0
+    assert srv.get_score_entry("LoserB")["deaths"] == 0
+    del srv.npcs["corpse_dummy"]
+    unplayer(loser_a)
+    unplayer(loser_b)
+    print("CORPSE_NO_RETALIATION_OK")
+
     # --- Floor-1 reset farming delay (#195.2): leaving an uncleared
     # descent stamps re-entry delay; cleared/unstamped leaves don't.
     farmer = mkplayer("Farmer", 60006, room="graveyard")
