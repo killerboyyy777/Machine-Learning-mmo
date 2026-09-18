@@ -19,13 +19,16 @@ class AgentEntry:
 
     __slots__ = ("agent_id", "agent_type", "branch", "checkpoint_path",
                  "created_at", "episodes", "total_reward", "last_active",
-                 "alive")
+                 "alive", "goal")
 
-    def __init__(self, agent_id, agent_type, branch, checkpoint_path):
+    def __init__(self, agent_id, agent_type, branch, checkpoint_path, goal=None):
         self.agent_id = agent_id
         self.agent_type = agent_type  # "linear" or "torch"
         self.branch = branch          # "stable" or "experimental"
         self.checkpoint_path = checkpoint_path
+        # Inheritable goal weights (#162 Phase 1): {w_axis: float} simplex,
+        # sampled/mutated at spawn, persisted below, logged per episode.
+        self.goal = dict(goal) if goal else None
         self.created_at = time.time()
         self.episodes = 0
         self.total_reward = 0.0
@@ -48,6 +51,7 @@ class AgentEntry:
             # reconstructing from the rounded mean (see #46).
             "total_reward": self.total_reward,
             "alive": self.alive,
+            "goal": dict(self.goal) if self.goal else None,
         }
 
 
@@ -61,7 +65,8 @@ class Registry:
         self._lock = threading.RLock()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def register(self, agent_id, agent_type, branch="experimental", checkpoint=None):
+    def register(self, agent_id, agent_type, branch="experimental", checkpoint=None,
+                 goal=None):
         """Register a new agent. Returns the AgentEntry."""
         with self._lock:
             if agent_id in self._agents:
@@ -75,7 +80,7 @@ class Registry:
             cp_dir = self.base_dir / agent_id
             cp_dir.mkdir(parents=True, exist_ok=True)
             cp = checkpoint or str(cp_dir / "checkpoint.pt")
-            entry = AgentEntry(agent_id, agent_type, branch, cp)
+            entry = AgentEntry(agent_id, agent_type, branch, cp, goal=goal)
             self._agents[agent_id] = entry
             return entry
 
@@ -154,6 +159,7 @@ class Registry:
                     a["agent_id"], a["agent_type"],
                     a.get("branch", "experimental"),
                     a.get("checkpoint", ""),
+                    goal=a.get("goal"),
                 )
                 entry.episodes = a.get("episodes", 0)
                 if "total_reward" in a:

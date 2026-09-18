@@ -86,9 +86,12 @@ class MetricsLogger:
         self.log("agent_death", agent_id=agent_id, episodes=episodes,
                  total_reward=round(total_reward, 4), **kw)
 
-    def log_episode(self, agent_id, episode, reward, steps):
+    def log_episode(self, agent_id, episode, reward, steps, goal=None):
+        kw = {}
+        if goal:
+            kw["goal"] = dict(goal)
         self.log("episode", agent_id=agent_id, episode=episode,
-                 reward=round(reward, 4), steps=steps)
+                 reward=round(reward, 4), steps=steps, **kw)
 
     def log_promotion(self, agent_id, from_branch, to_branch):
         self.log("promotion", agent_id=agent_id,
