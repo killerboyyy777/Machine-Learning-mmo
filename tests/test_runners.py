@@ -93,7 +93,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "torch_agents"))
 from torch_farm import Runner as TorchRunner
 
-_farm = types.SimpleNamespace(args=types.SimpleNamespace(name_prefix="T", url="ws://x"))
+_farm = types.SimpleNamespace(args=types.SimpleNamespace(name_prefix="T", url="ws://x"),
+                               agent=types.SimpleNamespace(intrinsic_accept=1.0,
+                                                           intrinsic_progress=2.0,
+                                                           rnd_lambda=0))
 _tr = TorchRunner(0, _farm)
 _info_all = {"quest": {"by_quest": {
     "guard_charm": {"turned_in": True},
@@ -101,10 +104,11 @@ _info_all = {"quest": {"by_quest": {
     "remedy": {"turned_in": True},
     "tonic": {"turned_in": True},
 }}}
-_gold, _loot, _pnl, _qr = _tr.transition_targets({"gold_raw": 0}, _info_all, "quest_turn_in")
+_gold, _loot, _pnl, _qr, _qi, _rnd = _tr.transition_targets({"gold_raw": 0}, [], _info_all, "quest_turn_in")
 assert _qr == float(QUESTS["guard_charm"]["reward_points"] + QUESTS["delver"]["reward_points"]
                     + QUESTS["remedy"]["reward_points"] + QUESTS["tonic"]["reward_points"]), _qr
-_gold, _loot, _pnl, _qr0 = _tr.transition_targets({"gold_raw": 0}, {}, "attack")
+assert _qi == 0.0 and _rnd == 0.0
+_gold, _loot, _pnl, _qr0, _qi0, _rnd0 = _tr.transition_targets({"gold_raw": 0}, [], {}, "attack")
 assert _qr0 == 0.0
 print("TORCH_QUEST_TARGETS_OK")
 
