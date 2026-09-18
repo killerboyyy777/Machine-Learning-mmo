@@ -1,9 +1,13 @@
-# area:server — game engine, protocol, world systems
+# area:server — game engine, protocol, world systems (+ Docker packaging,
+# which ships the server)
 area:server:
   - changed-files:
       - any-glob-to-any-file:
           - server.py
           - world.json
+          - Dockerfile
+          - compose.yaml
+          - .dockerignore
 
 # area:ml-env — observations, actions, rewards
 area:ml-env:
@@ -38,18 +42,10 @@ area:dashboard:
       - any-glob-to-any-file:
           - dashboard.html
 
-# area:market — player market, stalls, commissions, treasury
-area:market:
-  - changed-files:
-      - any-glob-to-any-file:
-          - server.py
-
-# area:quests — quests, givers, difficulty curve
-area:quests:
-  - changed-files:
-      - any-glob-to-any-file:
-          - server.py
-          - world.json
+# area:market, area:quests, balance: intentionally NOT path-mapped.
+# server.py/world.json touch every market/quest/balance change but also
+# everything else, so auto-tagging them here mistagged most PRs (seen on
+# #220, #259). Humans add these labels per-PR when relevant.
 
 # area:conductor — large-scale orchestrator
 area:conductor:
@@ -57,12 +53,7 @@ area:conductor:
       - any-glob-to-any-file:
           - ml/conductor/**/*
 
-# balance — economy/progression balance: faucets, sinks, exploits
-balance:
-  - changed-files:
-      - any-glob-to-any-file:
-          - server.py
-          - world.json
+# balance: intentionally not path-mapped (see area:market note above).
 
 # documentation — docs and guides
 documentation:
