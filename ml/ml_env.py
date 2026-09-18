@@ -1348,8 +1348,9 @@ class TextMMOEnv:
                 return {"cmd": "craft", "recipe": "iron_plate"}
             return None
         if action == "craft_arrows":
-            # One Iron Ore produces one Arrow through the server's generic
-            # recipe system. Gate on ore so the agent avoids guaranteed errors.
+            # One Iron Ore produces five Arrows (recipe output_qty) through
+            # the server's generic recipe system. Gate on ore so the agent
+            # avoids guaranteed errors.
             if any(srv.find_item_by_name(list(srv.ITEM_DEFS), name) == "iron_ore"
                    for name in (s["inv_names"] or [])):
                 return {"cmd": "craft", "recipe": "arrows"}

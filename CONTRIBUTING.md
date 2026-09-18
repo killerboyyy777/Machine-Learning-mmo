@@ -30,7 +30,7 @@ lanes follow the same workflow and [Code of Conduct](CODE_OF_CONDUCT.md).
    `CHANGELOG.md` Unreleased for anything user-visible, docstrings for
    new modules/functions, `.github/` docs for workflow changes. A PR
    with stale docs is not done.
-5. **Pre-commit hooks.** Install once (`pip install pre-commit &&
+6. **Pre-commit hooks.** Install once (`pip install pre-commit &&
    pre-commit install`): black, ruff, mypy, and the fast test subset run
    on every commit (see `.pre-commit-config.yaml`).
 
