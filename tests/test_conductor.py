@@ -77,7 +77,8 @@ print("CHURN_HELPERS_OK")
 
 # --- ChurnManager tick (arrivals only; deaths come from episodes) ---
 reg3 = Registry(os.path.join(tmpdir, "reg3"), max_agents=5)
-cm = ChurnManager(reg3, arrivals_per_minute=1000, mean_lifetime_episodes=2)
+cm = ChurnManager(reg3, arrivals_per_minute=1000, mean_lifetime_episodes=2,
+                  top_up_per_tick=0)  # Poisson character, no top-up
 cm._next_arrival = 0
 arrived = cm.tick(1.0)
 assert len(arrived) == 1
@@ -95,6 +96,21 @@ assert not reg3.get(aid).alive
 assert cm.report_episode(aid) is False  # unknown/gone ids are safe
 assert cm.report_episode("nobody") is False
 print("CHURN_TICK_OK")
+
+# --- spawn-to-target top-up (#214): multi-arrival ticks fill toward cap ---
+regt = Registry(os.path.join(tmpdir, "regt"), max_agents=5)
+cmt = ChurnManager(regt, arrivals_per_minute=0, mean_lifetime_episodes=100,
+                   top_up_per_tick=3)
+cmt._next_arrival = float("inf")  # Poisson off: top-up alone
+assert len(cmt.tick(1.0)) == 3
+assert len(cmt.tick(1.0)) == 2  # only room for 2 more: capped, not overfilled
+assert cmt.tick(1.0) == []  # at cap: nothing, no RuntimeError
+assert len(regt.alive_agents()) == 5 and regt.snapshot()["total"] == 5
+# top-up respects a dead slot the same way: kill one, next tick refills one
+regt.get(regt.alive_agents()[0].agent_id).alive = False
+assert len(cmt.tick(1.0)) == 1
+assert len(regt.alive_agents()) == 5
+print("CHURN_TOP_UP_OK")
 
 # --- Mixer ---
 reg4 = Registry(os.path.join(tmpdir, "reg4"), max_agents=10)
