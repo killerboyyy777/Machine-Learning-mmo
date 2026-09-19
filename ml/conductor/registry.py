@@ -19,9 +19,10 @@ class AgentEntry:
 
     __slots__ = ("agent_id", "agent_type", "branch", "checkpoint_path",
                  "created_at", "episodes", "total_reward", "last_active",
-                 "alive", "goal")
+                 "alive", "goal", "character")
 
-    def __init__(self, agent_id, agent_type, branch, checkpoint_path, goal=None):
+    def __init__(self, agent_id, agent_type, branch, checkpoint_path, goal=None,
+                 character=None):
         self.agent_id = agent_id
         self.agent_type = agent_type  # "linear" or "torch"
         self.branch = branch          # "stable" or "experimental"
@@ -29,6 +30,11 @@ class AgentEntry:
         # Inheritable goal weights (#162 Phase 1): {w_axis: float} simplex,
         # sampled/mutated at spawn, persisted below, logged per episode.
         self.goal = dict(goal) if goal else None
+        # Stable role name (#291, slice 2/6): the server-side character
+        # this incarnation plays as. Incarnation ids stay unique per
+        # spawn (collision-proof since #277); the character name is what
+        # persists across deaths so server scores/XP keep continuity.
+        self.character = character
         self.created_at = time.time()
         self.episodes = 0
         self.total_reward = 0.0
@@ -52,6 +58,7 @@ class AgentEntry:
             "total_reward": self.total_reward,
             "alive": self.alive,
             "goal": dict(self.goal) if self.goal else None,
+            "character": self.character,
         }
 
 
@@ -66,7 +73,7 @@ class Registry:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def register(self, agent_id, agent_type, branch="experimental", checkpoint=None,
-                 goal=None):
+                 goal=None, character=None):
         """Register a new agent. Returns the AgentEntry."""
         with self._lock:
             if agent_id in self._agents:
@@ -80,9 +87,27 @@ class Registry:
             cp_dir = self.base_dir / agent_id
             cp_dir.mkdir(parents=True, exist_ok=True)
             cp = checkpoint or str(cp_dir / "checkpoint.pt")
-            entry = AgentEntry(agent_id, agent_type, branch, cp, goal=goal)
+            entry = AgentEntry(agent_id, agent_type, branch, cp, goal=goal,
+                               character=character)
             self._agents[agent_id] = entry
             return entry
+
+    def alloc_character(self):
+        """Claim the smallest free stable role name (role_0, role_1, ...).
+
+        A name is free when no ALIVE entry holds it; dead entries keep
+        their history rows but release the name, so the next incarnation
+        respawns as the same server-side character (#291). Returns None
+        when the pool (sized by max_agents) is full -- callers fall back
+        to the incarnation id as the login name."""
+        with self._lock:
+            taken = {a.character for a in self._agents.values()
+                     if a.alive and a.character}
+            for i in range(self.max_agents):
+                name = f"role_{i}"
+                if name not in taken:
+                    return name
+            return None
 
     def get(self, agent_id):
         with self._lock:
@@ -168,6 +193,7 @@ class Registry:
                     a.get("branch", "experimental"),
                     a.get("checkpoint", ""),
                     goal=a.get("goal"),
+                    character=a.get("character"),
                 )
                 entry.episodes = a.get("episodes", 0)
                 if "total_reward" in a:

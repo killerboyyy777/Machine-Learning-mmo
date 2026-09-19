@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Stable role_I character names (#291, slice 2/6): registry entries carry
+  a persisted `character` (`role_0..role_{cap-1}`, freed on death and
+  reused by the next spawn); the conductor logs envs in as the character
+  name instead of the random incarnation id, so server-side scores and XP
+  survive churn deaths. Incarnation ids stay collision-proof (#277).
 - Live treasury assert accounts pre-reward heals (#285): the `gm_reward`
   check expected exactly 420.0 but a hurt arrival makes the pre-dungeon
   `gm_heal` debit first (seen as 418.0/416.0 in CI); the assert now

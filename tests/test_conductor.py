@@ -655,6 +655,51 @@ reg_goal2.load(os.path.join(tmpdir, "reg_goal", "registry.json"))
 assert reg_goal2.get("ga").goal == g_reg
 print("REGISTRY_GOAL_OK")
 
+# --- #291 slice 2/6: stable role_I character names, freed on death ---
+rr = Registry(os.path.join(tmpdir, "roles"), max_agents=3)
+cmr = ChurnManager(rr, arrivals_per_minute=0)
+cmr._next_arrival = float("inf")
+cids = [cmr._spawn_one() for _ in range(3)]
+assert [rr.get(a).character for a in cids] == ["role_0", "role_1", "role_2"]
+assert rr.alloc_character() is None  # pool full while all live
+rr.get(cids[0]).alive = False  # death frees the name, keeps history
+assert rr.alloc_character() == "role_0"
+c4 = cmr._spawn_one()  # respawn continues the same character
+assert rr.get(c4).character == "role_0" and c4 != cids[0]
+assert sorted(e.character for e in rr.alive_agents()) == ["role_0", "role_1", "role_2"]
+print("ROLE_REUSE_OK")
+
+# --- #291 slice 2/6: agent_id <-> character mapping round-trips ---
+rr.save()
+rr2 = Registry(os.path.join(tmpdir, "roles2"), max_agents=3)
+rr2.load(os.path.join(tmpdir, "roles", "registry.json"))
+assert rr2.get(c4).character == "role_0"
+assert rr2.get(cids[1]).character == "role_1"
+assert rr2.snapshot()["agents"][0]["character"] in {"role_0", "role_1", "role_2", None}
+print("ROLE_ROUNDTRIP_OK")
+
+# --- #291 slice 2/6: conductor logs envs in as the character name ---
+async def _role_login():
+    seen = []
+
+    def _cap(name):
+        seen.append(name)
+        return _FakeEnv()
+
+    cond = Conductor(os.path.join(tmpdir, "role_login"), max_agents=2,
+                     runners=[{"env_factory": _cap,
+                               "policy_fn": lambda obs, aid: 0}])
+    aid = cond.churn._spawn_one()
+    char = cond.registry.get(aid).character
+    assert char == "role_0"
+    assert await cond._maybe_start(aid) is True
+    assert seen == [char], seen  # login name, not the incarnation id
+    assert await cond._maybe_start(aid) is False  # duplicate refused
+    await cond.supervisor.stop_all()
+
+asyncio.run(_role_login())
+print("ROLE_LOGIN_OK")
+
 # --- #162 Phase 1: churn spawns carry simplex goals (fresh + mutated) ---
 _random.seed(21)
 reg_ch = Registry(os.path.join(tmpdir, "reg_ch"), max_agents=50)

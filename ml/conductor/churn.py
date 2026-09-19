@@ -163,7 +163,12 @@ class ChurnManager:
             raise RuntimeError("could not mint a unique agent id")
         agent_type = random.choice(["linear", "torch"])
         goal = self._sample_goal()
-        entry = self.registry.register(agent_id, agent_type, goal=goal)
+        # Stable role name (#291, slice 2/6): the server-side character
+        # for this incarnation. Freed by deaths (alloc skips live
+        # holders), so respawns continue the same character. None when
+        # the pool is full -- the conductor then logs in as agent_id.
+        entry = self.registry.register(agent_id, agent_type, goal=goal,
+                                        character=self.registry.alloc_character())
         self._lifetimes[agent_id] = geometric_lifetime(self.mean_lifetime_episodes)
         self._recent_goals.append(goal)
         return agent_id
