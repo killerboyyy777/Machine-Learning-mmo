@@ -180,6 +180,21 @@ async def main():
     assert gatherer.inventory.count("pine_timber") >= 2  # second harvest lands
     print("GATHER_OK")
 
+    # multi-yield truncates to remaining pack space, never overflows (#232)
+    from unittest import mock as _mock
+    capper = srv.Player(ws=FakeWS(), id=10006, name="CapGatherer", logged_in=True)
+    capper.room = "lumber_camp"
+    srv.add_member(capper)
+    capper.inventory = ["iron_ore"] * (srv.INVENTORY_CAP - 1)
+    node["available"] = True
+    node["respawn_at"] = None
+    with _mock.patch.object(srv.random, "randint", return_value=3):
+        await srv.cmd_gather(capper, {"node": "pine timber"})
+    assert srv._inventory_units(capper) == srv.INVENTORY_CAP, srv._inventory_units(capper)
+    assert capper.inventory.count("pine_timber") == 1  # truncated 3 -> 1
+    srv.remove_member(capper)
+    print("GATHER_CAP_OK")
+
     # --- Buff duration, replacement (no stacking), and expiry ---
     juicer = srv.Player(ws=FakeWS(), id=10005, name="BuffTester", logged_in=True)
     srv.add_member(juicer)
@@ -196,6 +211,16 @@ async def main():
     assert "attack" not in juicer.active_buffs  # expired and removed
     assert srv._player_buff_amount(juicer, "attack") == 0
     print("BUFF_STACK_OK")
+
+    # read-only commands never consume action buffs (#237)
+    for cmd in ("look", "stats", "inventory", "who", "leaderboard", "help",
+                "commission_list", "party_info", "market_list", "login"):
+        assert srv._command_ticks_buffs(cmd, {}) is False, cmd
+    assert srv._command_ticks_buffs("quest", {"action": "list"}) is False
+    for cmd in ("move", "attack", "take", "quest", "craft", "rest",
+                "market_buy", "party_leave", "commission_fill"):
+        assert srv._command_ticks_buffs(cmd, {"action": "accept"}) is True, cmd
+    print("BUFF_TICK_GATE_OK")
 
     # --- Dungeon instance ---
     d = srv.Dungeon(party_id=1)
@@ -285,6 +310,17 @@ async def main():
     assert srv.SCORES["seller"].get("trades_completed", 0) == 0
     assert srv.SCORES["seller"]["gold_bank"] == 90
     print("MARKET_TAX_OK")
+
+    # --- Market expand accounts lifetime (#240) ---
+    srv.tax_treasury = 0.0; srv.tax_collected_lifetime = 0.0
+    expander = srv.Player(ws=FakeWS(), id=20003, name="Expander", logged_in=True)
+    expander.gold = 1000
+    slots0 = srv.get_score_entry("Expander").get("market_slots", srv.MARKET_ORDER_SLOTS_BASE)
+    price0 = srv.market_slot_price(slots0)
+    await srv.cmd_market_expand(expander, {})
+    assert srv.tax_treasury == price0 and srv.tax_collected_lifetime == price0, (srv.tax_treasury, srv.tax_collected_lifetime)
+    assert srv.get_score_entry("Expander")["market_slots"] == slots0 + 1
+    print("MARKET_EXPAND_LIFETIME_OK")
 
     # --- GM spend from treasury ---
     p_gm = srv.Player(ws=FakeWS(), id=30001, name="GMBot", logged_in=True)
@@ -1150,6 +1186,52 @@ async def main():
     unplayer(invitee)
     print("INVITE_TTL_OK")
 
+    # disconnect purges invites the leaver sent (#248): no joining a party
+    # whose inviter is offline
+    leaver = mkplayer("Leaver", 50026)
+    joiner = mkplayer("Joiner", 50027)
+    await srv.cmd_party_invite(leaver, {"target": "Joiner"})
+    assert joiner.id in srv._pending_party_invites
+    await srv._leave_party_on_disconnect(leaver)
+    assert joiner.id not in srv._pending_party_invites
+    inbox.clear()
+    await srv.cmd_party_accept(joiner, {})
+    assert inbox[-1]["type"] == "error" and "no pending" in inbox[-1]["text"].lower(), inbox[-1]
+    for p in list(srv.parties.values()):
+        if leaver.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(leaver)
+    unplayer(joiner)
+    print("INVITE_DISCONNECT_OK")
+
+    # party switch relocates out of the old dungeon instance (#226)
+    import time as _time
+    leadA = mkplayer("LeadA", 50030)
+    leadB = mkplayer("LeadB", 50031)
+    switcher = mkplayer("Switcher", 50032)
+    partyA = srv._auto_create_party(leadA)
+    dA = srv.Dungeon(party_id=partyA.id)
+    srv.dungeons[dA.id] = dA
+    partyA.dungeon_id = dA.id
+    partyA.member_ids.add(switcher.id)
+    switcher.party_id = partyA.id
+    srv.remove_member(switcher)
+    switcher.room = dA.room_id(2)
+    srv.add_member(switcher)
+    partyB = srv._auto_create_party(leadB)
+    srv._pending_party_invites[switcher.id] = {"party": partyB, "ts": _time.time(),
+                                               "inviter": leadB.id}
+    await srv.cmd_party_accept(switcher, {})
+    assert switcher.party_id == partyB.id
+    assert switcher.room == srv.DUNGEON_ENTRANCE_ROOM, switcher.room
+    assert switcher.id not in partyA.member_ids
+    for p in (partyA, partyB):
+        if p.id in srv.parties:
+            srv._delete_party(p)
+    for p in (leadA, leadB, switcher):
+        unplayer(p)
+    print("PARTY_SWITCH_RELOCATE_OK")
+
     # collusion cap: seeded history evicts least-frequent first, keeps newcomer
     clposter = mkplayer("CollabPoster", 50026)
     clposter.gold = 100000
@@ -1188,6 +1270,20 @@ async def main():
     unplayer(charmer)
     print("CHARM_GATE_OK")
 
+    # pre-crafted charm survives accept (#239): no double craft
+    prefarm = mkplayer("PreFarmer", 50029, room="town_square")
+    pfentry = srv.get_score_entry("PreFarmer")
+    prefarm.inventory.append(srv.QUEST_CHARM_RESULT)  # crafted before accepting
+    await srv.cmd_quest(prefarm, {"action": "accept", "quest": "guard_charm"})
+    assert pfentry.get("quest_guard_active")
+    assert pfentry.get("guard_charm_crafted") is True
+    inbox.clear()
+    await srv.cmd_quest(prefarm, {"action": "turn_in", "quest": "guard_charm"})
+    assert not pfentry.get("quest_guard_active")
+    assert srv.QUEST_CHARM_RESULT not in prefarm.inventory
+    unplayer(prefarm)
+    print("CHARM_PREFARM_OK")
+
     # bool coercion: string "false" must not enable boolean gates (#192.3)
     import json as _json
     import os as _os
@@ -1213,6 +1309,49 @@ async def main():
         if _os.path.exists(cfg_path):
             _os.remove(cfg_path)
     print("BOOL_CONFIG_OK")
+
+    # unknown keys warn instead of vanishing (#241)
+    import io as _io
+    import contextlib as _ctx
+    cfg_path2 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_unknown_cfg_tmp.json")
+    real_cfg3 = srv.CONFIG_FILE
+    try:
+        with open(cfg_path2, "w") as f:
+            _json.dump({"scoring": {"DUNGEON_MAX_FLOORs": 60}}, f)
+        srv.CONFIG_FILE = cfg_path2
+        buf = _io.StringIO()
+        with _ctx.redirect_stdout(buf):
+            srv._apply_config()
+        assert "DUNGEON_MAX_FLOORs" in buf.getvalue(), buf.getvalue()
+    finally:
+        srv.CONFIG_FILE = real_cfg3
+        if _os.path.exists(cfg_path2):
+            _os.remove(cfg_path2)
+    print("UNKNOWN_CONFIG_OK")
+
+    # quest config section applies to globals AND catalog (#251)
+    cfg_path3 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_quest_cfg_tmp.json")
+    real_cfg4 = srv.CONFIG_FILE
+    saved_q = (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP,
+               srv.QUESTS["delver"]["floors_required"])
+    try:
+        with open(cfg_path3, "w") as f:
+            _json.dump({"quests": {"QUEST_DELVER_FLOORS": 5,
+                                   "QUEST_DELVER_XP": 99}}, f)
+        srv.CONFIG_FILE = cfg_path3
+        srv._apply_config()
+        srv._refresh_quests()
+        assert srv.QUEST_DELVER_FLOORS == 5, srv.QUEST_DELVER_FLOORS
+        assert srv.QUESTS["delver"]["floors_required"] == 5
+        assert srv.QUESTS["delver"]["reward_xp"] == 99
+    finally:
+        srv.CONFIG_FILE = real_cfg4
+        (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP) = saved_q[:2]
+        srv._refresh_quests()
+        assert srv.QUESTS["delver"]["floors_required"] == saved_q[2]
+        if _os.path.exists(cfg_path3):
+            _os.remove(cfg_path3)
+    print("QUEST_CONFIG_OK")
 
     # --config overlay: short TTLs apply, untouched keys keep prod defaults
     import os as _os2
@@ -1301,6 +1440,141 @@ async def main():
     assert len(srv.players) == n_players_before
     srv.send = _patched_send
     print("MALFORMED_OK")
+
+    # login obeys room capacity like moves do (#227)
+    fillers = [mkplayer(f"CapFill{i}", 51000 + i, room=srv.START_ROOM)
+               for i in range(srv.MAX_PLAYERS_PER_ROOM)]
+    assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
+    newcomer = srv.Player(ws=FakeWS(), id=51999, name="", logged_in=False)
+    srv.players[51999] = newcomer
+    await srv.cmd_login(newcomer, {"name": "CrowdedOut"})
+    assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
+    assert not newcomer.logged_in
+    assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
+    # rejected logins leave no entry/token state (#227 follow-up): a
+    # crowded probe carrying a token must not squat the name for its owner
+    squatter = srv.Player(ws=FakeWS(), id=51998, name="", logged_in=False)
+    srv.players[51998] = squatter
+    await srv.cmd_login(squatter, {"name": "Squatted", "token": "evil"})
+    assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
+    assert "squatted" not in srv.SCORES
+    srv.players.pop(51998, None)
+    for f in fillers:
+        unplayer(f)
+    srv.players.pop(51999, None)
+    print("LOGIN_CAP_OK")
+
+    # version mismatch warns, matching versions stay quiet (#243)
+    versioned = srv.Player(ws=FakeWS(), id=52000, name="", logged_in=False)
+    srv.players[52000] = versioned
+    inbox.clear()
+    await srv.cmd_login(versioned, {"name": "Versioned", "protocol_version": 999})
+    welcome = [m for m in inbox if m.get("type") == "welcome"]
+    assert welcome and "version_mismatch" in welcome[0], inbox
+    assert versioned.logged_in
+    srv.remove_member(versioned)
+    srv.players.pop(52000, None)
+    del srv.SCORES["versioned"]
+    unversioned = srv.Player(ws=FakeWS(), id=52001, name="", logged_in=False)
+    srv.players[52001] = unversioned
+    inbox.clear()
+    await srv.cmd_login(unversioned, {"name": "Unversioned"})
+    welcome = [m for m in inbox if m.get("type") == "welcome"]
+    assert welcome and "version_mismatch" not in welcome[0], inbox
+    srv.remove_member(unversioned)
+    srv.players.pop(52001, None)
+    del srv.SCORES["unversioned"]
+    print("VERSION_WARN_OK")
+
+    # failed GM bind closes the game listener, propagates (#242)
+    import socket as _socket
+    squat = _socket.socket()
+    squat.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    squat.bind(("127.0.0.1", 0))
+    squat.listen(1)
+    squat_port = squat.getsockname()[1]
+    saved_ports = (srv.PORT, srv.GM_PORT, srv.HTTP_PORT)
+    saved_scores = {}
+    for _sfx in ("", ".1", ".2"):
+        _p = srv.SCORES_FILE + _sfx
+        saved_scores[_sfx] = open(_p, "rb").read() if _os.path.exists(_p) else None
+    try:
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18771, squat_port, 18772
+        try:
+            await srv.main()  # already inside the suite's event loop
+            raised = False
+        except OSError:
+            raised = True
+        assert raised, "main() must propagate the GM bind failure"
+        probe = _socket.socket()
+        try:
+            probe.bind(("127.0.0.1", 18771))  # free again: listener closed
+        finally:
+            probe.close()
+    finally:
+        squat.close()
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = saved_ports
+        for _sfx, _data in saved_scores.items():
+            _p = srv.SCORES_FILE + _sfx
+            if _data is None:
+                if _os.path.exists(_p):
+                    _os.remove(_p)
+            else:
+                with open(_p, "wb") as f:
+                    f.write(_data)
+    print("STARTUP_LEAK_OK")
+
+    # shutdown cancels background tasks before the final save (#244)
+    saved_ports2 = (srv.PORT, srv.GM_PORT, srv.HTTP_PORT)
+    saved_scores2 = {}
+    for _sfx in ("", ".1", ".2"):
+        _p = srv.SCORES_FILE + _sfx
+        saved_scores2[_sfx] = open(_p, "rb").read() if _os.path.exists(_p) else None
+    srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18781, 18782, 18783
+    try:
+        main_task = asyncio.create_task(srv.main())
+        for _ in range(100):
+            await asyncio.sleep(0.1)
+            try:
+                _probe2 = _socket.socket()
+                _probe2.connect(("127.0.0.1", 18781))
+                _probe2.close()
+                break
+            except OSError:
+                pass
+        else:
+            raise AssertionError("test server did not boot")
+        main_task.cancel()
+        try:
+            await main_task
+        except asyncio.CancelledError:
+            pass
+        lingering = [t for t in asyncio.all_tasks()
+                     if not t.done() and getattr(t.get_coro(), "__qualname__", "") == "_run_resilient"]
+        assert not lingering, f"background tasks survive shutdown: {lingering}"
+    finally:
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = saved_ports2
+        for _sfx, _data in saved_scores2.items():
+            _p = srv.SCORES_FILE + _sfx
+            if _data is None:
+                if _os.path.exists(_p):
+                    _os.remove(_p)
+            else:
+                with open(_p, "wb") as f:
+                    f.write(_data)
+    print("SHUTDOWN_TASKS_OK")
+
+    # /health reads the cached snapshot, never the live dict (#224)
+    import json as _json2
+    hp1 = mkplayer("HealthOne", 52002)
+    hp2 = mkplayer("HealthTwo", 52003)
+    srv.refresh_snapshot_json()
+    snap = _json2.loads(srv.world_snapshot_json)
+    live = sum(1 for p in srv.players.values() if p.logged_in)
+    assert snap["server"]["players_online"] == live >= 2, snap["server"]
+    unplayer(hp1)
+    unplayer(hp2)
+    print("HEALTH_SNAPSHOT_OK")
 
     # safety net logs one line, never a traceback (disk-fill vector when
     # TEXTMMO_LOG_FILE is set): capture stdout through a real dispatch

@@ -36,12 +36,20 @@ err1 = float((((agent.rnd_pred(x) - tgt) ** 2).mean()).item())
 assert err1 < err0, (err0, err1)
 print(f"RND_LEARNS_OK ({err0:.4f} -> {err1:.4f})")
 
-# --- novel state still pays more than the trained one ---
+# --- novel states pay more than the trained one (#245) ---
 b_seen = agent.rnd_bonus(obs)
-novel = [0.9 - v for v in obs]
-b_novel = agent.rnd_bonus(novel)
-assert b_novel >= 0.0 and b_novel == b_novel  # noqa: PLR0124 (NaN-proof)
-print(f"RND_NOVELTY_OK (seen={b_seen:.4f} novel={b_novel:.4f})")
+novels = [[(0.9 - v + 0.05 * k) % 1.0 for v in obs] for k in range(3)]
+b_novels = [agent.rnd_bonus(n) for n in novels]
+for b_novel in b_novels:
+    assert b_novel >= 0.0 and b_novel == b_novel  # noqa: PLR0124 (NaN-proof)
+# Ordering on raw predictor error: training provably shrank the seen
+# error above (RND_LEARNS_OK), so untouched regions must score higher.
+with torch.no_grad():
+    err_seen = float(agent._rnd_error(x).item())
+    err_novels = [float(agent._rnd_error(
+        torch.tensor([n], dtype=torch.float32)).item()) for n in novels]
+assert min(err_novels) > err_seen, (err_seen, err_novels)
+print(f"RND_NOVELTY_OK (seen={b_seen:.4f} novel_mean={sum(b_novels)/len(b_novels):.4f})")
 
 # --- RND state survives save/load ---
 with tempfile.TemporaryDirectory() as tmp:

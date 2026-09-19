@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import random
 import statistics
 import sys
@@ -45,10 +46,10 @@ def _load_agent(policy, checkpoint):
     return lambda feats, mask: agent.act(feats, 0.0, mask)
 
 
-async def eval_seed(act_fn, url, seed, steps, reward_mode):
+async def eval_seed(act_fn, url, seed, steps, reward_mode, tag=""):
     random.seed(seed)
     torch.manual_seed(seed)
-    env = TextMMOEnv(f"Eval{seed}", url=url, max_steps=steps, reward_mode=reward_mode)
+    env = TextMMOEnv(f"Eval{tag}{seed}", url=url, max_steps=steps, reward_mode=reward_mode)
     obs = await env.reset()
     feats = flatten_obs(obs)
     done = False
@@ -61,11 +62,19 @@ async def eval_seed(act_fn, url, seed, steps, reward_mode):
     return score
 
 
-async def evaluate(checkpoint, policy, url, seeds, steps, reward_mode):
+def _run_tag(checkpoint):
+    """Short alphanumeric run tag so rival evaluations don't share
+    character names (persisted score entries would contaminate the
+    paired comparison, #233)."""
+    stem = os.path.splitext(os.path.basename(str(checkpoint)))[0]
+    return "".join(c for c in stem if c.isalnum())[:12] or "run"
+
+
+async def evaluate(checkpoint, policy, url, seeds, steps, reward_mode, tag=""):
     act_fn = _load_agent(policy, checkpoint)
     scores = []
     for s in seeds:
-        score = await eval_seed(act_fn, url, s, steps, reward_mode)
+        score = await eval_seed(act_fn, url, s, steps, reward_mode, tag)
         scores.append(score)
         print(f"  seed {s}: score={score:.2f}")
     return scores
@@ -73,7 +82,7 @@ async def evaluate(checkpoint, policy, url, seeds, steps, reward_mode):
 
 def report(name, scores):
     mean = statistics.fmean(scores)
-    std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+    std = statistics.stdev(scores) if len(scores) > 1 else 0.0
     print(
         f"{name}: n={len(scores)} mean={mean:.2f} std={std:.2f} "
         f"min={min(scores):.2f} max={max(scores):.2f}"
@@ -218,7 +227,8 @@ def main():
     )
     champ = asyncio.run(
         evaluate(
-            args.checkpoint, args.policy, args.url, seeds, args.steps, args.reward_mode
+            args.checkpoint, args.policy, args.url, seeds, args.steps, args.reward_mode,
+            _run_tag(args.checkpoint),
         )
     )
     m, _s = report("challenger", champ)
@@ -236,6 +246,7 @@ def main():
                 seeds,
                 args.steps,
                 args.reward_mode,
+                _run_tag(args.baseline),
             )
         )
         mb, _sb = report("baseline  ", base)
