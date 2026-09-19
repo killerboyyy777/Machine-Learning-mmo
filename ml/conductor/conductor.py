@@ -15,6 +15,31 @@ from .metrics import MetricsLogger
 from .pbt import PBTManager
 
 
+def _plugin_policy_factory(name, base_config):
+    """Build a restart-time policy rebuilder for a plugin slot.
+
+    Returns factory(checkpoint_path, hparams) -> policy_fn: a FRESH
+    plugin instance (never the shared slot instance, which serves every
+    agent on the slot) loading checkpoint_path when the file exists,
+    with hparams overlaid onto the slot config wherever they match the
+    plugin schema (e.g. epsilon); unknown hparams are ignored. A missing
+    checkpoint file keeps the slot's own checkpoint/fresh default.
+    """
+
+    def build(checkpoint_path, hparams):
+        from ml.plugins import get, instantiate
+        schema = get(name).config_schema()
+        config = dict(base_config)
+        for key, value in (hparams or {}).items():
+            if key in schema:
+                config[key] = value
+        if checkpoint_path and Path(checkpoint_path).is_file():
+            config["checkpoint"] = checkpoint_path
+        return instantiate(name, **config).make_policy()
+
+    return build
+
+
 def _materialize_slot(slot, url):
     """Turn a slot spec into a runnable slot.
 
@@ -22,7 +47,7 @@ def _materialize_slot(slot, url):
     "env": {...}}``, see :func:`ml.plugins.parse_slot`) or a legacy raw
     runner (``{"env_factory": f, "policy_fn": p}``). Returns
     ``{"weight", "agent_type", "env_factory", "policy_fn", "step_timeout",
-    "label"}``. The plugin instance is built once and shared across the
+    "label"}`` plus ``policy_factory`` (plugin slots only, else None). The plugin instance is built once and shared across the
     slot's agents (policies are stateless at act time)."""
     from .runners import make_env_factory
     weight = max(1, int(slot.get("weight", 1)))
@@ -37,6 +62,10 @@ def _materialize_slot(slot, url):
             "label": slot["plugin"],
             "env_factory": make_env_factory(**env_kwargs),
             "policy_fn": plugin.make_policy(),
+            # Fresh per-agent rebuilds on PBT restart (shared slot
+            # instance must never reload: it serves the whole slot).
+            "policy_factory": _plugin_policy_factory(
+                slot["plugin"], slot.get("config", {})),
             "step_timeout": slot.get("step_timeout"),
         }
     return {
@@ -45,6 +74,7 @@ def _materialize_slot(slot, url):
         "label": slot.get("label", "custom"),
         "env_factory": slot["env_factory"],
         "policy_fn": slot["policy_fn"],
+        "policy_factory": None,  # raw runners have no checkpoint to reload
         "step_timeout": slot.get("step_timeout"),
     }
 
@@ -95,26 +125,34 @@ class Conductor:
 
         Returns True when a task is running afterwards. Never raises: a
         bad spawn is logged as spawn_error and skipped, so one raising
-        factory can't end the whole run.
+        factory can't end the whole run. Failed starts are marked dead
+        (#230): without a task their episode-based lifetime never ages,
+        so alive-without-task ghosts would inflate `alive` forever.
         """
         try:
             slot = self._next_slot()
             if slot is None:
+                self.registry.mark_dead(agent_id)
                 return False
             entry = self.registry.get(agent_id)
             if entry is not None:
                 entry.agent_type = slot["agent_type"]
-            return await self.supervisor.start_agent(
+            started = await self.supervisor.start_agent(
                 agent_id,
                 slot["env_factory"],
                 slot["policy_fn"],
-                step_timeout=slot.get("step_timeout"))
+                step_timeout=slot.get("step_timeout"),
+                policy_factory=slot.get("policy_factory"))
+            if not started:
+                self.registry.mark_dead(agent_id)
+            return started
         except Exception as e:
             try:
                 self.metrics.log("spawn_error", agent_id=agent_id,
                                  error=str(e)[-300:])
             except Exception:
                 pass
+            self.registry.mark_dead(agent_id)
             return False
 
     def report_fitness(self, agent_id, fitness, episodes=1):
@@ -146,8 +184,8 @@ class Conductor:
             await asyncio.sleep(delay)
             agent_id = self.churn._spawn_one()
             entry = self.registry.get(agent_id)
-            # Log + assign only for agents that actually started: anything
-            # else is an alive-without-task ghost until churn reaps it.
+            # Log + assign only for agents that actually started
+            # (_maybe_start kills failed starts outright, #230).
             if entry and await self._maybe_start(agent_id):
                 self.metrics.log_agent_spawn(agent_id, entry.agent_type, entry.branch)
                 self.mixer.assign_one(agent_id)
@@ -189,6 +227,16 @@ class Conductor:
             # Periodic PBT exploit/explore (no-op when disabled)
             if self.pbt is not None and now - last_pbt >= pbt_interval:
                 ops = self.pbt.step()
+                for op in ops:
+                    # Reload the loser's task so the copied weights +
+                    # hparams actually take effect at runtime (#228).
+                    restarted = await self.supervisor.restart_agent(
+                        op["loser"], hparams=op.get("hparams"))
+                    try:
+                        self.metrics.log("pbt_reload", agent_id=op["loser"],
+                                         restarted=restarted)
+                    except Exception:
+                        pass
                 if ops:
                     print(f"[conductor] PBT: {len(ops)} exploit(s) "
                           + ", ".join(f"{o['loser']}<-{o['winner']}" for o in ops))

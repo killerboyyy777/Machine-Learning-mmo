@@ -3,6 +3,83 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Torch farm reward parity (#234): transitions carried count-loot,
+  buy-only P&L, zero intrinsic and no curiosity while learn() shaped on
+  those keys. Now mirrors single-agent targets (value loot, fill P&L,
+  accept/progress intrinsic, per-step RND).
+- Torch warmup gate (#222): learning waited for the FULL 10k replay
+  buffer, so default --steps runs did zero gradient steps behind warmup
+  logs. Now keys on a fillable minibatch (32) in solo + farm paths.
+- RND novelty ordering (#245): the test never compared novel vs seen, so
+  a dead novelty signal passed; now asserts raw-error ordering.
+- Eval run tags (#233): challenger/baseline shared `Eval{seed}` names, so
+  persisted score entries contaminated the paired comparison. Names now
+  carry a per-checkpoint tag; seeds (pairing) unchanged.
+- Eval sample std (#247): `report()` used population std, understating
+  spread vs `compare()`; now sample std with test cover.
+- PBT exploit reload (#228): the winner-copy never reached live losers;
+  the supervisor now restarts loser tasks with fresh envs/policies that
+  reload the checkpoint (dead entries refused, shutdown hardened to join
+  tasks). Follow-up: the stored closure still ran stale in-memory weights
+  and mutated hparams never reached the live policy -- restart now
+  rebuilds the policy from the loser's checkpoint file with hparams
+  overlaid (schema keys only) and re-assigns the loser to the mixer
+  (covered by RESTART_WEIGHTS_OK / RESTART_FACTORY_OK).
+- Conductor ghost agents (#230): failed starts stayed alive forever
+  (episode-aged lifetimes never expire taskless entries); now marked dead
+  at failed start, which also makes the alive-based soak gate sound
+  (crashed tasks already kill their entries in recovery).
+- Shutdown task lifecycle (#244): background loops are tracked and
+  cancelled before the final scores save (no concurrent save_scores);
+  they also start only after both listeners bind (refines #242).
+- Startup listener hygiene (#242): a failed GM bind now closes the game
+  listener before propagating instead of leaving it bound.
+- Dashboard GM origin (#236): the console dialed hardcoded 127.0.0.1, so
+  GM failed on any remote dashboard; now follows location.hostname.
+- Dashboard market defaults (#246): `renderMarket` crashed on partial
+  snapshots; now defaults like the Overview panel (node-verified).
+- Quest config actually applies (#251): the `quests` section (plus other
+  late-defined tunables) never took effect -- `_apply_config` ran before
+  those globals existed. Single apply pass at module bottom + catalog
+  sync; covered by QUEST_CONFIG_OK.
+- Scripted delver gating (#235): DungeonPlugin ordered ungated turn_in
+  before accept, making accept unreachable; now ordered by quest state.
+- GM reward validation (#223, implemented in #252): `gm_reward` spent
+  treasury gold before resolving the recipient (empty/offline targets
+  burned funds); now validates first for both gold and items, covered by
+  `tests/test_gm_unit.py`.
+- Buff tick gating (#237): read-only commands (look/stats/inventory/who/
+  leaderboard/help, list views, login, quest list) no longer consume
+  action-based buffs.
+- Gather cap truncation (#232): multi-yield harvests truncated to the
+  remaining pack space instead of overflowing past 24 units.
+- Party-switch relocation (#226): accepting a new invite while standing
+  in the old party's dungeon now relocates to the entrance like
+  party_leave, instead of haunting the wrong instance.
+- Health probe thread-safety (#224): `/health` iterated the live players
+  dict from the HTTP thread (intermittent RuntimeError); now served from
+  the cached snapshot like `/api/state`.
+- Login version warning (#243): `welcome` now carries `version_mismatch`
+  when the client sent a different protocol version (additive field;
+  old clients unaffected). (Wiki Protocol doc to follow.)
+- Guard-charm pre-farm (#239): accepting with an already-crafted charm no
+  longer wipes the crafted flag (no forced double craft).
+- Party invite hygiene (#248): invites record the inviter and are purged
+  when the inviter disconnects, so nobody joins a leaderless party.
+- Login room cap (#227): fresh connections could overflow a full start
+  room; logins now refuse like moves when the destination is at cap.
+  Follow-up: the crowded check ran after entry creation and the token
+  claim, so a rejected probe squatted the victim's `auth_token` (locking
+  out the real owner) and polluted SCORES toward the cap. The capacity
+  check now runs before any login state mutation.
+- Config unknown-key warning (#241): typo'd/wrong-nesting keys vanished
+  silently; now logged like bad values.
+- Market expand accounting (#240): the stall-slot fee hit `tax_treasury`
+  but skipped `tax_collected_lifetime` like every other sink; now both.
+- Farm checkpoint resume (#231): `save_weights` wrote weights+bias only,
+  resetting `training_steps` (and the epsilon schedule) on every restart.
+   Now saves the full LinearQAgent format; covered by
+   `tests/test_farm_resume.py`.
 - Collision-proof churn spawns (#277): `_spawn_one` mints ids from a wider
   random space with a retry-on-collision loop, so same-millisecond bursts
   never silently re-register an existing entry (which reset a live agent's
@@ -15,7 +92,7 @@ All notable changes to the text MMO engine are recorded here.
   (10, tunable in `server_config.json` economy) to break the 0-gold
   poverty trap; granted once per score entry (TTL-evicted entries re-grant
   on return -- a ~10g/week welcome-back stipend at most), never topped up
-  otherwise.
+   otherwise.
 - New unit suites (#252): training loops, conductor run, and GM treasury
   coverage in CI; `gm_reward` validates the destination before spending,
   so failed rewards no longer debit the treasury with nothing delivered.
@@ -33,6 +110,14 @@ All notable changes to the text MMO engine are recorded here.
   leader, accept relocates out of the old dungeon, kill gold splits among
   present contributors only; commercial half-up tax rounding with 1g
   trades paying out in full.
+- Env equip-mask fix (#229): the worn-weapon exclusion compared an item
+  id against a display name, so it never fired and `equip` stayed valid
+  after equipping. Now compares display names. Same dims.
+- Env item presence fix (#221): `item_presence` / `inv_presence` looked
+  ids up in a name->id map, so both 39-dim vectors were all-zeros forever
+  -- policies were blind to ground loot and inventory. Now resolved via
+  `ITEM_ID_TO_NAME` like the NPC line. Same dims (no checkpoint break),
+  but inputs change distribution: retraining recommended.
 - Docker full stack (#71): `Dockerfile` (lean `python:3.12-slim`,
   torch only via `INSTALL_TORCH=1`) + `compose.yaml` -- `docker compose up`
   runs server (8765) + dashboard (8766) + 4 scripted bots, with `soak`

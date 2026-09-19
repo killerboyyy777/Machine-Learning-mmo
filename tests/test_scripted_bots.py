@@ -60,6 +60,16 @@ env._state["exits"] = ["enter", "north"]
 assert selected(DungeonClearerPolicy(), env) == "move_enter"
 print("DUNGEON_ENTER_OK")
 
+# --- dungeon role: giver present, no quest -> accept (not turn_in) (#235) ---
+from ml.ml_env import QUEST_GIVER_NAME
+env = fresh_env()
+env._state["npc_names"] = [QUEST_GIVER_NAME]
+env._state["quest_delver_active"] = False
+assert selected(DungeonClearerPolicy(), env) == "quest2_accept"
+env._state["quest_delver_active"] = True
+assert selected(DungeonClearerPolicy(), env) == "quest2_turn_in"
+print("DELVER_ACCEPT_OK")
+
 # --- market role: no snapshot yet -> list ---
 env = fresh_env()
 env._state["market_state"] = None

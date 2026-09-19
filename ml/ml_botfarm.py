@@ -135,7 +135,10 @@ class Farm:
               f"at step {self.steps} -> {BEST_FILE}")
 
     def save_weights(self):
-        save_json(WEIGHTS_FILE, {"weights": self.agent.weights, "bias": self.agent.bias})
+        # Full LinearQAgent format (weights, bias, training_steps, dims,
+        # version) so restarts resume the epsilon schedule (#231: the old
+        # weights+bias-only blob reset training_steps to 0 on every load).
+        self.agent.save(WEIGHTS_FILE)
         print(f"Saved current weights to {WEIGHTS_FILE}")
 
 
