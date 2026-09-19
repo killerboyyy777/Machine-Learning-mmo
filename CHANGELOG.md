@@ -7,6 +7,11 @@ All notable changes to the text MMO engine are recorded here.
   check expected exactly 420.0 but a hurt arrival makes the pre-dungeon
   `gm_heal` debit first (seen as 418.0/416.0 in CI); the assert now
   subtracts parsed heal tax like the downstream asserts, exact not ranged.
+- Dashboard hover tooltips (#76): every metric and GM-config label in
+  `dashboard.html` now carries a `title` tooltip explaining range and
+  impact (tax rates, treasury costs, death/level formulas, buff windows),
+  with a dotted-underline affordance and a `CARD_TIPS` map for the dynamic
+  overview cards. Covered by `tests/test_dashboard.py` (TOOLTIPS_OK).
 - Presence obs flags actually flag (#263): `item_presence`/`inv_presence`
   looked item ids up in a reversed name->id map (always None, both vectors
   identically zero); they now map id->display-name like the NPC line.
