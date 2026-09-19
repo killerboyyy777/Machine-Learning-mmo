@@ -106,6 +106,9 @@
   .gm-pane { display: none; margin-top: 10px; }
   .gm-pane.active { display: grid; }
   .gm-cost { color: var(--warn); font-size: 11px; }
+  /* #76: dotted-underline affordance marks hoverable metric/config labels. */
+  .stat .l[title], .meta[title], th[title], .gmform label[title], h2[title],
+  .dim[title] { cursor: help; text-decoration: underline dotted; }
   .gm-preset.on { background: var(--accent); color: #0b1622; border-color: var(--accent); }
   #gmlog { max-height: 320px; overflow-y: auto; background: #0b0f13; border: 1px solid var(--border);
            border-radius: 6px; padding: 8px; margin-top: 10px; font-size: 12px; }
@@ -119,9 +122,9 @@
 <header>
   <h1>Text MMO — Live Dashboard</h1>
   <span class="meta"><span id="dot"></span><span id="status">connecting…</span></span>
-  <span class="meta">uptime <b id="uptime">-</b></span>
-  <span class="meta">players online <b id="online">-</b></span>
-  <span class="meta">connections <b id="conns">-</b></span>
+  <span class="meta" title="Server process uptime in seconds. Resets on restart; scores persist separately.">uptime <b id="uptime">-</b></span>
+  <span class="meta" title="Characters currently logged in. Excludes disconnected sockets.">players online <b id="online">-</b></span>
+  <span class="meta" title="Open sockets: players + dashboard viewers + GM console. Higher than players online is normal.">connections <b id="conns">-</b></span>
 </header>
 
 <div class="tabs">
@@ -144,9 +147,9 @@
   <div class="panel">
     <h2>Trends</h2>
     <div style="display:flex;gap:12px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><canvas id="ovPlayers" width="300" height="80" style="width:100%;height:80px"></canvas></div>
-      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><canvas id="ovScore" width="300" height="80" style="width:100%;height:80px"></canvas></div>
-      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Market orders</div><canvas id="ovVolume" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px" title="1s samples of logged-in characters. Dips to 0 mean idle, not down.">Players online</div><canvas id="ovPlayers" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px" title="Highest all-time score across recent snapshots. Quest turn-ins move it most.">Top score</div><canvas id="ovScore" width="300" height="80" style="width:100%;height:80px"></canvas></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px" title="Sell orders listed worldwide. Sellers start with 3 slots; extra slots cost treasury tax.">Market orders</div><canvas id="ovVolume" width="300" height="80" style="width:100%;height:80px"></canvas></div>
     </div>
   </div>
   <div class="panel">
@@ -179,7 +182,7 @@
 <div id="view-config" class="tabview">
   <div class="panel">
     <h2>Config</h2>
-    <p class="empty">Tunable constants with tooltips land here with the config editor (#63) and docs (#76).</p>
+    <p class="empty">Tunable constants land here with the config editor (#63). Metric and GM labels across this dashboard already carry hover tooltips explaining range and impact (#76).</p>
   </div>
 </div>
 
@@ -195,9 +198,9 @@
       <div class="panel">
         <h2>Performance</h2>
         <table>
-          <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
-                 <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
-                 <th>room</th></tr></thead>
+          <thead><tr><th title="Row number in this table.">#</th><th title="Character name (unique per account).">player</th><th title="Level: +5 max HP and +1 attack per level (100 XP base, 1.5x growth).">lv</th><th title="Score: quest points + variety-scaled XP minus death penalties.">score</th>
+                 <th title="NPC kills. Quest credit requires contribution.">kills</th><th title="Deaths: 40% of carried gold drops to the room, 10% is destroyed, -5 score.">deaths</th><th title="Carried gold. Sheltered escrow/bank wealth still counts toward the death penalty.">gold</th><th title="Current/max hit points. Level-ups heal only gained max HP.">hp</th>
+                 <th title="Current room id (e.g. town_square).">room</th></tr></thead>
           <tbody id="perf"></tbody>
         </table>
         <p class="empty" id="noPerf" style="display:none">No online players.</p>
@@ -206,7 +209,7 @@
     <div>
       <div class="panel">
         <h2>Top 10 all time</h2>
-        <table><thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th></tr></thead>
+         <table><thead><tr><th title="Rank by all-time score.">#</th><th title="Character name (unique per account).">player</th><th title="Level: +5 max HP and +1 attack per level.">lv</th><th title="All-time score (persists across sessions).">score</th></tr></thead>
                <tbody id="scores"></tbody></table>
       </div>
       <div class="panel">
@@ -233,15 +236,15 @@
   <div class="panel">
     <h2>Market</h2>
     <div class="statrow">
-      <div class="stat"><div class="v" id="m-treasury">-</div><div class="l">GM treasury</div></div>
-      <div class="stat"><div class="v" id="m-lifetime">-</div><div class="l">tax collected (lifetime)</div></div>
-      <div class="stat"><div class="v" id="m-trades">-</div><div class="l">completed trades</div></div>
+      <div class="stat"><div class="v" id="m-treasury">-</div><div class="l" title="GM treasury (gold). Filled by the 10% market tax; GM actions spend it 1:1.">GM treasury</div></div>
+      <div class="stat"><div class="v" id="m-lifetime">-</div><div class="l" title="Total market tax ever collected (10% per trade, half-up rounding; 1g trades pay in full). Never resets except on world wipe.">tax collected (lifetime)</div></div>
+      <div class="stat"><div class="v" id="m-trades">-</div><div class="l" title="Buyer/seller trades settled through the market since server start.">completed trades</div></div>
     </div>
   </div>
   <div class="panel">
     <h2>Open sell orders (anywhere in the world)</h2>
     <table>
-      <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>seller</th><th>posted</th></tr></thead>
+      <thead><tr><th title="Row number in this table.">#</th><th title="Order id (unique per listing).">id</th><th title="Item display name (matches inventory names).">item</th><th title="Ask price in gold. A 10% tax applies on sale.">price</th><th title="Seller character (receives price minus tax).">seller</th><th title="Listing time. Orders expire after 24h.">posted</th></tr></thead>
       <tbody id="orders"></tbody>
     </table>
     <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
@@ -249,7 +252,7 @@
   <div class="panel">
     <h2>Buy &amp; sell history <span class="legend"><span class="buy">■</span> buyer <span class="sell">■</span> seller</span></h2>
     <table>
-      <thead><tr><th>#</th><th>time</th><th>buyer</th><th>seller</th><th>item</th><th>price</th><th>tax</th><th>seller gets</th></tr></thead>
+      <thead><tr><th title="Row number in this table.">#</th><th title="When the trade settled.">time</th><th title="Buying character (pays the full price).">buyer</th><th title="Selling character (receives price minus tax).">seller</th><th title="Item display name (matches inventory names).">item</th><th title="Settled price in gold.">price</th><th title="10% market tax taken (half-up rounding; 1g trades are tax-free). Funds the GM treasury.">tax</th><th title="Price minus tax, paid to the seller.">seller gets</th></tr></thead>
       <tbody id="tradeHistory"></tbody>
     </table>
     <p class="empty" id="noTrades" style="display:none">No completed trades yet.</p>
@@ -258,17 +261,17 @@
 
 <div id="view-dungeon" class="tabview">
   <div class="panel">
-    <h2>World event buffs</h2>
+    <h2 title="Active XP/Gold 2x world buffs (GM-bought at 50 tax/min, up to 60 min).">World event buffs</h2>
     <div id="buffs"></div>
   </div>
   <div class="panel">
-    <h2>Elite bosses (GM spawned)</h2>
-    <table><thead><tr><th>name</th><th>room</th><th>hp</th><th>attack</th></tr></thead>
+    <h2 title="GM-spawned elites (100 tax per star). Clear them for loot.">Elite bosses (GM spawned)</h2>
+     <table><thead><tr><th title="Elite boss name (GM-spawned).">name</th><th title="Surface room the boss guards.">room</th><th title="Current/max HP. Slay cost is 1 tax per max HP (min 10).">hp</th><th title="Damage dealt per hit.">attack</th></tr></thead>
            <tbody id="bosses"></tbody></table>
     <p class="empty" id="noBosses" style="display:none">No GM bosses alive.</p>
   </div>
   <div class="panel">
-    <h2>Instanced party dungeons</h2>
+    <h2 title="Party dungeons (max 4 members). Abandoning an uncleared descent locks re-entry for 60s.">Instanced party dungeons</h2>
     <div id="dungeons"></div>
   </div>
 </div>
@@ -290,7 +293,7 @@
     <datalist id="gm-npcs"></datalist>
 
     <div class="gmform" style="margin-top:10px">
-      <label for="gm-action">Action</label>
+      <label for="gm-action" title="GM action. Every action spends treasury tax except Kick (free).">Action</label>
       <select id="gm-action">
         <option value="gold">Reward gold (1:1 tax)</option>
         <option value="item">Drop item (floor value)</option>
@@ -305,38 +308,38 @@
     </div>
 
     <div class="gmform gm-pane active" data-pane="gold">
-      <label for="gm-gold-player">Player</label>
+      <label for="gm-gold-player" title="Recipient must be online. Validated before any treasury spend.">Player</label>
       <input id="gm-gold-player" list="gm-players" placeholder="character name">
-      <label for="gm-gold-amount">Gold</label>
+      <label for="gm-gold-amount" title="Gold granted 1:1 from the treasury (new characters start with 10g).">Gold</label>
       <input id="gm-gold-amount" type="number" min="1" value="50">
-      <label>Quick</label>
+      <label title="Preset grant amounts.">Quick</label>
       <div style="display:flex;gap:4px;flex-wrap:wrap;">
         <button type="button" class="gm-preset" data-gold="50">+50</button>
         <button type="button" class="gm-preset" data-gold="250">+250</button>
         <button type="button" class="gm-preset" data-gold="1000">+1000</button>
       </div>
-      <label>Cost</label><span id="gm-gold-cost" class="gm-cost"></span>
+      <label title="Live treasury check for this reward.">Cost</label><span id="gm-gold-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-gold">Reward gold</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="item">
-      <label for="gm-item-target">Target</label>
+      <label for="gm-item-target" title="Online player to receive the drop (or leave blank and set a room).">Target</label>
       <input id="gm-item-target" list="gm-players" placeholder="player name">
-      <label for="gm-item-room">Room</label>
+      <label for="gm-item-room" title="Room id to drop the item in (surface rooms for bosses, any room for items).">Room</label>
       <input id="gm-item-room" list="gm-rooms" placeholder="room id">
-      <label for="gm-item-name">Item</label>
+      <label for="gm-item-name" title="Item id, e.g. healing_herb. Cost is the item floor value.">Item</label>
       <input id="gm-item-name" list="gm-items" placeholder="item name, e.g. healing_herb">
-      <label>Cost</label><span class="gm-cost">varies (item floor value)</span>
+      <label title="Charged from the treasury at the item floor value.">Cost</label><span class="gm-cost">varies (item floor value)</span>
       <label></label><button id="gm-send-item">Drop item</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="buff">
-      <label for="gm-buff-type">Buff</label>
+      <label for="gm-buff-type" title="World-wide 2x multiplier while active.">Buff</label>
       <select id="gm-buff-type"><option value="xp">XP (2x)</option><option value="gold">Gold (2x)</option></select>
-      <label for="gm-buff-min">Minutes</label>
+      <label for="gm-buff-min" title="Duration from 1 to 60 minutes at 50 tax per minute.">Minutes</label>
       <input id="gm-buff-min" type="number" min="1" max="60" value="5">
-      <label>Cost</label><span id="gm-buff-cost" class="gm-cost"></span>
-      <label>Presets</label>
+      <label title="Minutes times 50 tax, checked against the treasury.">Cost</label><span id="gm-buff-cost" class="gm-cost"></span>
+      <label title="One-click buff shortcuts.">Presets</label>
       <div style="display:flex;gap:4px;flex-wrap:wrap;">
         <button type="button" class="gm-preset" data-buff="xp" data-min="5">XP 5m</button>
         <button type="button" class="gm-preset" data-buff="xp" data-min="15">XP 15m</button>
@@ -347,9 +350,9 @@
     </div>
 
     <div class="gmform gm-pane" data-pane="boss">
-      <label for="gm-boss-room">Room</label>
+      <label for="gm-boss-room" title="Surface room id where the boss spawns (e.g. deep_forest).">Room</label>
       <input id="gm-boss-room" list="gm-rooms" placeholder="room id">
-      <label for="gm-boss-str">Strength</label>
+      <label for="gm-boss-str" title="1-5 stars at 100 tax per star. HP and attack scale with stars.">Strength</label>
       <select id="gm-boss-str">
         <option value="1">★ (100 tax)</option>
         <option value="2">★★ (200 tax)</option>
@@ -357,46 +360,46 @@
         <option value="4">★★★★ (400 tax)</option>
         <option value="5">★★★★★ (500 tax)</option>
       </select>
-      <label>Cost</label><span id="gm-boss-cost" class="gm-cost"></span>
+      <label title="Stars times 100 tax, checked against the treasury.">Cost</label><span id="gm-boss-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-boss">Spawn boss</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="announce">
-      <label for="gm-announce-text">Message</label>
+      <label for="gm-announce-text" title="Server-wide broadcast, max 200 characters, 25 tax flat.">Message</label>
       <input id="gm-announce-text" maxlength="200" placeholder="server-wide message (max 200 chars)">
-      <label>Cost</label><span id="gm-announce-cost" class="gm-cost"></span>
+      <label title="Flat 25 tax per broadcast.">Cost</label><span id="gm-announce-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-announce">Broadcast</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="heal">
-      <label for="gm-heal-player">Player</label>
+      <label for="gm-heal-player" title="Online player to heal to full HP.">Player</label>
       <input id="gm-heal-player" list="gm-players" placeholder="character name">
-      <label>Cost</label><span id="gm-heal-cost" class="gm-cost"></span>
+      <label title="2 tax per missing HP. Already-full targets cost nothing.">Cost</label><span id="gm-heal-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-heal">Heal to full</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="teleport">
-      <label for="gm-teleport-player">Player</label>
+      <label for="gm-teleport-player" title="Online player to move.">Player</label>
       <input id="gm-teleport-player" list="gm-players" placeholder="character name">
-      <label for="gm-teleport-room">Room</label>
+      <label for="gm-teleport-room" title="Destination surface room id.">Room</label>
       <input id="gm-teleport-room" list="gm-rooms" placeholder="room id (surface only)">
-      <label>Cost</label><span id="gm-teleport-cost" class="gm-cost"></span>
+      <label title="Flat 50 tax per teleport.">Cost</label><span id="gm-teleport-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-teleport">Teleport</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="slay">
-      <label for="gm-slay-target">NPC</label>
+      <label for="gm-slay-target" title="NPC name (must be unique). Quest givers are immune.">NPC</label>
       <input id="gm-slay-target" list="gm-npcs" placeholder="NPC name (must be unique)">
-      <label>Cost</label><span id="gm-slay-cost" class="gm-cost"></span>
+      <label title="1 tax per max HP, minimum 10.">Cost</label><span id="gm-slay-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-slay">Slay NPC</button>
     </div>
 
     <div class="gmform gm-pane" data-pane="kick">
-      <label for="gm-kick-player">Player</label>
+      <label for="gm-kick-player" title="Online player to disconnect.">Player</label>
       <input id="gm-kick-player" list="gm-players" placeholder="character name">
-      <label for="gm-kick-reason">Reason</label>
+      <label for="gm-kick-reason" title="Optional reason shown to the player (max 120 chars).">Reason</label>
       <input id="gm-kick-reason" maxlength="120" placeholder="optional reason">
-      <label>Cost</label><span id="gm-kick-cost" class="gm-cost"></span>
+      <label title="Kicks are always free.">Cost</label><span id="gm-kick-cost" class="gm-cost"></span>
       <label></label><button id="gm-send-kick">Kick player</button>
     </div>
     <div id="gmlog"></div>
@@ -801,6 +804,16 @@ function renderOverview(s) {
   // Health cards: derived client-side from fields the snapshot already
   // carries -- no server computation needed (offline-first dashboard).
   const m = s.market || {orders: []};
+  // #76: hover explanations for the health cards (range + impact).
+  const CARD_TIPS = {
+    "players": "Characters currently logged in. Excludes disconnected sockets.",
+    "connections": "Open sockets: players + dashboard viewers + GM console.",
+    "treasury": "GM treasury (gold). Filled by the 10% market tax; GM actions spend it 1:1.",
+    "open orders": "Sell orders currently listed anywhere in the world.",
+    "lifetime trades": "Completed market trades since server start.",
+    "dungeons": "Instanced party dungeons currently open (enter via the graveyard).",
+    "uptime": "Server process uptime in seconds. Resets on restart.",
+  };
   const cards = [
     ["players", s.server.players_online],
     ["connections", s.server.connections],
@@ -811,7 +824,7 @@ function renderOverview(s) {
     ["uptime", (s.server.uptime ?? 0) + "s"],
   ];
   $("ovCards").innerHTML = cards.map(([l, v]) =>
-    `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join("");
+    `<div class="stat"><div class="v">${esc(v)}</div><div class="l" title="${esc(CARD_TIPS[l] || l)}">${esc(l)}</div></div>`).join("");
   const pill = $("ovHealth");
   if (s.server.players_online > 0) {
     pill.textContent = "● Healthy";
