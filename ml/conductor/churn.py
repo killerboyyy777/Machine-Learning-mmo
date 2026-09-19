@@ -144,9 +144,23 @@ class ChurnManager:
             return mutate_goal(random.choice(self._recent_goals))
         return sample_goal()
 
-    def _spawn_one(self):
-        """Spawn a single agent with a random lifetime and goal weights."""
-        agent_id = f"agent_{int(time.time() * 1000) % 100000}_{random.randint(0, 999)}"
+    def _spawn_one(self, max_attempts=100):
+        """Spawn a single agent with a random lifetime and goal weights.
+
+        Ids are minted collision-proof (#277): a wider random space
+        (6 digits, not 3) plus a retry-on-collision loop against the
+        live registry. Same-millisecond bursts used to share the time
+        prefix and collide on randint(0, 999); register() then returned
+        the EXISTING entry, so the spawn silently reset a live agent's
+        lifetime row and the top-up fill came up short. Exhaustion
+        raises RuntimeError, which both tick paths already tolerate."""
+        for _ in range(max_attempts):
+            agent_id = (f"agent_{int(time.time() * 1000) % 100000}"
+                        f"_{random.randint(0, 999999):06d}")
+            if self.registry.get(agent_id) is None:
+                break
+        else:
+            raise RuntimeError("could not mint a unique agent id")
         agent_type = random.choice(["linear", "torch"])
         goal = self._sample_goal()
         entry = self.registry.register(agent_id, agent_type, goal=goal)
