@@ -213,6 +213,23 @@ def test_maren_obs_features():
     print("MAREN_OBS_OK")
 
 
+def test_presence_obs_flags():
+    # #263: presence flags looked ids up in a name->id map (always None),
+    # so both vectors were identically zero. Craft a state holding one
+    # known item and assert exactly its slots flag.
+    iid = ml_env.ITEM_LIST[0]
+    name = ml_env.ITEM_ID_TO_NAME[iid]
+    e = TextMMOEnv("ParsePresence")
+    e._state["item_names"] = [name]
+    e._state["inv_names"] = [name]
+    obs = e._build_obs()
+    assert obs["item_presence"][0] == 1.0
+    assert obs["inv_presence"][0] == 1.0
+    assert sum(obs["item_presence"]) == 1.0
+    assert sum(obs["inv_presence"]) == 1.0
+    print("PRESENCE_OBS_OK")
+
+
 def test_equip_mask_excludes_worn_weapon():
     # #229: id-vs-display-name compare never excluded the worn weapon.
     e = TextMMOEnv("ParseEquip")
@@ -311,6 +328,7 @@ test_maren_mirror_and_stages()
 test_quest_transitions_all_four()
 test_event_parsing_maren_combat_inventory()
 test_maren_obs_features()
+test_presence_obs_flags()
 test_equip_mask_excludes_worn_weapon()
 test_item_presence_vectors()
 test_dynamic_shard_valuation()
