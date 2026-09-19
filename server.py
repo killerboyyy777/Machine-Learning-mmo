@@ -169,6 +169,10 @@ def _apply_config():
             continue
         for key, val in section.items():
             if key not in g:
+                # Typo'd/wrong-nesting keys used to vanish silently (#241):
+                # warn like bad values do so operators notice.
+                print(f"Warning: {os.path.basename(CONFIG_FILE)}: "
+                      f"unknown key {key!r} ignored (check spelling/nesting)")
                 continue
             try:
                 # bool("false") is True: parse bools explicitly so a string
@@ -182,7 +186,9 @@ def _apply_config():
                       f"skipping {key}={val!r} ({e}); keeping default {g[key]!r}")
     print(f"Config loaded from {os.path.basename(CONFIG_FILE)}")
 
-_apply_config()
+# NOTE: _apply_config() is CALLED once at the bottom of the module (after
+# QUESTS), not here: every overridable global must exist before the single
+# apply pass, or whole config sections silently miss (#251).
 
 GM_BUFF_COST_PER_MINUTE = 50
 GM_BOSS_COST_PER_STRENGTH = 100
@@ -403,7 +409,7 @@ parties = {}      # party_id -> Party
 dungeons = {}     # dungeon_id -> Dungeon
 _commissions = {}  # commission_id -> Commission data
 _party_counter = itertools.count(1)
-_pending_party_invites = {}   # invitee player.id -> Party (invitation)
+_pending_party_invites = {}   # invitee player.id -> {"party", "ts", "inviter"} (invitation)
 _commission_counter = itertools.count(1)
 
 # (COMMISSION_TTL_SECONDS lives with the other commission tunables above
@@ -931,6 +937,20 @@ async def award_xp(name, amount, reason):
 def _player_buff_amount(player, category):
     value = player.active_buffs.get(category, {})
     return int(value.get("amount", 0)) if value.get("remaining", 0) > 0 else 0
+
+
+# Commands with no game effect never consume action-based buffs (#237).
+# quest is mixed: only its list sub-action is read-only.
+NO_BUFF_TICK = frozenset({
+    "login", "look", "inventory", "stats", "who", "leaderboard", "help",
+    "commission_list", "party_info", "market_list",
+})
+
+
+def _command_ticks_buffs(cmd, msg):
+    """Pure gate for buff consumption (unit-testable without dispatch)."""
+    return (cmd not in NO_BUFF_TICK
+            and not (cmd == "quest" and (msg or {}).get("action") == "list"))
 
 
 def _tick_player_buffs(player):
@@ -1539,6 +1559,14 @@ async def cmd_login(player, msg):
     if name_owners.get(name.lower()) not in (None, player.id):
         await send(player, {"type": "error", "text": f"The name '{name}' is already in use right now."})
         return
+    # Room capacity applies to logins like moves (#227): no sneaking into
+    # a full room through a fresh connection. Checked before any state
+    # mutation (entry creation, token claim, bank credit) so a rejected
+    # login leaves no entry or token state behind.
+    dest = START_ROOM if dungeon_for_room(player.room) else player.room
+    if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
+        await send(player, {"type": "error", "text": f"{ROOMS[dest]['name']} is too crowded. Try again shortly."})
+        return
     entry = get_score_entry(name)
     stored = entry.get("auth_token")
     if stored:
@@ -1572,16 +1600,24 @@ async def cmd_login(player, msg):
         )
     player.name = name
     player.logged_in = True
-    player.room = START_ROOM if dungeon_for_room(player.room) else player.room
+    player.room = dest
     if player.room not in entry["rooms_visited"]:
         entry["rooms_visited"].append(player.room)
     sync_player_level(player)
     name_owners[name.lower()] = player.id
     add_member(player)
     lvl = entry["level"]
-    await send(player, {"type": "welcome", "text": f"Welcome, {name} (level {lvl}).",
-                        "protocol_version": PROTOCOL_VERSION,
-                        "client_version": msg.get("protocol_version")})
+    client_version = msg.get("protocol_version")
+    welcome = {"type": "welcome", "text": f"Welcome, {name} (level {lvl}).",
+               "protocol_version": PROTOCOL_VERSION,
+               "client_version": client_version}
+    if client_version is not None and client_version != PROTOCOL_VERSION:
+        # Promised warn-on-mismatch (#72, #243): additive field, old
+        # version-less clients unaffected.
+        welcome["version_mismatch"] = (
+            f"Server speaks protocol {PROTOCOL_VERSION}; "
+            f"you sent {client_version}. Update your client.")
+    await send(player, welcome)
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
     await broadcast_room(player.room, {"type": "message", "text": f"{name} appears."}, exclude=player)
@@ -1864,6 +1900,9 @@ async def cmd_gather(player, msg):
     node["available"] = False
     node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
     quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+    # Multi-yield must not overflow the pack (#232): truncate to the
+    # remaining space (a full pack already refused above, so >= 1 fits).
+    quantity = min(quantity, INVENTORY_CAP - _inventory_units(player))
     player.inventory.extend([node["item"]] * quantity)
     item_name = ITEM_DEFS[node["item"]]["name"]
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
@@ -2416,6 +2455,29 @@ QUESTS = {
 }
 
 
+def _refresh_quests():
+    """Sync catalog copies from (possibly tuned) globals (#251)."""
+    QUESTS["guard_charm"].update({
+        "reward_xp": QUEST_GUARD_XP, "reward_gold": QUEST_GUARD_GOLD,
+        "reward_points": QUEST_GUARD_POINTS})
+    QUESTS["delver"].update({
+        "floors_required": QUEST_DELVER_FLOORS, "reward_xp": QUEST_DELVER_XP,
+        "reward_gold": QUEST_DELVER_GOLD, "reward_points": QUEST_DELVER_POINTS})
+    QUESTS["remedy"].update({
+        "reward_xp": QUEST_REMEDY_XP, "reward_gold": QUEST_REMEDY_GOLD,
+        "reward_points": QUEST_REMEDY_POINTS})
+    QUESTS["tonic"].update({
+        "reward_xp": QUEST_TONIC_XP, "reward_gold": QUEST_TONIC_GOLD,
+        "reward_points": QUEST_TONIC_POINTS})
+
+
+# Single config pass, HERE at module bottom: every overridable global
+# (including the QUEST_* block above) exists by now, so no config section
+# misses (#251). Then sync the catalog copies from the tuned values.
+_apply_config()
+_refresh_quests()
+
+
 def quest_delver_ready(entry):
     """True when an accepted Depth Delver quest has enough new clears."""
     return (entry.get("dungeon_floors_cleared", 0)
@@ -2484,6 +2546,12 @@ async def cmd_quest(player, msg):
             return
         _set_quest_active(entry, qid, True)
         mark_scores_dirty()
+        if qid == "guard_charm":
+            # Pre-farmed charms count (#239): accepting must not wipe a
+            # charm crafted before the quest was active.
+            if QUEST_CHARM_RESULT in player.inventory:
+                entry["guard_charm_crafted"] = True
+                mark_scores_dirty()
         if qid == "guard_charm":
             await send(player, {"type": "message", "text": "Town Guard: Ah, adventurer! We need protectors for our walls. "
                   "Bring me an Ancient Guardian Charm, crafted from Treant Bark, Troll Hide, and Ectoplasm. "
@@ -2607,7 +2675,8 @@ async def cmd_party_invite(player, msg):
         old_leader = players.get(old_party.leader_id)
         if old_leader and old_leader.logged_in and old_leader is not player:
             await send(old_leader, {"type": "message", "text": f"Your invitation to {target.name} was replaced by {player.name}."})
-    _pending_party_invites[target.id] = {"party": party, "ts": time.time()}
+    _pending_party_invites[target.id] = {"party": party, "ts": time.time(),
+                                         "inviter": player.id}
     await send(target, {"type": "message", "text": f"{player.name} invites you to a party. Send party_accept to join."})
     await send(player, {"type": "message", "text": f"Invitation sent to {target.name}."})
 
@@ -2749,7 +2818,7 @@ async def cmd_market_cancel(player, msg):
 
 async def cmd_market_expand(player, msg):
     """Buy +1 market stall slot. Fee goes to the GM treasury (gold sink)."""
-    global tax_treasury
+    global tax_treasury, tax_collected_lifetime
     entry = get_score_entry(player.name)
     slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
     price = market_slot_price(slots)
@@ -2758,6 +2827,7 @@ async def cmd_market_expand(player, msg):
         return
     player.gold -= price
     tax_treasury += price
+    tax_collected_lifetime += price
     entry["market_slots"] = slots + 1
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"Market stall expanded to {slots + 1} slots for {price} gold (next: {market_slot_price(slots + 1)} gold)."})
@@ -3456,11 +3526,19 @@ def start_dashboard():
                 state = world_snapshot_json if world_snapshot_json is not None else "{}"
                 self._send(state.encode(), "application/json")
             elif path == "/health":
-                # Liveness probe for CI/Docker/monitoring (#56).
+                # Liveness probe for CI/Docker/monitoring (#56). Served
+                # from the cached snapshot (#224): iterating live `players`
+                # from this HTTP thread raced logins/disconnects and raised
+                # RuntimeError, failing probes under exactly the load that
+                # matters. The snapshot string is immutable once built.
+                try:
+                    snap = json.loads(world_snapshot_json) if world_snapshot_json else {}
+                except (TypeError, ValueError):
+                    snap = {}
                 body = json.dumps({
                     "status": "ok",
                     "uptime": round(time.time() - START_TIME, 1),
-                    "players_online": sum(1 for p in players.values() if p.logged_in),
+                    "players_online": (snap.get("server") or {}).get("players_online", 0),
                     "memory_mb": _memory_mb(),
                 })
                 self._send(body.encode(), "application/json")
@@ -3526,8 +3604,13 @@ async def npc_ai_loop():
 
 async def _leave_party_on_disconnect(player):
     # A pending invitation can never be accepted after disconnect, so drop
-    # it instead of leaking one dict entry per abandoned invite.
+    # it instead of leaking one dict entry per abandoned invite. Invites
+    # the leaver SENT are keyed by invitee (#248): drop those too, or the
+    # invitee could still join a party whose inviter is offline.
     _pending_party_invites.pop(player.id, None)
+    for pid in [k for k, v in _pending_party_invites.items()
+                if isinstance(v, dict) and v.get("inviter") == player.id]:
+        _pending_party_invites.pop(pid, None)
     party = parties.get(player.party_id) if player.party_id else None
     if not party:
         return
@@ -3589,7 +3672,7 @@ async def handle_connection(ws):
                 log_command(player.name, cmd, msg)
                 if cmd in SCORE_ARG_EXTRACTORS:
                     record_action(player.name, (cmd, SCORE_ARG_EXTRACTORS[cmd](msg)))
-                if player.logged_in:
+                if player.logged_in and _command_ticks_buffs(cmd, msg):
                     _tick_player_buffs(player)
                 await handler(player, msg)
             except Exception as e:
@@ -3658,9 +3741,12 @@ async def main():
         sys.stderr = _logf
         print(f"[server] logging to {log_file}", flush=True)
     start_dashboard()
-    asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop))
-    asyncio.create_task(_run_resilient("scores_save", scores_save_loop))
-    asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop))
+    # Background loops start only after BOTH listeners bind (#242): a GM
+    # bind failure then leaks nothing. Handles are kept + cancelled on
+    # shutdown (#244): an untracked scores_save_loop could otherwise enter
+    # save_scores() concurrently with the final save below (same tmp file
+    # + rotation).
+    bg_tasks = []
     # Graceful shutdown (#55): SIGTERM/SIGINT break the wait below so the
     # finally chain runs -- listeners close, player sockets close, scores
     # persist, exit 0. Platforms without handler support fall back to
@@ -3677,7 +3763,18 @@ async def main():
             print(f"Server 0.5 (instanced dungeon, parties, market, GM) on ws://{HOST}:{PORT}")
             print(f"GM stream on ws://{GM_HOST}:{GM_PORT}")
         game_server = await websockets.serve(handle_connection, HOST, PORT)
-        gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
+        try:
+            gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
+        except Exception:
+            # Don't leak the game listener when the GM bind fails (#242).
+            game_server.close()
+            await game_server.wait_closed()
+            raise
+        bg_tasks.extend([
+            asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop)),
+            asyncio.create_task(_run_resilient("scores_save", scores_save_loop)),
+            asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop)),
+        ])
         try:
             await stop.wait()
         finally:
@@ -3693,6 +3790,13 @@ async def main():
                         await ws.close()
                     except Exception:
                         pass
+            for t in bg_tasks:
+                t.cancel()
+            for t in bg_tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
     finally:
         save_scores()
         print("Scores saved. Bye.", flush=True)
@@ -3728,9 +3832,11 @@ if __name__ == "__main__":
     if _args.config:
         # Config also loads at import (before flags exist); re-apply here so
         # the flag wins. All tunables are read at runtime, so late override
-        # is equivalent to an early one.
+        # is equivalent to an early one -- plus a catalog sync, since QUESTS
+        # holds value copies (#251).
         CONFIG_FILE = _args.config
         _apply_config()
+        _refresh_quests()
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, OSError) as e:

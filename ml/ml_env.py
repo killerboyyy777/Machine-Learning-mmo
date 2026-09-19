@@ -1209,7 +1209,9 @@ class TextMMOEnv:
                 continue
             if srv.ITEM_DEFS[iid].get("type") != item_type:
                 continue
-            if exclude_equipped and iid == self._state["equipped"]:
+            # state["equipped"] is a display name (server stats_view), so
+            # compare names, not ids (#229: id == name was never true).
+            if exclude_equipped and name == self._state["equipped"]:
                 continue
             if exclude_equipped:
                 self._inv_type_cache[item_type] = name
@@ -1674,9 +1676,6 @@ class TextMMOEnv:
         static_names = set(NPC_ID_TO_NAME.values())
         unknown_npcs = [n for n in s["npc_names"] if n not in static_names]
         npc_presence = [1.0 if NPC_ID_TO_NAME[nid] in s["npc_names"] else 0.0 for nid in NPC_LIST]
-        # (#263: ITEM_LIST holds ids, state holds display names -- look up
-        # the name per id like the NPC line above. The old reversed
-        # name->id map queried by id always missed, zeroing both flags.)
         item_presence = [1.0 if ITEM_ID_TO_NAME[i] in s["item_names"] else 0.0 for i in ITEM_LIST]
 
         inv_presence = [1.0 if ITEM_ID_TO_NAME[i] in (s["inv_names"] or []) else 0.0 for i in ITEM_LIST]
