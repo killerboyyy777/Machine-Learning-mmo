@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Presence obs flags actually flag (#263): `item_presence`/`inv_presence`
+  looked item ids up in a reversed name->id map (always None, both vectors
+  identically zero); they now map id->display-name like the NPC line.
 - Torch farm reward parity (#234): transitions carried count-loot,
   buy-only P&L, zero intrinsic and no curiosity while learn() shaped on
   those keys. Now mirrors single-agent targets (value loot, fill P&L,
