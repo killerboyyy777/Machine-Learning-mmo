@@ -17,6 +17,8 @@ import os
 import random
 import shutil
 
+from ml.ml_env import goal_reward
+
 
 class PBTManager:
     """Exploit/explore loop over registry-backed population members."""
@@ -50,11 +52,22 @@ class PBTManager:
             "episodes": 0,
         }
 
-    def report(self, agent_id, fitness, episodes=1):
-        """Record an evaluation result (fitness = higher is better)."""
+    def report(self, agent_id, fitness, episodes=1, vector=None):
+        """Record an evaluation result (fitness = higher is better).
+
+        When a per-step reward `vector` is supplied and the registry
+        entry carries goal weights (#288), fitness becomes the
+        goal-weighted dot product -- so selection ranks members by
+        goal alignment, not raw scalar reward. Without a vector (or
+        without entry goals) the raw fitness is kept, unchanged."""
         m = self._members.get(agent_id)
         if m is None:
             return
+        if vector is not None:
+            entry = self.registry.get(agent_id)
+            goal = entry.goal if entry is not None else None
+            if goal:
+                fitness = goal_reward(vector, goal)
         m["fitness"] = float(fitness)
         m["episodes"] += episodes
 
