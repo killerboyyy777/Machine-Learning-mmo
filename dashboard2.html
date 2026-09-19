@@ -95,6 +95,33 @@
   .stat .l { color: var(--dim); font-size: var(--fs-xs); text-transform: uppercase; }
   select { font: inherit; background: var(--panel2); color: var(--text);
            border: 1px solid var(--border); border-radius: var(--r-sm); padding: 5px 8px; }
+  input, button { font: inherit; background: var(--panel2); color: var(--text);
+                  border: 1px solid var(--border); border-radius: var(--r-sm); padding: 5px 8px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  button { cursor: pointer; background: var(--panel); }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  .gmform { display: grid; grid-template-columns: 150px 1fr; gap: 8px 12px; align-items: center; }
+  .gmform label { color: var(--dim); }
+  .gm-pane { display: none; margin-top: 10px; }
+  .gm-pane.active { display: grid; }
+  .gm-cost { color: var(--warn); font-size: var(--fs-xs); }
+  .gm-preset.on { background: var(--accent); color: #0b1622; border-color: var(--accent); }
+  #gmlog { max-height: 320px; overflow-y: auto; background: #0b0f13; border: 1px solid var(--border);
+           border-radius: var(--r-sm); padding: 8px; margin-top: 10px; font-size: var(--fs-sm); }
+  #gmlog .row { padding: 2px 0; border-bottom: 1px dotted var(--border); }
+  #gmlog .row:last-child { border-bottom: none; }
+  .gmcred { display: flex; gap: 12px; flex-wrap: wrap; color: var(--dim); }
+  .gmcred b { color: var(--text); }
+  .buy { color: #79c0ff; font-weight: bold; } .sell { color: #ffb454; font-weight: bold; }
+  .buff { display: inline-block; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); margin: 2px 4px 2px 0; font-size: var(--fs-xs); }
+  .buff.on { border-color: var(--good); color: var(--good); }
+  .dung { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px; margin-bottom: 10px; }
+  .floor { display: flex; gap: 10px; align-items: center; padding: 4px 0; border-bottom: 1px dotted var(--border); }
+  .floor:last-child { border-bottom: none; }
+  .floor .fn { width: 90px; color: var(--accent); }
+  .floor .st { color: var(--dim); }
+  .legend { font-size: var(--fs-xs); color: var(--dim); font-weight: normal; text-transform: none;
+            letter-spacing: 0; margin-left: 8px; }
   /* v2 trend charts (uPlot mounts its canvas here; explicit height, fluid width). */
   .trend { height: 80px; }
   .trend .uplot { width: 100%; }
@@ -189,14 +216,48 @@
 <div id="view-market" class="tabview">
   <div class="panel">
     <h2>Market</h2>
-    <p class="empty">Market tab, trend charts, and trade history land here in revamp 2/4 (#206).</p>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="m-treasury">-</div><div class="l">GM treasury</div></div>
+      <div class="stat"><div class="v" id="m-lifetime">-</div><div class="l">tax collected (lifetime)</div></div>
+      <div class="stat"><div class="v" id="m-trades">-</div><div class="l">completed trades</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Open sell orders (anywhere in the world)</h2>
+    <table>
+      <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>seller</th><th>posted</th></tr></thead>
+      <tbody id="orders"></tbody>
+    </table>
+    <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
+  </div>
+  <div class="panel">
+    <h2>Settled-price history</h2>
+    <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Trade price per fill (from market.history)</div><div class="trend" id="m-priceHist"></div></div>
+  </div>
+  <div class="panel">
+    <h2>Buy &amp; sell history <span class="legend"><span class="buy">■</span> buyer <span class="sell">■</span> seller</span></h2>
+    <table>
+      <thead><tr><th>#</th><th>time</th><th>buyer</th><th>seller</th><th>item</th><th>price</th><th>tax</th><th>seller gets</th></tr></thead>
+      <tbody id="tradeHistory"></tbody>
+    </table>
+    <p class="empty" id="noTrades" style="display:none">No completed trades yet.</p>
   </div>
 </div>
 
 <div id="view-dungeon" class="tabview">
   <div class="panel">
-    <h2>Dungeons</h2>
-    <p class="empty">Dungeon instances, buffs, and bosses land here in revamp 2/4 (#206).</p>
+    <h2>World event buffs</h2>
+    <div id="buffs"></div>
+  </div>
+  <div class="panel">
+    <h2>Elite bosses (GM spawned)</h2>
+     <table><thead><tr><th>name</th><th>room</th><th>hp</th><th>attack</th></tr></thead>
+           <tbody id="bosses"></tbody></table>
+    <p class="empty" id="noBosses" style="display:none">No GM bosses alive.</p>
+  </div>
+  <div class="panel">
+    <h2>Instanced party dungeons</h2>
+    <div id="dungeons"></div>
   </div>
 </div>
 
@@ -230,8 +291,132 @@
 
 <div id="view-gm" class="tabview">
   <div class="panel">
-    <h2>GM</h2>
-    <p class="empty">GM console lands here in revamp 2/4 (#206).</p>
+    <h2>GM console</h2>
+    <div class="gmcred">
+      <span>treasury <b id="g-treasury">-</b></span>
+      <span id="g-status">ws: disconnected</span>
+    </div>
+    <div style="margin-top:10px;margin-bottom:8px;color:var(--dim);font-size:11px;">
+      GM stream connects to <code>ws://&lt;dashboard-host&gt;:<span id="g-gm-port">-</span></code> (same host as this page).
+      Loopback-only: this console works from localhost; remote dashboards are read-only.
+    </div>
+
+    <datalist id="gm-players"></datalist>
+    <datalist id="gm-items"></datalist>
+    <datalist id="gm-rooms"></datalist>
+    <datalist id="gm-npcs"></datalist>
+
+    <div class="gmform" style="margin-top:10px">
+      <label for="gm-action">Action</label>
+      <select id="gm-action">
+        <option value="gold">Reward gold (1:1 tax)</option>
+        <option value="item">Drop item (floor value)</option>
+        <option value="buff">World buff (50 tax/min)</option>
+        <option value="boss">Spawn boss (100 tax/star)</option>
+        <option value="announce">Announce (25 tax flat)</option>
+        <option value="heal">Heal player (2 tax/HP)</option>
+        <option value="teleport">Teleport player (50 tax flat)</option>
+        <option value="slay">Slay NPC (1 tax/HP, min 10)</option>
+        <option value="kick">Kick player (free)</option>
+      </select>
+    </div>
+
+    <div class="gmform gm-pane active" data-pane="gold">
+      <label for="gm-gold-player">Player</label>
+      <input id="gm-gold-player" list="gm-players" placeholder="character name">
+      <label for="gm-gold-amount">Gold</label>
+      <input id="gm-gold-amount" type="number" min="1" value="50">
+      <label>Quick</label>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button type="button" class="gm-preset" data-gold="50">+50</button>
+        <button type="button" class="gm-preset" data-gold="250">+250</button>
+        <button type="button" class="gm-preset" data-gold="1000">+1000</button>
+      </div>
+      <label>Cost</label><span id="gm-gold-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-gold">Reward gold</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="item">
+      <label for="gm-item-target">Target</label>
+      <input id="gm-item-target" list="gm-players" placeholder="player name">
+      <label for="gm-item-room">Room</label>
+      <input id="gm-item-room" list="gm-rooms" placeholder="room id">
+      <label for="gm-item-name">Item</label>
+      <input id="gm-item-name" list="gm-items" placeholder="item name, e.g. healing_herb">
+      <label>Cost</label><span class="gm-cost">varies (item floor value)</span>
+      <label></label><button id="gm-send-item">Drop item</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="buff">
+      <label for="gm-buff-type">Buff</label>
+      <select id="gm-buff-type"><option value="xp">XP (2x)</option><option value="gold">Gold (2x)</option></select>
+      <label for="gm-buff-min">Minutes</label>
+      <input id="gm-buff-min" type="number" min="1" max="60" value="5">
+      <label>Cost</label><span id="gm-buff-cost" class="gm-cost"></span>
+      <label>Presets</label>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button type="button" class="gm-preset" data-buff="xp" data-min="5">XP 5m</button>
+        <button type="button" class="gm-preset" data-buff="xp" data-min="15">XP 15m</button>
+        <button type="button" class="gm-preset" data-buff="gold" data-min="5">Gold 5m</button>
+        <button type="button" class="gm-preset" data-buff="gold" data-min="15">Gold 15m</button>
+      </div>
+      <label></label><button id="gm-send-buff">Activate buff</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="boss">
+      <label for="gm-boss-room">Room</label>
+      <input id="gm-boss-room" list="gm-rooms" placeholder="room id">
+      <label for="gm-boss-str">Strength</label>
+      <select id="gm-boss-str">
+        <option value="1">★ (100 tax)</option>
+        <option value="2">★★ (200 tax)</option>
+        <option value="3" selected>★★★ (300 tax)</option>
+        <option value="4">★★★★ (400 tax)</option>
+        <option value="5">★★★★★ (500 tax)</option>
+      </select>
+      <label>Cost</label><span id="gm-boss-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-boss">Spawn boss</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="announce">
+      <label for="gm-announce-text">Message</label>
+      <input id="gm-announce-text" maxlength="200" placeholder="server-wide message (max 200 chars)">
+      <label>Cost</label><span id="gm-announce-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-announce">Broadcast</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="heal">
+      <label for="gm-heal-player">Player</label>
+      <input id="gm-heal-player" list="gm-players" placeholder="character name">
+      <label>Cost</label><span id="gm-heal-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-heal">Heal to full</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="teleport">
+      <label for="gm-teleport-player">Player</label>
+      <input id="gm-teleport-player" list="gm-players" placeholder="character name">
+      <label for="gm-teleport-room">Room</label>
+      <input id="gm-teleport-room" list="gm-rooms" placeholder="room id (surface only)">
+      <label>Cost</label><span id="gm-teleport-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-teleport">Teleport</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="slay">
+      <label for="gm-slay-target">NPC</label>
+      <input id="gm-slay-target" list="gm-npcs" placeholder="NPC name (must be unique)">
+      <label>Cost</label><span id="gm-slay-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-slay">Slay NPC</button>
+    </div>
+
+    <div class="gmform gm-pane" data-pane="kick">
+      <label for="gm-kick-player">Player</label>
+      <input id="gm-kick-player" list="gm-players" placeholder="character name">
+      <label for="gm-kick-reason">Reason</label>
+      <input id="gm-kick-reason" maxlength="120" placeholder="optional reason">
+      <label>Cost</label><span id="gm-kick-cost" class="gm-cost"></span>
+      <label></label><button id="gm-send-kick">Kick player</button>
+    </div>
+    <div id="gmlog"></div>
   </div>
 </div>
 
@@ -537,6 +722,73 @@ function renderActivity(activity) {
     </div>`).join("");
 }
 
+function renderMarket(m) {
+  // Partial-snapshot tolerant like v1 (#246): every field defaults.
+  const treasury = m.treasury ?? 0;
+  $("m-treasury").textContent = treasury.toFixed(1);
+  $("m-lifetime").textContent = (m.collected_lifetime ?? 0).toFixed(1);
+  $("m-trades").textContent = m.trade_count ?? 0;
+  $("g-treasury").textContent = treasury.toFixed(1);
+  if (typeof updateGMCosts === "function") updateGMCosts();
+  const orders = m.orders || [];
+  $("orders").innerHTML = orders.map((o, i) => `
+    <tr><td>${i+1}</td><td>${esc(o.id)}</td><td>${esc(o.item)}</td>
+        <td><b>${o.price}</b></td><td class="sell">${esc(o.seller)}</td>
+        <td>${esc(o.ts)}</td></tr>`).join("");
+  $("noOrders").style.display = orders.length ? "none" : "";
+  const history = m.history || [];
+  $("tradeHistory").innerHTML = history.map((h, i) => `
+    <tr><td>${i+1}</td><td>${esc(h.time ?? h.ts)}</td><td class="buy">${esc(h.buyer)}</td>
+        <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}</td>
+        <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join("");
+  $("noTrades").style.display = history.length ? "none" : "";
+  // Settled-price history as a uPlot area chart (new in 2/4: v1 shows the
+  // table only; the series already rides in the snapshot).
+  trendChart("m-priceHist", history.map(h => h.price), "#ffb454");
+}
+
+function mmss(secs) {
+  if (!secs || secs <= 0) return "0s";
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m ? `${m}m ${s}s` : `${s}s`;
+}
+
+function renderBuffs(b) {
+  const parts = [];
+  for (const k of ["xp", "gold"]) {
+    const s = b[k] || 0;
+    parts.push(`<span class="buff ${s > 0 ? "on" : ""}">${k.toUpperCase()}x2 ${
+      s > 0 ? `— ${mmss(s)} left` : "— inactive"}</span>`);
+  }
+  $("buffs").innerHTML = parts.join("") || `<span class="empty">no active buffs</span>`;
+}
+
+function renderBosses(bosses) {
+  $("bosses").innerHTML = bosses.map(b => `
+    <tr><td><b>${esc(b.name)}</b></td><td>${esc(b.room)}</td>
+        <td>${b.hp}/${b.max_hp}</td><td>${b.attack}</td></tr>`).join("");
+  $("noBosses").style.display = bosses.length ? "none" : "";
+}
+
+function renderDungeons(dungeons) {
+  if (!dungeons || !dungeons.length) {
+    $("dungeons").innerHTML = `<span class="empty">No dungeons opened yet. Players enter through the graveyard's 'enter' doorway.</span>`;
+    return;
+  }
+  $("dungeons").innerHTML = dungeons.map(d => `
+    <div class="dung">
+      <h3>Dungeon ${esc(d.id)} <span class="tag alive">${esc((d.party || []).join(", ") || "solo")}</span>
+          <span class="tag">max floor ${d.max_floor_reached || 0}</span></h3>
+      ${(d.floors || []).map(f => `
+        <div class="floor">
+          <span class="fn">Floor ${f.floor}</span>
+          <span class="st">${f.guards_alive}/${f.guards_total} guards alive</span>
+          <span class="st">${f.cleared ? "cleared (unsealed)" : "sealed until guards die"}</span>
+        </div>`).join("")}
+      ${(d.floors || []).length ? "" : `<span class="empty">floor 1 not generated yet</span>`}
+    </div>`).join("");
+}
+
 let trackedName = null;
 let trackedNamesKey = "";
 
@@ -631,7 +883,14 @@ const TAB_SECTIONS = {
     ["activity", s => renderActivity(s.activity || [])],
     ["character tracker", s => renderTracker(s.players || [])],
   ],
-  market: [], dungeon: [], agents: [], quests: [], crafting: [], config: [], gm: [],
+  market: [["market", s => renderMarket(s.market || {orders: [], history: []})]],
+  dungeon: [
+    ["buffs", s => renderBuffs(s.buffs || {})],
+    ["bosses", s => renderBosses(s.bosses || [])],
+    ["dungeons", s => renderDungeons(s.dungeons || [])],
+  ],
+  agents: [], quests: [], crafting: [], config: [],
+  gm: [["gm catalog", s => populateDatalists(s.catalog || {})]],
 };
 
 function renderAll(s) {
@@ -668,6 +927,25 @@ async function tick() {
   }
 }
 
+function populateDatalists(cat) {
+  const setDatalist = (id, arr) => {
+    const dl = $(id);
+    if (dl) dl.innerHTML = (arr || []).map(v => `<option value="${esc(v)}">`).join("");
+  };
+  setDatalist("gm-players", cat.players);
+  setDatalist("gm-items", cat.items);
+  setDatalist("gm-rooms", cat.rooms);
+  if (lastState && lastState.rooms) {
+    const npcs = [];
+    for (const r of lastState.rooms) {
+      for (const n of (r.npcs || [])) {
+        if (n.alive && !npcs.includes(n.name)) npcs.push(n.name);
+      }
+    }
+    setDatalist("gm-npcs", npcs.sort());
+  }
+}
+
 // ---- Tab switching -------------------------------------------------------
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
@@ -679,6 +957,186 @@ for (const tab of document.querySelectorAll(".tab")) {
     if (lastState) renderAll(lastState);
   });
 }
+
+// ---- GM console (verbatim port of v1: same stream, same commands) --------
+let gmws = null;
+let gmBuf = [];
+
+function gmlog(text, cls) {
+  const row = document.createElement("div");
+  row.className = "row" + (cls ? " " + cls : "");
+  row.textContent = new Date().toLocaleTimeString() + "  " + text;
+  $("gmlog").prepend(row);
+  while ($("gmlog").children.length > 200) $("gmlog").lastChild.remove();
+}
+
+function gmOpen() {
+  try {
+    if (!lastState) return;
+    const port = lastState.server.gm_port || 8767;
+    gmws = new WebSocket(`ws://127.0.0.1:${port}`);
+    gmws.onopen = () => {
+      $("g-status").textContent = `ws: connected to 127.0.0.1:${port}`;
+      $("g-status").style.color = "var(--good)";
+      for (const m of gmBuf.splice(0)) gmws.send(JSON.stringify(m));
+    };
+    gmws.onmessage = ev => {
+      try { gmlog(JSON.parse(ev.data).text || ev.data); }
+      catch { gmlog(ev.data); }
+    };
+    gmws.onclose = () => {
+      $("g-status").textContent = "ws: disconnected — click a button to reconnect";
+      $("g-status").style.color = "var(--bad)";
+      gmws = null;
+    };
+    gmws.onerror = () => gmws && gmws.close();
+  } catch (e) {
+    gmlog("WS error: " + e.message);
+  }
+}
+
+function gmSend(payload) {
+  gmlog("> " + JSON.stringify(payload));
+  if (gmws && gmws.readyState === WebSocket.OPEN) gmws.send(JSON.stringify(payload));
+  else { gmBuf.push(payload); gmOpen(); }
+}
+
+// ---- GM action panes -----------------------------------------------------
+function gmActivePane() {
+  const v = $("gm-action").value;
+  document.querySelectorAll(".gm-pane").forEach(p =>
+    p.classList.toggle("active", p.dataset.pane === v));
+  updateGMCosts();
+}
+$("gm-action").addEventListener("change", gmActivePane);
+
+function gmPlayerByName(name) {
+  if (!lastState || !name) return null;
+  return lastState.players.find(p => p.name.toLowerCase() === name.toLowerCase()) || null;
+}
+
+function gmNpcMaxHp(name) {
+  if (!lastState || !name || !lastState.rooms) return null;
+  const needle = name.toLowerCase();
+  for (const r of lastState.rooms) {
+    for (const n of (r.npcs || [])) {
+      if (n.alive && n.name.toLowerCase().includes(needle)) return n.max_hp;
+    }
+  }
+  return null;
+}
+
+function gmCostText(cost) {
+  const treasury = parseFloat($("g-treasury").textContent) || 0;
+  if (cost == null) return `treasury: ${treasury}`;
+  const ok = treasury >= cost;
+  return `${cost} tax (${ok ? "" : "insufficient "}treasury: ${treasury})`;
+}
+
+function updateGMCosts() {
+  const buffMin = Math.min(60, Math.max(1, parseInt($("gm-buff-min").value, 10) || 5));
+  const bossStr = Math.min(5, Math.max(1, parseInt($("gm-boss-str").value, 10) || 3));
+  $("gm-gold-cost").textContent = gmCostText(parseInt($("gm-gold-amount").value, 10) || 0);
+  $("gm-buff-cost").textContent = gmCostText(buffMin * 50);
+  $("gm-boss-cost").textContent = gmCostText(bossStr * 100);
+  $("gm-announce-cost").textContent = gmCostText(25);
+  $("gm-teleport-cost").textContent = gmCostText(50);
+  $("gm-kick-cost").textContent = gmCostText(0);
+  const healTarget = gmPlayerByName($("gm-heal-player").value.trim());
+  if (healTarget && healTarget.max_hp > healTarget.hp) {
+    $("gm-heal-cost").textContent = gmCostText((healTarget.max_hp - healTarget.hp) * 2);
+  } else {
+    $("gm-heal-cost").textContent = healTarget ? "already full (no charge)" : gmCostText(null);
+  }
+  const slayHp = gmNpcMaxHp($("gm-slay-target").value.trim());
+  $("gm-slay-cost").textContent = slayHp == null ? gmCostText(null) : gmCostText(Math.max(10, slayHp));
+}
+
+$("gm-send-gold").addEventListener("click", () => {
+  const player = $("gm-gold-player").value.trim();
+  const gold = parseInt($("gm-gold-amount").value, 10);
+  if (!player || !gold) { gmlog("player name and gold amount are required"); return; }
+  gmSend({ "cmd": "gm_reward", "player": player, "gold": gold });
+});
+
+$("gm-send-item").addEventListener("click", () => {
+  const player = $("gm-item-target").value.trim();
+  const room = $("gm-item-room").value.trim();
+  const item = $("gm-item-name").value.trim();
+  if (!item || (!player && !room)) { gmlog("item name and (player or room) are required"); return; }
+  const payload = { "cmd": "gm_reward", "item": item };
+  if (room) payload.room = room;
+  else payload.player = player;
+  gmSend(payload);
+});
+
+$("gm-send-buff").addEventListener("click", () => {
+  const type = $("gm-buff-type").value;
+  const minutes = parseInt($("gm-buff-min").value, 10) || 5;
+  gmSend({ "cmd": "gm_buff", "type": type, "minutes": Math.min(60, Math.max(1, minutes)) });
+});
+
+$("gm-send-announce").addEventListener("click", () => {
+  const text = $("gm-announce-text").value.trim();
+  if (!text) { gmlog("announcement text is required"); return; }
+  gmSend({ "cmd": "gm_announce", "text": text.slice(0, 200) });
+});
+
+$("gm-send-heal").addEventListener("click", () => {
+  const player = $("gm-heal-player").value.trim();
+  if (!player) { gmlog("player name is required"); return; }
+  gmSend({ "cmd": "gm_heal", "player": player });
+});
+
+$("gm-send-teleport").addEventListener("click", () => {
+  const player = $("gm-teleport-player").value.trim();
+  const room = $("gm-teleport-room").value.trim();
+  if (!player || !room) { gmlog("player name and room are required"); return; }
+  gmSend({ "cmd": "gm_teleport", "player": player, "room": room });
+});
+
+$("gm-send-boss").addEventListener("click", () => {
+  const room = $("gm-boss-room").value.trim();
+  const strength = Math.min(5, Math.max(1, parseInt($("gm-boss-str").value, 10) || 3));
+  if (!room) { gmlog("room id is required (e.g. deep_forest)"); return; }
+  gmSend({ "cmd": "gm_boss", "room": room, "strength": strength });
+});
+
+$("gm-send-slay").addEventListener("click", () => {
+  const target = $("gm-slay-target").value.trim();
+  if (!target) { gmlog("NPC name is required"); return; }
+  gmSend({ "cmd": "gm_slay", "target": target });
+});
+
+$("gm-send-kick").addEventListener("click", () => {
+  const player = $("gm-kick-player").value.trim();
+  if (!player) { gmlog("player name is required"); return; }
+  const payload = { "cmd": "gm_kick", "player": player };
+  const reason = $("gm-kick-reason").value.trim();
+  if (reason) payload.reason = reason.slice(0, 120);
+  gmSend(payload);
+});
+
+// Preset buttons (gold amounts, buff shortcuts)
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".gm-preset");
+  if (!btn) return;
+  if (btn.dataset.gold) {
+    $("gm-gold-amount").value = btn.dataset.gold;
+    updateGMCosts();
+  }
+  if (btn.dataset.buff) {
+    $("gm-buff-type").value = btn.dataset.buff;
+    $("gm-buff-min").value = btn.dataset.min;
+    updateGMCosts();
+  }
+});
+
+// Update cost display on input change (flat-cost actions need none)
+["gm-gold-amount", "gm-buff-min", "gm-heal-player", "gm-slay-target"].forEach(id =>
+  $(id)?.addEventListener("input", updateGMCosts));
+$("gm-buff-type")?.addEventListener("change", updateGMCosts);
+$("gm-boss-str")?.addEventListener("change", updateGMCosts);
 
 tick();
 setInterval(tick, 1000);
