@@ -78,8 +78,12 @@ All notable changes to the text MMO engine are recorded here.
   but skipped `tax_collected_lifetime` like every other sink; now both.
 - Farm checkpoint resume (#231): `save_weights` wrote weights+bias only,
   resetting `training_steps` (and the epsilon schedule) on every restart.
-  Now saves the full LinearQAgent format; covered by
-  `tests/test_farm_resume.py`.
+   Now saves the full LinearQAgent format; covered by
+   `tests/test_farm_resume.py`.
+- Collision-proof churn spawns (#277): `_spawn_one` mints ids from a wider
+  random space with a retry-on-collision loop, so same-millisecond bursts
+  never silently re-register an existing entry (which reset a live agent's
+  lifetime row and shorted the top-up fill); exhaustion raises RuntimeError.
 - Spawn-to-target churn (#214): each tick tops up toward the registry cap
   (at most `top_up_per_tick`, default 1) after the Poisson arrival, so
   episode-driven deaths can't bleed the population below cap on fast
