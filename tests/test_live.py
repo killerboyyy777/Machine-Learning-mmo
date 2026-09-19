@@ -10,7 +10,7 @@ party invite/accept/shared dungeon, and the dashboard snapshot.
 Note: the raw protocol requires FULL direction names (north/south/...,
 up/down/enter) -- shorthand like `w` is rejected by the server.
 """
-import asyncio, json, time
+import asyncio, json, re, time
 import websockets
 
 URI = "ws://127.0.0.1:8765"
@@ -112,6 +112,23 @@ async def main():
         await GM.send(json.dumps({"cmd": cmd, **kwargs}))
         return await recv(GM, timeout=5.0)
 
+    heal_spent = []  # treasury tax paid by gm_heal_full calls below
+
+    async def gm_heal_full(player_name):
+        # Flake guard (#274): the graveyard hits idlers every ~3s, so heal
+        # to full immediately before each dungeon entry. From full HP the
+        # seconds before the enter are arithmetically unsurvivable-to-fail.
+        # Either reply proves full HP afterwards (healed, or already full).
+        # Heals spend treasury tax, so the cost is parsed out for the
+        # treasury asserts downstream (accounting stays exact, not weakened).
+        got = await gm_send("gm_heal", player=player_name)
+        assert any("healed" in m.get("text", "") or "full HP" in m.get("text", "")
+                   for m in got), got
+        for m in got:
+            mt = re.search(r"\((\d+) tax spent\)", m.get("text", ""))
+            if mt:
+                heal_spent.append(int(mt.group(1)))
+
     # ---- A: login + seed gold via GM (loopback, treasury at TEXTMMO_GM_SEED=700)
     await send(A, {"cmd": "login", "name": "LiveA"})
     ent = {}
@@ -151,6 +168,7 @@ async def main():
     assert room is not None and room["id"] == "graveyard"
     assert "enter" in room["exits"]
     print("GRAVEYARD_OK")
+    await gm_heal_full("LiveA")
 
     # ---- A: enter dungeon (solo auto-party, floor 1)
     droom = await move_for_room(A, "enter")
@@ -213,8 +231,9 @@ async def main():
     await send(A, {"cmd": "market_list"})
     ml = await recv(A, want_type="market", timeout=5.0)
     assert ml is not None
-    # 420 (after B's gold) + 5 (tax on 50 sale) = 425
-    assert ml["tax_treasury"] == 425.0 and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
+    # 420 (after B's gold) + 5 (tax on 50 sale) = 425, minus any gm_heal
+    # tax spent getting here (solo-enter heal above, if A arrived hurt).
+    assert ml["tax_treasury"] == 425.0 - sum(heal_spent) and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
     assert len(ml["orders"]) == 0
     print("MARKET_TRADE_TAX_OK")
 
@@ -222,7 +241,7 @@ async def main():
     got = await gm_send("gm_boss", room="deep_forest", strength=1)
     assert any("spawned" in m.get("text", "") for m in got), got      # 425-100 = 325
     got = await gm_send("gm_buff", type="xp", minutes=1)
-    assert any("Treasury now 275.0" in m.get("text", "") for m in got), got
+    assert any(f"Treasury now {round(275.0 - sum(heal_spent), 2)}." in m.get("text", "") for m in got), got
     print("GM_SPEND_OK")
 
     # ---- Party: invite + accept in graveyard
@@ -239,6 +258,8 @@ async def main():
     pi = await recv(A, want_type="party", timeout=5.0)
     assert pi is not None and len(pi["members"]) == 2 and pi["leader"] == "LiveA", pi
     print("PARTY_OK")
+    await gm_heal_full("LiveA")
+    await gm_heal_full("LiveB")
 
     # party dungeon instance is shared
     da = await move_for_room(A, "enter")
@@ -266,7 +287,7 @@ async def main():
     import urllib.request
     state = json.loads(urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=3).read())
     assert isinstance(state["dungeons"], list) and len(state["dungeons"]) >= 1
-    assert state["market"]["treasury"] == 275.0, state["market"]
+    assert state["market"]["treasury"] == 275.0 - sum(heal_spent), state["market"]
     assert state["market"]["collected_lifetime"] == 5.0, state["market"]
     assert "buffs" in state and "bosses" in state
     assert state["server"]["ws_port"] == 8765

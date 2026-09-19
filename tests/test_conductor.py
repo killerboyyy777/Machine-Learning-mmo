@@ -112,6 +112,40 @@ assert len(cmt.tick(1.0)) == 1
 assert len(regt.alive_agents()) == 5
 print("CHURN_TOP_UP_OK")
 
+# --- #277 _spawn_one is collision-proof under forced id reuse ---
+import ml.conductor.churn as _churn
+from unittest import mock as _mock
+regr = Registry(os.path.join(tmpdir, "collide"), max_agents=10)
+cmc = ChurnManager(regr, arrivals_per_minute=0, top_up_per_tick=5)
+cmc._next_arrival = float("inf")  # Poisson off: direct spawns only
+_frozen = {"return_value": 1234.567}
+with _mock.patch.object(_churn.time, "time", **_frozen), \
+     _mock.patch.object(_churn.random, "randint", side_effect=[7, 7, 8]):
+    _a1 = cmc._spawn_one()  # draws 7 -> free
+    _a2 = cmc._spawn_one()  # draws 7 -> taken, retries to 8
+assert _a1 != _a2 and len(regr.alive_agents()) == 2
+# pre-fix code returned the same id twice here (register hands back the
+# existing entry) and left only 1 alive agent.
+# Exhaustion still surfaces as RuntimeError (both tick paths tolerate it).
+with _mock.patch.object(_churn.time, "time", **_frozen), \
+     _mock.patch.object(_churn.random, "randint", return_value=7):
+    try:
+        cmc._spawn_one(max_attempts=5)
+        _exhausted = False
+    except RuntimeError:
+        _exhausted = True
+assert _exhausted
+# Top-up fills to cap even when every first draw collides.
+regr2 = Registry(os.path.join(tmpdir, "collide2"), max_agents=3)
+cmt2 = ChurnManager(regr2, arrivals_per_minute=0, top_up_per_tick=3)
+cmt2._next_arrival = float("inf")
+with _mock.patch.object(_churn.time, "time", **_frozen), \
+     _mock.patch.object(_churn.random, "randint",
+                        side_effect=[1, 1, 2, 1, 2, 3]):
+    assert len(cmt2.tick(1.0)) == 3
+assert len(regr2.alive_agents()) == 3
+print("SPAWN_COLLISION_OK")
+
 # --- Mixer ---
 reg4 = Registry(os.path.join(tmpdir, "reg4"), max_agents=10)
 mx = Mixer.__new__(Mixer)
