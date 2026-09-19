@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Live treasury assert accounts pre-reward heals (#285): the `gm_reward`
+  check expected exactly 420.0 but a hurt arrival makes the pre-dungeon
+  `gm_heal` debit first (seen as 418.0/416.0 in CI); the assert now
+  subtracts parsed heal tax like the downstream asserts, exact not ranged.
 - Dashboard hover tooltips (#76): every metric and GM-config label in
   `dashboard.html` now carries a `title` tooltip explaining range and
   impact (tax rates, treasury costs, death/level formulas, buff windows),

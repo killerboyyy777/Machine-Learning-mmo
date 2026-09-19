@@ -210,7 +210,11 @@ async def main():
     await send(B, {"cmd": "login", "name": "LiveB"})
     await drain(B, 1.5)
     msgs = await gm_send("gm_reward", player="LiveB", gold=250)
-    assert any("Treasury now 420.0" in m.get("text", "") for m in msgs), msgs
+    # 670 (after A's gold) - 250, minus any gm_heal tax spent above (#285:
+    # A may reach the graveyard hurt, so the pre-dungeon heal debits before
+    # this reward lands -- seen as 418.0/416.0 in CI. Accounting stays
+    # exact like the downstream asserts; nothing is weakened).
+    assert any(f"Treasury now {round(420.0 - sum(heal_spent), 2)}" in m.get("text", "") for m in msgs), msgs
     await send(B, {"cmd": "move", "dir": "west"})
     await wait_room(B)
     await send(B, {"cmd": "buy", "item": "rusty"})
