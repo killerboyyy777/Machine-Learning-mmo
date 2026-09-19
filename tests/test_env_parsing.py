@@ -13,7 +13,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
 
 import ml_env
-from ml_env import (GOAL_AXES, MERCHANT_NAMES, OBS_SIZE, QUESTS, TextMMOEnv,
+from ml_env import (GOAL_AXES, ITEM_ID_TO_NAME, ITEM_LIST,
+                    MERCHANT_NAMES, OBS_SIZE, QUESTS, TextMMOEnv,
                     _parse_commissions, best_market_ask, flatten_obs,
                     flip_margin, goal_reward, inventory_value, merchant_value,
                     mutate_goal, pack_full, pack_units, quest_stage,
@@ -212,6 +213,40 @@ def test_maren_obs_features():
     print("MAREN_OBS_OK")
 
 
+def test_equip_mask_excludes_worn_weapon():
+    # #229: id-vs-display-name compare never excluded the worn weapon.
+    e = TextMMOEnv("ParseEquip")
+    e._state["inv_names"] = ["Rusty Sword"]
+    e._state["equipped"] = "Rusty Sword"
+    e._build_obs()  # refreshes the per-observation type cache, as in live flow
+    assert e._first_inv_typed("weapon") is None
+    e._state["equipped"] = "Oak Longbow"
+    e._build_obs()
+    assert e._first_inv_typed("weapon") == "Rusty Sword"
+    print("EQUIP_MASK_OK")
+
+
+def test_item_presence_vectors():
+    # #221: presence looked up ids in a name->id map, so both vectors were
+    # all-zeros forever. Ground/inventory display names must light up.
+    e = TextMMOEnv("ParsePresence")
+    ground_id, held_id = ITEM_LIST[0], ITEM_LIST[1]
+    e._state["item_names"] = [ITEM_ID_TO_NAME[ground_id]]
+    e._state["inv_names"] = [ITEM_ID_TO_NAME[held_id]]
+    obs = e._build_obs()
+    assert obs["item_presence"][ITEM_LIST.index(ground_id)] == 1.0
+    assert obs["inv_presence"][ITEM_LIST.index(held_id)] == 1.0
+    assert sum(obs["item_presence"]) == 1.0, sum(obs["item_presence"])
+    assert sum(obs["inv_presence"]) == 1.0, sum(obs["inv_presence"])
+    e._state["item_names"] = []
+    e._state["inv_names"] = []
+    obs = e._build_obs()
+    assert sum(obs["item_presence"]) == 0.0
+    assert sum(obs["inv_presence"]) == 0.0
+    assert len(flatten_obs(obs)) == OBS_SIZE
+    print("ITEM_PRESENCE_OK")
+
+
 def test_dynamic_shard_valuation():
     # dungeon_shard_{n} ids register at floor build, after import: they must
     # still value through live ITEM_DEFS and flag inv_unknown (#194).
@@ -276,6 +311,8 @@ test_maren_mirror_and_stages()
 test_quest_transitions_all_four()
 test_event_parsing_maren_combat_inventory()
 test_maren_obs_features()
+test_equip_mask_excludes_worn_weapon()
+test_item_presence_vectors()
 test_dynamic_shard_valuation()
 test_goal_vector_and_dot()
 test_goal_sampling()
