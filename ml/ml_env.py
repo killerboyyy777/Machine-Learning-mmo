@@ -1674,10 +1674,12 @@ class TextMMOEnv:
         static_names = set(NPC_ID_TO_NAME.values())
         unknown_npcs = [n for n in s["npc_names"] if n not in static_names]
         npc_presence = [1.0 if NPC_ID_TO_NAME[nid] in s["npc_names"] else 0.0 for nid in NPC_LIST]
-        item_ids = {v: k for k, v in ITEM_ID_TO_NAME.items()}
-        item_presence = [1.0 if item_ids.get(i, None) in s["item_names"] else 0.0 for i in ITEM_LIST]
+        # (#263: ITEM_LIST holds ids, state holds display names -- look up
+        # the name per id like the NPC line above. The old reversed
+        # name->id map queried by id always missed, zeroing both flags.)
+        item_presence = [1.0 if ITEM_ID_TO_NAME[i] in s["item_names"] else 0.0 for i in ITEM_LIST]
 
-        inv_presence = [1.0 if item_ids.get(i, None) in (s["inv_names"] or []) else 0.0 for i in ITEM_LIST]
+        inv_presence = [1.0 if ITEM_ID_TO_NAME[i] in (s["inv_names"] or []) else 0.0 for i in ITEM_LIST]
         equipped_flag = 1.0 if s["equipped"] else 0.0
         inv_unknown = 1.0 if any(n not in ITEM_ID_TO_NAME.values() for n in (s["inv_names"] or [])) else 0.0
 

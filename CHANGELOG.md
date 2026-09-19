@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Presence obs flags actually flag (#263): `item_presence`/`inv_presence`
+  looked item ids up in a reversed name->id map (always None, both vectors
+  identically zero); they now map id->display-name like the NPC line.
 - Collision-proof churn spawns (#277): `_spawn_one` mints ids from a wider
   random space with a retry-on-collision loop, so same-millisecond bursts
   never silently re-register an existing entry (which reset a live agent's
