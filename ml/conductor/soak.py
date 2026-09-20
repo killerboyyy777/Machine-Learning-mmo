@@ -120,6 +120,18 @@ def parse_args():
         default=None,
         help="JSONL status log (default: <base-dir>/soak_status.jsonl)",
     )
+    p.add_argument(
+        "--reset", default="none", choices=("none", "lineage", "cell", "all"),
+        help="pre-run wipe ladder over the registry tree (#290): none "
+             "resumes as-is (default); lineage forgets ancestry; cell "
+             "additionally forgets learned weights; all starts fresh.",
+    )
+    p.add_argument(
+        "--resume", dest="resume", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="resume the previous run's population (default on; "
+             "--no-resume starts empty; --reset all implies fresh).",
+    )
     return p.parse_args()
 
 
@@ -240,7 +252,16 @@ async def main():
         mean_lifetime_episodes=args.lifetime,
         runners=slots,
         url=args.url,
+        resume=args.resume and args.reset != "all",
+        reset=args.reset,
     )
+    if args.reset == "all":
+        # Registry tree is wiped by reset_state; metrics live outside
+        # it, so clear them here for a truly fresh population.
+        try:
+            os.remove(os.path.join(args.base_dir, "metrics.jsonl"))
+        except OSError:
+            pass
     status_file = args.status_file or os.path.join(args.base_dir, "soak_status.jsonl")
     print(
         f"[soak] {args.agents} agents for {args.duration:.0f}s "

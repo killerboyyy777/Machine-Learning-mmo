@@ -9,6 +9,19 @@ import inspect
 import time
 import traceback
 
+import websockets
+
+
+# Reconnect backoff for dropped server connections (#290, slice 6/6):
+# exponential per consecutive failure, capped, plus a deterministic
+# per-agent stagger so a server restart doesn't thundering-herd it.
+_RECONNECT_BASE_S = 1.0
+_RECONNECT_MAX_S = 60.0
+# A disconnect is never a crash: these escape neither reset (retried
+# below) nor the step loop (they end the episode instead).
+_CONNECTION_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError,
+                      websockets.ConnectionClosed)
+
 
 def _env_floor(env):
     """Best-effort floor/cell id for an env (TextMMOEnv state shape).
@@ -46,6 +59,9 @@ class AgentTask:
         self.total_reward = 0.0
         self.steps = 0
         self.episodes = 0
+        # Consecutive failed connects (reset on every success); drives
+        # the reconnect backoff. Disconnects never kill the task.
+        self.reconnects = 0
         self.last_error = None
         self.done = asyncio.Event()
 
@@ -53,7 +69,23 @@ class AgentTask:
         """Run episodes until the task is cancelled or the agent dies."""
         try:
             while not self.done.is_set():
-                obs = await self.env.reset()
+                try:
+                    obs = await self.env.reset()
+                except _CONNECTION_ERRORS:
+                    # Server down/restarting: back off (staggered per
+                    # agent) and retry. A disconnect is not a death, so
+                    # it never escapes to the crash path below.
+                    self.reconnects += 1
+                    delay = min(
+                        _RECONNECT_MAX_S,
+                        _RECONNECT_BASE_S * 2 ** min(self.reconnects, 6),
+                    ) + (hash(self.agent_id) % 1000) / 1000.0
+                    self.last_error = (
+                        f"disconnected, reconnecting in {delay:.1f}s "
+                        f"(attempt {self.reconnects})")
+                    await asyncio.sleep(delay)
+                    continue
+                self.reconnects = 0
                 episode_reward = 0.0
                 for _ in range(self.max_steps):
                     if self.done.is_set():
@@ -88,6 +120,15 @@ class AgentTask:
                     except asyncio.TimeoutError:
                         self.last_error = (
                             f"step timeout after {self.step_timeout}s "
+                            f"(episode {self.episodes + 1})")
+                        break
+                    except (OSError, websockets.ConnectionClosed):
+                        # Socket died mid-episode (ml_env converts
+                        # send-time closes; anything else surfaces here):
+                        # end the episode, reconnect on the next reset.
+                        # Not a crash, not a death.
+                        self.last_error = (
+                            f"connection lost mid-episode "
                             f"(episode {self.episodes + 1})")
                         break
                     episode_reward += reward

@@ -905,5 +905,107 @@ for _p, _a, _r, _n, _d in _hook_calls:
     assert _p == {"obs": 0} and _a == 0 and _r == 1.0
     assert _n == {"obs": 1} and _d is True
 print("LEARN_HOOK_OK")
+# --- #290 reset ladder: none|lineage|cell|all wipe before resume ---
+from ml.conductor.registry import RESET_MODES
+assert RESET_MODES == ("none", "lineage", "cell", "all")
+rr = Registry(os.path.join(tmpdir, "resetmodes"), max_agents=5)
+assert rr.reset_state("none") == []
+rr.register("r1", "linear")
+rr.save()  # registry.json (+ lineage refresh for r1)
+_ckpt = os.path.join(tmpdir, "resetmodes", "r1", "checkpoint.pt")
+with open(_ckpt, "w") as _f:
+    _f.write("weights")
+try:
+    rr.reset_state("bogus")
+    _bad_reset = False
+except ValueError:
+    _bad_reset = True
+assert _bad_reset  # unknown modes fail fast, never half-wipe
+_got = rr.reset_state("lineage")
+assert not os.path.isdir(os.path.join(tmpdir, "resetmodes", "lineages"))
+assert os.path.isfile(_ckpt)  # weights survive a lineage reset
+assert os.path.isfile(os.path.join(tmpdir, "resetmodes", "registry.json"))
+_got = rr.reset_state("cell")
+assert not os.path.isfile(_ckpt)  # weights forgotten...
+assert os.path.isfile(os.path.join(tmpdir, "resetmodes", "registry.json"))
+_rr2 = Registry(os.path.join(tmpdir, "resetmodes"), max_agents=5)
+_rr2.load()
+assert _rr2.get("r1") is not None  # ...but the roster survives
+_got = rr.reset_state("all")
+assert not os.path.exists(os.path.join(tmpdir, "resetmodes"))
+# Conductor wiring: reset runs before load, bogus fails fast.
+try:
+    Conductor(os.path.join(tmpdir, "creset"), resume=False, reset="bogus")
+    _bad_conductor = False
+except ValueError:
+    _bad_conductor = True
+assert _bad_conductor
+_cc = Conductor(os.path.join(tmpdir, "creset"), reset="all")
+assert _cc.registry.snapshot()["total"] == 0  # wiped, load no-ops
+# Soak CLI: --reset/--no-resume parse, defaults resume as-is.
+import ml.conductor.soak as _soak
+with _mock.patch.object(sys, "argv",
+                        ["soak", "--reset", "cell", "--no-resume",
+                         "--agents", "3"]):
+    _sa = _soak.parse_args()
+assert (_sa.reset, _sa.resume, _sa.agents) == ("cell", False, 3)
+with _mock.patch.object(sys, "argv", ["soak"]):
+    _sa = _soak.parse_args()
+assert (_sa.reset, _sa.resume) == ("none", True)
+print("RESET_MODES_OK")
+
+# --- #290 disconnect != death: dropped sockets reconnect, never death-log ---
+import ml.conductor.supervisor as _sup
+
+
+class _DropEnv(_FakeEnv):
+    def __init__(self):
+        self.resets = 0
+
+    async def reset(self):
+        self.resets += 1
+        if self.resets <= 2:
+            raise ConnectionError("server restarting")
+        return await super().reset()
+
+
+async def _reconnect_check():
+    r = Registry(os.path.join(tmpdir, "reconn"), max_agents=5)
+    r.register("rc", "linear")
+    _deaths = []
+
+    class _M:
+        def log_agent_death(self, aid, eps, tot, error=None):
+            _deaths.append((aid, error))
+
+        def log_episode(self, *a, **k):
+            pass
+
+    sup = Supervisor(r, max_concurrent=1, metrics=_M())
+    _envs = []
+    with _mock.patch.object(_sup, "_RECONNECT_BASE_S", 0.01):
+        assert await sup.start_agent(
+            "rc", lambda aid: _envs.append(_DropEnv()) or _envs[-1],
+            lambda o, a: 0) is True
+        for _ in range(100):  # 2 failed connects, then live episodes
+            _task = sup._tasks.get("rc")
+            if (_envs and _envs[0].resets >= 3 and _task is not None
+                    and _task.episodes >= 1):
+                break
+            await asyncio.sleep(0.05)
+        assert _envs[0].resets >= 3  # retried, then connected
+        assert _task.reconnects == 0  # counter reset on success
+        assert _task.episodes >= 1  # and training continued
+        assert _deaths == []  # disconnects never death-logged
+        assert r.get("rc").alive is True
+        await sup.stop_all()
+    return True
+
+
+assert asyncio.run(_reconnect_check())
+# ...while a genuine crash still kills exactly once, with the error --
+# covered above by DEATH_CRASH_OK (re-running _crash_check here would
+# double-count its append-mode jsonl).
+print("DISCONNECT_NOT_DEATH_OK")
 
 print("ALL_CONDUCTOR_OK")
