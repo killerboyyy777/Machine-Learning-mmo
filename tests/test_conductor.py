@@ -748,4 +748,49 @@ async def _sup_goals():
 asyncio.run(_sup_goals())
 print("SUPERVISOR_GOALS_OK")
 
+# --- #289: Dirichlet spawn distribution is uniform over the simplex ---
+_random.seed(289)
+_N289 = 5000
+_acc289 = [0.0] * len(GOAL_AXES)
+for _ in range(_N289):
+    _g289 = sample_goal()
+    for _i289, _a289 in enumerate(GOAL_AXES):
+        _acc289[_i289] += _g289["w_" + _a289]
+for _i289, _a289 in enumerate(GOAL_AXES):
+    _mean289 = _acc289[_i289] / _N289
+    assert abs(_mean289 - 1.0 / len(GOAL_AXES)) < 0.02, (_a289, _mean289)
+print("GOAL_DIST_OK")
+
+# --- #289: offspring mutate the parent goal (mechanism + fraction) ---
+import ml.conductor.churn as _churn289
+from unittest import mock as _mock289
+r_os = Registry(os.path.join(tmpdir, "reg_os"), max_agents=60)
+_parent289 = {"w_" + _a: (1.0 if _a == "score" else 0.0) for _a in GOAL_AXES}
+cm_os = ChurnManager(r_os, arrivals_per_minute=0, mean_lifetime_episodes=10000)
+cm_os._recent_goals.append(("p289", _parent289))
+with _mock289.patch.object(_churn289, "OFFSPRING_FRACTION", 1.0):
+    # lineage shape (#293): _sample_goal returns (goal, parent_id).
+    _kid_pairs = [cm_os._sample_goal() for _ in range(50)]
+    _kids289 = [g for g, _p in _kid_pairs]
+    assert all(p == "p289" for _g, p in _kid_pairs)
+# mutants keep the parent's dominant axis (fresh draws would scatter 1/7
+# each way: all-50 agreement has probability (1/7)^50 ~ 0).
+assert all(max(_g, key=_g.get) == "w_score" for _g in _kids289)
+assert len({tuple(sorted(_g.items())) for _g in _kids289}) > 1  # noise, not clones
+with _mock289.patch.object(_churn289, "OFFSPRING_FRACTION", 0.0):
+    _fresh_pairs = [cm_os._sample_goal() for _ in range(50)]
+    _fresh289 = [g for g, _p in _fresh_pairs]
+    assert all(p is None for _g, p in _fresh_pairs)
+assert any(max(_g, key=_g.get) != "w_score" for _g in _fresh289)
+# production fraction: ~half the batch derives from the parent (100
+# mutants with dominant score + ~100/7 fresh scoring by chance).
+_random.seed(2891)
+_dom289 = 0
+for _ in range(200):
+    _gdom, _pdom = cm_os._sample_goal()
+    if max(_gdom, key=_gdom.get) == "w_score":
+        _dom289 += 1
+assert 95 <= _dom289 <= 135, _dom289
+print("GOAL_OFFSPRING_OK")
+
 print("ALL_CONDUCTOR_OK")
