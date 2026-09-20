@@ -8,6 +8,12 @@ All notable changes to the text MMO engine are recorded here.
   the goal dot product as fitness -- so selection ranks members by goal
   alignment, not raw scalar reward. Vectorless/goal-less reports keep the
   raw path unchanged; `Conductor.report_fitness` passes vectors through.
+- Lineage checkpoints + registry resume (#293): each spawn records its
+  parent (mutated-from agent, None for fresh samples) and writes
+  `lineages/<id>/{goal.json, parent_id}` plus a copy of the current
+  checkpoint; `registry.json` saves atomically (tmp+replace) and each save
+  refreshes the lineage ckpts (latest-only) while pruning dirs for removed
+  ids; `Conductor(resume=True)` (default) reloads the previous population.
 - Live treasury assert accounts pre-reward heals (#285): the `gm_reward`
   check expected exactly 420.0 but a hurt arrival makes the pre-dungeon
   `gm_heal` debit first (seen as 418.0/416.0 in CI); the assert now
