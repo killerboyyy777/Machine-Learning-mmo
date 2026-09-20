@@ -84,11 +84,17 @@ class Conductor:
 
     def __init__(self, base_dir, max_agents=50, arrivals_per_minute=2.0,
                  mean_lifetime_episodes=100, floors=None, pbt=None, runner=None,
-                 runners=None, url="ws://localhost:8765"):
+                 runners=None, url="ws://localhost:8765", resume=True):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
+        if resume:
+            # Resume-by-default (#293, slice 4/6): pick up the previous
+            # run's population (entries, goals, parents) instead of
+            # starting empty. Missing registry.json (first run) is a
+            # no-op; pass resume=False for a guaranteed-fresh population.
+            self.registry.load()
         self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d_10_f1"])
         self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
         self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
@@ -155,11 +161,12 @@ class Conductor:
             self.registry.mark_dead(agent_id)
             return False
 
-    def report_fitness(self, agent_id, fitness, episodes=1):
+    def report_fitness(self, agent_id, fitness, episodes=1, vector=None):
         """Feed an evaluation result into the PBT population (no-op when
-        PBT is disabled). Agents must be enrolled first (see enroll_pbt)."""
+        PBT is disabled). Agents must be enrolled first (see enroll_pbt).
+        A per-step reward `vector` makes fitness goal-weighted (#288)."""
         if self.pbt is not None:
-            self.pbt.report(agent_id, fitness, episodes)
+            self.pbt.report(agent_id, fitness, episodes, vector=vector)
 
     def enroll_pbt(self, agent_id, hparams=None):
         """Enroll a registered agent in the PBT population."""

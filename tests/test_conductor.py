@@ -59,6 +59,52 @@ assert reg2.get("a1").total_reward == 30.0
 assert reg2.get("a1").mean_reward == 15.0
 print("REGISTRY_OK")
 
+# --- #293 lineage checkpoints + atomic round-trip + resume ---
+import json as _json3
+import ml.conductor.churn as _churn
+from unittest import mock as _mock
+regr = Registry(os.path.join(tmpdir, "lineage"), max_agents=5)
+cml = ChurnManager(regr, arrivals_per_minute=0)
+cml._next_arrival = float("inf")
+# Seed one parent, then force the offspring branch for the next spawn.
+pgoal = {"w_score": 1.0}
+regr.register("p0", "linear", goal=pgoal)
+cml._recent_goals.append(("p0", pgoal))
+with _mock.patch.object(_churn.random, "random", return_value=0.0):
+    kid = cml._spawn_one()
+kentry = regr.get(kid)
+assert kentry.parent_id == "p0"  # parentage recorded, not just the weights
+lin = regr.load_lineage(kid)
+assert lin["parent_id"] == "p0"
+assert lin["goal"] == kentry.goal
+assert lin["ckpt"] is None  # fresh spawn: no checkpoint file yet
+# Simulate training writing weights, then a save: the lineage ckpt
+# snapshot follows ("weights change" is visible across saves).
+with open(kentry.checkpoint_path, "wb") as f:
+    f.write(b"v1")
+regr.save()
+assert open(regr.load_lineage(kid)["ckpt"], "rb").read() == b"v1"
+with open(kentry.checkpoint_path, "wb") as f:
+    f.write(b"v2")
+regr.save()
+assert open(regr.load_lineage(kid)["ckpt"], "rb").read() == b"v2"
+# Atomic write: no .tmp litter, registry.json always parses.
+assert not os.path.exists(os.path.join(tmpdir, "lineage", "registry.json.tmp"))
+with open(os.path.join(tmpdir, "lineage", "registry.json")) as f:
+    _json3.load(f)
+# Resume: a fresh Registry on the same dir restores entries, goals,
+# and parents (Conductor(resume=True) leans on exactly this).
+regr2 = Registry(os.path.join(tmpdir, "lineage"), max_agents=5)
+regr2.load()
+assert regr2.get(kid).parent_id == "p0"
+assert regr2.get(kid).goal == kentry.goal
+assert regr2.get("p0") is not None
+# Disk guard: removing an entry prunes its lineage dir on next save.
+regr.remove("p0")
+regr.save()
+assert regr.load_lineage("p0") is None
+print("LINEAGE_OK")
+
 # --- Churn helpers ---
 intervals = [poisson_interval(60.0) for _ in range(100)]
 assert all(i >= 0 for i in intervals)
@@ -701,5 +747,50 @@ async def _sup_goals():
 
 asyncio.run(_sup_goals())
 print("SUPERVISOR_GOALS_OK")
+
+# --- #289: Dirichlet spawn distribution is uniform over the simplex ---
+_random.seed(289)
+_N289 = 5000
+_acc289 = [0.0] * len(GOAL_AXES)
+for _ in range(_N289):
+    _g289 = sample_goal()
+    for _i289, _a289 in enumerate(GOAL_AXES):
+        _acc289[_i289] += _g289["w_" + _a289]
+for _i289, _a289 in enumerate(GOAL_AXES):
+    _mean289 = _acc289[_i289] / _N289
+    assert abs(_mean289 - 1.0 / len(GOAL_AXES)) < 0.02, (_a289, _mean289)
+print("GOAL_DIST_OK")
+
+# --- #289: offspring mutate the parent goal (mechanism + fraction) ---
+import ml.conductor.churn as _churn289
+from unittest import mock as _mock289
+r_os = Registry(os.path.join(tmpdir, "reg_os"), max_agents=60)
+_parent289 = {"w_" + _a: (1.0 if _a == "score" else 0.0) for _a in GOAL_AXES}
+cm_os = ChurnManager(r_os, arrivals_per_minute=0, mean_lifetime_episodes=10000)
+cm_os._recent_goals.append(("p289", _parent289))
+with _mock289.patch.object(_churn289, "OFFSPRING_FRACTION", 1.0):
+    # lineage shape (#293): _sample_goal returns (goal, parent_id).
+    _kid_pairs = [cm_os._sample_goal() for _ in range(50)]
+    _kids289 = [g for g, _p in _kid_pairs]
+    assert all(p == "p289" for _g, p in _kid_pairs)
+# mutants keep the parent's dominant axis (fresh draws would scatter 1/7
+# each way: all-50 agreement has probability (1/7)^50 ~ 0).
+assert all(max(_g, key=_g.get) == "w_score" for _g in _kids289)
+assert len({tuple(sorted(_g.items())) for _g in _kids289}) > 1  # noise, not clones
+with _mock289.patch.object(_churn289, "OFFSPRING_FRACTION", 0.0):
+    _fresh_pairs = [cm_os._sample_goal() for _ in range(50)]
+    _fresh289 = [g for g, _p in _fresh_pairs]
+    assert all(p is None for _g, p in _fresh_pairs)
+assert any(max(_g, key=_g.get) != "w_score" for _g in _fresh289)
+# production fraction: ~half the batch derives from the parent (100
+# mutants with dominant score + ~100/7 fresh scoring by chance).
+_random.seed(2891)
+_dom289 = 0
+for _ in range(200):
+    _gdom, _pdom = cm_os._sample_goal()
+    if max(_gdom, key=_gdom.get) == "w_score":
+        _dom289 += 1
+assert 95 <= _dom289 <= 135, _dom289
+print("GOAL_OFFSPRING_OK")
 
 print("ALL_CONDUCTOR_OK")
