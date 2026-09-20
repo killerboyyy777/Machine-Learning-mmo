@@ -10,7 +10,8 @@
      Agents/Quests/Crafting in 3/4 (#209), Config with the editor (#63).
      Time-series use vendored uPlot 1.6.32 (MIT, /uplot.min.js); the old
      canvas line charts are gone with their stretch-blur. Snapshot
-     contract: read-only GET /api/state, additive keys only, 1s poll. -->
+     contract: read-only GET /api/state, additive keys only, 2s poll
+     (10s when the tab is hidden). -->
 <style>
   :root {
     --bg: #101418; --panel: #171c22; --panel2: #1e252d; --border: #2a333d;
@@ -538,6 +539,23 @@ const $ = id => document.getElementById(id);
 
 let lastState = null;
 
+// Change-guarded DOM writes (PERF: the 1s loop used to re-parse every
+// panel's innerHTML on every tick even with identical data -- 23 parses +
+// 6 chart pushes + a map repaint per idle second). setHTML skips the write
+// when the string is unchanged, so idle ticks cost ~zero DOM churn while
+// live ticks render exactly as before.
+const lastHTML = {};
+function setHTML(id, html) {
+  if (lastHTML[id] === html) return;
+  lastHTML[id] = html;
+  $(id).innerHTML = html;
+}
+function setHTMLEl(el, key, html) {
+  if (lastHTML[key] === html) return;
+  lastHTML[key] = html;
+  el.innerHTML = html;
+}
+
 function hpbar(hp, max) {
   if (max == null || max === 0) return "";
   const pct = Math.max(0, Math.min(100, hp / max * 100));
@@ -672,7 +690,7 @@ function renderRoomDrawer(byId) {
   }
   const r = byId[openRoomId];
   box.style.display = "";
-  box.innerHTML = `<div class="room">
+  setHTML("roomDrawer", `<div class="room">
       <h3>${esc(r.name)} <span class="dim">${esc(r.id)}</span>
         <button id="roomClose" style="float:right">×</button></h3>
       <div>${(r.players || []).map(p => {
@@ -682,20 +700,28 @@ function renderRoomDrawer(byId) {
       <div>${(r.items || []).map(i => `<span class="tag itemtag">${esc(i)}</span>`).join("")}</div>
       ${(r.gold > 0) ? `<div><span class="tag itemtag">${esc(r.gold)} gold (death drop)</span></div>` : ""}
       <div>${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}</div>
-    </div>`;
+    </div>`);
   $("roomClose").addEventListener("click", () => {
     openRoomId = null;
     renderRoomDrawer(byId);
   });
 }
 
+// Last map paint key: rooms JSON + pan/zoom. Identical ticks skip the
+// repaint entirely (PERF); pan/zoom/click re-render through this same
+// function with a changed view, so they still repaint.
+let lastMapKey = "";
 function renderWorldMap(rooms) {
   const canvas = $("worldMapCanvas");
   if (!canvas) return;
-  // 32 nodes redrawn per 1s tick is trivial; no quadtree, dirty rects, or
-  // rAF loop needed at this scale (see #131 if the map ever grows 10x).
-  const {byId, positions, links, worldW, worldH} = mapLayout(rooms);
   mapRooms = rooms;
+  // 32 nodes redrawn per tick is trivial, but pointless when idle; skip
+  // when neither the world nor the view changed (see #131 if the map
+  // ever grows 10x and even dirty-checking gets expensive).
+  const key = JSON.stringify([rooms, mapView.x, mapView.y, mapView.k]);
+  if (key === lastMapKey) return;
+  lastMapKey = key;
+  const {byId, positions, links, worldW, worldH} = mapLayout(rooms);
   // DPR-aware backing store (#205): draw in CSS pixels regardless of display
   // density, so the map stays sharp on hidpi instead of stretching 1200x480.
   const dpr = window.devicePixelRatio || 1;
@@ -810,7 +836,7 @@ function renderWorldMap(rooms) {
 }
 
 function renderRooms(rooms) {
-  $("rooms").innerHTML = rooms.map(r => `
+  setHTML("rooms", rooms.map(r => `
     <div class="room">
       <h3>${esc(r.name)}</h3>
       ${r.players.length ? r.players.map(p => {
@@ -824,11 +850,11 @@ function renderRooms(rooms) {
       ${(r.gold > 0) ? `<span class="tag itemtag">💰 ${esc(r.gold)} gold (death drop)</span>` : ""}
       ${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}
       ${(!r.players.length && !r.npcs.length && !r.items.length) ? `<span class="empty">empty</span>` : ""}
-    </div>`).join("");
+    </div>`).join(""));
 }
 
 function renderPerf(players) {
-  $("perf").innerHTML = players.map((p, i) => `
+  setHTML("perf", players.map((p, i) => `
     <tr>
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
@@ -839,13 +865,13 @@ function renderPerf(players) {
       <td>${p.gold}</td>
       <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
       <td>${esc(p.room)}</td>
-    </tr>`).join("");
+    </tr>`).join(""));
   $("noPerf").style.display = players.length ? "none" : "";
 }
 
 function renderScores(scores) {
-  $("scores").innerHTML = scores.slice(0, 10).map((s, i) => `
-    <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${s.score.toFixed(1)}</b></td></tr>`).join("");
+  setHTML("scores", scores.slice(0, 10).map((s, i) => `
+    <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${s.score.toFixed(1)}</b></td></tr>`).join(""));
 }
 
 // Trend charts via vendored uPlot (#205): DPR-clean by construction (the
@@ -871,7 +897,13 @@ function trendChart(id, values, colorKey) {
   // axis visibility is creation-time config.
   const live = values.length > 0;
   const data = live ? [values.map((_, i) => i), values] : [[0, 1], [0, 0]];
+  // PERF: skip both pushes when nothing changed. Data identity is a cheap
+  // join (histories are short); width is cached so setSize fires only on
+  // real resizes, not every tick.
+  const dataKey = values.join(",");
+  const w = el.clientWidth || 0;
   let u = charts[id];
+  if (u && u._empty === !live && u._dataKey === dataKey && u._w === w) return;
   if (!u || u._empty === live) {
     if (u) { try { u.destroy(); } catch (e) {} }
     const grid = cssVar("--border", "#2a333d"), font = cssVar("--dim", "#8b98a5");
@@ -891,10 +923,15 @@ function trendChart(id, values, colorKey) {
   } else {
     u.setData(data);
   }
-  // Refit every tick: a chart sized while its tab was hidden (260px
-  // fallback) or while the window was wider snaps back to its panel.
-  // This is the structural fix for canvases overflowing their panels.
-  if (el.clientWidth) { try { u.setSize({width: el.clientWidth, height: 80}); } catch (e) {} }
+  u._dataKey = dataKey;
+  u._w = w;
+  // Refit on width change only: a chart sized while its tab was hidden
+  // (260px fallback) or while the window was wider snaps back to its
+  // panel. This is the structural fix for canvases overflowing panels.
+  if (w && w !== u._sizedW) {
+    try { u.setSize({width: w, height: 80}); u._sizedW = w; }
+    catch (e) {}
+  }
 }
 function resizeCharts() {
   for (const [id, u] of Object.entries(charts)) {
@@ -912,13 +949,15 @@ function renderHistory(history) {
 }
 
 function renderActivity(activity) {
-  $("activity").innerHTML = activity.map(a => `
+  // Display cap (PERF): the server keeps 100 rows; the newest 80 render.
+  // Nothing a glanceable dashboard needs lives beyond that.
+  setHTML("activity", (activity || []).slice(-80).map(a => `
     <div class="row">
       <span class="t">${esc(a.time)}</span>
       <span class="n">${esc(a.name)} ${a.level ? `<span class="dim">(lv${a.level})</span>` : ""}</span>
       <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
         ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
-    </div>`).join("");
+    </div>`).join(""));
 }
 
 function renderMarket(m) {
@@ -930,16 +969,16 @@ function renderMarket(m) {
   $("g-treasury").textContent = treasury.toFixed(1);
   if (typeof updateGMCosts === "function") updateGMCosts();
   const orders = m.orders || [];
-  $("orders").innerHTML = orders.map((o, i) => `
+  setHTML("orders", orders.map((o, i) => `
     <tr><td>${i+1}</td><td>${esc(o.id)}</td><td>${esc(o.item)}</td>
         <td><b>${o.price}</b></td><td class="sell">${esc(o.seller)}</td>
-        <td>${esc(o.ts)}</td></tr>`).join("");
+        <td>${esc(o.ts)}</td></tr>`).join(""));
   $("noOrders").style.display = orders.length ? "none" : "";
   const history = m.history || [];
-  $("tradeHistory").innerHTML = history.map((h, i) => `
+  setHTML("tradeHistory", history.map((h, i) => `
     <tr><td>${i+1}</td><td>${esc(h.time ?? h.ts)}</td><td class="buy">${esc(h.buyer)}</td>
         <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}</td>
-        <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join("");
+        <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join(""));
   $("noTrades").style.display = history.length ? "none" : "";
   // Settled-price history as a uPlot area chart (new in 2/4: v1 shows the
   // table only; the series already rides in the snapshot).
@@ -959,22 +998,22 @@ function renderBuffs(b) {
     parts.push(`<span class="buff ${s > 0 ? "on" : ""}">${k.toUpperCase()}x2 ${
       s > 0 ? `— ${mmss(s)} left` : "— inactive"}</span>`);
   }
-  $("buffs").innerHTML = parts.join("") || `<span class="empty">no active buffs</span>`;
+  setHTML("buffs", parts.join("") || `<span class="empty">no active buffs</span>`);
 }
 
 function renderBosses(bosses) {
-  $("bosses").innerHTML = bosses.map(b => `
+  setHTML("bosses", bosses.map(b => `
     <tr><td><b>${esc(b.name)}</b></td><td>${esc(b.room)}</td>
-        <td>${b.hp}/${b.max_hp}</td><td>${b.attack}</td></tr>`).join("");
+        <td>${b.hp}/${b.max_hp}</td><td>${b.attack}</td></tr>`).join(""));
   $("noBosses").style.display = bosses.length ? "none" : "";
 }
 
 function renderDungeons(dungeons) {
   if (!dungeons || !dungeons.length) {
-    $("dungeons").innerHTML = `<span class="empty">No dungeons opened yet. Players enter through the graveyard's 'enter' doorway.</span>`;
+    setHTML("dungeons", `<span class="empty">No dungeons opened yet. Players enter through the graveyard's 'enter' doorway.</span>`);
     return;
   }
-  $("dungeons").innerHTML = dungeons.map(d => `
+  setHTML("dungeons", dungeons.map(d => `
     <div class="dung">
       <h3>Dungeon ${esc(d.id)} <span class="tag alive">${esc((d.party || []).join(", ") || "solo")}</span>
           <span class="tag">max floor ${d.max_floor_reached || 0}</span></h3>
@@ -985,11 +1024,11 @@ function renderDungeons(dungeons) {
           <span class="st">${f.cleared ? "cleared (unsealed)" : "sealed until guards die"}</span>
         </div>`).join("")}
       ${(d.floors || []).length ? "" : `<span class="empty">floor 1 not generated yet</span>`}
-    </div>`).join("");
+    </div>`).join(""));
 }
 
 function renderAgents(players) {
-  $("agents").innerHTML = players.map((p, i) => `
+  setHTML("agents", players.map((p, i) => `
     <tr>
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
@@ -1001,20 +1040,20 @@ function renderAgents(players) {
       <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
       <td>${esc(p.room)}</td>
       <td>${esc(p.last_action || "-")}</td>
-    </tr>`).join("");
+    </tr>`).join(""));
   $("noAgents").style.display = players.length ? "none" : "";
   const feed = [];
   for (const p of players) {
     for (const a of (p.recent_actions || [])) feed.push({who: p.name, ...a});
   }
   feed.sort((x, y) => String(y.time).localeCompare(String(x.time)));
-  $("agentActivity").innerHTML = feed.slice(0, 15).map(a => `
+  setHTML("agentActivity", feed.slice(0, 15).map(a => `
     <div class="row">
       <span class="t">${esc(a.time)}</span>
       <span class="n">${esc(a.who)}</span>
       <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
         ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
-    </div>`).join("") || `<span class="empty">No tracked actions yet.</span>`;
+    </div>`).join("") || `<span class="empty">No tracked actions yet.</span>`);
 }
 
 function renderQuests(q) {
@@ -1022,22 +1061,22 @@ function renderQuests(q) {
   const active = qs.active || {}, completions = qs.completions || {};
   $("q-active").textContent = Object.values(active).reduce((a, b) => a + (b || 0), 0);
   $("q-turnins").textContent = qs.turnins_last_min ?? 0;
-  $("questCatalog").innerHTML = (qs.catalog || []).map(c => `
+  setHTML("questCatalog", (qs.catalog || []).map(c => `
     <tr><td><b>${esc(c.id)}</b><br><span class="dim">${esc(c.brief || "")}</span></td>
         <td>${esc(c.giver_name || "")}</td><td>${esc(c.room || "")}</td>
         <td>${c.reward_xp ?? 0} XP + ${c.reward_gold ?? 0}g</td>
-        <td>${active[c.id] ?? 0}</td><td>${completions[c.id] ?? 0}</td></tr>`).join("");
+        <td>${active[c.id] ?? 0}</td><td>${completions[c.id] ?? 0}</td></tr>`).join(""));
   // Per-quest turn-in feed (owner round 2): who turned in what, when --
   // newest first, from the snapshot's recent_turnins ring.
   const brief = Object.fromEntries((qs.catalog || []).map(c => [c.id, c.brief || c.id]));
   const feed = (qs.recent_turnins || []).slice().reverse();
-  $("questFeed").innerHTML = feed.map(t => `
+  setHTML("questFeed", feed.map(t => `
     <div class="row">
       <span class="t">${esc(t.t)}</span>
       <span class="n">${esc(t.name)}</span>
       <span class="c">turned in <b>${esc(t.qid)}</b>
         <span class="d"> ${esc(brief[t.qid] || "")}</span></span>
-    </div>`).join("") || `<span class="empty">No turn-ins recorded yet.</span>`;
+    </div>`).join("") || `<span class="empty">No turn-ins recorded yet.</span>`);
 }
 
 function renderRecipes(recipes) {
@@ -1050,10 +1089,10 @@ function renderRecipes(recipes) {
                  ...(r.inputs || []).map(i => i.item)].join(" ").toLowerCase();
     return q.split(/\s+/).every(w => hay.includes(w));
   });
-  $("recipeRows").innerHTML = rows.map(r => `
+  setHTML("recipeRows", rows.map(r => `
     <tr><td><b>${esc(r.result)}</b>${r.result_qty > 1 ? ` ×${r.result_qty}` : ""}</td>
         <td>${(r.inputs || []).map(i => `${i.qty}× ${esc(i.item)}`).join(", ")}</td>
-        <td>${r.tier ?? "-"}</td><td>${esc(r.category || "-")}</td></tr>`).join("");
+        <td>${r.tier ?? "-"}</td><td>${esc(r.category || "-")}</td></tr>`).join(""));
   $("noRecipes").style.display = rows.length ? "none" : "";
 }
 
@@ -1070,8 +1109,8 @@ function renderCrafting(rooms, market, activity, recipes) {
     }
   }
   const srows = Object.entries(supply).sort((a, b) => b[1] - a[1]).slice(0, 15);
-  $("matSupply").innerHTML = srows.map(([it, n]) => `
-    <tr><td>${esc(it)}</td><td>${n}</td><td>${esc([...roomsOf[it]].join(", "))}</td></tr>`).join("");
+  setHTML("matSupply", srows.map(([it, n]) => `
+    <tr><td>${esc(it)}</td><td>${n}</td><td>${esc([...roomsOf[it]].join(", "))}</td></tr>`).join(""));
   $("noSupply").style.display = srows.length ? "none" : "";
   const byItem = {};
   for (const o of ((market || {}).orders || [])) {
@@ -1080,8 +1119,8 @@ function renderCrafting(rooms, market, activity, recipes) {
     if (o.price < b.min) b.min = o.price;
   }
   const orows = Object.entries(byItem).sort((a, b) => b[1].n - a[1].n);
-  $("matOrders").innerHTML = orows.map(([it, b]) => `
-    <tr><td>${esc(it)}</td><td>${b.n}</td><td>${b.min}</td></tr>`).join("");
+  setHTML("matOrders", orows.map(([it, b]) => `
+    <tr><td>${esc(it)}</td><td>${b.n}</td><td>${b.min}</td></tr>`).join(""));
   $("noMatOrders").style.display = orows.length ? "none" : "";
   const flow = {gather: 0, craft: 0, take: 0, buy: 0, sell: 0};
   for (const a of activity || []) {
@@ -1106,7 +1145,7 @@ function renderConfig(s) {
     ["market tax minimum", m.tax_min ?? "-"],
     ["server uptime", (s.server.uptime ?? 0) + "s"],
   ];
-  $("configRows").innerHTML = rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join("");
+  setHTML("configRows", rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join(""));
 }
 
 let trackedName = null;
@@ -1121,17 +1160,17 @@ function renderTracker(players) {
   if (key !== trackedNamesKey) {
     trackedNamesKey = key;
     if (!names.includes(trackedName)) trackedName = names[0] ?? null;
-    sel.innerHTML = names.map(n =>
-      `<option value="${esc(n)}"${n === trackedName ? " selected" : ""}>${esc(n)}</option>`).join("");
+    setHTML("trackSelect", names.map(n =>
+      `<option value="${esc(n)}"${n === trackedName ? " selected" : ""}>${esc(n)}</option>`).join(""));
   }
   const detail = $("trackDetail");
   const p = players.find(x => x.name === trackedName);
   if (!p) {
-    detail.innerHTML = `<span class="empty">No online players to track.</span>`;
+    setHTML("trackDetail", `<span class="empty">No online players to track.</span>`);
     return;
   }
   const acts = p.recent_actions || [];
-  detail.innerHTML = `
+  setHTML("trackDetail", `
     <div class="tmeta"><b>${esc(p.name)}</b> (lv${p.level ?? 1}) · ${esc(p.room)} ·
       score <b>${p.score.toFixed(1)}</b> · ${p.hp}/${p.max_hp} HP ${hpbar(p.hp, p.max_hp)} ·
       ${p.gold} gold · ${acts.length} recent action${acts.length === 1 ? "" : "s"}</div>` +
@@ -1140,7 +1179,7 @@ function renderTracker(players) {
         <span class="t">${esc(a.time)}</span>
         <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
           ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
-      </div>`).join("") : `<span class="empty">No tracked actions yet.</span>`);
+      </div>`).join("") : `<span class="empty">No tracked actions yet.</span>`));
 }
 
 $("trackSelect").addEventListener("change", e => {
@@ -1167,8 +1206,8 @@ function renderOverview(s) {
     ["dungeons", (s.dungeons || []).length],
     ["uptime", (s.server.uptime ?? 0) + "s"],
   ];
-  $("ovCards").innerHTML = cards.map(([l, v]) =>
-    `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join("");
+  setHTML("ovCards", cards.map(([l, v]) =>
+    `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join(""));
   const pill = $("ovHealth");
   if (s.server.players_online > 0) {
     pill.textContent = "● Healthy";
@@ -1183,13 +1222,13 @@ function renderOverview(s) {
     (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0), "purple");
   trendChart("ovVolume", hist.map(h => h.market_orders ?? 0), "amber");
   const acts = (s.activity || []).slice(-10).reverse();
-  $("ovActivity").innerHTML = acts.length ? acts.map(a => `
+  setHTML("ovActivity", acts.length ? acts.map(a => `
     <div class="row">
       <span class="t">${esc(a.time)}</span>
       <span class="n">${esc(a.name)} ${a.level ? `<span class="dim">(lv${a.level})</span>` : ""}</span>
       <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
         ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
-    </div>`).join("") : `<span class="empty">No activity yet.</span>`;
+    </div>`).join("") : `<span class="empty">No activity yet.</span>`);
 }
 
 // Sections grouped by tab: only the active tab renders each tick, so
@@ -1257,7 +1296,7 @@ async function tick() {
 function populateDatalists(cat) {
   const setDatalist = (id, arr) => {
     const dl = $(id);
-    if (dl) dl.innerHTML = (arr || []).map(v => `<option value="${esc(v)}">`).join("");
+    if (dl) setHTMLEl(dl, id, (arr || []).map(v => `<option value="${esc(v)}">`).join(""));
   };
   setDatalist("gm-players", cat.players);
   setDatalist("gm-items", cat.items);
@@ -1482,15 +1521,34 @@ $("themeToggle").addEventListener("click", () => {
   else delete root.dataset.theme;
   try { localStorage.setItem("dash2-theme", light ? "light" : "dark"); } catch (e) {}
   // Charts bake themed colors/axes at creation: drop them so the next tick
-  // rebuilds themed. The map re-reads tokens on every render already.
+  // rebuilds themed. The map re-reads tokens on every render already, but
+  // its repaint guard needs invalidating or it would keep the old paint.
+  lastMapKey = "";
   for (const [id, u] of Object.entries(charts)) {
     try { u.destroy(); } catch (e) {}
     delete charts[id];
   }
 });
 
+// Throttled poll loop (PERF): 2s visible, 10s hidden. The 1s cadence
+// re-fetched and re-rendered the world every second; nothing on this
+// dashboard goes stale meaningfully in 2s, and a background tab needs
+// almost nothing. visibilitychange reschedules immediately so returning
+// to the tab refreshes at once instead of after a stale tail.
+let pollTimer = 0;
+function schedulePoll() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0; }
+  const hidden = typeof document.hidden === "boolean" && document.hidden;
+  pollTimer = setTimeout(async () => { await tick(); schedulePoll(); }, hidden ? 10000 : 2000);
+}
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && lastState) renderAll(lastState);
+    schedulePoll();
+  });
+}
 tick();
-setInterval(tick, 1000);
+schedulePoll();
 </script>
 </body>
 </html>

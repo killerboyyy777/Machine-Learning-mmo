@@ -123,6 +123,12 @@ for tok in (".grid > * { min-width: 0; }", ".tscroll.cap", ".trend canvas"):
 # Quest turn-in feed + recipe browser widgets present.
 for wid in ("questFeed", "recipeSearch", "recipeRows", "noRecipes"):
     assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+# PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
+# throttled poll loop with hidden-tab slowdown.
+assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"
+for tok in ("function setHTML", "lastMapKey", "_dataKey", "slice(-80)",
+            "visibilitychange", "schedulePoll", "10000 : 2000"):
+    assert tok in html2, f"v2: perf token {tok} missing"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
 # #211 regression pin: sections must receive the snapshot (render(s)).
