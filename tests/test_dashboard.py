@@ -79,8 +79,14 @@ assert '<script src="/uplot.min.js">' in html2, "v2: uplot script tag missing"
 # Design tokens: spacing/type scales + font + radius on top of legacy vars.
 for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
     assert tok in html2, f"v2: token {tok} missing"
-# Only Overview + World are functional in 1/4; the rest point at follow-ups.
-assert "revamp 2/4 (#206)" in html2 and "revamp 3/4 (#209)" in html2
+# Market/Dungeons/GM are functional since 2/4; Agents/Quests/Crafting
+# (3/4) and Config (#63) remain placeholders.
+assert "revamp 2/4 (#206)" not in html2, "v2: market/dungeon/gm still placeholder"
+assert "revamp 3/4 (#209)" in html2
+for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
+             "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
+             "gm-action", "gm-players", "gm-rooms"):
+    assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
 # #211 regression pin: sections must receive the snapshot (render(s)).
