@@ -7,6 +7,7 @@ Protocol is plain JSON over WebSocket. See README.md for the full list.
 import asyncio
 import json
 import os
+import queue
 import random
 import signal
 import sys
@@ -3341,6 +3342,18 @@ def vlog(msg):
 START_TIME = time.time()
 command_log = []
 track_log = {}
+# Monotonic activity sequence: every command_log entry carries one, so the
+# dashboard can sort across midnight (HH:MM:SS strings don't) and SSE
+# consumers can resume with Last-Event-ID. Additive field, read-only use.
+activity_seq = 0
+# SSE fan-out for the dashboard live-activity stream (split-lane): one
+# bounded queue per connected viewer. log_command (asyncio thread) drops
+# an entry into each; each /api/activity/stream handler (HTTP thread)
+# drains its own. Full queues drop (that viewer resyncs from the snapshot
+# poll, which still carries activity), so a dead viewer never blocks the
+# game loop. 2-3 viewers + bot growth: trivial.
+ACTIVITY_STREAM_SIZE = 500
+activity_subscribers = []
 _score_history = {}
 _dashboard_history = []  # [{ts, players_online, top_scores: [{name, score}]}]
 _HISTORY_SAMPLE_INTERVAL = 30  # seconds between samples
@@ -3368,8 +3381,15 @@ def log_command(name, cmd, msg):
         detail = ""
     entry = get_score_entry(name) if name and name != "<new>" else None
     lvl = entry["level"] if entry else 1
-    entry_log = {"time": time.strftime("%H:%M:%S"), "name": name or "<new>", "cmd": cmd, "detail": detail, "level": lvl}
+    global activity_seq
+    activity_seq += 1
+    entry_log = {"seq": activity_seq, "time": time.strftime("%H:%M:%S"), "name": name or "<new>", "cmd": cmd, "detail": detail, "level": lvl}
     command_log.append(entry_log)
+    for q in list(activity_subscribers):
+        try:
+            q.put_nowait(entry_log)
+        except queue.Full:
+            pass
     if len(command_log) > ACTIVITY_LOG_SIZE:
         del command_log[0]
     if name and name != "<new>":
@@ -3463,6 +3483,7 @@ def world_snapshot():
         buffs_view[k] = remaining
     return {
         "server": {"ws_port": PORT, "gm_port": GM_PORT, "uptime": int(time.time() - START_TIME),
+                   "start_ts": START_TIME,
                    "players_online": len(online_players), "connections": len(players)},
         "rooms": rooms, "players": online_players, "scores": scores,
         "activity": list(command_log),
@@ -3540,6 +3561,10 @@ def start_dashboard():
     uplot_path = join(here, "uplot.min.js")
 
     class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
+        # HTTP/1.1 keep-alive for everything (Content-Length is already
+        # sent on all routes) + required framing for the SSE stream below.
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, fmt, *args):
             if VERBOSE:
                 print(f"[http] {self.address_string()}: {fmt % args}")
@@ -3583,8 +3608,73 @@ def start_dashboard():
             elif path == "/uplot.min.js" and os.path.exists(uplot_path):
                 with open(uplot_path, "rb") as f:
                     self._send(f.read(), "application/javascript")
+            elif path == "/api/activity/stream":
+                self._serve_activity_stream()
             else:
                 self.send_error(404)
+
+        def _serve_activity_stream(self):
+            """Server-sent activity events (split-lane dashboard live feel).
+
+            Query ?since=SEQ and/or Last-Event-ID resume from a sequence;
+            replays missed entries (cap 100), then streams new ones as
+            `id:` + `data:` frames with :ping heartbeats. Ends when the
+            viewer disconnects (write raises) and unsubscribes itself.
+            Runs in this request's HTTP thread; never touches game state.
+            """
+            import urllib.parse as _up
+            since = 0
+            try:
+                qs = _up.parse_qs(_up.urlsplit(self.path).query)
+                if "since" in qs:
+                    since = int(qs["since"][0])
+            except (ValueError, IndexError):
+                pass
+            try:
+                leid = self.headers.get("Last-Event-ID")
+                if leid is not None:
+                    since = int(leid)
+            except (ValueError, TypeError):
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            def _frame(entry):
+                return (f"id: {entry['seq']}\n"
+                        f"data: {json.dumps(entry)}\n\n").encode()
+
+            missed = [e for e in command_log if e.get("seq", 0) > since][-100:]
+            if not missed and since > activity_seq:
+                # Stale cursor (e.g. server restarted, seq reset): send a
+                # fresh tail so the viewer never waits on a dead offset.
+                missed = list(command_log[-30:])
+            try:
+                for e in missed:
+                    self.wfile.write(_frame(e))
+                self.wfile.flush()
+                sub = queue.Queue(ACTIVITY_STREAM_SIZE)
+                activity_subscribers.append(sub)
+                try:
+                    while True:
+                        try:
+                            entry = sub.get(timeout=20)
+                        except queue.Empty:
+                            self.wfile.write(b": ping\n\n")
+                            self.wfile.flush()
+                            continue
+                        self.wfile.write(_frame(entry))
+                        self.wfile.flush()
+                finally:
+                    try:
+                        activity_subscribers.remove(sub)
+                    except ValueError:
+                        pass
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
     try:
         refresh_snapshot_json()

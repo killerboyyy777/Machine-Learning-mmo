@@ -141,6 +141,22 @@ assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
 # Settled-price panel renamed to plain words.
 assert "Price per completed sale" in html2
 assert "Settled-price history" not in html2
+# Split-lane live feel: SSE stream + shared row helper + start_ts ticker.
+for tok in ("EventSource", "/api/activity/stream", "activityRow",
+            "actMaxSeq", "start_ts", "startTs"):
+    assert tok in html2, f"v2: split-lane token {tok} missing"
+# /OC robustness: guarded scores/servers/cmdClass, seq sort, empty states.
+assert ".score.toFixed" not in html2, "v2: unguarded toFixed survives"
+assert "s.server.players_online" not in html2, "v2: unguarded s.server survives"
+assert "cmd-\" + (cmd" in html2 or 'cmd-" + (cmd' in html2
+assert "b.seq" in html2 and "localeCompare" in html2
+assert "No scores recorded yet." in html2
+# Server lane: seq field, fan-out registry, SSE route, start timestamp.
+import re as _re
+_srv = open(_os.path.join(_os.path.dirname(__file__), "..", "server.py")).read()
+for tok in ('"seq": activity_seq', "activity_subscribers",
+            "text/event-stream", '"start_ts": START_TIME'):
+    assert tok in _srv, f"server: split-lane token {tok} missing"
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
 assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"

@@ -569,7 +569,9 @@ function hpbar(hp, max) {
   return `<span class="hpbar"><i class="${cls}" style="width:${pct}%"></i></span>`;
 }
 
-function cmdClass(cmd) { return "cmd-" + cmd; }
+// Unguarded cmd (/oc round) used to yield class="cmd-undefined" on
+// malformed rows; fall back to the bare prefix (unstyled, never throws).
+function cmdClass(cmd) { return "cmd-" + (cmd || ""); }
 
 function exitEntries(room) {
   const exits = (room && room.exits) || [];
@@ -885,7 +887,7 @@ function renderPerf(players) {
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
       <td>${p.level ?? 1}</td>
-      <td><b>${p.score.toFixed(1)}</b></td>
+      <td><b>${(p.score ?? 0).toFixed(1)}</b></td>
       <td>${p.kills}</td>
       <td>${p.deaths}</td>
       <td>${p.gold}</td>
@@ -896,8 +898,11 @@ function renderPerf(players) {
 }
 
 function renderScores(scores) {
-  setHTML("scores", scores.slice(0, 10).map((s, i) => `
-    <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${s.score.toFixed(1)}</b></td></tr>`).join(""));
+  // Empty state (/oc round: a fresh scores table rendered nothing at all).
+  const top = (scores || []).slice(0, 10);
+  setHTML("scores", top.map((s, i) => `
+    <tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.level ?? 1}</td><td><b>${(s.score ?? 0).toFixed(1)}</b></td></tr>`).join("") ||
+    `<tr><td colspan="4"><span class="empty">No scores recorded yet.</span></td></tr>`);
 }
 
 // Trend charts via vendored uPlot (#205): DPR-clean by construction (the
@@ -974,16 +979,55 @@ function renderHistory(history) {
     (x.top_scores && x.top_scores[0]) ? x.top_scores[0].score : 0), "purple");
 }
 
-function renderActivity(activity) {
-  // Display cap (PERF): the server keeps 100 rows; the newest 80 render.
-  // Nothing a glanceable dashboard needs lives beyond that.
-  setHTML("activity", (activity || []).slice(-80).map(a => `
+// One activity row, shared by the snapshot renderer and the SSE stream
+// handler so both paths produce byte-identical HTML (keeps the setHTML
+// change-guard effective across sources).
+function activityRow(a) {
+  return `
     <div class="row">
       <span class="t">${esc(a.time)}</span>
       <span class="n">${esc(a.name)} ${a.level ? `<span class="dim">(lv${a.level})</span>` : ""}</span>
       <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
         ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
-    </div>`).join(""));
+    </div>`;
+}
+// Newest-80 row strings (oldest first) + high-water seq for the stream
+// cursor. Snapshot ticks rebuild wholesale (resync); stream appends.
+let actRows = [];
+let actMaxSeq = 0;
+function renderActivity(activity) {
+  // Display cap (PERF): the server keeps 100 rows; the newest 80 render.
+  // Nothing a glanceable dashboard needs lives beyond that.
+  // Empty state (/oc round: the live-activity panel stayed blank).
+  const rows = (activity || []).slice(-80);
+  let mx = 0;
+  for (const a of rows) {
+    if ((a.seq ?? 0) > mx) mx = a.seq;
+  }
+  actMaxSeq = mx;
+  actRows = rows.map(activityRow);
+  setHTML("activity", actRows.join("") || `<span class="empty">No activity yet.</span>`);
+}
+
+let actSource = null;
+function actStream() {
+  // Live activity rows via SSE (split-lane): rows arrive as they happen
+  // instead of riding the 2s snapshot poll. The snapshot render stays as
+  // the resync source; EventSource auto-reconnects with Last-Event-ID.
+  if (typeof EventSource === "undefined") return;
+  try {
+    if (actSource) actSource.close();
+    actSource = new EventSource("/api/activity/stream?since=" + actMaxSeq);
+    actSource.onmessage = ev => {
+      let a;
+      try { a = JSON.parse(ev.data); } catch (e) { return; }
+      if (!a || (a.seq ?? 0) <= actMaxSeq) return;
+      actMaxSeq = a.seq;
+      actRows.push(activityRow(a));
+      while (actRows.length > 80) actRows.shift();
+      setHTML("activity", actRows.join(""));
+    };
+  } catch (e) { /* streaming unavailable: snapshot poll still fills */ }
 }
 
 function renderMarket(m) {
@@ -1059,7 +1103,7 @@ function renderAgents(players) {
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
       <td>${p.level ?? 1}</td>
-      <td><b>${p.score.toFixed(1)}</b></td>
+      <td><b>${(p.score ?? 0).toFixed(1)}</b></td>
       <td>${p.kills}</td>
       <td>${p.deaths}</td>
       <td>${p.gold}</td>
@@ -1072,7 +1116,10 @@ function renderAgents(players) {
   for (const p of players) {
     for (const a of (p.recent_actions || [])) feed.push({who: p.name, ...a});
   }
-  feed.sort((x, y) => String(y.time).localeCompare(String(x.time)));
+  // Newest first by monotonic seq; HH:MM:SS strings sort wrong across
+  // midnight (/oc round), so they are only the fallback for old entries.
+  feed.sort((a, b) => ((b.seq ?? -1) - (a.seq ?? -1)) ||
+    String(b.time).localeCompare(String(a.time)));
   setHTML("agentActivity", feed.slice(0, 15).map(a => `
     <div class="row">
       <span class="t">${esc(a.time)}</span>
@@ -1164,12 +1211,13 @@ function renderConfig(s) {
   // Read-only viewer over snapshot-exposed tunables (ports, tax terms).
   // Full editing lands with the config editor (#63).
   const m = s.market || {};
+  const sv = s.server || {};
   const rows = [
-    ["game websocket port", s.server.ws_port ?? "-"],
-    ["GM stream port (loopback-only)", s.server.gm_port ?? "-"],
+    ["game websocket port", sv.ws_port ?? "-"],
+    ["GM stream port (loopback-only)", sv.gm_port ?? "-"],
     ["market tax rate", m.tax_rate ?? "-"],
     ["market tax minimum", m.tax_min ?? "-"],
-    ["server uptime", (s.server.uptime ?? 0) + "s"],
+    ["server uptime", (sv.uptime ?? 0) + "s"],
   ];
   setHTML("configRows", rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join(""));
 }
@@ -1198,7 +1246,7 @@ function renderTracker(players) {
   const acts = p.recent_actions || [];
   setHTML("trackDetail", `
     <div class="tmeta"><b>${esc(p.name)}</b> (lv${p.level ?? 1}) · ${esc(p.room)} ·
-      score <b>${p.score.toFixed(1)}</b> · ${p.hp}/${p.max_hp} HP ${hpbar(p.hp, p.max_hp)} ·
+      score <b>${(p.score ?? 0).toFixed(1)}</b> · ${p.hp}/${p.max_hp} HP ${hpbar(p.hp, p.max_hp)} ·
       ${p.gold} gold · ${acts.length} recent action${acts.length === 1 ? "" : "s"}</div>` +
     (acts.length ? acts.map(a => `
       <div class="row">
@@ -1223,19 +1271,20 @@ function renderOverview(s) {
   // Health cards: derived client-side from fields the snapshot already
   // carries -- no server computation needed (offline-first dashboard).
   const m = s.market || {orders: []};
+  const sv = s.server || {};
   const cards = [
-    ["players", s.server.players_online],
-    ["connections", s.server.connections],
+    ["players", sv.players_online ?? "-"],
+    ["connections", sv.connections ?? "-"],
     ["treasury", (m.treasury ?? 0).toFixed(1)],
     ["open orders", (m.orders || []).length],
     ["lifetime trades", m.trade_count ?? 0],
     ["dungeons", (s.dungeons || []).length],
-    ["uptime", (s.server.uptime ?? 0) + "s"],
+    ["uptime", (sv.uptime ?? 0) + "s"],
   ];
   setHTML("ovCards", cards.map(([l, v]) =>
     `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join(""));
   const pill = $("ovHealth");
-  if (s.server.players_online > 0) {
+  if ((sv.players_online ?? 0) > 0) {
     pill.textContent = "● Healthy";
     pill.style.color = "var(--good)";
   } else {
@@ -1309,10 +1358,15 @@ async function tick() {
     $("dot").classList.remove("stale");
     $("status").textContent = "live";
     $("status").style.color = "";
-    $("uptime").textContent = s.server.uptime + "s";
-    $("online").textContent = s.server.players_online;
-    $("conns").textContent = s.server.connections;
+    // Unguarded s.server (/oc round): a partial snapshot threw here and
+    // skipped the whole render. Header reads tolerate a missing block.
+    const sv = s.server || {};
+    if (sv.start_ts) startTs = sv.start_ts;
+    else $("uptime").textContent = sv.uptime == null ? "-" : sv.uptime + "s";
+    $("online").textContent = sv.players_online ?? "-";
+    $("conns").textContent = sv.connections ?? "-";
     renderAll(s);
+    if (!actSource) actStream();
   } catch (e) {
     $("dot").classList.add("stale");
     $("status").textContent = "no server connection";
@@ -1573,6 +1627,16 @@ if (typeof document.addEventListener === "function") {
     schedulePoll();
   });
 }
+// Client-side uptime ticker (split-lane): derived from the snapshot's
+// start timestamp every 1s with zero traffic, so the display never jumps
+// between 2s polls. Falls back to the snapshot value when the server
+// predates start_ts.
+let startTs = 0;
+setInterval(() => {
+  if (startTs) {
+    $("uptime").textContent = Math.max(0, Math.floor(Date.now() / 1000 - startTs)) + "s";
+  }
+}, 1000);
 tick();
 schedulePoll();
 </script>
