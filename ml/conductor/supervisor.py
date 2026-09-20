@@ -24,11 +24,18 @@ def _env_floor(env):
 class AgentTask:
     """Wraps one agent's episode loop with fault isolation."""
 
-    def __init__(self, agent_id, env, policy_fn, max_steps=2000, step_timeout=None):
+    def __init__(self, agent_id, env, policy_fn, max_steps=2000, step_timeout=None,
+                 learn_hook=None):
         self.agent_id = agent_id
         self.env = env
         self.policy_fn = policy_fn
         self.max_steps = max_steps
+        # Per-step learning hook (#292, slice 5/6): called as
+        # hook(prev_obs, action, reward, next_obs, done) after every env
+        # step; wires the transition into LinearQAgent.update /
+        # TorchDQNAgent.store+learn (dead code from the conductor until
+        # now). Never raises (guarded per call); None disables.
+        self.learn_hook = learn_hook
         # Watchdog (#50): max wall-clock seconds per env.step; a hung
         # step ends the episode instead of wedging the task forever.
         # None disables. Only guards the async env call -- a blocking
@@ -71,6 +78,7 @@ class AgentTask:
                             action = self.policy_fn(obs, self.agent_id, mask)
                     else:
                         action = self.policy_fn(obs, self.agent_id)
+                    prev_obs = obs
                     try:
                         if self.step_timeout is not None:
                             obs, reward, done, info = await asyncio.wait_for(
@@ -84,6 +92,12 @@ class AgentTask:
                         break
                     episode_reward += reward
                     self.steps += 1
+                    if self.learn_hook is not None:
+                        try:
+                            self.learn_hook(prev_obs, action, reward, obs,
+                                            done)
+                        except Exception:
+                            pass
                     if done:
                         break
                 self.episodes += 1
@@ -142,7 +156,7 @@ class Supervisor:
         # fresh envs/policies that reload the copied weights (#228).
         # policy_factory(checkpoint_path, hparams) rebuilds the policy
         # from the loser's checkpoint file; None keeps the stored closure.
-        self._specs = {}  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory)
+        self._specs = {}  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook)
         self._lock = asyncio.Lock()
 
     def _log_death(self, agent_id, episodes, total_reward, error=None):
@@ -172,7 +186,8 @@ class Supervisor:
             pass
 
     async def start_agent(self, agent_id, env_factory, policy_fn, max_steps=2000,
-                          step_timeout=None, policy_factory=None):
+                           step_timeout=None, policy_factory=None,
+                           learn_hook=None):
         """Start an isolated task for one agent.
 
         Returns True when a task is running afterwards, False when the
@@ -201,11 +216,12 @@ class Supervisor:
             except Exception:
                 pass
             at = AgentTask(agent_id, env, policy_fn, max_steps,
-                           step_timeout=step_timeout if step_timeout is not None
-                           else self._step_timeout)
+                            step_timeout=step_timeout if step_timeout is not None
+                            else self._step_timeout,
+                            learn_hook=learn_hook)
             self._tasks[agent_id] = at
             self._specs[agent_id] = (env_factory, policy_fn, max_steps,
-                                     step_timeout, policy_factory)
+                                      step_timeout, policy_factory, learn_hook)
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
             return True
 
@@ -292,17 +308,18 @@ class Supervisor:
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
         await self._shutdown(at)
-        env_factory, policy_fn, max_steps, step_timeout, policy_factory = spec
+        env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook = spec
         if policy_factory is not None:
             try:
                 policy_fn = policy_factory(entry.checkpoint_path,
-                                           hparams or {})
+                                            hparams or {})
             except Exception:
                 policy_fn = spec[1]
         started = await self.start_agent(agent_id, env_factory, policy_fn,
-                                         max_steps=max_steps,
-                                         step_timeout=step_timeout,
-                                         policy_factory=policy_factory)
+                                          max_steps=max_steps,
+                                          step_timeout=step_timeout,
+                                          policy_factory=policy_factory,
+                                          learn_hook=learn_hook)
         if started and self._mixer is not None:
             try:
                 # Shutdown already dropped the id from floor lists, but

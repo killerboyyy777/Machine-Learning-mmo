@@ -838,4 +838,72 @@ for _ in range(200):
 assert 95 <= _dom289 <= 135, _dom289
 print("GOAL_OFFSPRING_OK")
 
+# --- #292 supervisor per-step learn hook (throttled, slice 5/6) ---
+from ml.ml_env import TextMMOEnv as _HookEnv
+from ml.plugins.linear import LinearPlugin as _LinearPlugin
+from ml.plugins.torch_plugin import TorchPlugin as _TorchPlugin
+
+# linear: one update moves zeroed weights, td_error exact (reward 1.0,
+# zeroed next-q) -- previously dead code from the conductor
+_lp = _LinearPlugin()
+_he = _HookEnv("HookLearn")
+_ho1, _ho2 = _he._build_obs(), _he._build_obs()
+_td = _lp.learn(_ho1, 0, 1.0, _ho2, False)
+assert _td == 1.0, _td
+assert any(w != 0.0 for w in _lp._agent.weights[0])
+# save/load delegate to the agent checkpoint
+_lp.save(os.path.join(tmpdir, "hook_learn.json"))
+assert _lp.load(os.path.join(tmpdir, "hook_learn.json")) is True
+print("LEARN_LINEAR_OK")
+
+# torch throttle (stub agent: no torch in this env): every step stores,
+# learn() fires every K=4 shared steps only
+_tp = _TorchPlugin.__new__(_TorchPlugin)
+_tp.learn_every = 4
+
+
+class _StubDQN:
+    def __init__(self):
+        self.stored = 0
+        self.learned = 0
+
+    def store(self, t):
+        self.stored += 1
+
+    def learn(self):
+        self.learned += 1
+        return {}
+
+
+_tp._agent = _StubDQN()
+_TorchPlugin._shared_learn_steps = 0
+try:
+    for _i in range(7):
+        _tp.learn(_ho1, 0, 1.0, _ho2, False)
+    assert _tp._agent.stored == 7 and _tp._agent.learned == 1
+finally:
+    _TorchPlugin._shared_learn_steps = 0
+print("LEARN_TORCH_THROTTLE_OK")
+
+# supervisor calls the hook per step as (prev_obs, action, reward,
+# next_obs, done); start_agent carries it into specs for PBT restarts
+_hook_calls = []
+
+
+async def _hook_run():
+    _r = Registry(os.path.join(tmpdir, "hooklearn"), max_agents=5)
+    _sup = Supervisor(_r)
+    _ok = await _sup.start_agent(
+        "hl1", lambda aid: _FakeEnv(), lambda obs, aid: 0,
+        learn_hook=lambda p, a, r, n, d: _hook_calls.append((p, a, r, n, d)))
+    assert _ok and _sup._specs["hl1"][5] is not None
+    await asyncio.sleep(0.2)
+    await _sup.stop_all()
+asyncio.run(_hook_run())
+assert _hook_calls, "hook never fired"
+for _p, _a, _r, _n, _d in _hook_calls:
+    assert _p == {"obs": 0} and _a == 0 and _r == 1.0
+    assert _n == {"obs": 1} and _d is True
+print("LEARN_HOOK_OK")
+
 print("ALL_CONDUCTOR_OK")

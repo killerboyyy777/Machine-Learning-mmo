@@ -3,6 +3,15 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Supervisor per-step learn hook (#292, slice 5/6): the supervisor calls
+  a per-step hook as (prev_obs, action, reward, next_obs, done), wiring
+  transitions into the previously dead-from-conductor LinearQAgent.update
+  / TorchDQNAgent.store+learn paths. `AgentPlugin` gains learn/save/load
+  defaults plus `goal_dim` (None = ignores-goals, slice 6 fills it in);
+  torch learn() is throttled to every K=4 shared steps across the slot's
+  agents (minibatch gating still applies); the hook rides the restart
+  specs so PBT relaunches keep learning. Covered by LEARN_LINEAR_OK
+  (weights actually move), LEARN_TORCH_THROTTLE_OK, and LEARN_HOOK_OK.
 - Stable role_I character names (#291, slice 2/6): registry entries carry
   a persisted `character` (`role_0..role_{cap-1}`, freed on death and
   reused by the next spawn); the conductor logs envs in as the character

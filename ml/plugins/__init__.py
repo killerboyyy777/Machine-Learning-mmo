@@ -91,6 +91,25 @@ class AgentPlugin:
     def on_episode_end(self, info):
         """Optional hook after each episode (logging, schedules)."""
 
+    goal_dim = None  # goal-vector width this policy consumes (None =
+    # ignores-goals; slice 6/6 wires goal-conditioned policies in).
+
+    def learn(self, prev_obs, action, reward, next_obs, done):
+        """Per-step learning hook (#292, slice 5/6). Called by the
+        supervisor after every env step as
+        ``hook(prev_obs, action, reward, next_obs, done)``; returns a
+        loss-ish float or None. Base default: no learning (scripted
+        policies). Exceptions never propagate (supervisor guards)."""
+        return None
+
+    def save(self, path):
+        """Persist learned weights. Base default: nothing to save."""
+        return False
+
+    def load(self, path):
+        """Reload learned weights. Base default: nothing to load."""
+        return False
+
     def act(self, obs, agent_id, mask=None):
         """Learned-style policy: return an action index."""
         raise NotImplementedError
