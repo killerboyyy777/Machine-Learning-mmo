@@ -159,13 +159,17 @@
   .legend { font-size: var(--fs-xs); color: var(--dim); font-weight: normal; text-transform: none;
             letter-spacing: 0; margin-left: 8px; }
   /* v2 trend charts (uPlot mounts its canvas here; explicit height, fluid width).
-     overflow:hidden + block canvas contains the chart in its panel: an
-     inline canvas leaves a baseline gap that bled into the panel below,
-     and a stale pixel width (resized while its tab was hidden) can no
-     longer paint outside the box. */
+     uPlot's layers (.u-under, canvas, .u-over) are absolutely positioned
+     by its own stylesheet -- which we don't ship -- so without the rules
+     below they stack vertically to ~240px: unclipped that was the round-2
+     bleed into the panel below, and clipping it (overflow:hidden) hid the
+     pushed-down canvas entirely (the round-3 blank-chart regression).
+     Absolute positioning restores the intended 80px overlay; the clip and
+     max-width stay as belt-and-braces. */
   .trend { height: 80px; overflow: hidden; }
-  .trend .uplot { width: 100%; }
-  .trend canvas { display: block; max-width: 100%; }
+  .trend .uplot { width: 100%; position: relative; }
+  .trend .u-under, .trend .u-over { position: absolute; left: 0; top: 0; }
+  .trend canvas { position: absolute; left: 0; top: 0; display: block; max-width: 100%; }
 </style>
 </head>
 <body>
@@ -214,7 +218,7 @@
   <div class="grid">
     <div>
       <div class="panel">
-        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail</span></h2>
+        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail · solid tile = indoor, dashed = outdoor</span></h2>
         <div class="world-map"><canvas id="worldMapCanvas" width="1200" height="480" style="width:100%;height:480px;cursor:grab"></canvas></div>
         <div id="roomDrawer" style="display:none"></div>
         <div id="rooms" class="rooms"></div>
@@ -283,8 +287,8 @@
     <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
   </div>
   <div class="panel">
-    <h2>Settled-price history</h2>
-    <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Trade price per fill (from market.history)</div><div class="trend" id="m-priceHist"></div></div>
+    <h2>Price per completed sale</h2>
+    <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">One point per sale, oldest to newest — empty until the first trade</div><div class="trend" id="m-priceHist"></div></div>
   </div>
   <div class="panel">
     <h2>Buy &amp; sell history <span class="legend"><span class="buy">■</span> buyer <span class="sell">■</span> seller</span></h2>
@@ -352,15 +356,18 @@
   </div>
 </div>
 
+<!-- Round 3 order: live flow first, reference material after, recipe
+     browser last. -->
 <div id="view-crafting" class="tabview">
   <div class="panel">
-    <h2>Recipe browser <span class="legend">all craftable recipes</span></h2>
-    <input id="recipeSearch" placeholder="filter by result or ingredient…" style="width:100%;margin-bottom:8px">
-    <div class="tscroll"><table>
-      <thead><tr><th>result</th><th>ingredients</th><th>tier</th><th>category</th></tr></thead>
-      <tbody id="recipeRows"></tbody>
-    </table></div>
-    <p class="empty" id="noRecipes" style="display:none">No recipes match.</p>
+    <h2>Recent flow</h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="flow-gather">-</div><div class="l">gather</div></div>
+      <div class="stat"><div class="v" id="flow-craft">-</div><div class="l">craft</div></div>
+      <div class="stat"><div class="v" id="flow-take">-</div><div class="l">take</div></div>
+      <div class="stat"><div class="v" id="flow-buy">-</div><div class="l">buy</div></div>
+      <div class="stat"><div class="v" id="flow-sell">-</div><div class="l">sell</div></div>
+    </div>
   </div>
   <div class="panel">
     <h2>Material on the ground</h2>
@@ -379,14 +386,13 @@
     <p class="empty" id="noMatOrders" style="display:none">No open orders.</p>
   </div>
   <div class="panel">
-    <h2>Recent flow</h2>
-    <div class="statrow">
-      <div class="stat"><div class="v" id="flow-gather">-</div><div class="l">gather</div></div>
-      <div class="stat"><div class="v" id="flow-craft">-</div><div class="l">craft</div></div>
-      <div class="stat"><div class="v" id="flow-take">-</div><div class="l">take</div></div>
-      <div class="stat"><div class="v" id="flow-buy">-</div><div class="l">buy</div></div>
-      <div class="stat"><div class="v" id="flow-sell">-</div><div class="l">sell</div></div>
-    </div>
+    <h2>Recipe browser <span class="legend">all craftable recipes</span></h2>
+    <input id="recipeSearch" placeholder="filter by result or ingredient…" style="width:100%;margin-bottom:8px">
+    <div class="tscroll"><table>
+      <thead><tr><th>result</th><th>ingredients</th><th>tier</th><th>category</th></tr></thead>
+      <tbody id="recipeRows"></tbody>
+    </table></div>
+    <p class="empty" id="noRecipes" style="display:none">No recipes match.</p>
   </div>
 </div>
 
@@ -594,7 +600,7 @@ function cssVar(name, fallback) {
   return fallback;
 }
 
-function mapLayout(rooms) {
+function mapLayout(rooms, fitW) {
   const byId = Object.fromEntries(rooms.map(r => [r.id, r]));
   // Direction-aware grid embedding: walking north moves the node UP on
   // screen (and south down, east right, west left), so tile adjacency
@@ -651,13 +657,17 @@ function mapLayout(rooms) {
   }
   const marginX = 85, marginY = 35;
   const cols = Math.max(1, maxX - minX + 1), rowsN = Math.max(1, maxY - minY + 1);
-  // Extent-aware cells (owner follow-up: uniform shrink-to-fit cells came
-  // out narrower than a tile, so rooms collided). Each dimension is
-  // lower-bounded by tile size + gap; the world grows instead and the map
-  // region scrolls. Tiles can never overlap at any width. Compass ordering
-  // (and the GEO proof) is untouched: only cell extents changed.
-  const cellW = Math.max(TILE_W + TILE_GAP, (MAP_W - marginX * 2) / cols);
+  // Fit-width cells (owner round 3: the anti-collision growth left a
+  // permanent inner scrollbar). The world fits the available width
+  // exactly; tiles scale DOWN when cells go narrow, so tiles can never
+  // overlap and no scrollbar appears at normal widths. Only absurdly
+  // narrow containers fall back to scrolling (36px/cell floor). Compass
+  // ordering (and the GEO proof) is untouched: only extents changed.
+  const availW = Math.max(360, fitW || MAP_W);
+  const cellW = Math.max(36, (availW - marginX * 2) / cols);
   const cellH = Math.max(TILE_H + TILE_GAP, (MAP_H - marginY * 2) / rowsN);
+  const tileW = Math.max(24, Math.min(TILE_W, cellW - 12));
+  const tileH = Math.max(12, Math.min(TILE_H, cellH - 16, tileW * TILE_H / TILE_W));
   const worldW = Math.ceil(marginX * 2 + cols * cellW);
   const worldH = Math.ceil(marginY * 2 + rowsN * cellH);
   const positions = {};
@@ -679,7 +689,7 @@ function mapLayout(rooms) {
       }
     }
   }
-  return {byId, positions, links, worldW, worldH};
+  return {byId, positions, links, worldW, worldH, tileW, tileH};
 }
 
 function renderRoomDrawer(byId) {
@@ -718,10 +728,13 @@ function renderWorldMap(rooms) {
   // 32 nodes redrawn per tick is trivial, but pointless when idle; skip
   // when neither the world nor the view changed (see #131 if the map
   // ever grows 10x and even dirty-checking gets expensive).
-  const key = JSON.stringify([rooms, mapView.x, mapView.y, mapView.k]);
+  // Fit width comes from the live container (round 3: no permanent inner
+  // scrollbar); smoke-harness safe via the MAP_W fallback.
+  const fitW = (canvas.parentElement && canvas.parentElement.clientWidth) || MAP_W;
+  const key = JSON.stringify([rooms, mapView.x, mapView.y, mapView.k, fitW]);
   if (key === lastMapKey) return;
   lastMapKey = key;
-  const {byId, positions, links, worldW, worldH} = mapLayout(rooms);
+  const {byId, positions, links, worldW, worldH, tileW, tileH} = mapLayout(rooms, fitW);
   // DPR-aware backing store (#205): draw in CSS pixels regardless of display
   // density, so the map stays sharp on hidpi instead of stretching 1200x480.
   const dpr = window.devicePixelRatio || 1;
@@ -762,22 +775,34 @@ function renderWorldMap(rooms) {
   ctx.stroke();
   for (const room of rooms) {
     const p = positions[room.id];
-    const px = X(p.x), py = Y(p.y), w = Math.max(30, TILE_W * k), h = Math.max(14, TILE_H * k);
+    const px = X(p.x), py = Y(p.y);
+    const w = Math.max(12, tileW * k), h = Math.max(8, tileH * k);
     const occupants = (room.players || []).length;
-    ctx.fillStyle = tile;
-    ctx.strokeStyle = room.id === "town_square" ? acc : edge;
+    // Indoor/outdoor (round 3, map-only): outdoor tiles melt into the map
+    // background with a dashed dim edge; indoor tiles keep the solid panel
+    // look. Missing flag (partial snapshots) keeps the old solid style.
+    const outdoor = room.shelter === false;
+    const home = room.id === "town_square";
+    ctx.fillStyle = outdoor ? bg : tile;
+    ctx.strokeStyle = home ? acc : (outdoor ? sub : edge);
+    ctx.setLineDash(!home && outdoor ? [5, 4] : []);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
     ctx.fill();
     ctx.stroke();
-    if (k > 0.4) {
+    // Text only when the drawn tile can hold it (narrow fit-width tiles
+    // stay legible instead of overflowing their rooms).
+    if (w >= 70) {
       ctx.fillStyle = ink;
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
       ctx.fillText(room.name, px, py - 2);
+    }
+    if (w >= 44) {
       ctx.fillStyle = sub;
       ctx.font = "9px monospace";
+      ctx.textAlign = "center";
       ctx.fillText(occupants ? `${occupants} player${occupants === 1 ? "" : "s"}` : room.id, px, py + 11);
     }
   }
@@ -817,8 +842,9 @@ function renderWorldMap(rooms) {
       const r = canvas.getBoundingClientRect();
       const mx = (e.clientX - r.left) * (canvas.clientWidth / r.width);
       const my = (e.clientY - r.top) * (canvas.clientHeight / r.height);
-      const {positions} = mapLayout(lastState.rooms || []);
-      let best = null, bestD = 60 / mapView.k;
+      const {positions, tileW} = mapLayout(lastState.rooms || [],
+        (canvas.parentElement && canvas.parentElement.clientWidth) || MAP_W);
+      let best = null, bestD = (tileW / 2 + 10) / mapView.k;
       for (const [id, p] of Object.entries(positions)) {
         const d = Math.hypot((p.x + mapView.x) * mapView.k - mx,
                              (p.y + mapView.y) * mapView.k - my);
@@ -980,7 +1006,7 @@ function renderMarket(m) {
         <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}</td>
         <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join(""));
   $("noTrades").style.display = history.length ? "none" : "";
-  // Settled-price history as a uPlot area chart (new in 2/4: v1 shows the
+  // Price-per-sale chart as a uPlot area (new in 2/4: v1 shows the
   // table only; the series already rides in the snapshot).
   trendChart("m-priceHist", history.map(h => h.price), "amber");
 }

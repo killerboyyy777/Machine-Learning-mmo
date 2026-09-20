@@ -106,9 +106,10 @@ assert "tabular-nums" in html2 and "min-height: 120px" in html2
 # was #gmlog's #0b0f13; the map canvas fill is token-read in JS now).
 assert "background: #0b0f13" not in html2
 assert 'background: var(--panel2)' in html2
-# Tiles can never overlap: cells lower-bounded by tile size + gap, and the
-# layout returns world dims the canvas sizes itself from.
-assert "TILE_W + TILE_GAP" in html2 and "worldW, worldH" in html2
+# Tiles can never overlap: the world fits its container width with tiles
+# scaled down as cells narrow (round 3), and the layout returns world
+# dims the canvas sizes itself from.
+assert "worldW, worldH" in html2 and "tileW, tileH" in html2
 # Charts: empty states render axes (no values.length early-out), themed
 # palette keys at every call site, refit helper + tab-switch hook.
 assert "!values.length" not in html2 and "history.length < 2" not in html2
@@ -123,6 +124,23 @@ for tok in (".grid > * { min-width: 0; }", ".tscroll.cap", ".trend canvas"):
 # Quest turn-in feed + recipe browser widgets present.
 for wid in ("questFeed", "recipeSearch", "recipeRows", "noRecipes"):
     assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+# Round 3: uPlot layers are absolutely positioned (the stacked-layers +
+# overflow clip blanked every chart); the world fits its container with
+# scaled tiles instead of growing+scrolling.
+assert ".trend .u-under" in html2 and "position: absolute" in html2
+assert "availW" in html2 and "tileW, tileH" in html2
+assert "TILE_W + TILE_GAP" not in html2, "v2: map still grows+scrolls"
+# Crafting order: flow first, recipe browser last.
+assert html2.index("Recent flow") < html2.index("Recipe browser")
+# Indoor/outdoor legend + full shelter coverage in world.json.
+assert "solid tile = indoor, dashed = outdoor" in html2
+import json as _json, os as _os
+_world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
+assert len(_world["rooms"]) == 32
+assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
+# Settled-price panel renamed to plain words.
+assert "Price per completed sale" in html2
+assert "Settled-price history" not in html2
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
 assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"

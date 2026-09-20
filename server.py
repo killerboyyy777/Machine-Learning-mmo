@@ -3414,7 +3414,7 @@ def world_snapshot():
     rooms = []
     for rid, r in ROOMS.items():
         rooms.append({
-            "id": rid, "name": r["name"],
+            "id": rid, "name": r["name"], "shelter": bool(r.get("shelter", False)),
             "exits": [{"dir": d, "to": t, "to_name": ROOMS.get(t, {}).get("name", t)} for d, t in r.get("exits", {}).items()],
             "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
             "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
