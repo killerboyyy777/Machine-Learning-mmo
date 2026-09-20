@@ -82,10 +82,30 @@ async def _conductor_run(tmpdir):
     print("CONDUCTOR_RUN_OK")
 
 
+async def _conductor_resume(tmpdir):
+    d = os.path.join(tmpdir, "resume")
+    c1 = Conductor(d, max_agents=3)
+    aid = c1.churn._spawn_one()
+    goal = dict(c1.registry.get(aid).goal or {})
+    c1.registry.save()
+    # resume=True (default): the next Conductor on the same dir picks up
+    # the previous population with goals and parents intact.
+    c2 = Conductor(d, max_agents=3)
+    got = c2.registry.get(aid)
+    assert got is not None and got.goal == goal
+    assert got.parent_id == c1.registry.get(aid).parent_id
+    assert c2.registry.load_lineage(aid)["goal"] == goal
+    # resume=False: guaranteed-fresh population even when a save exists.
+    c3 = Conductor(d, max_agents=3, resume=False)
+    assert c3.registry.snapshot()["total"] == 0
+    print("CONDUCTOR_RESUME_OK")
+
+
 async def main():
     tmpdir = tempfile.mkdtemp()
     await _supervisor_flow(tmpdir)
     await _conductor_run(tmpdir)
+    await _conductor_resume(tmpdir)
 
 
 asyncio.run(main())

@@ -8,6 +8,12 @@ All notable changes to the text MMO engine are recorded here.
   reused by the next spawn); the conductor logs envs in as the character
   name instead of the random incarnation id, so server-side scores and XP
   survive churn deaths. Incarnation ids stay collision-proof (#277).
+- Lineage checkpoints + registry resume (#293): each spawn records its
+  parent (mutated-from agent, None for fresh samples) and writes
+  `lineages/<id>/{goal.json, parent_id}` plus a copy of the current
+  checkpoint; `registry.json` saves atomically (tmp+replace) and each save
+  refreshes the lineage ckpts (latest-only) while pruning dirs for removed
+  ids; `Conductor(resume=True)` (default) reloads the previous population.
 - Live treasury assert accounts pre-reward heals (#285): the `gm_reward`
   check expected exactly 420.0 but a hurt arrival makes the pre-dungeon
   `gm_heal` debit first (seen as 418.0/416.0 in CI); the assert now

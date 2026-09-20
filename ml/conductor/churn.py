@@ -72,7 +72,7 @@ class ChurnManager:
         self.top_up_per_tick = max(0, top_up_per_tick)
         self._next_arrival = time.time()
         self._lifetimes = {}  # agent_id -> episodes_remaining
-        self._recent_goals = deque(maxlen=50)  # parent pool for offspring
+        self._recent_goals = deque(maxlen=50)  # (id, goal) parent pool
 
     def tick(self, dt):
         """Advance the Poisson arrival clock, then top up toward cap.
@@ -137,12 +137,14 @@ class ChurnManager:
     def _sample_goal(self):
         """Fresh Dirichlet goal, or a mutation of a recent one (offspring).
 
-        The in-memory pool keeps this phase free of lineage files; Phase 2
-        persists parentage per lineage.
+        Returns (goal, parent_id): parent_id names the mutated agent, or
+        None for fresh samples. The pool holds (agent_id, goal) pairs so
+        parentage survives to the lineage record (#293, slice 4/6).
         """
         if self._recent_goals and random.random() < OFFSPRING_FRACTION:
-            return mutate_goal(random.choice(self._recent_goals))
-        return sample_goal()
+            parent_id, parent_goal = random.choice(self._recent_goals)
+            return mutate_goal(parent_goal), parent_id
+        return sample_goal(), None
 
     def _spawn_one(self, max_attempts=100):
         """Spawn a single agent with a random lifetime and goal weights.
@@ -162,15 +164,21 @@ class ChurnManager:
         else:
             raise RuntimeError("could not mint a unique agent id")
         agent_type = random.choice(["linear", "torch"])
-        goal = self._sample_goal()
+        # Tuple unpack (#293 changed the shape: (goal, parent_id)).
+        goal, parent_id = self._sample_goal()
         # Stable role name (#291, slice 2/6): the server-side character
         # for this incarnation. Freed by deaths (alloc skips live
         # holders), so respawns continue the same character. None when
         # the pool is full -- the conductor then logs in as agent_id.
         entry = self.registry.register(agent_id, agent_type, goal=goal,
-                                        character=self.registry.alloc_character())
+                                       character=self.registry.alloc_character(),
+                                       parent_id=parent_id)
+        # Lineage files at spawn (#293): goal.json + parent now; the ckpt
+        # copy lands on the next registry.save() once training has written
+        # a checkpoint file.
+        self.registry.save_lineage(agent_id)
         self._lifetimes[agent_id] = geometric_lifetime(self.mean_lifetime_episodes)
-        self._recent_goals.append(goal)
+        self._recent_goals.append((agent_id, goal))
         return agent_id
 
     async def wave_fill(self, target_count, wave_size=10, wave_delay=5.0):

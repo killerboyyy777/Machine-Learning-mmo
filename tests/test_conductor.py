@@ -59,6 +59,52 @@ assert reg2.get("a1").total_reward == 30.0
 assert reg2.get("a1").mean_reward == 15.0
 print("REGISTRY_OK")
 
+# --- #293 lineage checkpoints + atomic round-trip + resume ---
+import json as _json3
+import ml.conductor.churn as _churn
+from unittest import mock as _mock
+regr = Registry(os.path.join(tmpdir, "lineage"), max_agents=5)
+cml = ChurnManager(regr, arrivals_per_minute=0)
+cml._next_arrival = float("inf")
+# Seed one parent, then force the offspring branch for the next spawn.
+pgoal = {"w_score": 1.0}
+regr.register("p0", "linear", goal=pgoal)
+cml._recent_goals.append(("p0", pgoal))
+with _mock.patch.object(_churn.random, "random", return_value=0.0):
+    kid = cml._spawn_one()
+kentry = regr.get(kid)
+assert kentry.parent_id == "p0"  # parentage recorded, not just the weights
+lin = regr.load_lineage(kid)
+assert lin["parent_id"] == "p0"
+assert lin["goal"] == kentry.goal
+assert lin["ckpt"] is None  # fresh spawn: no checkpoint file yet
+# Simulate training writing weights, then a save: the lineage ckpt
+# snapshot follows ("weights change" is visible across saves).
+with open(kentry.checkpoint_path, "wb") as f:
+    f.write(b"v1")
+regr.save()
+assert open(regr.load_lineage(kid)["ckpt"], "rb").read() == b"v1"
+with open(kentry.checkpoint_path, "wb") as f:
+    f.write(b"v2")
+regr.save()
+assert open(regr.load_lineage(kid)["ckpt"], "rb").read() == b"v2"
+# Atomic write: no .tmp litter, registry.json always parses.
+assert not os.path.exists(os.path.join(tmpdir, "lineage", "registry.json.tmp"))
+with open(os.path.join(tmpdir, "lineage", "registry.json")) as f:
+    _json3.load(f)
+# Resume: a fresh Registry on the same dir restores entries, goals,
+# and parents (Conductor(resume=True) leans on exactly this).
+regr2 = Registry(os.path.join(tmpdir, "lineage"), max_agents=5)
+regr2.load()
+assert regr2.get(kid).parent_id == "p0"
+assert regr2.get(kid).goal == kentry.goal
+assert regr2.get("p0") is not None
+# Disk guard: removing an entry prunes its lineage dir on next save.
+regr.remove("p0")
+regr.save()
+assert regr.load_lineage("p0") is None
+print("LINEAGE_OK")
+
 # --- Churn helpers ---
 intervals = [poisson_interval(60.0) for _ in range(100)]
 assert all(i >= 0 for i in intervals)
