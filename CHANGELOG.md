@@ -8,6 +8,10 @@ All notable changes to the text MMO engine are recorded here.
   reused by the next spawn); the conductor logs envs in as the character
   name instead of the random incarnation id, so server-side scores and XP
   survive churn deaths. Incarnation ids stay collision-proof (#277).
+- Spawn-goal distribution + offspring proof (#289): Dirichlet sampler
+  pinned uniform over the simplex (per-axis mean 1/7 over 5000 draws) and
+  the parent-mutation path pinned (mutants keep the parent's dominant
+  axis; production OFFSPRING_FRACTION yields ~half derived spawns).
 - Goal-weighted PBT fitness (#288): `PBTManager.report` accepts a per-step
   reward vector and, when the registry entry carries goal weights, stores
   the goal dot product as fitness -- so selection ranks members by goal
