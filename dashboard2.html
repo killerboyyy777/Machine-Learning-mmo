@@ -89,6 +89,7 @@
   .cmd-market_post { color: #ffb454; } .cmd-market_buy { color: #79c0ff; }
   .cmd-party_invite, .cmd-party_accept { color: #d2a8ff; }
   .empty { color: var(--dim); font-style: italic; }
+  .dim { color: var(--dim); }
   .statrow { display: flex; gap: 24px; flex-wrap: wrap; }
   .stat { min-width: 110px; }
   .stat .v { font-size: var(--fs-xl); font-weight: bold; }
@@ -263,29 +264,76 @@
 
 <div id="view-agents" class="tabview">
   <div class="panel">
-    <h2>Agents</h2>
-    <p class="empty">Agent pool, training metrics, and bot start/stop land here in revamp 3/4 (#209).</p>
+    <h2>Live roster</h2>
+    <table>
+      <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
+             <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
+             <th>room</th><th>last action</th></tr></thead>
+      <tbody id="agents"></tbody>
+    </table>
+    <p class="empty" id="noAgents" style="display:none">No online players.</p>
+  </div>
+  <div class="panel">
+    <h2>Recent agent actions</h2>
+    <div id="agentActivity"></div>
   </div>
 </div>
 
 <div id="view-quests" class="tabview">
   <div class="panel">
     <h2>Quests</h2>
-    <p class="empty">Quest catalog, active counts, and turn-in rates land here in revamp 3/4 (#209).</p>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="q-active">-</div><div class="l">active quests</div></div>
+      <div class="stat"><div class="v" id="q-turnins">-</div><div class="l">turn-ins last min</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Catalog</h2>
+    <table>
+      <thead><tr><th>quest</th><th>giver</th><th>room</th><th>reward</th>
+             <th>active</th><th>turn-ins</th></tr></thead>
+      <tbody id="questCatalog"></tbody>
+    </table>
   </div>
 </div>
 
 <div id="view-crafting" class="tabview">
   <div class="panel">
-    <h2>Crafting</h2>
-    <p class="empty">Recipe tree, profitability, and supply panels land here in revamp 3/4 (#209).</p>
+    <h2>Material on the ground</h2>
+    <table>
+      <thead><tr><th>item</th><th>units</th><th>rooms</th></tr></thead>
+      <tbody id="matSupply"></tbody>
+    </table>
+    <p class="empty" id="noSupply" style="display:none">No loose materials.</p>
+  </div>
+  <div class="panel">
+    <h2>Listed supply</h2>
+    <table>
+      <thead><tr><th>item</th><th>listings</th><th>min price</th></tr></thead>
+      <tbody id="matOrders"></tbody>
+    </table>
+    <p class="empty" id="noMatOrders" style="display:none">No open orders.</p>
+  </div>
+  <div class="panel">
+    <h2>Recent flow</h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="flow-gather">-</div><div class="l">gather</div></div>
+      <div class="stat"><div class="v" id="flow-craft">-</div><div class="l">craft</div></div>
+      <div class="stat"><div class="v" id="flow-take">-</div><div class="l">take</div></div>
+      <div class="stat"><div class="v" id="flow-buy">-</div><div class="l">buy</div></div>
+      <div class="stat"><div class="v" id="flow-sell">-</div><div class="l">sell</div></div>
+    </div>
   </div>
 </div>
 
 <div id="view-config" class="tabview">
   <div class="panel">
-    <h2>Config</h2>
-    <p class="empty">Tunable constants with tooltips land here with the config editor (#63).</p>
+    <h2>Config (read-only)</h2>
+    <p class="empty">Values below are read from the live snapshot. Full editing lands with the config editor (#63).</p>
+    <table>
+      <thead><tr><th>key</th><th>value</th></tr></thead>
+      <tbody id="configRows"></tbody>
+    </table>
   </div>
 </div>
 
@@ -789,6 +837,98 @@ function renderDungeons(dungeons) {
     </div>`).join("");
 }
 
+function renderAgents(players) {
+  $("agents").innerHTML = players.map((p, i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td>${esc(p.name)}</td>
+      <td>${p.level ?? 1}</td>
+      <td><b>${p.score.toFixed(1)}</b></td>
+      <td>${p.kills}</td>
+      <td>${p.deaths}</td>
+      <td>${p.gold}</td>
+      <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
+      <td>${esc(p.room)}</td>
+      <td>${esc(p.last_action || "-")}</td>
+    </tr>`).join("");
+  $("noAgents").style.display = players.length ? "none" : "";
+  const feed = [];
+  for (const p of players) {
+    for (const a of (p.recent_actions || [])) feed.push({who: p.name, ...a});
+  }
+  feed.sort((x, y) => String(y.time).localeCompare(String(x.time)));
+  $("agentActivity").innerHTML = feed.slice(0, 15).map(a => `
+    <div class="row">
+      <span class="t">${esc(a.time)}</span>
+      <span class="n">${esc(a.who)}</span>
+      <span class="c"><span class="cmd ${cmdClass(a.cmd)}">${esc(a.cmd)}</span>
+        ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
+    </div>`).join("") || `<span class="empty">No tracked actions yet.</span>`;
+}
+
+function renderQuests(q) {
+  const qs = q || {};
+  const active = qs.active || {}, completions = qs.completions || {};
+  $("q-active").textContent = Object.values(active).reduce((a, b) => a + (b || 0), 0);
+  $("q-turnins").textContent = qs.turnins_last_min ?? 0;
+  $("questCatalog").innerHTML = (qs.catalog || []).map(c => `
+    <tr><td><b>${esc(c.id)}</b><br><span class="dim">${esc(c.brief || "")}</span></td>
+        <td>${esc(c.giver_name || "")}</td><td>${esc(c.room || "")}</td>
+        <td>${c.reward_xp ?? 0} XP + ${c.reward_gold ?? 0}g</td>
+        <td>${active[c.id] ?? 0}</td><td>${completions[c.id] ?? 0}</td></tr>`).join("");
+}
+
+function renderCrafting(rooms, market, activity) {
+  // Supply: ground loot aggregated by item across rooms; listed supply
+  // aggregated from open orders. Demand: recent command counts. All
+  // series already ride in the snapshot; nothing new is fetched.
+  const supply = {}, roomsOf = {};
+  for (const r of rooms || []) {
+    for (const it of (r.items || [])) {
+      supply[it] = (supply[it] || 0) + 1;
+      (roomsOf[it] ||= new Set()).add(r.name);
+    }
+  }
+  const srows = Object.entries(supply).sort((a, b) => b[1] - a[1]).slice(0, 15);
+  $("matSupply").innerHTML = srows.map(([it, n]) => `
+    <tr><td>${esc(it)}</td><td>${n}</td><td>${esc([...roomsOf[it]].join(", "))}</td></tr>`).join("");
+  $("noSupply").style.display = srows.length ? "none" : "";
+  const byItem = {};
+  for (const o of ((market || {}).orders || [])) {
+    const b = (byItem[o.item] ||= {n: 0, min: Infinity});
+    b.n++;
+    if (o.price < b.min) b.min = o.price;
+  }
+  const orows = Object.entries(byItem).sort((a, b) => b[1].n - a[1].n);
+  $("matOrders").innerHTML = orows.map(([it, b]) => `
+    <tr><td>${esc(it)}</td><td>${b.n}</td><td>${b.min}</td></tr>`).join("");
+  $("noMatOrders").style.display = orows.length ? "none" : "";
+  const flow = {gather: 0, craft: 0, take: 0, buy: 0, sell: 0};
+  for (const a of activity || []) {
+    const c = (a.cmd || "").toLowerCase();
+    if (c === "gather") flow.gather++;
+    else if (c === "craft") flow.craft++;
+    else if (c === "take") flow.take++;
+    else if (c === "buy" || c === "market_buy") flow.buy++;
+    else if (c === "sell" || c === "market_post") flow.sell++;
+  }
+  for (const [k, v] of Object.entries(flow)) $("flow-" + k).textContent = v;
+}
+
+function renderConfig(s) {
+  // Read-only viewer over snapshot-exposed tunables (ports, tax terms).
+  // Full editing lands with the config editor (#63).
+  const m = s.market || {};
+  const rows = [
+    ["game websocket port", s.server.ws_port ?? "-"],
+    ["GM stream port (loopback-only)", s.server.gm_port ?? "-"],
+    ["market tax rate", m.tax_rate ?? "-"],
+    ["market tax minimum", m.tax_min ?? "-"],
+    ["server uptime", (s.server.uptime ?? 0) + "s"],
+  ];
+  $("configRows").innerHTML = rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join("");
+}
+
 let trackedName = null;
 let trackedNamesKey = "";
 
@@ -889,7 +1029,10 @@ const TAB_SECTIONS = {
     ["bosses", s => renderBosses(s.bosses || [])],
     ["dungeons", s => renderDungeons(s.dungeons || [])],
   ],
-  agents: [], quests: [], crafting: [], config: [],
+  agents: [["agents", s => renderAgents(s.players || [])]],
+  quests: [["quests", s => renderQuests(s.quests || {})]],
+  crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [])]],
+  config: [["config", s => renderConfig(s)]],
   gm: [["gm catalog", s => populateDatalists(s.catalog || {})]],
 };
 

@@ -79,13 +79,19 @@ assert '<script src="/uplot.min.js">' in html2, "v2: uplot script tag missing"
 # Design tokens: spacing/type scales + font + radius on top of legacy vars.
 for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
     assert tok in html2, f"v2: token {tok} missing"
-# Market/Dungeons/GM are functional since 2/4; Agents/Quests/Crafting
-# (3/4) and Config (#63) remain placeholders.
+# Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are
+# functional; only Config still points at its follow-up (#63).
 assert "revamp 2/4 (#206)" not in html2, "v2: market/dungeon/gm still placeholder"
-assert "revamp 3/4 (#209)" in html2
+assert "revamp 3/4 (#209)" not in html2, "v2: agents/quests/crafting still placeholder"
+assert "(#63)" in html2, "v2: config editor pointer missing"
 for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
-             "gm-action", "gm-players", "gm-rooms"):
+             "gm-action", "gm-players", "gm-rooms",
+             "agents", "noAgents", "agentActivity",
+             "q-active", "q-turnins", "questCatalog",
+             "matSupply", "noSupply", "matOrders", "noMatOrders",
+             "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
+             "configRows"):
     assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
