@@ -23,6 +23,14 @@
     --font: ui-monospace, "Cascadia Mono", Consolas, monospace;
     --r-sm: 6px; --r-md: 8px;
   }
+  /* Light theme: same tokens, flipped values. Toggled from the header,
+     persisted in localStorage. Every component reads vars, so this is
+     the entire theming surface. */
+  [data-theme="light"] {
+    --bg: #f2f4f7; --panel: #ffffff; --panel2: #e8ecf1; --border: #d3dae2;
+    --text: #1c2733; --dim: #5d6f80; --accent: #0b6bcb; --good: #1a7f37;
+    --warn: #9a6700; --bad: #cf222e;
+  }
   * { box-sizing: border-box; }
   body { margin: 0; padding: var(--sp-lg); background: var(--bg); color: var(--text);
          font: var(--fs-md)/1.45 var(--font); }
@@ -55,11 +63,15 @@
        border-bottom: 1px solid var(--border); }
   td { padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   tr:last-child td { border-bottom: none; }
-  .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
-  .room { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px; }
+  .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 10px; }
+  /* Tiles hold still during live runs: tabular numbers + reserved widths
+     so value changes never shift siblings; room cards keep a floor height
+     instead of collapsing when empty. (Deliberately not a fixed layout:
+     content still flows, it just never jitters.) */
+  .room { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px; min-height: 120px; overflow-wrap: anywhere; }
   .world-map { overflow-x: auto; background: #0b0f13; border: 1px solid var(--border);
                border-radius: 6px; margin-bottom: 10px; min-height: 180px; }
-  .world-map canvas { display: block; min-width: 720px; width: 100%; height: 480px; }
+  .world-map canvas { display: block; width: 100%; height: 480px; }
   .tag { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 7px; border-radius: 999px;
          font-size: var(--fs-xs); background: var(--panel); border: 1px solid var(--border); }
   .alive { color: var(--good); } .dead { color: var(--bad); }
@@ -92,7 +104,7 @@
   .dim { color: var(--dim); }
   .statrow { display: flex; gap: 24px; flex-wrap: wrap; }
   .stat { min-width: 110px; }
-  .stat .v { font-size: var(--fs-xl); font-weight: bold; }
+  .stat .v { font-size: var(--fs-xl); font-weight: bold; font-variant-numeric: tabular-nums; min-width: 7ch; }
   .stat .l { color: var(--dim); font-size: var(--fs-xs); text-transform: uppercase; }
   select { font: inherit; background: var(--panel2); color: var(--text);
            border: 1px solid var(--border); border-radius: var(--r-sm); padding: 5px 8px; }
@@ -131,6 +143,7 @@
 <body>
 <header>
   <h1>Text MMO — Live Dashboard <span class="tag">v2</span></h1>
+  <button id="themeToggle" title="Toggle light/dark theme">◐ theme</button>
   <span class="meta"><span id="dot"></span><span id="status">connecting…</span></span>
   <span class="meta">uptime <b id="uptime">-</b></span>
   <span class="meta">players online <b id="online">-</b></span>
@@ -140,6 +153,7 @@
 <div class="tabs">
   <div class="tab active" data-tab="overview">Overview</div>
   <div class="tab" data-tab="world">World</div>
+  <div class="tab" data-tab="players">Players</div>
   <div class="tab" data-tab="market">Market</div>
   <div class="tab" data-tab="dungeon">Dungeons</div>
   <div class="tab" data-tab="agents">Agents</div>
@@ -172,11 +186,31 @@
   <div class="grid">
     <div>
       <div class="panel">
-        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">drag to pan · wheel to zoom · click a room for detail</span></h2>
+        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail</span></h2>
         <div class="world-map"><canvas id="worldMapCanvas" width="1200" height="480" style="width:100%;height:480px;cursor:grab"></canvas></div>
         <div id="roomDrawer" style="display:none"></div>
         <div id="rooms" class="rooms"></div>
       </div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2>History</h2>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><div class="trend" id="histPlayers"></div></div>
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><div class="trend" id="histScore"></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Live activity</h2>
+        <div id="activity"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="view-players" class="tabview">
+  <div class="grid">
+    <div>
       <div class="panel">
         <h2>Performance</h2>
         <table>
@@ -193,17 +227,6 @@
         <h2>Top 10 all time</h2>
         <table><thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th></tr></thead>
                <tbody id="scores"></tbody></table>
-      </div>
-      <div class="panel">
-        <h2>History</h2>
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><div class="trend" id="histPlayers"></div></div>
-          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><div class="trend" id="histScore"></div></div>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>Live activity</h2>
-        <div id="activity"></div>
       </div>
       <div class="panel">
         <h2>Track character</h2>
@@ -502,42 +525,68 @@ let openRoomId = null;              // room detail drawer selection
 
 function mapLayout(rooms) {
   const byId = Object.fromEntries(rooms.map(r => [r.id, r]));
-  const neighbors = Object.fromEntries(rooms.map(r => [r.id, new Set()]));
-  for (const room of rooms) {
-    for (const [, target] of exitEntries(room)) {
-      if (byId[target]) {
-        neighbors[room.id].add(target);
-        neighbors[target].add(room.id);
+  // Direction-aware grid embedding: walking north moves the node UP on
+  // screen (and south down, east right, west left), so tile adjacency
+  // matches walking directions. BFS from Town Square; each step moves one
+  // cell in the exit's compass direction. Non-compass exits (up/down/enter)
+  // and collisions resolve to the nearest free cell by ring search, so
+  // placement stays deterministic with no coordinates to maintain.
+  const DELTA = {north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0]};
+  const cellOf = {};
+  const taken = new Set();
+  const claim = (x, y) => {
+    for (let ring = 0; ; ring++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (const dy of [-ring, ring]) {
+          const key = (x + dx) + "," + (y + dy);
+          if (!taken.has(key)) { taken.add(key); return [x + dx, y + dy]; }
+        }
+      }
+      for (let dy = -ring + 1; dy <= ring - 1; dy++) {
+        for (const dx of [-ring, ring]) {
+          const key = (x + dx) + "," + (y + dy);
+          if (!taken.has(key)) { taken.add(key); return [x + dx, y + dy]; }
+        }
       }
     }
+  };
+  const start = byId.town_square ? "town_square" : rooms[0]?.id;
+  const queue = [];
+  if (start) {
+    cellOf[start] = claim(0, 0);
+    queue.push(start);
   }
-  // Layer the graph from Town Square. Deterministic, no pixel coordinates
-  // to maintain as rooms are added.
-  const depth = {};
-  const queue = [byId.town_square ? "town_square" : rooms[0]?.id];
-  if (queue[0]) depth[queue[0]] = 0;
   while (queue.length) {
     const id = queue.shift();
-    for (const next of neighbors[id] || []) {
-      if (depth[next] === undefined) {
-        depth[next] = depth[id] + 1;
-        queue.push(next);
-      }
+    const [cx, cy] = cellOf[id];
+    for (const [dir, target] of exitEntries(byId[id])) {
+      if (!byId[target] || cellOf[target] !== undefined) continue;
+      const d = DELTA[(dir || "").toLowerCase()] || [0, 0];
+      cellOf[target] = claim(cx + d[0], cy + d[1]);
+      queue.push(target);
     }
   }
-  let fallbackDepth = Math.max(0, ...Object.values(depth)) + 1;
   for (const room of rooms) {
-    if (depth[room.id] === undefined) depth[room.id] = fallbackDepth++;
+    if (cellOf[room.id] === undefined) cellOf[room.id] = claim(0, 0);
   }
-  const layers = {};
-  for (const room of rooms) (layers[depth[room.id]] ||= []).push(room);
-  const maxDepth = Math.max(1, ...Object.keys(layers).map(Number));
+  // Fit the occupied bbox into the canvas with a margin.
+  let minX = 0, maxX = 0, minY = 0, maxY = 0;
+  for (const id in cellOf) {
+    const [x, y] = cellOf[id];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
   const marginX = 85, marginY = 35;
+  const cols = Math.max(1, maxX - minX + 1), rowsN = Math.max(1, maxY - minY + 1);
+  const cell = Math.min((MAP_W - marginX * 2) / cols, (MAP_H - marginY * 2) / rowsN);
   const positions = {};
-  for (const [layer, layerRooms] of Object.entries(layers)) {
-    const x = marginX + Number(layer) * ((MAP_W - marginX * 2) / maxDepth);
-    const step = (MAP_H - marginY * 2) / (layerRooms.length + 1);
-    layerRooms.forEach((room, i) => { positions[room.id] = { x, y: marginY + step * (i + 1) }; });
+  for (const id in cellOf) {
+    positions[id] = {
+      x: marginX + (cellOf[id][0] - minX + 0.5) * cell,
+      y: marginY + (cellOf[id][1] - minY + 0.5) * cell,
+    };
   }
   const seen = new Set();
   const links = [];
@@ -1017,10 +1066,12 @@ const TAB_SECTIONS = {
   world: [
     ["world map", s => renderWorldMap(s.rooms || [])],
     ["rooms", s => renderRooms(s.rooms || [])],
-    ["performance", s => renderPerf(s.players || [])],
-    ["scores", s => renderScores(s.scores || [])],
     ["history", s => renderHistory(s.history || [])],
     ["activity", s => renderActivity(s.activity || [])],
+  ],
+  players: [
+    ["performance", s => renderPerf(s.players || [])],
+    ["scores", s => renderScores(s.scores || [])],
     ["character tracker", s => renderTracker(s.players || [])],
   ],
   market: [["market", s => renderMarket(s.market || {orders: [], history: []})]],
@@ -1280,6 +1331,20 @@ document.addEventListener("click", e => {
   $(id)?.addEventListener("input", updateGMCosts));
 $("gm-buff-type")?.addEventListener("change", updateGMCosts);
 $("gm-boss-str")?.addEventListener("change", updateGMCosts);
+
+// Theme toggle: light/dark via the token set, persisted across visits.
+try {
+  if (localStorage.getItem("dash2-theme") === "light") {
+    document.documentElement.dataset.theme = "light";
+  }
+} catch (e) { /* private mode: theming stays default */ }
+$("themeToggle").addEventListener("click", () => {
+  const root = document.documentElement;
+  const light = root.dataset.theme !== "light";
+  if (light) root.dataset.theme = "light";
+  else delete root.dataset.theme;
+  try { localStorage.setItem("dash2-theme", light ? "light" : "dark"); } catch (e) {}
+});
 
 tick();
 setInterval(tick, 1000);

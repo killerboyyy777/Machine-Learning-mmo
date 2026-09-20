@@ -91,8 +91,17 @@ for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "q-active", "q-turnins", "questCatalog",
              "matSupply", "noSupply", "matOrders", "noMatOrders",
              "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
-             "configRows"):
+             "configRows", "themeToggle"):
     assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+# Players tab split out of World (more tabs, less content each).
+assert '<div class="tab" data-tab="players">Players</div>' in html2
+assert '<div id="view-players" class="tabview">' in html2
+# North-up map: compass deltas put north exits above their source.
+assert "north: [0, -1]" in html2 and "south: [0, 1]" in html2
+# No forced horizontal scroll: the 720px canvas floor is gone.
+assert "min-width: 720px" not in html2
+# Tiles hold still: reserved widths + tabular numerals.
+assert "tabular-nums" in html2 and "min-height: 120px" in html2
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
 # #211 regression pin: sections must receive the snapshot (render(s)).
