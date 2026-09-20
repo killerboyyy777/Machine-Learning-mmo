@@ -89,11 +89,17 @@ class Conductor:
 
     def __init__(self, base_dir, max_agents=50, arrivals_per_minute=2.0,
                  mean_lifetime_episodes=100, floors=None, pbt=None, runner=None,
-                 runners=None, url="ws://localhost:8765", resume=True):
+                 runners=None, url="ws://localhost:8765", resume=True,
+                 reset="none"):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
+        if reset != "none":
+            # Reset ladder (#290, slice 6/6): wipe persisted state BEFORE
+            # load. reset="all" deletes registry.json, so the load below
+            # is a no-op and the run starts fresh.
+            self.registry.reset_state(reset)
         if resume:
             # Resume-by-default (#293, slice 4/6): pick up the previous
             # run's population (entries, goals, parents) instead of
