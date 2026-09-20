@@ -36,3 +36,16 @@ class LinearPlugin(AgentPlugin):
 
     def act(self, obs, agent_id, mask=None):
         return self._agent.act(flatten_obs(obs), self.epsilon, mask)
+
+    def learn(self, prev_obs, action, reward, next_obs, done):
+        """One Q-learning step on this transition (#292)."""
+        return self._agent.update(flatten_obs(prev_obs), action, reward,
+                                  flatten_obs(next_obs), done)
+
+    def save(self, path):
+        self._agent.save(path)
+        return True
+
+    def load(self, path):
+        self._agent.load(path)
+        return True
