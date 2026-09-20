@@ -7,6 +7,11 @@ All notable changes to the text MMO engine are recorded here.
   pinned uniform over the simplex (per-axis mean 1/7 over 5000 draws) and
   the parent-mutation path pinned (mutants keep the parent's dominant
   axis; production OFFSPRING_FRACTION yields ~half derived spawns).
+- Goal-weighted PBT fitness (#288): `PBTManager.report` accepts a per-step
+  reward vector and, when the registry entry carries goal weights, stores
+  the goal dot product as fitness -- so selection ranks members by goal
+  alignment, not raw scalar reward. Vectorless/goal-less reports keep the
+  raw path unchanged; `Conductor.report_fitness` passes vectors through.
 - Lineage checkpoints + registry resume (#293): each spawn records its
   parent (mutated-from agent, None for fresh samples) and writes
   `lineages/<id>/{goal.json, parent_id}` plus a copy of the current
