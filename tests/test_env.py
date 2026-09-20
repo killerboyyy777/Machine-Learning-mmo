@@ -68,6 +68,16 @@ async def main():
     assert pi and len(pi["members"]) == 2, pi
     print("PARTY_ENV_OK", pi["leader"], [m["name"] for m in pi["members"]])
 
+    # Flake guard (#274): heal to full before the shared dungeon entry --
+    # same graveyard idle-death window as test_live's party enter (a dead
+    # character respawns to town, where move_enter cannot resolve).
+    gm2 = await websockets.connect(GM_URI)
+    try:
+        for e in (e1, e2):
+            await gm2.send(json.dumps({"cmd": "gm_heal", "player": e.name}))
+            await asyncio.sleep(0.4)
+    finally:
+        await gm2.close()
     # enter the shared dungeon
     await e1.step(A2IDX["move_south"])                       # graveyard
     await e2.step(A2IDX["move_south"])
