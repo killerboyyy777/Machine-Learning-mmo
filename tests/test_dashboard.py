@@ -102,6 +102,27 @@ assert "north: [0, -1]" in html2 and "south: [0, 1]" in html2
 assert "min-width: 720px" not in html2
 # Tiles hold still: reserved widths + tabular numerals.
 assert "tabular-nums" in html2 and "min-height: 120px" in html2
+# Round 2 follow-ups: no hardcoded dark surfaces remain (GM black stripe
+# was #gmlog's #0b0f13; the map canvas fill is token-read in JS now).
+assert "background: #0b0f13" not in html2
+assert 'background: var(--panel2)' in html2
+# Tiles can never overlap: cells lower-bounded by tile size + gap, and the
+# layout returns world dims the canvas sizes itself from.
+assert "TILE_W + TILE_GAP" in html2 and "worldW, worldH" in html2
+# Charts: empty states render axes (no values.length early-out), themed
+# palette keys at every call site, refit helper + tab-switch hook.
+assert "!values.length" not in html2 and "history.length < 2" not in html2
+assert "hist.length >= 2" not in html2
+for key in ('"blue"', '"purple"', '"amber"'):
+    assert key in html2, f"v2: palette key {key} missing"
+assert "requestAnimationFrame(resizeCharts)" in html2
+# Containment: grid blowout kill, table scroll regions, capped roster,
+# block canvas in trends.
+for tok in (".grid > * { min-width: 0; }", ".tscroll.cap", ".trend canvas"):
+    assert tok in html2, f"v2: containment {tok} missing"
+# Quest turn-in feed + recipe browser widgets present.
+for wid in ("questFeed", "recipeSearch", "recipeRows", "noRecipes"):
+    assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
 # #211 regression pin: sections must receive the snapshot (render(s)).

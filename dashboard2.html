@@ -50,9 +50,21 @@
          background: var(--panel); color: var(--dim); cursor: pointer; user-select: none; }
   .tab:hover { color: var(--text); border-color: var(--accent); }
   .tab.active { background: var(--accent); color: #0b1622; border-color: var(--accent); font-weight: bold; }
+  /* Light theme: the dark fixed text on accent buttons is unreadable
+     against the dark-blue light accent, so it flips to white. */
+  [data-theme="light"] .tab.active, [data-theme="light"] .gm-preset.on { color: #ffffff; }
   .tabview { display: none; }
   .tabview.active { display: block; }
   .grid { display: grid; grid-template-columns: 1fr 340px; gap: 12px; }
+  /* Containment (owner round 2: charts/tables blew out of their panels):
+     grid children default to min-width:auto, so a fixed-width canvas or a
+     nowrap table forces its track wider than the viewport. min-width:0 lets
+     tracks shrink; .tscroll gives wide tables their own scroll region
+     instead of the page; .cap additionally bounds tall live tables. */
+  .grid > * { min-width: 0; }
+  .panel { min-width: 0; }
+  .tscroll { overflow-x: auto; }
+  .tscroll.cap { max-height: 340px; overflow-y: auto; }
   @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
   /* .panel is the single shared panel component: every card on every tab. */
   .panel { background: var(--panel); border: 1px solid var(--border);
@@ -69,9 +81,12 @@
      instead of collapsing when empty. (Deliberately not a fixed layout:
      content still flows, it just never jitters.) */
   .room { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px; min-height: 120px; overflow-wrap: anywhere; }
-  .world-map { overflow-x: auto; background: #0b0f13; border: 1px solid var(--border);
+  /* World map + GM log read the theme tokens like everything else; the old
+     hardcoded #0b0f13 made both stay dark in light mode (the GM "black
+     stripe" was this rule, a bug rather than an empty-log placeholder). */
+  .world-map { overflow: auto; background: var(--panel2); border: 1px solid var(--border);
                border-radius: 6px; margin-bottom: 10px; min-height: 180px; }
-  .world-map canvas { display: block; width: 100%; height: 480px; }
+  .world-map canvas { display: block; }
   .tag { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 7px; border-radius: 999px;
          font-size: var(--fs-xs); background: var(--panel); border: 1px solid var(--border); }
   .alive { color: var(--good); } .dead { color: var(--bad); }
@@ -87,6 +102,13 @@
   #activity .c { flex: 1; }
   #activity .c .cmd { font-weight: bold; }
   #activity .c .d { color: var(--dim); }
+  /* Agent actions + quest turn-in feed share the activity row layout. */
+  #agentActivity .row, #questFeed .row { padding: 3px 0; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
+  #agentActivity .t, #questFeed .t { color: var(--dim); flex: 0 0 58px; }
+  #agentActivity .n, #questFeed .n { color: var(--accent); flex: 0 0 96px; overflow: hidden; text-overflow: ellipsis; }
+  #agentActivity .c, #questFeed .c { flex: 1; }
+  #agentActivity .c .cmd, #questFeed .c .cmd { font-weight: bold; }
+  #agentActivity .c .d, #questFeed .c .d { color: var(--dim); }
   #trackDetail { max-height: 420px; overflow-y: auto; }
   #trackDetail .row { padding: 3px 0; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
   #trackDetail .t { color: var(--dim); flex: 0 0 58px; }
@@ -119,7 +141,7 @@
   .gm-pane.active { display: grid; }
   .gm-cost { color: var(--warn); font-size: var(--fs-xs); }
   .gm-preset.on { background: var(--accent); color: #0b1622; border-color: var(--accent); }
-  #gmlog { max-height: 320px; overflow-y: auto; background: #0b0f13; border: 1px solid var(--border);
+  #gmlog { max-height: 320px; overflow-y: auto; background: var(--panel2); border: 1px solid var(--border);
            border-radius: var(--r-sm); padding: 8px; margin-top: 10px; font-size: var(--fs-sm); }
   #gmlog .row { padding: 2px 0; border-bottom: 1px dotted var(--border); }
   #gmlog .row:last-child { border-bottom: none; }
@@ -135,9 +157,14 @@
   .floor .st { color: var(--dim); }
   .legend { font-size: var(--fs-xs); color: var(--dim); font-weight: normal; text-transform: none;
             letter-spacing: 0; margin-left: 8px; }
-  /* v2 trend charts (uPlot mounts its canvas here; explicit height, fluid width). */
-  .trend { height: 80px; }
+  /* v2 trend charts (uPlot mounts its canvas here; explicit height, fluid width).
+     overflow:hidden + block canvas contains the chart in its panel: an
+     inline canvas leaves a baseline gap that bled into the panel below,
+     and a stale pixel width (resized while its tab was hidden) can no
+     longer paint outside the box. */
+  .trend { height: 80px; overflow: hidden; }
   .trend .uplot { width: 100%; }
+  .trend canvas { display: block; max-width: 100%; }
 </style>
 </head>
 <body>
@@ -213,12 +240,12 @@
     <div>
       <div class="panel">
         <h2>Performance</h2>
-        <table>
+        <div class="tscroll"><table>
           <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
                  <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
                  <th>room</th></tr></thead>
           <tbody id="perf"></tbody>
-        </table>
+        </table></div>
         <p class="empty" id="noPerf" style="display:none">No online players.</p>
       </div>
     </div>
@@ -248,10 +275,10 @@
   </div>
   <div class="panel">
     <h2>Open sell orders (anywhere in the world)</h2>
-    <table>
+    <div class="tscroll"><table>
       <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>seller</th><th>posted</th></tr></thead>
       <tbody id="orders"></tbody>
-    </table>
+    </table></div>
     <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
   </div>
   <div class="panel">
@@ -260,10 +287,10 @@
   </div>
   <div class="panel">
     <h2>Buy &amp; sell history <span class="legend"><span class="buy">■</span> buyer <span class="sell">■</span> seller</span></h2>
-    <table>
+    <div class="tscroll"><table>
       <thead><tr><th>#</th><th>time</th><th>buyer</th><th>seller</th><th>item</th><th>price</th><th>tax</th><th>seller gets</th></tr></thead>
       <tbody id="tradeHistory"></tbody>
-    </table>
+    </table></div>
     <p class="empty" id="noTrades" style="display:none">No completed trades yet.</p>
   </div>
 </div>
@@ -288,12 +315,12 @@
 <div id="view-agents" class="tabview">
   <div class="panel">
     <h2>Live roster</h2>
-    <table>
+    <div class="tscroll cap"><table>
       <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
              <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
              <th>room</th><th>last action</th></tr></thead>
       <tbody id="agents"></tbody>
-    </table>
+    </table></div>
     <p class="empty" id="noAgents" style="display:none">No online players.</p>
   </div>
   <div class="panel">
@@ -312,21 +339,34 @@
   </div>
   <div class="panel">
     <h2>Catalog</h2>
-    <table>
+    <div class="tscroll"><table>
       <thead><tr><th>quest</th><th>giver</th><th>room</th><th>reward</th>
              <th>active</th><th>turn-ins</th></tr></thead>
       <tbody id="questCatalog"></tbody>
-    </table>
+    </table></div>
+  </div>
+  <div class="panel">
+    <h2>Recent turn-ins <span class="legend">who turned in what, when</span></h2>
+    <div id="questFeed"></div>
   </div>
 </div>
 
 <div id="view-crafting" class="tabview">
   <div class="panel">
+    <h2>Recipe browser <span class="legend">all craftable recipes</span></h2>
+    <input id="recipeSearch" placeholder="filter by result or ingredient…" style="width:100%;margin-bottom:8px">
+    <div class="tscroll"><table>
+      <thead><tr><th>result</th><th>ingredients</th><th>tier</th><th>category</th></tr></thead>
+      <tbody id="recipeRows"></tbody>
+    </table></div>
+    <p class="empty" id="noRecipes" style="display:none">No recipes match.</p>
+  </div>
+  <div class="panel">
     <h2>Material on the ground</h2>
-    <table>
+    <div class="tscroll"><table>
       <thead><tr><th>item</th><th>units</th><th>rooms</th></tr></thead>
       <tbody id="matSupply"></tbody>
-    </table>
+    </table></div>
     <p class="empty" id="noSupply" style="display:none">No loose materials.</p>
   </div>
   <div class="panel">
@@ -518,10 +558,23 @@ function exitEntries(room) {
 }
 
 const MAP_W = 1200, MAP_H = 480;
+const TILE_W = 120, TILE_H = 36, TILE_GAP = 24;
 let mapView = {x: 0, y: 0, k: 1};   // pan offset + zoom (world units)
 let mapBound = false;               // pan/zoom/click listeners attach once
 let mapRooms = [];                  // last layout, for hit-testing
 let openRoomId = null;              // room detail drawer selection
+
+// Theme-token reader for canvas paint (canvas cannot use var()).
+// Node-smoke safe: typeof-guard, falls back to the dark values.
+function cssVar(name, fallback) {
+  try {
+    if (typeof getComputedStyle === "function") {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      if (v) return v;
+    }
+  } catch (e) { /* smoke harness: no CSSOM */ }
+  return fallback;
+}
 
 function mapLayout(rooms) {
   const byId = Object.fromEntries(rooms.map(r => [r.id, r]));
@@ -580,12 +633,20 @@ function mapLayout(rooms) {
   }
   const marginX = 85, marginY = 35;
   const cols = Math.max(1, maxX - minX + 1), rowsN = Math.max(1, maxY - minY + 1);
-  const cell = Math.min((MAP_W - marginX * 2) / cols, (MAP_H - marginY * 2) / rowsN);
+  // Extent-aware cells (owner follow-up: uniform shrink-to-fit cells came
+  // out narrower than a tile, so rooms collided). Each dimension is
+  // lower-bounded by tile size + gap; the world grows instead and the map
+  // region scrolls. Tiles can never overlap at any width. Compass ordering
+  // (and the GEO proof) is untouched: only cell extents changed.
+  const cellW = Math.max(TILE_W + TILE_GAP, (MAP_W - marginX * 2) / cols);
+  const cellH = Math.max(TILE_H + TILE_GAP, (MAP_H - marginY * 2) / rowsN);
+  const worldW = Math.ceil(marginX * 2 + cols * cellW);
+  const worldH = Math.ceil(marginY * 2 + rowsN * cellH);
   const positions = {};
   for (const id in cellOf) {
     positions[id] = {
-      x: marginX + (cellOf[id][0] - minX + 0.5) * cell,
-      y: marginY + (cellOf[id][1] - minY + 0.5) * cell,
+      x: marginX + (cellOf[id][0] - minX + 0.5) * cellW,
+      y: marginY + (cellOf[id][1] - minY + 0.5) * cellH,
     };
   }
   const seen = new Set();
@@ -600,7 +661,7 @@ function mapLayout(rooms) {
       }
     }
   }
-  return {byId, positions, links};
+  return {byId, positions, links, worldW, worldH};
 }
 
 function renderRoomDrawer(byId) {
@@ -633,24 +694,39 @@ function renderWorldMap(rooms) {
   if (!canvas) return;
   // 32 nodes redrawn per 1s tick is trivial; no quadtree, dirty rects, or
   // rAF loop needed at this scale (see #131 if the map ever grows 10x).
-  const {byId, positions, links} = mapLayout(rooms);
+  const {byId, positions, links, worldW, worldH} = mapLayout(rooms);
   mapRooms = rooms;
   // DPR-aware backing store (#205): draw in CSS pixels regardless of display
   // density, so the map stays sharp on hidpi instead of stretching 1200x480.
   const dpr = window.devicePixelRatio || 1;
-  const bw = Math.round(MAP_W * dpr), bh = Math.round(MAP_H * dpr);
+  const bw = Math.round(worldW * dpr), bh = Math.round(worldH * dpr);
   if (canvas.width !== bw || canvas.height !== bh) {
     canvas.width = bw;
     canvas.height = bh;
   }
+  canvas.style.width = worldW + "px";
+  canvas.style.height = worldH + "px";
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Theme-wired paint (owner follow-up: the map stayed dark in light mode).
+  // Tokens are read per render; the smoke harness falls back to dark values.
+  const bg = cssVar("--panel2", "#1e252d"), tile = cssVar("--panel", "#171c22"),
+        edge = cssVar("--border", "#2a333d"), ink = cssVar("--text", "#d7e0e8"),
+        sub = cssVar("--dim", "#8b98a5"), acc = cssVar("--accent", "#6fc3ff");
   const {x: ox, y: oy, k} = mapView;
-  ctx.clearRect(0, 0, MAP_W, MAP_H);
-  ctx.fillStyle = "#0b0f13";
-  ctx.fillRect(0, 0, MAP_W, MAP_H);
+  ctx.clearRect(0, 0, worldW, worldH);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, worldW, worldH);
+  if (!rooms.length) {
+    ctx.fillStyle = sub;
+    ctx.font = "12px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("no rooms in snapshot", worldW / 2, worldH / 2);
+    renderRoomDrawer(byId);
+    return;
+  }
   const X = wx => (wx + ox) * k, Y = wy => (wy + oy) * k;
-  ctx.strokeStyle = "#43515f";
+  ctx.strokeStyle = edge;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (const l of links) {
@@ -660,21 +736,21 @@ function renderWorldMap(rooms) {
   ctx.stroke();
   for (const room of rooms) {
     const p = positions[room.id];
-    const px = X(p.x), py = Y(p.y), w = Math.max(30, 120 * k), h = Math.max(14, 36 * k);
+    const px = X(p.x), py = Y(p.y), w = Math.max(30, TILE_W * k), h = Math.max(14, TILE_H * k);
     const occupants = (room.players || []).length;
-    ctx.fillStyle = "#1e252d";
-    ctx.strokeStyle = room.id === "town_square" ? "#79c0ff" : "#2a333d";
+    ctx.fillStyle = tile;
+    ctx.strokeStyle = room.id === "town_square" ? acc : edge;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
     ctx.fill();
     ctx.stroke();
     if (k > 0.4) {
-      ctx.fillStyle = "#d7e0e8";
+      ctx.fillStyle = ink;
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
       ctx.fillText(room.name, px, py - 2);
-      ctx.fillStyle = "#8b98a5";
+      ctx.fillStyle = sub;
       ctx.font = "9px monospace";
       ctx.fillText(occupants ? `${occupants} player${occupants === 1 ? "" : "s"}` : room.id, px, py + 11);
     }
@@ -685,8 +761,8 @@ function renderWorldMap(rooms) {
     canvas.addEventListener("wheel", e => {
       e.preventDefault();
       const r = canvas.getBoundingClientRect();
-      const mx = (e.clientX - r.left) * (MAP_W / r.width);
-      const my = (e.clientY - r.top) * (MAP_H / r.height);
+      const mx = (e.clientX - r.left) * (canvas.clientWidth / r.width);
+      const my = (e.clientY - r.top) * (canvas.clientHeight / r.height);
       const k2 = Math.min(4, Math.max(0.5, mapView.k * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
       mapView.x = mx / k2 - (mx / mapView.k - mapView.x);
       mapView.y = my / k2 - (my / mapView.k - mapView.y);
@@ -699,8 +775,8 @@ function renderWorldMap(rooms) {
     canvas.addEventListener("mousemove", e => {
       if (!drag) return;
       const r = canvas.getBoundingClientRect();
-      const dx = (e.clientX - drag.x) * (MAP_W / r.width) / mapView.k;
-      const dy = (e.clientY - drag.y) * (MAP_H / r.height) / mapView.k;
+      const dx = (e.clientX - drag.x) * (canvas.clientWidth / r.width) / mapView.k;
+      const dy = (e.clientY - drag.y) * (canvas.clientHeight / r.height) / mapView.k;
       if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
       mapView.x += dx;
       mapView.y += dy;
@@ -713,8 +789,8 @@ function renderWorldMap(rooms) {
       drag = null;
       if (wasDrag || !lastState) return;
       const r = canvas.getBoundingClientRect();
-      const mx = (e.clientX - r.left) * (MAP_W / r.width);
-      const my = (e.clientY - r.top) * (MAP_H / r.height);
+      const mx = (e.clientX - r.left) * (canvas.clientWidth / r.width);
+      const my = (e.clientY - r.top) * (canvas.clientHeight / r.height);
       const {positions} = mapLayout(lastState.rooms || []);
       let best = null, bestD = 60 / mapView.k;
       for (const [id, p] of Object.entries(positions)) {
@@ -776,37 +852,63 @@ function renderScores(scores) {
 // library scales its backing store), so the old 300x80 canvas stretch-blur
 // is gone structurally. One instance per element, setData() per tick.
 const charts = {};
-function trendChart(id, values, color) {
+// Series palette per theme (owner follow-up: charts must work in light
+// mode too). Callers pass keys; a raw hex still works as a fallback.
+function themePalette() {
+  return (document.documentElement.dataset.theme === "light")
+    ? {blue: "#0b6bcb", purple: "#6e3ac9", amber: "#8a5a00"}
+    : {blue: "#79c0ff", purple: "#d2a8ff", amber: "#ffb454"};
+}
+function trendChart(id, values, colorKey) {
   const el = document.getElementById(id);
-  if (!el || !values.length || typeof uPlot === "undefined") return;
-  const data = [values.map((_, i) => i), values];
+  if (!el || typeof uPlot === "undefined") return;
+  const pal = themePalette();
+  const color = pal[colorKey] || colorKey || pal.blue;
+  // Empty state (owner follow-up: panels looked broken with no data).
+  // A zero flatline is the honest value for counts/prices with no samples,
+  // and visible axes mark it as "waiting for data" vs the hidden-axes live
+  // look. The instance is recreated on empty<->live transitions because
+  // axis visibility is creation-time config.
+  const live = values.length > 0;
+  const data = live ? [values.map((_, i) => i), values] : [[0, 1], [0, 0]];
   let u = charts[id];
-  if (!u) {
+  if (!u || u._empty === live) {
+    if (u) { try { u.destroy(); } catch (e) {} }
+    const grid = cssVar("--border", "#2a333d"), font = cssVar("--dim", "#8b98a5");
     u = charts[id] = new uPlot({
       width: el.clientWidth || 260,
       height: 80,
       scales: {x: {time: false}},
       series: [{}, {stroke: color, width: 1.5, fill: color + "26"}],
-      axes: [{show: false}, {show: false}],
+      axes: [
+        {show: !live, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
+        {show: !live, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
+      ],
       legend: {show: false},
       cursor: {show: false},
     }, data, el);
+    u._empty = !live;
   } else {
     u.setData(data);
   }
+  // Refit every tick: a chart sized while its tab was hidden (260px
+  // fallback) or while the window was wider snaps back to its panel.
+  // This is the structural fix for canvases overflowing their panels.
+  if (el.clientWidth) { try { u.setSize({width: el.clientWidth, height: 80}); } catch (e) {} }
 }
-window.addEventListener("resize", () => {
+function resizeCharts() {
   for (const [id, u] of Object.entries(charts)) {
     const el = document.getElementById(id);
-    if (el && el.clientWidth && u) u.setSize({width: el.clientWidth, height: 80});
+    if (el && el.clientWidth && u) { try { u.setSize({width: el.clientWidth, height: 80}); } catch (e) {} }
   }
-});
+}
+window.addEventListener("resize", resizeCharts);
 
 function renderHistory(history) {
-  if (!history || history.length < 2) return;
-  trendChart("histPlayers", history.map(h => h.players_online), "#79c0ff");
-  const topScore = history.map(h => (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0);
-  trendChart("histScore", topScore, "#d2a8ff");
+  const h = history || [];
+  trendChart("histPlayers", h.map(x => x.players_online), "blue");
+  trendChart("histScore", h.map(x =>
+    (x.top_scores && x.top_scores[0]) ? x.top_scores[0].score : 0), "purple");
 }
 
 function renderActivity(activity) {
@@ -841,7 +943,7 @@ function renderMarket(m) {
   $("noTrades").style.display = history.length ? "none" : "";
   // Settled-price history as a uPlot area chart (new in 2/4: v1 shows the
   // table only; the series already rides in the snapshot).
-  trendChart("m-priceHist", history.map(h => h.price), "#ffb454");
+  trendChart("m-priceHist", history.map(h => h.price), "amber");
 }
 
 function mmss(secs) {
@@ -925,9 +1027,38 @@ function renderQuests(q) {
         <td>${esc(c.giver_name || "")}</td><td>${esc(c.room || "")}</td>
         <td>${c.reward_xp ?? 0} XP + ${c.reward_gold ?? 0}g</td>
         <td>${active[c.id] ?? 0}</td><td>${completions[c.id] ?? 0}</td></tr>`).join("");
+  // Per-quest turn-in feed (owner round 2): who turned in what, when --
+  // newest first, from the snapshot's recent_turnins ring.
+  const brief = Object.fromEntries((qs.catalog || []).map(c => [c.id, c.brief || c.id]));
+  const feed = (qs.recent_turnins || []).slice().reverse();
+  $("questFeed").innerHTML = feed.map(t => `
+    <div class="row">
+      <span class="t">${esc(t.t)}</span>
+      <span class="n">${esc(t.name)}</span>
+      <span class="c">turned in <b>${esc(t.qid)}</b>
+        <span class="d"> ${esc(brief[t.qid] || "")}</span></span>
+    </div>`).join("") || `<span class="empty">No turn-ins recorded yet.</span>`;
 }
 
-function renderCrafting(rooms, market, activity) {
+function renderRecipes(recipes) {
+  // Recipe browser (owner round 2): every known recipe with ingredients,
+  // filterable by result or component. Reads the search box live.
+  const q = ($("recipeSearch").value || "").toLowerCase().trim();
+  const rows = (recipes || []).filter(r => {
+    if (!q) return true;
+    const hay = [r.result, r.category, String(r.tier),
+                 ...(r.inputs || []).map(i => i.item)].join(" ").toLowerCase();
+    return q.split(/\s+/).every(w => hay.includes(w));
+  });
+  $("recipeRows").innerHTML = rows.map(r => `
+    <tr><td><b>${esc(r.result)}</b>${r.result_qty > 1 ? ` ×${r.result_qty}` : ""}</td>
+        <td>${(r.inputs || []).map(i => `${i.qty}× ${esc(i.item)}`).join(", ")}</td>
+        <td>${r.tier ?? "-"}</td><td>${esc(r.category || "-")}</td></tr>`).join("");
+  $("noRecipes").style.display = rows.length ? "none" : "";
+}
+
+function renderCrafting(rooms, market, activity, recipes) {
+  renderRecipes(recipes);
   // Supply: ground loot aggregated by item across rooms; listed supply
   // aggregated from open orders. Demand: recent command counts. All
   // series already ride in the snapshot; nothing new is fetched.
@@ -1017,6 +1148,10 @@ $("trackSelect").addEventListener("change", e => {
   if (lastState) renderTracker(lastState.players);
 });
 
+$("recipeSearch").addEventListener("input", () => {
+  if (lastState) renderRecipes(lastState.recipes || []);
+});
+
 let activeTab = "overview";
 
 function renderOverview(s) {
@@ -1043,12 +1178,10 @@ function renderOverview(s) {
     pill.style.color = "var(--dim)";
   }
   const hist = s.history || [];
-  if (hist.length >= 2) {
-    trendChart("ovPlayers", hist.map(h => h.players_online), "#79c0ff");
-    trendChart("ovScore", hist.map(h =>
-      (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0), "#d2a8ff");
-    trendChart("ovVolume", hist.map(h => h.market_orders ?? 0), "#ffb454");
-  }
+  trendChart("ovPlayers", hist.map(h => h.players_online), "blue");
+  trendChart("ovScore", hist.map(h =>
+    (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0), "purple");
+  trendChart("ovVolume", hist.map(h => h.market_orders ?? 0), "amber");
   const acts = (s.activity || []).slice(-10).reverse();
   $("ovActivity").innerHTML = acts.length ? acts.map(a => `
     <div class="row">
@@ -1082,7 +1215,7 @@ const TAB_SECTIONS = {
   ],
   agents: [["agents", s => renderAgents(s.players || [])]],
   quests: [["quests", s => renderQuests(s.quests || {})]],
-  crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [])]],
+  crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [])]],
   config: [["config", s => renderConfig(s)]],
   gm: [["gm catalog", s => populateDatalists(s.catalog || {})]],
 };
@@ -1149,6 +1282,10 @@ for (const tab of document.querySelectorAll(".tab")) {
     activeTab = tab.dataset.tab;
     $("view-" + activeTab).classList.add("active");
     if (lastState) renderAll(lastState);
+    // The new tab's panels have real widths now: refit any chart that was
+    // sized while hidden (or while the window was a different size).
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(resizeCharts);
+    else resizeCharts();
   });
 }
 
@@ -1344,6 +1481,12 @@ $("themeToggle").addEventListener("click", () => {
   if (light) root.dataset.theme = "light";
   else delete root.dataset.theme;
   try { localStorage.setItem("dash2-theme", light ? "light" : "dark"); } catch (e) {}
+  // Charts bake themed colors/axes at creation: drop them so the next tick
+  // rebuilds themed. The map re-reads tokens on every render already.
+  for (const [id, u] of Object.entries(charts)) {
+    try { u.destroy(); } catch (e) {}
+    delete charts[id];
+  }
 });
 
 tick();

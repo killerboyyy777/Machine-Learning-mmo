@@ -243,6 +243,25 @@ for nid, tmpl in WORLD["npcs"].items():
 RECIPES = WORLD.get("recipes", {})
 
 
+def _iname(iid):
+    return ITEM_DEFS.get(iid, {}).get("name", iid)
+
+
+# Dashboard recipe browser view: static, precomputed once (additive
+# snapshot key, read-only). Names resolved here so the client needs no
+# item-def lookup table.
+RECIPE_VIEWS = [
+    {"id": rid,
+     "result": _iname(rec.get("result", rid)),
+     "result_qty": rec.get("output_qty", 1),
+     "inputs": [{"item": _iname(iid), "qty": qty}
+                for iid, qty in (rec.get("inputs") or {}).items()],
+     "tier": rec.get("tier", 0),
+     "category": rec.get("category", "")}
+    for rid, rec in RECIPES.items()
+]
+
+
 def validate_world(data):
     """Check world.json cross-references; return a list of error strings.
 
@@ -2356,6 +2375,10 @@ QUEST_TONIC_GOLD = 20
 QUEST_TONIC_POINTS = 12
 
 quest_turnin_times = []
+# Per-quest turn-in feed for the dashboard (who turned in what when).
+# Bounded deque discipline: newest last, trimmed on append.
+TURNIN_FEED_SIZE = 50
+quest_turnin_feed = []
 
 # Quest giver category system - makes it easy to add/change quest NPCs.
 # Add new entries here to create new quest givers; kill penalties,
@@ -2535,6 +2558,9 @@ async def cmd_quest(player, msg):
     def _record_turnin():
         entry[qid_key(entry, qid, "completions")] = entry.get(qid_key(entry, qid, "completions"), 0) + 1
         quest_turnin_times.append(time.time())
+        quest_turnin_feed.append({"t": time.strftime("%H:%M:%S"), "name": player.name, "qid": qid})
+        while len(quest_turnin_feed) > TURNIN_FEED_SIZE:
+            del quest_turnin_feed[0]
         mark_scores_dirty()
 
     if action == "accept":
@@ -3380,6 +3406,7 @@ def _quest_snapshot():
         "active": active,
         "completions": completions,
         "turnins_last_min": len(quest_turnin_times),
+        "recent_turnins": list(quest_turnin_feed)[-20:],
     }
 
 
@@ -3448,6 +3475,7 @@ def world_snapshot():
         "bosses": bosses,
         "dungeons": dungeon_views,
         "quests": _quest_snapshot(),
+        "recipes": RECIPE_VIEWS,
         "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),
                     "items": sorted([v["name"] for v in ITEM_DEFS.values()]),
                     "rooms": sorted(list(ROOMS.keys()))},
