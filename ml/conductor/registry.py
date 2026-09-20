@@ -15,6 +15,14 @@ import threading
 from pathlib import Path
 
 
+# Reset ladder for the resume CLI (#290, slice 6/6): increasing wipe
+# scope over the registry tree, applied before load. Modes after `none`
+# are cumulative: lineage forgets ancestry, cell additionally forgets
+# learned weights (agents restart fresh), all wipes the whole tree.
+# Metrics live outside the registry tree; the caller clears them on all.
+RESET_MODES = ("none", "lineage", "cell", "all")
+
+
 class AgentEntry:
     """One agent in the registry."""
 
@@ -255,6 +263,38 @@ class Registry:
                 shutil.rmtree(child, ignore_errors=True)
                 pruned += 1
         return pruned
+
+    def reset_state(self, mode="none"):
+        """Wipe persisted state per the reset ladder. Returns the list of
+        removed paths (for logging). Unknown modes fail fast."""
+        if mode not in RESET_MODES:
+            raise ValueError(
+                f"unknown reset mode {mode!r} (want one of {RESET_MODES})")
+        removed = []
+        with self._lock:
+            if mode == "none":
+                return removed
+            if mode == "all":
+                shutil.rmtree(self.base_dir, ignore_errors=True)
+                removed.append(str(self.base_dir))
+                self._agents.clear()
+                return removed
+            lin = self.base_dir / "lineages"
+            if lin.is_dir():
+                shutil.rmtree(lin, ignore_errors=True)
+                removed.append(str(lin))
+            if mode == "cell":
+                for entry in self._agents.values():
+                    cp = entry.checkpoint_path
+                    if not cp or not os.path.isfile(cp):
+                        continue
+                    try:
+                        Path(cp).relative_to(self.base_dir)
+                    except ValueError:
+                        continue  # foreign path: not ours to wipe
+                    os.remove(cp)
+                    removed.append(cp)
+        return removed
 
     def load(self, path=None):
         path = path or str(self.base_dir / "registry.json")

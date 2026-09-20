@@ -12,6 +12,12 @@ All notable changes to the text MMO engine are recorded here.
   agents (minibatch gating still applies); the hook rides the restart
   specs so PBT relaunches keep learning. Covered by LEARN_LINEAR_OK
   (weights actually move), LEARN_TORCH_THROTTLE_OK, and LEARN_HOOK_OK.
+- Reset CLI + reconnect handling (#290, slice 6/6): soak grows
+  `--reset none|lineage|cell|all` (increasing pre-run wipe scope over the
+  registry tree, applied before load) plus `--resume/--no-resume`
+  (default on); dropped server connections back off with per-agent
+  stagger and reconnect instead of killing the task, and mid-episode
+  socket deaths end the episode instead of death-logging the agent.
 - Stable role_I character names (#291, slice 2/6): registry entries carry
   a persisted `character` (`role_0..role_{cap-1}`, freed on death and
   reused by the next spawn); the conductor logs envs in as the character
