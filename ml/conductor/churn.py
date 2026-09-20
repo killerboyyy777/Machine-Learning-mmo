@@ -164,8 +164,14 @@ class ChurnManager:
         else:
             raise RuntimeError("could not mint a unique agent id")
         agent_type = random.choice(["linear", "torch"])
+        # Tuple unpack (#293 changed the shape: (goal, parent_id)).
         goal, parent_id = self._sample_goal()
+        # Stable role name (#291, slice 2/6): the server-side character
+        # for this incarnation. Freed by deaths (alloc skips live
+        # holders), so respawns continue the same character. None when
+        # the pool is full -- the conductor then logs in as agent_id.
         entry = self.registry.register(agent_id, agent_type, goal=goal,
+                                       character=self.registry.alloc_character(),
                                        parent_id=parent_id)
         # Lineage files at spawn (#293): goal.json + parent now; the ckpt
         # copy lands on the next registry.save() once training has written

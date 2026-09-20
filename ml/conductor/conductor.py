@@ -143,9 +143,21 @@ class Conductor:
             entry = self.registry.get(agent_id)
             if entry is not None:
                 entry.agent_type = slot["agent_type"]
+            # Log in as the stable character name (#291, slice 2/6), not
+            # the incarnation id, so server-side scores/XP survive deaths.
+            # The wrapped factory is what the supervisor stores in specs,
+            # so PBT restarts keep the same character too. Falls back to
+            # agent_id when the entry carries no character (pool full or
+            # pre-#291 rows): identical to the old behavior.
+            login = (entry.character if entry is not None else None) or agent_id
+            base_factory = slot["env_factory"]
+            if login != agent_id:
+                env_factory = lambda aid, _f=base_factory, _n=login: _f(_n)
+            else:
+                env_factory = base_factory
             started = await self.supervisor.start_agent(
                 agent_id,
-                slot["env_factory"],
+                env_factory,
                 slot["policy_fn"],
                 step_timeout=slot.get("step_timeout"),
                 policy_factory=slot.get("policy_factory"))

@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Stable role_I character names (#291, slice 2/6): registry entries carry
+  a persisted `character` (`role_0..role_{cap-1}`, freed on death and
+  reused by the next spawn); the conductor logs envs in as the character
+  name instead of the random incarnation id, so server-side scores and XP
+  survive churn deaths. Incarnation ids stay collision-proof (#277).
 - Spawn-goal distribution + offspring proof (#289): Dirichlet sampler
   pinned uniform over the simplex (per-axis mean 1/7 over 5000 draws) and
   the parent-mutation path pinned (mutants keep the parent's dominant
