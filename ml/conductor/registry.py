@@ -9,6 +9,7 @@ When experimental outperforms stable over a window, it gets promoted.
 """
 import os
 import json
+import shutil
 import time
 import threading
 from pathlib import Path
@@ -19,9 +20,10 @@ class AgentEntry:
 
     __slots__ = ("agent_id", "agent_type", "branch", "checkpoint_path",
                  "created_at", "episodes", "total_reward", "last_active",
-                 "alive", "goal")
+                 "alive", "goal", "parent_id")
 
-    def __init__(self, agent_id, agent_type, branch, checkpoint_path, goal=None):
+    def __init__(self, agent_id, agent_type, branch, checkpoint_path, goal=None,
+                 parent_id=None):
         self.agent_id = agent_id
         self.agent_type = agent_type  # "linear" or "torch"
         self.branch = branch          # "stable" or "experimental"
@@ -29,6 +31,9 @@ class AgentEntry:
         # Inheritable goal weights (#162 Phase 1): {w_axis: float} simplex,
         # sampled/mutated at spawn, persisted below, logged per episode.
         self.goal = dict(goal) if goal else None
+        # Lineage parent (#293, slice 4/6): agent_id this entry mutated from,
+        # None for fresh Dirichlet samples. Persisted per lineage on disk.
+        self.parent_id = parent_id
         self.created_at = time.time()
         self.episodes = 0
         self.total_reward = 0.0
@@ -52,6 +57,7 @@ class AgentEntry:
             "total_reward": self.total_reward,
             "alive": self.alive,
             "goal": dict(self.goal) if self.goal else None,
+            "parent_id": self.parent_id,
         }
 
 
@@ -66,7 +72,7 @@ class Registry:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def register(self, agent_id, agent_type, branch="experimental", checkpoint=None,
-                 goal=None):
+                 goal=None, parent_id=None):
         """Register a new agent. Returns the AgentEntry."""
         with self._lock:
             if agent_id in self._agents:
@@ -80,7 +86,8 @@ class Registry:
             cp_dir = self.base_dir / agent_id
             cp_dir.mkdir(parents=True, exist_ok=True)
             cp = checkpoint or str(cp_dir / "checkpoint.pt")
-            entry = AgentEntry(agent_id, agent_type, branch, cp, goal=goal)
+            entry = AgentEntry(agent_id, agent_type, branch, cp, goal=goal,
+                               parent_id=parent_id)
             self._agents[agent_id] = entry
             return entry
 
@@ -152,8 +159,79 @@ class Registry:
         path = path or str(self.base_dir / "registry.json")
         with self._lock:
             data = self.snapshot()
-        with open(path, "w") as f:
+        # Atomic tmp+replace (#293): a crash mid-write must never leave a
+        # truncated registry behind. Same pattern as the agent checkpoints.
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+        with self._lock:
+            for aid in self._agents:
+                self.save_lineage(aid)
+            self.prune_lineages()
+
+    def lineage_dir(self, agent_id):
+        """On-disk lineage record for one agent."""
+        return self.base_dir / "lineages" / agent_id
+
+    def save_lineage(self, agent_id):
+        """Persist one agent's lineage: goal weights, parent link, and a
+        copy of the current checkpoint file (when one exists yet -- fresh
+        spawns have none until their first save).
+
+        Overwrites in place, so each lineage holds the LATEST snapshot
+        only: the disk guard against unbounded ckpt growth. Returns True
+        on success, False for unknown ids."""
+        with self._lock:
+            entry = self._agents.get(agent_id)
+            if entry is None:
+                return False
+            goal = dict(entry.goal) if entry.goal else {}
+            parent_id = entry.parent_id
+            checkpoint_path = entry.checkpoint_path
+        d = self.lineage_dir(agent_id)
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "goal.json", "w") as f:
+            json.dump(goal, f, indent=2)
+        with open(d / "parent_id", "w") as f:
+            f.write(parent_id or "")
+        if checkpoint_path and os.path.isfile(checkpoint_path):
+            shutil.copyfile(checkpoint_path, d / "ckpt")
+        return True
+
+    def load_lineage(self, agent_id):
+        """Read back a lineage record. Returns None for unknown ids."""
+        d = self.lineage_dir(agent_id)
+        if not d.is_dir():
+            return None
+        try:
+            with open(d / "goal.json") as f:
+                goal = json.load(f)
+        except (OSError, ValueError):
+            goal = {}
+        try:
+            with open(d / "parent_id") as f:
+                parent_id = f.read().strip() or None
+        except OSError:
+            parent_id = None
+        ckpt = d / "ckpt"
+        return {"goal": goal, "parent_id": parent_id,
+                "ckpt": str(ckpt) if ckpt.is_file() else None}
+
+    def prune_lineages(self):
+        """Drop lineage dirs for ids no longer in the registry (removed
+        entries must not pin disk forever). Returns the pruned count."""
+        base = self.base_dir / "lineages"
+        if not base.is_dir():
+            return 0
+        pruned = 0
+        with self._lock:
+            known = set(self._agents)
+        for child in base.iterdir():
+            if child.name not in known:
+                shutil.rmtree(child, ignore_errors=True)
+                pruned += 1
+        return pruned
 
     def load(self, path=None):
         path = path or str(self.base_dir / "registry.json")
@@ -168,6 +246,7 @@ class Registry:
                     a.get("branch", "experimental"),
                     a.get("checkpoint", ""),
                     goal=a.get("goal"),
+                    parent_id=a.get("parent_id"),
                 )
                 entry.episodes = a.get("episodes", 0)
                 if "total_reward" in a:
