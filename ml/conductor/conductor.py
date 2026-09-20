@@ -173,11 +173,12 @@ class Conductor:
             self.registry.mark_dead(agent_id)
             return False
 
-    def report_fitness(self, agent_id, fitness, episodes=1):
+    def report_fitness(self, agent_id, fitness, episodes=1, vector=None):
         """Feed an evaluation result into the PBT population (no-op when
-        PBT is disabled). Agents must be enrolled first (see enroll_pbt)."""
+        PBT is disabled). Agents must be enrolled first (see enroll_pbt).
+        A per-step reward `vector` makes fitness goal-weighted (#288)."""
         if self.pbt is not None:
-            self.pbt.report(agent_id, fitness, episodes)
+            self.pbt.report(agent_id, fitness, episodes, vector=vector)
 
     def enroll_pbt(self, agent_id, hparams=None):
         """Enroll a registered agent in the PBT population."""

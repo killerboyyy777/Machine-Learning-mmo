@@ -83,6 +83,41 @@ e = c.registry.register("c0", "linear")
 c.enroll_pbt("c0", {"lr": 0.002})
 c.report_fitness("c0", 3.0, episodes=11)
 assert c.status()["pbt"]["c0"]["fitness"] == 3.0
+# vector passthrough: goal-weighted fitness surfaces through Conductor
+# (partial goals compose: missing axes read 0).
+c.registry.register("c1", "linear", goal={"w_gold": 1.0})
+c.enroll_pbt("c1", {"lr": 0.002})
+c.report_fitness("c1", -1.0, episodes=11, vector={"gold": 4.0})
+assert c.status()["pbt"]["c1"]["fitness"] == 4.0
 print("PBT_CONDUCTOR_OK")
+
+# --- goal-weighted fitness: weights influence selection (#288) ---
+from ml.ml_env import GOAL_AXES, reward_vector
+reg3 = Registry(os.path.join(tmpdir, "reg3"), max_agents=10)
+_gold_goal = {"w_" + k: (1.0 if k == "gold" else 0.0) for k in GOAL_AXES}
+_xp_goal = {"w_" + k: (1.0 if k == "xp" else 0.0) for k in GOAL_AXES}
+reg3.register("gg", "linear", goal=_gold_goal)
+reg3.register("gx", "linear", goal=_xp_goal)
+pbt3 = PBTManager(reg3, None, min_episodes=1, min_delta=0.01)
+pbt3.register("gg", {"lr": 0.01})
+pbt3.register("gx", {"lr": 0.01})
+v = reward_vector(score_gain=1.0, xp_gain=0.0, gold_delta=5.0,
+                  inv_delta=0.0, social=0.0, quest=2.0)
+# vector correctness: fitness equals the exact goal dot product, and the
+# raw scalar is ignored once a vector is supplied.
+pbt3.report("gg", -999.0, episodes=2, vector=v)
+assert pbt3._members["gg"]["fitness"] == 5.0
+pbt3.report("gx", 999.0, episodes=2, vector=v)
+assert pbt3._members["gx"]["fitness"] == 0.0
+# selection follows the weights: exploit copies the goal-aligned winner.
+ops = pbt3.step()
+assert len(ops) == 1 and ops[0]["winner"] == "gg" \
+    and ops[0]["loser"] == "gx", ops
+print("PBT_GOAL_FITNESS_OK")
+# no vector (or no entry goal): raw scalar path unchanged.
+pbt3.report("gx", 7.5, episodes=1)
+assert pbt3._members["gx"]["fitness"] == 7.5
+pbt3.report("ghost", 9.0, episodes=1, vector=v)  # unknown id: safe no-op
+print("PBT_RAW_FITNESS_OK")
 
 print("ALL_PBT_OK")
