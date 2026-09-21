@@ -141,7 +141,9 @@ def summarize(cond):
     st = cond.status()
     agents = st["registry"]["agents"]
     episodes = sum(a["episodes"] for a in agents)
-    mean_r = sum(a["mean_reward"] * a["episodes"] for a in agents) / max(1, episodes)
+    total_r = sum(a.get("total_reward", a["mean_reward"] * a["episodes"])
+                  for a in agents)
+    mean_r = total_r / max(1, episodes)
     return {
         "ts": time.time(),
         "uptime": round(st["uptime"], 1),

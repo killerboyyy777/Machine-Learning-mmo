@@ -19,9 +19,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install websockets==17.1
+      - run: pip install -r requirements.txt
       - run: python tests/test_server_unit.py
       - run: python tests/test_quest_grind.py
+      - run: python tests/test_conductor.py
+      - run: python tests/test_reward_modes.py
+      - run: python tests/test_scripted_bots.py
+      - run: python tests/test_pbt.py
+      - run: python tests/test_curriculum.py
+      - run: python tests/test_plugins.py
+      - run: python tests/test_env_reset.py
+      - run: python tests/test_env_parsing.py
+      - run: python tests/test_dashboard.py
+      - run: python tests/test_scores_backup.py
+      - run: python tests/test_training_loops.py
+      - run: python tests/test_conductor_run.py
+      - run: python tests/test_gm_unit.py
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:

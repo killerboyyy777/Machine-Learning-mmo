@@ -297,7 +297,7 @@ class Conductor:
             cell = by_type.setdefault(a["agent_type"],
                                       {"alive": 0, "episodes": 0, "reward": 0.0})
             cell["episodes"] += a["episodes"]
-            cell["reward"] += a["mean_reward"] * a["episodes"]
+            cell["reward"] += a.get("total_reward", a["mean_reward"] * a["episodes"])
             if a["alive"]:
                 cell["alive"] += 1
         for cell in by_type.values():

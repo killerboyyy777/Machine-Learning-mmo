@@ -38,10 +38,7 @@ class TorchFarm:
         self.last_save_step = -1
         self.last_best_score = float("-inf")
         self.agent = TorchDQNAgent(name=args.name_prefix + "Shared", url=args.url)
-        if args.weights:
-            loaded = self.agent.load_weights(args.weights)
-        else:
-            loaded = self.agent.load_weights()
+        loaded = self.agent.load_weights(args.weights)
         if not loaded and args.best_weights and os.path.exists(args.best_weights):
             self.agent.load_weights(args.best_weights)
         self.runners = []
