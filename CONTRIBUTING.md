@@ -60,6 +60,8 @@ No code required:
   comparing runs.
 * **Conductor runs**: `python ml/conductor/soak.py --agents N --duration S`
   needs a live server; keep `--min-agents` gates honest (fail = fail).
+  Resume prior state by default; select wipes with
+  `--reset none|lineage|cell|all` and `--resume/--no-resume`.
 * **Perf budget**: the server is single-process asyncio; a PR that adds
   per-command or per-tick work should note the cost (the nightly soak and
   the 30-agent farm are the canaries).
