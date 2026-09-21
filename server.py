@@ -3582,10 +3582,9 @@ def _memory_mb():
 def start_dashboard():
     import threading
     here = dirname(abspath(__file__))
+    # Canonical dashboard (revamp promoted in #207; old file deleted with
+    # the swap, /v2 kept as an alias). Chart lib vendored alongside.
     html_path = join(here, "dashboard.html")
-    # Revamp parallel file (#205): self-contained rebuild served at /v2
-    # with its vendored chart lib. Old dashboard untouched.
-    html2_path = join(here, "dashboard2.html")
     uplot_path = join(here, "uplot.min.js")
 
     class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
@@ -3630,8 +3629,10 @@ def start_dashboard():
             elif path in ("/", "/dashboard.html") and os.path.exists(html_path):
                 with open(html_path, "rb") as f:
                     self._send(f.read(), "text/html; charset=utf-8")
-            elif path == "/v2" and os.path.exists(html2_path):
-                with open(html2_path, "rb") as f:
+            elif path == "/v2" and os.path.exists(html_path):
+                # Swap alias (#207): /v2 keeps serving the canonical
+                # dashboard so existing bookmarks/soak scripts keep working.
+                with open(html_path, "rb") as f:
                     self._send(f.read(), "text/html; charset=utf-8")
             elif path == "/uplot.min.js" and os.path.exists(uplot_path):
                 with open(uplot_path, "rb") as f:

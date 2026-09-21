@@ -1,89 +1,39 @@
-"""Dashboard markup/JS consistency tests (no server needed).
+"""Dashboard contract tests (no server needed).
 
 Run from the repo root:  python tests/test_dashboard.py
-Covers #127: every tab has a view, every $("id") referenced in JS exists
-in markup, the default landing is Overview, and placeholder panels point
-at their follow-up issues.
+Covers #207: the canonical dashboard.html (promoted from dashboard2.html
+in the swap) keeps every tab/view pairing, every $("id") referenced in JS
+exists in markup, the default landing is Overview, and the snapshot-server
+markers the client depends on are present. Old dashboard.html retired with
+the swap; its blocks were removed, not ported.
 """
 import os
 import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# --- canonical dashboard contract (#207 swap of the #205 revamp) ---
 html = open(os.path.join(ROOT, "dashboard.html"), encoding="utf-8").read()
-
-# --- every data-tab has a matching view div ---
 tabs = re.findall(r'data-tab="([\w-]+)"', html)
 views = re.findall(r'id="(view-[\w-]+)"', html)
 assert tabs, "no tabs found"
 for tab in tabs:
     assert f"view-{tab}" in views, f"tab {tab!r} has no view div"
-print(f"TABS_OK ({len(tabs)} tabs, {len(views)} views)")
-
-# --- every $("literal") referenced in JS exists in markup ---
 ids = set(re.findall(r'id="([\w-]+)"', html))
 used = set(re.findall(r'\$\("([\w-]+)"\)', html))
-missing = used - ids
-assert not missing, f"JS references missing ids: {sorted(missing)}"
-print(f"IDS_OK ({len(used)} referenced ids all present)")
-
-# --- default landing is Overview ---
+assert not (used - ids), f"JS references missing ids: {sorted(used - ids)}"
 m = re.search(r'<div class="tab active" data-tab="([\w-]+)"', html)
 assert m and m.group(1) == "overview", "default tab is not overview"
-m = re.search(r'<div id="(view-[\w-]+)" class="tabview active"', html)
-assert m and m.group(1) == "view-overview", "default view is not overview"
-print("DEFAULT_TAB_OK")
-
-# --- Phase 2 widgets exist: health pill, volume chart, canvas map, drawer ---
-for wid in ("ovHealth", "ovVolume", "worldMapCanvas", "roomDrawer"):
-    assert f'id="{wid}"' in html, f"missing widget {wid}"
-print("PHASE2_WIDGETS_OK")
-
-# --- placeholder panels point at follow-up work (no bare TODOs) ---
-for view in ("agents", "quests", "crafting", "config"):
-    block = re.search(rf'<div id="view-{view}" class="tabview">(.*?)</div>\s*</div>',
-                      html, re.DOTALL)
-    assert block, f"view-{view} block not found"
-    assert re.search(r"#\d+", block.group(1)), f"view-{view} has no issue ref"
-stray = [line for line in html.splitlines()
-          if re.search(r"TODO|FIXME|XXX", line) and "coming in" not in line.lower()
-          and "lands here" not in line.lower()]
-assert not stray, f"stray markers: {stray[:3]}"
-print("PLACEHOLDERS_OK")
-
-# --- #76: metric/config labels carry hover tooltips (range + impact) ---
-titled = re.findall(r'title="([^"]*)"', html)
-assert len(titled) >= 40, f"too few tooltips: {len(titled)}"
-assert not re.search(r'title=""', html), "empty title attribute"
-assert all(len(t) >= 20 for t in titled), "tooltip too short to explain range/impact"
-for probe in ('<div class="l" title="GM treasury',
-               '<label for="gm-action" title="',
-               "CARD_TIPS"):
-    assert probe in html, f"tooltip probe missing: {probe[:40]}"
-print(f"TOOLTIPS_OK ({len(titled)} titles, all non-empty)")
-
-# --- dashboard2.html revamp contract (#205): same invariants, v2 specifics ---
-html2 = open(os.path.join(ROOT, "dashboard2.html"), encoding="utf-8").read()
-tabs2 = re.findall(r'data-tab="([\w-]+)"', html2)
-views2 = re.findall(r'id="(view-[\w-]+)"', html2)
-assert tabs2, "v2: no tabs found"
-for tab in tabs2:
-    assert f"view-{tab}" in views2, f"v2: tab {tab!r} has no view div"
-ids2 = set(re.findall(r'id="([\w-]+)"', html2))
-used2 = set(re.findall(r'\$\("([\w-]+)"\)', html2))
-assert not (used2 - ids2), f"v2: JS references missing ids: {sorted(used2 - ids2)}"
-m = re.search(r'<div class="tab active" data-tab="([\w-]+)"', html2)
-assert m and m.group(1) == "overview", "v2: default tab is not overview"
 # Vendored chart lib referenced (served by the dashboard HTTP handler).
-assert '<script src="/uplot.min.js">' in html2, "v2: uplot script tag missing"
+assert '<script src="/uplot.min.js">' in html, "uplot script tag missing"
 # Design tokens: spacing/type scales + font + radius on top of legacy vars.
 for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
-    assert tok in html2, f"v2: token {tok} missing"
+    assert tok in html, f"token {tok} missing"
 # Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are
 # functional; only Config still points at its follow-up (#63).
-assert "revamp 2/4 (#206)" not in html2, "v2: market/dungeon/gm still placeholder"
-assert "revamp 3/4 (#209)" not in html2, "v2: agents/quests/crafting still placeholder"
-assert "(#63)" in html2, "v2: config editor pointer missing"
+assert "revamp 2/4 (#206)" not in html, "market/dungeon/gm still placeholder"
+assert "revamp 3/4 (#209)" not in html, "agents/quests/crafting still placeholder"
+assert "(#63)" in html, "config editor pointer missing"
 for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
              "gm-action", "gm-players", "gm-rooms",
@@ -92,65 +42,65 @@ for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "matSupply", "noSupply", "matOrders", "noMatOrders",
              "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
              "configRows", "themeToggle"):
-    assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+    assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Players tab split out of World (more tabs, less content each).
-assert '<div class="tab" data-tab="players">Players</div>' in html2
-assert '<div id="view-players" class="tabview">' in html2
+assert '<div class="tab" data-tab="players">Players</div>' in html
+assert '<div id="view-players" class="tabview">' in html
 # North-up map: compass deltas put north exits above their source.
-assert "north: [0, -1]" in html2 and "south: [0, 1]" in html2
+assert "north: [0, -1]" in html and "south: [0, 1]" in html
 # No forced horizontal scroll: the 720px canvas floor is gone.
-assert "min-width: 720px" not in html2
+assert "min-width: 720px" not in html
 # Tiles hold still: reserved widths + tabular numerals.
-assert "tabular-nums" in html2 and "min-height: 120px" in html2
+assert "tabular-nums" in html and "min-height: 120px" in html
 # Round 2 follow-ups: no hardcoded dark surfaces remain (GM black stripe
 # was #gmlog's #0b0f13; the map canvas fill is token-read in JS now).
-assert "background: #0b0f13" not in html2
-assert 'background: var(--panel2)' in html2
+assert "background: #0b0f13" not in html
+assert 'background: var(--panel2)' in html
 # Tiles can never overlap: the world fits its container width with tiles
 # scaled down as cells narrow (round 3), and the layout returns world
 # dims the canvas sizes itself from.
-assert "worldW, worldH" in html2 and "tileW, tileH" in html2
+assert "worldW, worldH" in html and "tileW, tileH" in html
 # Charts: empty states render axes (no values.length early-out), themed
 # palette keys at every call site, refit helper + tab-switch hook.
-assert "!values.length" not in html2 and "history.length < 2" not in html2
-assert "hist.length >= 2" not in html2
+assert "!values.length" not in html and "history.length < 2" not in html
+assert "hist.length >= 2" not in html
 for key in ('"blue"', '"purple"', '"amber"'):
-    assert key in html2, f"v2: palette key {key} missing"
-assert "requestAnimationFrame(resizeCharts)" in html2
+    assert key in html, f"palette key {key} missing"
+assert "requestAnimationFrame(resizeCharts)" in html
 # Containment: grid blowout kill, table scroll regions, capped roster,
 # block canvas in trends.
 for tok in (".grid > * { min-width: 0; }", ".tscroll.cap", ".trend canvas"):
-    assert tok in html2, f"v2: containment {tok} missing"
+    assert tok in html, f"containment {tok} missing"
 # Quest turn-in feed + recipe browser widgets present.
 for wid in ("questFeed", "recipeSearch", "recipeRows", "noRecipes"):
-    assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+    assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Round 3: uPlot layers are absolutely positioned (the stacked-layers +
 # overflow clip blanked every chart); the world fits its container with
 # scaled tiles instead of growing+scrolling.
-assert ".trend .u-under" in html2 and "position: absolute" in html2
-assert "availW" in html2 and "tileW, tileH" in html2
-assert "TILE_W + TILE_GAP" not in html2, "v2: map still grows+scrolls"
+assert ".trend .u-under" in html and "position: absolute" in html
+assert "availW" in html and "tileW, tileH" in html
+assert "TILE_W + TILE_GAP" not in html, "map still grows+scrolls"
 # Crafting order: flow first, recipe browser last.
-assert html2.index("Recent flow") < html2.index("Recipe browser")
+assert html.index("Recent flow") < html.index("Recipe browser")
 # Indoor/outdoor legend + full shelter coverage in world.json.
-assert "solid tile = indoor, dashed = outdoor" in html2
+assert "solid tile = indoor, dashed = outdoor" in html
 import json as _json, os as _os
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
 assert len(_world["rooms"]) == 32
 assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
 # Settled-price panel renamed to plain words.
-assert "Price per completed sale" in html2
-assert "Settled-price history" not in html2
+assert "Price per completed sale" in html
+assert "Settled-price history" not in html
 # Split-lane live feel: SSE stream + shared row helper + start_ts ticker.
 for tok in ("EventSource", "/api/activity/stream", "activityRow",
             "actMaxSeq", "start_ts", "startTs"):
-    assert tok in html2, f"v2: split-lane token {tok} missing"
+    assert tok in html, f"split-lane token {tok} missing"
 # /OC robustness: guarded scores/servers/cmdClass, seq sort, empty states.
-assert ".score.toFixed" not in html2, "v2: unguarded toFixed survives"
-assert "s.server.players_online" not in html2, "v2: unguarded s.server survives"
-assert "cmd-\" + (cmd" in html2 or 'cmd-" + (cmd' in html2
-assert "a.seq ?? -1" in html2 and "localeCompare" in html2
-assert "No scores recorded yet." in html2
+assert ".score.toFixed" not in html, "unguarded toFixed survives"
+assert "s.server.players_online" not in html, "unguarded s.server survives"
+assert "cmd-\" + (cmd" in html or 'cmd-" + (cmd' in html
+assert "a.seq ?? -1" in html and "localeCompare" in html
+assert "No scores recorded yet." in html
 # Server lane: seq field, fan-out registry, SSE route, start timestamp.
 import re as _re
 _srv = open(_os.path.join(_os.path.dirname(__file__), "..", "server.py")).read()
@@ -160,60 +110,60 @@ for tok in ('"seq": activity_seq', "activity_subscribers",
 # Shelter veto: market is outdoor.
 assert _world["rooms"]["market"]["shelter"] is False
 # Quest panel states the full turn-in chain, not just the brief.
-assert "turn-in:" in html2 and "hand it over" in html2
+assert "turn-in:" in html and "hand it over" in html
 # Chart readouts: always-visible current value per graph.
 for wid in ("ovPlayersVal", "ovScoreVal", "ovVolumeVal",
             "histPlayersVal", "histScoreVal", "m-priceHistVal"):
-    assert f'id="{wid}"' in html2, f"v2: missing readout {wid}"
-assert ".trendval" in html2 and "setTrendVal" in html2
+    assert f'id="{wid}"' in html, f"missing readout {wid}"
+assert ".trendval" in html and "setTrendVal" in html
 # Sort rule: every data table sortable + div-list controls present.
 for tid in ("perf", "agents", "orders", "tradeHistory", "bosses",
             "matSupply", "matOrders", "questCatalog", "recipeRows",
             "steamOrders"):
-    assert f'data-sort="{tid}"' in html2, f"v2: table {tid} not sortable"
+    assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
 for wid in ("questFeedSort", "agentActivitySort", "activitySort",
             "dungeonSort"):
-    assert f'id="{wid}"' in html2, f"v2: missing sort control {wid}"
-assert "function sortRows" in html2 and "bindSortTables()" in html2
+    assert f'id="{wid}"' in html, f"missing sort control {wid}"
+assert "function sortRows" in html and "bindSortTables()" in html
 # Recipe spec: ingredients column last, sortable result/tier/category.
-ri = html2.index('data-sort="recipeRows"')
-assert ri < html2.index("<th>tier</th>") < html2.index("<th>category</th>")
-assert html2.index("<th>category</th>") < html2.index("<th>ingredients</th>")
+ri = html.index('data-sort="recipeRows"')
+assert ri < html.index("<th>tier</th>") < html.index("<th>category</th>")
+assert html.index("<th>category</th>") < html.index("<th>ingredients</th>")
 # Steam-market panel: picker, range, stats, ladder, orders, median/volume.
 for wid in ("steamItem", "steamRange", "st-lowask", "st-med", "st-vol",
             "st-chart", "st-ladder", "st-ladderHead", "steamOrders",
             "noSteamOrders"):
-    assert f'id="{wid}"' in html2, f"v2: missing steam widget {wid}"
-assert "uPlot.paths.bars" in html2 and "Item market" in html2
+    assert f'id="{wid}"' in html, f"missing steam widget {wid}"
+assert "uPlot.paths.bars" in html and "Item market" in html
 # Hover readouts: cursor + setCursor hook + timestamps on every chart.
-assert html2.count("setCursor") >= 2, "v2: hover hooks missing"
-assert "fmtTs" in html2 and ".u-cursor-x" in html2
+assert html.count("setCursor") >= 2, "hover hooks missing"
+assert "fmtTs" in html and ".u-cursor-x" in html
 # Theme micro-fix: toggle invalidates the map key AND repaints at once.
-assert 'lastMapKey = "";' in html2
-i = html2.index('$("themeToggle").addEventListener')
-assert "renderAll(lastState)" in html2[i:i + 1200], "v2: toggle does not repaint at once"
-assert "drag: {x: false, y: false}" in html2
-assert 'id="st-tip"' in html2
+assert 'lastMapKey = "";' in html
+i = html.index('$("themeToggle").addEventListener')
+assert "renderAll(lastState)" in html[i:i + 1200], "toggle does not repaint at once"
+assert "drag: {x: false, y: false}" in html
+assert 'id="st-tip"' in html
 # Commissions board: Quests-adjacent sortable panel + snapshot key.
 for wid in ("commissions", "noCommissions"):
-    assert f'id="{wid}"' in html2, f"v2: missing commissions widget {wid}"
-assert 'data-sort="commissions"' in html2
-assert "renderCommissions" in html2
-assert "<th>posted</th>" in html2 and "fmtAge" in html2
+    assert f'id="{wid}"' in html, f"missing commissions widget {wid}"
+assert 'data-sort="commissions"' in html
+assert "renderCommissions" in html
+assert "<th>posted</th>" in html and "fmtAge" in html
 for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot",
             '"created_ts": c.get("created_ts", 0)'):
     assert tok in _srv, f"server: commissions token {tok} missing"
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
-assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"
+assert "setInterval(tick" not in html, "1s setInterval loop still present"
 for tok in ("function setHTML", "lastMapKey", "_dataKey", "slice(-80)",
             "visibilitychange", "schedulePoll", "10000 : 2000"):
-    assert tok in html2, f"v2: perf token {tok} missing"
+    assert tok in html, f"perf token {tok} missing"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
-assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
+assert "drawLineChart" not in html, "legacy canvas charts still present"
 # #211 regression pin: sections must receive the snapshot (render(s)).
-assert re.search(r"try \{\s*render\(s\);", html2), "v2: renderAll drops s"
-print("DASHBOARD2_OK")
+assert re.search(r"try \{\s*render\(s\);", html), "renderAll drops s"
+print("DASHBOARD_OK")
 
 # --- renderMarket tolerates partial snapshots (#246) ---
 rm = re.search(r"function renderMarket\(m\) \{(.*?)\n\}\n", html, re.DOTALL)
