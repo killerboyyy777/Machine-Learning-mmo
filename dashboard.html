@@ -867,11 +867,13 @@ function renderWorldMap(rooms) {
     // Indoor/outdoor (round 3, map-only): outdoor tiles melt into the map
     // background with a dashed dim edge; indoor tiles keep the solid panel
     // look. Missing flag (partial snapshots) keeps the old solid style.
+    // Spawn (town_square, outdoor): accent-colored DASHED border carries
+    // both signals at once (spawn accent + outdoor dash).
     const outdoor = room.shelter === false;
     const home = room.id === "town_square";
     ctx.fillStyle = outdoor ? bg : tile;
     ctx.strokeStyle = home ? acc : (outdoor ? sub : edge);
-    ctx.setLineDash(!home && outdoor ? [5, 4] : []);
+    ctx.setLineDash(outdoor ? [5, 4] : []);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);

@@ -84,6 +84,8 @@ assert "TILE_W + TILE_GAP" not in html, "map still grows+scrolls"
 assert html.index("Recent flow") < html.index("Recipe browser")
 # Indoor/outdoor legend + full shelter coverage in world.json.
 assert "solid tile = indoor, dashed = outdoor" in html
+# Spawn-border fix: outdoor-home tile carries accent AND dash.
+assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
 import json as _json, os as _os
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
 assert len(_world["rooms"]) == 32
