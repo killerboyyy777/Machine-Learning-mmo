@@ -27,7 +27,7 @@ area:tests:
       - any-glob-to-any-file:
           - tests/**/*
 
-# area:docs — README, CHANGELOG, TODO, protocol docs
+# area:docs — README, CHANGELOG, protocol docs
 area:docs:
   - changed-files:
       - any-glob-to-any-file:
