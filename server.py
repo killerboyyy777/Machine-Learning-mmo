@@ -3433,6 +3433,22 @@ def _quest_snapshot():
     }
 
 
+def _commission_snapshot():
+    """Dashboard commissions board: open + closed bounties, newest first,
+    capped (filled/cancelled records persist server-side, unbounded)."""
+    cmds = sorted(_commissions.values(), key=lambda c: c.get("id", 0), reverse=True)[:100]
+    return [
+        {"id": c.get("id"), "poster": c.get("poster", ""),
+         "target": c.get("target", ""),
+         "required_kills": c.get("required_kills", 0),
+         "reward_gold": c.get("reward_gold", 0),
+         "reward_xp": c.get("reward_xp", 0),
+         "status": c.get("status", "open"),
+         "filled_by": c.get("filled_by")}
+        for c in cmds
+    ]
+
+
 def world_snapshot():
     rooms = []
     for rid, r in ROOMS.items():
@@ -3499,6 +3515,7 @@ def world_snapshot():
         "bosses": bosses,
         "dungeons": dungeon_views,
         "quests": _quest_snapshot(),
+        "commissions": _commission_snapshot(),
         "recipes": RECIPE_VIEWS,
         "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),
                     "items": sorted([v["name"] for v in ITEM_DEFS.values()]),

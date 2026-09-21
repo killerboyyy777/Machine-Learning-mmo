@@ -185,6 +185,13 @@ for wid in ("steamItem", "steamRange", "st-lowask", "st-med", "st-vol",
             "noSteamOrders"):
     assert f'id="{wid}"' in html2, f"v2: missing steam widget {wid}"
 assert "uPlot.paths.bars" in html2 and "Item market" in html2
+# Commissions board: Quests-adjacent sortable panel + snapshot key.
+for wid in ("commissions", "noCommissions"):
+    assert f'id="{wid}"' in html2, f"v2: missing commissions widget {wid}"
+assert 'data-sort="commissions"' in html2
+assert "renderCommissions" in html2
+for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot"):
+    assert tok in _srv, f"server: commissions token {tok} missing"
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
 assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"
