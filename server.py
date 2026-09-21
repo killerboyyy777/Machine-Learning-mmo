@@ -1780,8 +1780,18 @@ async def cmd_attack(player, msg):
         present = sorted({c.lower() for c in contributors
                           for p in players_by_name.get(c.lower(), ())
                           if p.logged_in and p.room == player.room})
-        share_each = 0 if npc_is_quest_npc else round(npc.get("gold", 0) * _buff_mult("gold") / max(1, len(present)))
-        for cname in present:
+        if npc_is_quest_npc:
+            shares = [0] * len(present)
+        else:
+            # Integer-safe split: floor + hand the remainder out one gold at a
+            # time, so the faucet always pays the full pot. round() alone can
+            # zero every share on small pots (e.g. 2g over 4 contributors) and
+            # leak the NPC's gold.
+            total = int(round(npc.get("gold", 0) * _buff_mult("gold")))
+            n = max(1, len(present))
+            base, rem = divmod(total, n)
+            shares = [base + (1 if i < rem else 0) for i in range(n)]
+        for cname, share_each in zip(present, shares):
             for p in players_by_name.get(cname, ()):
                 if p.logged_in and p.room == player.room:
                     p.gold += share_each
@@ -2736,9 +2746,6 @@ async def cmd_party_accept(player, msg):
             _delete_party(old)
     party.member_ids.add(player.id)
     player.party_id = party.id
-    leader = players.get(party.leader_id)
-    if leader and leader.logged_in:
-        await send(leader, {"type": "message", "text": "You are now the party leader."})
     await _notify_party(party, f"{player.name} joins the party.")
     await send(player, stats_view(player))
 
@@ -3861,6 +3868,14 @@ async def handle_connection(ws):
                 if name_owners.get(player.name.lower()) == pid:
                     del name_owners[player.name.lower()]
                 await _leave_party_on_disconnect(player)
+                # Carried gold is otherwise session-scoped (never written to a
+                # score entry), so a disconnect would vaporize it. Park it in
+                # gold_bank -- the same offline-holding slot the offline-seller
+                # path (credit_gold) uses -- so the next login pays it out.
+                if player.gold > 0:
+                    entry = get_score_entry(player.name)
+                    entry["gold_bank"] = entry.get("gold_bank", 0) + player.gold
+                    mark_scores_dirty()
                 lvl = get_score_entry(player.name)["level"]
                 vlog(f"player {player.name} (lv{lvl}) disconnected")
             else:

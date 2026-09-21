@@ -33,7 +33,7 @@ thresholds (CURRICULUM_THRESHOLDS). Default is stage 3 / manual: today's
 behavior, byte-identical.
 
 The observation covers everything a fixed-size vector can reasonably carry
-about the 0.5 systems (instanced party dungeons, the player market, parties,
+about the core systems (instanced party dungeons, the player market, parties,
 and leveling), plus the Town Guard repeatable quest:
   - room one-hot over the static surface world + is_dungeon / floor number
   - exit mask across ALL directions including "up"/"down"/"enter"
@@ -84,9 +84,11 @@ Actions added on top of the old (move/attack/take/rest/look) set:
     (stall slots are capped per seller; market_expand buys +1 for gold)
   - party_invite / party_accept / party_leave / party_info
   - heal                               (full heal, only on Sister Maren's tile)
-  - quest_accept / quest_turn_in / quest_list   (Town Guard repeatable quests;
-    both quests share the giver/room and the accept -> objective -> turn-in
-    pattern. quest_accept/quest_turn_in default to "guard_charm": craft the
+  - quest_accept / quest_turn_in / quest_list   (four repeatable quests:
+    guard_charm + delver share the Town Guard giver in town_square; remedy +
+    tonic share Sister Maren in healing_spring. Each follows the accept ->
+    objective -> turn-in pattern. quest_accept/quest_turn_in default to
+    "guard_charm": craft the
     charm from 1x Treant Bark + 1x Troll Hide + 1x Ectoplasm, turn in by the
     guard for fixed XP + gold + score, repeatable. quest2_accept/quest2_turn_in
     drive the "delver" quest instead: clear dungeon floors, report back.)
@@ -575,6 +577,7 @@ HEALER_NAME = "Sister Maren"
 # cmd_take/gather/buy/market_buy reject: worn gear and up to 5 arrows ride free).
 INVENTORY_CAP = getattr(srv, "INVENTORY_CAP", 24)
 AMMO_EXEMPT_COUNT = getattr(srv, "AMMO_EXEMPT_COUNT", 5)
+PARTY_MAX_MEMBERS = getattr(srv, "PARTY_MAX_MEMBERS", 4)
 
 
 def pack_units(state):
@@ -1760,7 +1763,7 @@ class TextMMOEnv:
             "score_norm": s["score"] / 100.0,     # arbitrary scale, tune to taste
             "variety": s["variety"],
             "allies_norm": min(s["other_players"], 5) / 5.0,
-            "party_norm": min(s["party_size"], srv.PARTY_MAX_MEMBERS) / srv.PARTY_MAX_MEMBERS,
+            "party_norm": min(s["party_size"], PARTY_MAX_MEMBERS) / PARTY_MAX_MEMBERS,
             "level_norm": min(s["level"], 20) / 20.0,
             "xp_progress": min(1.0, s["xp"] / max(1.0, s["xp_to_next"])),
             "market_norm": market_norm,
