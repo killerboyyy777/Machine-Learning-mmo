@@ -4,165 +4,197 @@
     "town_square": {
       "name": "Town Square",
       "description": "A worn stone square at the heart of town. A notice board creaks in the wind. Benches invite weary travelers to rest (2 gold).",
+      "shelter": false,
       "exits": {"north": "forest_edge", "east": "old_shop", "south": "graveyard", "west": "market"},
       "rest_area": true
     },
     "market": {
       "name": "Market",
       "description": "A small market stall run by a wandering merchant. Prices are chalked on a board. A corner bunkhouse rents rest (2 gold).",
+      "shelter": false,
       "exits": {"east": "town_square", "west": "artisan_row"},
       "rest_area": true
     },
     "old_shop": {
       "name": "Old Shop",
       "description": "Dusty shelves line the walls of this abandoned shop. Something might still be worth grabbing.",
+      "shelter": true,
       "exits": {"west": "town_square", "east": "harbor_lane"}
     },
     "forest_edge": {
       "name": "Forest Edge",
       "description": "Tall pines mark the border of a dark forest. You hear rustling nearby.",
+      "shelter": false,
       "exits": {"south": "town_square", "north": "deep_forest", "east": "healing_spring"}
     },
     "healing_spring": {
       "name": "Healing Spring",
       "description": "A clear spring bubbles up between mossy stones. The water looks restorative. Pilgrims rest here (2 gold).",
+      "shelter": false,
       "exits": {"west": "forest_edge", "east": "stillwater_lake"},
       "rest_area": true
     },
     "deep_forest": {
       "name": "Deep Forest",
       "description": "Sunlight barely reaches the forest floor here. Something is watching you.",
+      "shelter": false,
       "exits": {"south": "forest_edge", "east": "mountain_pass", "north": "pinewood_thicket"}
     },
     "mountain_pass": {
       "name": "Mountain Pass",
       "description": "A narrow, windswept pass. It's a dangerous shortcut, but a shortcut all the same.",
+      "shelter": false,
       "exits": {"west": "deep_forest", "down": "graveyard", "east": "highland_trail"}
     },
     "graveyard": {
       "name": "Old Graveyard",
       "description": "Crooked headstones lean at odd angles. The air is cold.",
+      "shelter": false,
       "exits": {"north": "town_square", "up": "mountain_pass", "enter": "dungeon_entrance", "down": "crypt_hall"}
     },
     "harbor_lane": {
       "name": "Harbor Lane",
       "description": "A cobbled lane sloping down to the water. Gulls cry overhead and ropes creak.",
+      "shelter": false,
       "exits": {"west": "old_shop", "east": "salt_docks", "north": "chandlery"}
     },
     "salt_docks": {
       "name": "Salt Docks",
       "description": "Barnacled piers jut into grey water. Rough folk load and unload cargo day and night.",
+      "shelter": false,
       "exits": {"west": "harbor_lane", "south": "tide_pools"}
     },
     "chandlery": {
       "name": "Chandlery",
       "description": "A cramped supply shop smelling of tar and lamp oil. Sailors' remedies line the shelves.",
+      "shelter": true,
       "exits": {"south": "harbor_lane"}
     },
     "tide_pools": {
       "name": "Tide Pools",
       "description": "Shallow pools left by the tide, full of crabs and glinting shells.",
+      "shelter": false,
       "exits": {"north": "salt_docks"}
     },
     "artisan_row": {
       "name": "Artisan Row",
       "description": "Workshops hum along this narrow street. Hammers ring and leather stretches.",
+      "shelter": false,
       "exits": {"east": "market", "west": "tannery", "north": "smithy"}
     },
     "tannery": {
       "name": "Tannery",
       "description": "The sharp smell of curing hides hangs thick. Pelts stretch on wooden frames.",
+      "shelter": true,
       "exits": {"east": "artisan_row"}
     },
     "smithy": {
       "name": "Smithy",
       "description": "A soot-stained forge. Half-finished blades cool in a trough of hissing water.",
+      "shelter": true,
       "exits": {"south": "artisan_row", "east": "forge"}
     },
     "forge": {
       "name": "Deep Forge",
       "description": "The inner forge burns unnaturally hot. Something small and angry tends the coals.",
+      "shelter": true,
       "exits": {"west": "smithy"}
     },
     "stillwater_lake": {
       "name": "Stillwater Lake",
       "description": "A glassy lake fed by the spring. Ripples move against the wind sometimes.",
+      "shelter": false,
       "exits": {"west": "healing_spring", "east": "reed_beds", "north": "lake_shrine"}
     },
     "reed_beds": {
       "name": "Reed Beds",
       "description": "Tall reeds whisper around muddy channels. Herbs grow thick between the roots.",
+      "shelter": false,
       "exits": {"west": "stillwater_lake", "north": "heron_nest"}
     },
     "lake_shrine": {
       "name": "Lake Shrine",
       "description": "A weathered stone shrine overlooks the water. Offerings of shells have piled for years. The quiet invites rest (2 gold).",
+      "shelter": false,
       "exits": {"south": "stillwater_lake"},
       "rest_area": true
     },
     "heron_nest": {
       "name": "Heron Nest",
       "description": "A massive nest of driftwood crowns the reeds. Huge feathers drift on the breeze.",
+      "shelter": false,
       "exits": {"south": "reed_beds"}
     },
     "pinewood_thicket": {
       "name": "Pinewood Thicket",
       "description": "Dense pinewood north of the deep forest. Axe-marks scar the oldest trunks.",
+      "shelter": false,
       "exits": {"south": "deep_forest", "north": "frozen_pass", "east": "lumber_camp"}
     },
     "frozen_pass": {
       "name": "Frozen Pass",
       "description": "A high pass where snow lingers year-round. The wind cuts like a blade.",
+      "shelter": false,
       "exits": {"south": "pinewood_thicket", "north": "storm_summit"}
     },
     "lumber_camp": {
       "name": "Lumber Camp",
       "description": "An abandoned logging camp. Felled trunks rot beside a collapsed bunkhouse.",
+      "shelter": false,
       "exits": {"west": "pinewood_thicket"}
     },
     "storm_summit": {
       "name": "Storm Summit",
       "description": "The highest peak for miles. Lightning scars the black rock between snowdrifts.",
+      "shelter": false,
       "exits": {"south": "frozen_pass"}
     },
     "highland_trail": {
       "name": "Highland Trail",
       "description": "A rocky trail winding through high meadows dotted with sweet mountain berries.",
+      "shelter": false,
       "exits": {"west": "mountain_pass", "east": "eagle_roost", "north": "stone_circle"}
     },
     "eagle_roost": {
       "name": "Eagle Roost",
       "description": "Sheer cliffs pocked with nests. A dizzying shaft of air rises to a higher ledge.",
+      "shelter": false,
       "exits": {"west": "highland_trail", "up": "sky_nest"}
     },
     "stone_circle": {
       "name": "Stone Circle",
       "description": "Ancient standing stones hum faintly. Moss and mountain berries grow between them.",
+      "shelter": false,
       "exits": {"south": "highland_trail"}
     },
     "sky_nest": {
       "name": "Sky Nest",
       "description": "A vast aerie above the clouds. Frost crystals glitter in a giant's nest of bones.",
+      "shelter": false,
       "exits": {"down": "eagle_roost"}
     },
     "crypt_hall": {
       "name": "Crypt Hall",
       "description": "A torch-lit hall beneath the graveyard. Stone sarcophagi line the damp walls.",
+      "shelter": true,
       "exits": {"up": "graveyard", "south": "burial_chamber", "east": "bone_pit"}
     },
     "burial_chamber": {
       "name": "Burial Chamber",
       "description": "A sealed chamber of old kings. Grave goods glint in the dark.",
+      "shelter": true,
       "exits": {"north": "crypt_hall"}
     },
     "bone_pit": {
       "name": "Bone Pit",
       "description": "A pit of ancient bones that shift and clatter on their own. Something down here is wrong.",
+      "shelter": true,
       "exits": {"west": "crypt_hall", "down": "deep_catacombs"}
     },
     "deep_catacombs": {
       "name": "Deep Catacombs",
       "description": "The lowest dark, where even the dead seem afraid to go. A lost blade gleams ahead.",
+      "shelter": true,
       "exits": {"up": "bone_pit"}
     }
   },

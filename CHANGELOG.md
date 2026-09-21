@@ -3,6 +3,16 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Live dashboard v2 rebuild (#209, 3/4 in review): parallel /v2 UI over
+  read-only GET /api/state (additive keys only) - Overview health cards +
+  uPlot trends, north-up world map with pan/zoom/room drawer and
+  indoor/outdoor tiles, Players (performance, top-10, character tracker),
+  Market (treasury, orders, price-per-sale chart, trade history), Dungeons
+  (buffs, GM bosses, instances), Agents (capped live roster, action feed),
+  Quests (catalog, per-quest turn-in feed), Crafting (flow-first, supply,
+  recipe browser), read-only Config, and a verbatim GM console.
+  Light/dark theme, empty-state charts/axes, change-guarded rendering
+  with 2s visible / 10s hidden snapshot polls.
 - Supervisor per-step learn hook (#292, slice 5/6): the supervisor calls
   a per-step hook as (prev_obs, action, reward, next_obs, done), wiring
   transitions into the previously dead-from-conductor LinearQAgent.update

@@ -79,14 +79,136 @@ assert '<script src="/uplot.min.js">' in html2, "v2: uplot script tag missing"
 # Design tokens: spacing/type scales + font + radius on top of legacy vars.
 for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
     assert tok in html2, f"v2: token {tok} missing"
-# Market/Dungeons/GM are functional since 2/4; Agents/Quests/Crafting
-# (3/4) and Config (#63) remain placeholders.
+# Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are
+# functional; only Config still points at its follow-up (#63).
 assert "revamp 2/4 (#206)" not in html2, "v2: market/dungeon/gm still placeholder"
-assert "revamp 3/4 (#209)" in html2
+assert "revamp 3/4 (#209)" not in html2, "v2: agents/quests/crafting still placeholder"
+assert "(#63)" in html2, "v2: config editor pointer missing"
 for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
-             "gm-action", "gm-players", "gm-rooms"):
+             "gm-action", "gm-players", "gm-rooms",
+             "agents", "noAgents", "agentActivity",
+             "q-active", "q-turnins", "questCatalog",
+             "matSupply", "noSupply", "matOrders", "noMatOrders",
+             "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
+             "configRows", "themeToggle"):
     assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+# Players tab split out of World (more tabs, less content each).
+assert '<div class="tab" data-tab="players">Players</div>' in html2
+assert '<div id="view-players" class="tabview">' in html2
+# North-up map: compass deltas put north exits above their source.
+assert "north: [0, -1]" in html2 and "south: [0, 1]" in html2
+# No forced horizontal scroll: the 720px canvas floor is gone.
+assert "min-width: 720px" not in html2
+# Tiles hold still: reserved widths + tabular numerals.
+assert "tabular-nums" in html2 and "min-height: 120px" in html2
+# Round 2 follow-ups: no hardcoded dark surfaces remain (GM black stripe
+# was #gmlog's #0b0f13; the map canvas fill is token-read in JS now).
+assert "background: #0b0f13" not in html2
+assert 'background: var(--panel2)' in html2
+# Tiles can never overlap: the world fits its container width with tiles
+# scaled down as cells narrow (round 3), and the layout returns world
+# dims the canvas sizes itself from.
+assert "worldW, worldH" in html2 and "tileW, tileH" in html2
+# Charts: empty states render axes (no values.length early-out), themed
+# palette keys at every call site, refit helper + tab-switch hook.
+assert "!values.length" not in html2 and "history.length < 2" not in html2
+assert "hist.length >= 2" not in html2
+for key in ('"blue"', '"purple"', '"amber"'):
+    assert key in html2, f"v2: palette key {key} missing"
+assert "requestAnimationFrame(resizeCharts)" in html2
+# Containment: grid blowout kill, table scroll regions, capped roster,
+# block canvas in trends.
+for tok in (".grid > * { min-width: 0; }", ".tscroll.cap", ".trend canvas"):
+    assert tok in html2, f"v2: containment {tok} missing"
+# Quest turn-in feed + recipe browser widgets present.
+for wid in ("questFeed", "recipeSearch", "recipeRows", "noRecipes"):
+    assert f'id="{wid}"' in html2, f"v2: missing widget {wid}"
+# Round 3: uPlot layers are absolutely positioned (the stacked-layers +
+# overflow clip blanked every chart); the world fits its container with
+# scaled tiles instead of growing+scrolling.
+assert ".trend .u-under" in html2 and "position: absolute" in html2
+assert "availW" in html2 and "tileW, tileH" in html2
+assert "TILE_W + TILE_GAP" not in html2, "v2: map still grows+scrolls"
+# Crafting order: flow first, recipe browser last.
+assert html2.index("Recent flow") < html2.index("Recipe browser")
+# Indoor/outdoor legend + full shelter coverage in world.json.
+assert "solid tile = indoor, dashed = outdoor" in html2
+import json as _json, os as _os
+_world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
+assert len(_world["rooms"]) == 32
+assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
+# Settled-price panel renamed to plain words.
+assert "Price per completed sale" in html2
+assert "Settled-price history" not in html2
+# Split-lane live feel: SSE stream + shared row helper + start_ts ticker.
+for tok in ("EventSource", "/api/activity/stream", "activityRow",
+            "actMaxSeq", "start_ts", "startTs"):
+    assert tok in html2, f"v2: split-lane token {tok} missing"
+# /OC robustness: guarded scores/servers/cmdClass, seq sort, empty states.
+assert ".score.toFixed" not in html2, "v2: unguarded toFixed survives"
+assert "s.server.players_online" not in html2, "v2: unguarded s.server survives"
+assert "cmd-\" + (cmd" in html2 or 'cmd-" + (cmd' in html2
+assert "a.seq ?? -1" in html2 and "localeCompare" in html2
+assert "No scores recorded yet." in html2
+# Server lane: seq field, fan-out registry, SSE route, start timestamp.
+import re as _re
+_srv = open(_os.path.join(_os.path.dirname(__file__), "..", "server.py")).read()
+for tok in ('"seq": activity_seq', "activity_subscribers",
+            "text/event-stream", '"start_ts": START_TIME'):
+    assert tok in _srv, f"server: split-lane token {tok} missing"
+# Shelter veto: market is outdoor.
+assert _world["rooms"]["market"]["shelter"] is False
+# Quest panel states the full turn-in chain, not just the brief.
+assert "turn-in:" in html2 and "hand it over" in html2
+# Chart readouts: always-visible current value per graph.
+for wid in ("ovPlayersVal", "ovScoreVal", "ovVolumeVal",
+            "histPlayersVal", "histScoreVal", "m-priceHistVal"):
+    assert f'id="{wid}"' in html2, f"v2: missing readout {wid}"
+assert ".trendval" in html2 and "setTrendVal" in html2
+# Sort rule: every data table sortable + div-list controls present.
+for tid in ("perf", "agents", "orders", "tradeHistory", "bosses",
+            "matSupply", "matOrders", "questCatalog", "recipeRows",
+            "steamOrders"):
+    assert f'data-sort="{tid}"' in html2, f"v2: table {tid} not sortable"
+for wid in ("questFeedSort", "agentActivitySort", "activitySort",
+            "dungeonSort"):
+    assert f'id="{wid}"' in html2, f"v2: missing sort control {wid}"
+assert "function sortRows" in html2 and "bindSortTables()" in html2
+# Recipe spec: ingredients column last, sortable result/tier/category.
+ri = html2.index('data-sort="recipeRows"')
+assert ri < html2.index("<th>tier</th>") < html2.index("<th>category</th>")
+assert html2.index("<th>category</th>") < html2.index("<th>ingredients</th>")
+# Steam-market panel: picker, range, stats, ladder, orders, median/volume.
+for wid in ("steamItem", "steamRange", "st-lowask", "st-med", "st-vol",
+            "st-chart", "st-ladder", "st-ladderHead", "steamOrders",
+            "noSteamOrders"):
+    assert f'id="{wid}"' in html2, f"v2: missing steam widget {wid}"
+assert "uPlot.paths.bars" in html2 and "Item market" in html2
+# Hover readouts: cursor + setCursor hook + timestamps on every chart.
+assert html2.count("setCursor") >= 2, "v2: hover hooks missing"
+assert "fmtTs" in html2 and ".u-cursor-x" in html2
+# Theme micro-fix: toggle invalidates the map key AND repaints at once.
+assert 'lastMapKey = "";' in html2
+i = html2.index('$("themeToggle").addEventListener')
+assert "renderAll(lastState)" in html2[i:i + 1200], "v2: toggle does not repaint at once"
+assert "drag: {x: false, y: false}" in html2
+assert 'id="st-tip"' in html2
+# Commissions board: Quests-adjacent sortable panel + snapshot key.
+for wid in ("commissions", "noCommissions"):
+    assert f'id="{wid}"' in html2, f"v2: missing commissions widget {wid}"
+assert 'data-sort="commissions"' in html2
+assert "renderCommissions" in html2
+assert "<th>posted</th>" in html2 and "fmtAge" in html2
+for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot",
+            '"created_ts": c.get("created_ts", 0)'):
+    assert tok in _srv, f"server: commissions token {tok} missing"
+# PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
+# throttled poll loop with hidden-tab slowdown.
+assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"
+for tok in ("function setHTML", "lastMapKey", "_dataKey", "slice(-80)",
+            "visibilitychange", "schedulePoll", "10000 : 2000"):
+    assert tok in html2, f"v2: perf token {tok} missing"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html2, "v2: legacy canvas charts still present"
 # #211 regression pin: sections must receive the snapshot (render(s)).

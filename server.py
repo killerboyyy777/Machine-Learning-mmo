@@ -7,6 +7,7 @@ Protocol is plain JSON over WebSocket. See README.md for the full list.
 import asyncio
 import json
 import os
+import queue
 import random
 import signal
 import sys
@@ -241,6 +242,25 @@ for nid, tmpl in WORLD["npcs"].items():
     npcs[nid] = {**tmpl, "id": nid, "alive": True, "respawn_at": None, "contributors": {}}
 
 RECIPES = WORLD.get("recipes", {})
+
+
+def _iname(iid):
+    return ITEM_DEFS.get(iid, {}).get("name", iid)
+
+
+# Dashboard recipe browser view: static, precomputed once (additive
+# snapshot key, read-only). Names resolved here so the client needs no
+# item-def lookup table.
+RECIPE_VIEWS = [
+    {"id": rid,
+     "result": _iname(rec.get("result", rid)),
+     "result_qty": rec.get("output_qty", 1),
+     "inputs": [{"item": _iname(iid), "qty": qty}
+                for iid, qty in (rec.get("inputs") or {}).items()],
+     "tier": rec.get("tier", 0),
+     "category": rec.get("category", "")}
+    for rid, rec in RECIPES.items()
+]
 
 
 def validate_world(data):
@@ -2356,6 +2376,11 @@ QUEST_TONIC_GOLD = 20
 QUEST_TONIC_POINTS = 12
 
 quest_turnin_times = []
+# Per-quest turn-in feed for the dashboard (who turned in what when).
+# Bounded deque discipline: newest last, trimmed on append.
+TURNIN_FEED_SIZE = 50
+quest_turnin_feed = []
+quest_feed_seq = 0
 
 # Quest giver category system - makes it easy to add/change quest NPCs.
 # Add new entries here to create new quest givers; kill penalties,
@@ -2533,8 +2558,13 @@ async def cmd_quest(player, msg):
         return find_npc_in_room(player.room, quest["giver_npc"]) is not None
 
     def _record_turnin():
+        global quest_feed_seq
         entry[qid_key(entry, qid, "completions")] = entry.get(qid_key(entry, qid, "completions"), 0) + 1
         quest_turnin_times.append(time.time())
+        quest_feed_seq += 1
+        quest_turnin_feed.append({"seq": quest_feed_seq, "t": time.strftime("%H:%M:%S"), "name": player.name, "qid": qid})
+        while len(quest_turnin_feed) > TURNIN_FEED_SIZE:
+            del quest_turnin_feed[0]
         mark_scores_dirty()
 
     if action == "accept":
@@ -3315,6 +3345,18 @@ def vlog(msg):
 START_TIME = time.time()
 command_log = []
 track_log = {}
+# Monotonic activity sequence: every command_log entry carries one, so the
+# dashboard can sort across midnight (HH:MM:SS strings don't) and SSE
+# consumers can resume with Last-Event-ID. Additive field, read-only use.
+activity_seq = 0
+# SSE fan-out for the dashboard live-activity stream (split-lane): one
+# bounded queue per connected viewer. log_command (asyncio thread) drops
+# an entry into each; each /api/activity/stream handler (HTTP thread)
+# drains its own. Full queues drop (that viewer resyncs from the snapshot
+# poll, which still carries activity), so a dead viewer never blocks the
+# game loop. 2-3 viewers + bot growth: trivial.
+ACTIVITY_STREAM_SIZE = 500
+activity_subscribers = []
 _score_history = {}
 _dashboard_history = []  # [{ts, players_online, top_scores: [{name, score}]}]
 _HISTORY_SAMPLE_INTERVAL = 30  # seconds between samples
@@ -3342,8 +3384,15 @@ def log_command(name, cmd, msg):
         detail = ""
     entry = get_score_entry(name) if name and name != "<new>" else None
     lvl = entry["level"] if entry else 1
-    entry_log = {"time": time.strftime("%H:%M:%S"), "name": name or "<new>", "cmd": cmd, "detail": detail, "level": lvl}
+    global activity_seq
+    activity_seq += 1
+    entry_log = {"seq": activity_seq, "time": time.strftime("%H:%M:%S"), "name": name or "<new>", "cmd": cmd, "detail": detail, "level": lvl}
     command_log.append(entry_log)
+    for q in list(activity_subscribers):
+        try:
+            q.put_nowait(entry_log)
+        except queue.Full:
+            pass
     if len(command_log) > ACTIVITY_LOG_SIZE:
         del command_log[0]
     if name and name != "<new>":
@@ -3380,14 +3429,32 @@ def _quest_snapshot():
         "active": active,
         "completions": completions,
         "turnins_last_min": len(quest_turnin_times),
+        "recent_turnins": list(quest_turnin_feed)[-20:],
     }
+
+
+def _commission_snapshot():
+    """Dashboard commissions board: open + closed bounties, newest first,
+    capped (filled/cancelled records persist server-side, unbounded)."""
+    cmds = sorted(_commissions.values(), key=lambda c: c.get("id", 0), reverse=True)[:100]
+    return [
+        {"id": c.get("id"), "poster": c.get("poster", ""),
+         "target": c.get("target", ""),
+         "required_kills": c.get("required_kills", 0),
+         "reward_gold": c.get("reward_gold", 0),
+         "reward_xp": c.get("reward_xp", 0),
+         "status": c.get("status", "open"),
+         "filled_by": c.get("filled_by"),
+         "created_ts": c.get("created_ts", 0)}
+        for c in cmds
+    ]
 
 
 def world_snapshot():
     rooms = []
     for rid, r in ROOMS.items():
         rooms.append({
-            "id": rid, "name": r["name"],
+            "id": rid, "name": r["name"], "shelter": bool(r.get("shelter", False)),
             "exits": [{"dir": d, "to": t, "to_name": ROOMS.get(t, {}).get("name", t)} for d, t in r.get("exits", {}).items()],
             "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
             "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
@@ -3436,6 +3503,7 @@ def world_snapshot():
         buffs_view[k] = remaining
     return {
         "server": {"ws_port": PORT, "gm_port": GM_PORT, "uptime": int(time.time() - START_TIME),
+                   "start_ts": START_TIME,
                    "players_online": len(online_players), "connections": len(players)},
         "rooms": rooms, "players": online_players, "scores": scores,
         "activity": list(command_log),
@@ -3448,6 +3516,8 @@ def world_snapshot():
         "bosses": bosses,
         "dungeons": dungeon_views,
         "quests": _quest_snapshot(),
+        "commissions": _commission_snapshot(),
+        "recipes": RECIPE_VIEWS,
         "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),
                     "items": sorted([v["name"] for v in ITEM_DEFS.values()]),
                     "rooms": sorted(list(ROOMS.keys()))},
@@ -3512,6 +3582,10 @@ def start_dashboard():
     uplot_path = join(here, "uplot.min.js")
 
     class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
+        # HTTP/1.1 keep-alive for everything (Content-Length is already
+        # sent on all routes) + required framing for the SSE stream below.
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, fmt, *args):
             if VERBOSE:
                 print(f"[http] {self.address_string()}: {fmt % args}")
@@ -3555,8 +3629,73 @@ def start_dashboard():
             elif path == "/uplot.min.js" and os.path.exists(uplot_path):
                 with open(uplot_path, "rb") as f:
                     self._send(f.read(), "application/javascript")
+            elif path == "/api/activity/stream":
+                self._serve_activity_stream()
             else:
                 self.send_error(404)
+
+        def _serve_activity_stream(self):
+            """Server-sent activity events (split-lane dashboard live feel).
+
+            Query ?since=SEQ and/or Last-Event-ID resume from a sequence;
+            replays missed entries (cap 100), then streams new ones as
+            `id:` + `data:` frames with :ping heartbeats. Ends when the
+            viewer disconnects (write raises) and unsubscribes itself.
+            Runs in this request's HTTP thread; never touches game state.
+            """
+            import urllib.parse as _up
+            since = 0
+            try:
+                qs = _up.parse_qs(_up.urlsplit(self.path).query)
+                if "since" in qs:
+                    since = int(qs["since"][0])
+            except (ValueError, IndexError):
+                pass
+            try:
+                leid = self.headers.get("Last-Event-ID")
+                if leid is not None:
+                    since = int(leid)
+            except (ValueError, TypeError):
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            def _frame(entry):
+                return (f"id: {entry['seq']}\n"
+                        f"data: {json.dumps(entry)}\n\n").encode()
+
+            missed = [e for e in command_log if e.get("seq", 0) > since][-100:]
+            if not missed and since > activity_seq:
+                # Stale cursor (e.g. server restarted, seq reset): send a
+                # fresh tail so the viewer never waits on a dead offset.
+                missed = list(command_log[-30:])
+            try:
+                for e in missed:
+                    self.wfile.write(_frame(e))
+                self.wfile.flush()
+                sub = queue.Queue(ACTIVITY_STREAM_SIZE)
+                activity_subscribers.append(sub)
+                try:
+                    while True:
+                        try:
+                            entry = sub.get(timeout=20)
+                        except queue.Empty:
+                            self.wfile.write(b": ping\n\n")
+                            self.wfile.flush()
+                            continue
+                        self.wfile.write(_frame(entry))
+                        self.wfile.flush()
+                finally:
+                    try:
+                        activity_subscribers.remove(sub)
+                    except ValueError:
+                        pass
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
     try:
         refresh_snapshot_json()
