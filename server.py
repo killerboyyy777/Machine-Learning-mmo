@@ -2380,6 +2380,7 @@ quest_turnin_times = []
 # Bounded deque discipline: newest last, trimmed on append.
 TURNIN_FEED_SIZE = 50
 quest_turnin_feed = []
+quest_feed_seq = 0
 
 # Quest giver category system - makes it easy to add/change quest NPCs.
 # Add new entries here to create new quest givers; kill penalties,
@@ -2557,9 +2558,11 @@ async def cmd_quest(player, msg):
         return find_npc_in_room(player.room, quest["giver_npc"]) is not None
 
     def _record_turnin():
+        global quest_feed_seq
         entry[qid_key(entry, qid, "completions")] = entry.get(qid_key(entry, qid, "completions"), 0) + 1
         quest_turnin_times.append(time.time())
-        quest_turnin_feed.append({"t": time.strftime("%H:%M:%S"), "name": player.name, "qid": qid})
+        quest_feed_seq += 1
+        quest_turnin_feed.append({"seq": quest_feed_seq, "t": time.strftime("%H:%M:%S"), "name": player.name, "qid": qid})
         while len(quest_turnin_feed) > TURNIN_FEED_SIZE:
             del quest_turnin_feed[0]
         mark_scores_dirty()

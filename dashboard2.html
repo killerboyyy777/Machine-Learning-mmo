@@ -103,11 +103,12 @@
   #activity .c { flex: 1; }
   #activity .c .cmd { font-weight: bold; }
   #activity .c .d { color: var(--dim); }
-  /* Agent actions + quest turn-in feed share the activity row layout. */
-  #agentActivity .row, #questFeed .row { padding: 3px 0; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
-  #agentActivity .t, #questFeed .t { color: var(--dim); flex: 0 0 58px; }
+  /* Agent actions + quest turn-in feed + sell ladder share the row layout. */
+  #agentActivity .row, #questFeed .row, #st-ladder .row { padding: 3px 0; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
+  #agentActivity .t, #questFeed .t, #st-ladder .t { color: var(--dim); flex: 0 0 58px; }
+  #st-ladder .t { flex-basis: 110px; }
   #agentActivity .n, #questFeed .n { color: var(--accent); flex: 0 0 96px; overflow: hidden; text-overflow: ellipsis; }
-  #agentActivity .c, #questFeed .c { flex: 1; }
+  #agentActivity .c, #questFeed .c, #st-ladder .c { flex: 1; }
   #agentActivity .c .cmd, #questFeed .c .cmd { font-weight: bold; }
   #agentActivity .c .d, #questFeed .c .d { color: var(--dim); }
   #trackDetail { max-height: 420px; overflow-y: auto; }
@@ -166,6 +167,14 @@
      pushed-down canvas entirely (the round-3 blank-chart regression).
      Absolute positioning restores the intended 80px overlay; the clip and
      max-width stay as belt-and-braces. */
+  /* Always-visible current values (owner round 3: no numberless charts). */
+  .trendval { color: var(--text); font-size: var(--fs-sm); font-weight: bold; }
+  /* Sortable table headers (owner sort rule): pointer + hint. */
+  table[data-sort] th { cursor: pointer; }
+  table[data-sort] th:hover { color: var(--accent); }
+  .sortctl { font-size: var(--fs-xs); color: var(--dim); font-weight: normal;
+             text-transform: none; letter-spacing: 0; margin-left: 8px; }
+  .sortctl select { font-size: var(--fs-xs); padding: 2px 5px; margin-left: 4px; }
   .trend { height: 80px; overflow: hidden; }
   .trend .uplot { width: 100%; position: relative; }
   .trend .u-under, .trend .u-over { position: absolute; left: 0; top: 0; }
@@ -203,9 +212,9 @@
   <div class="panel">
     <h2>Trends</h2>
     <div style="display:flex;gap:12px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><div class="trend" id="ovPlayers"></div></div>
-      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><div class="trend" id="ovScore"></div></div>
-      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Market orders</div><div class="trend" id="ovVolume"></div></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online <b class="trendval" id="ovPlayersVal">-</b></div><div class="trend" id="ovPlayers"></div></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score <b class="trendval" id="ovScoreVal">-</b></div><div class="trend" id="ovScore"></div></div>
+      <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Market orders <b class="trendval" id="ovVolumeVal">-</b></div><div class="trend" id="ovVolume"></div></div>
     </div>
   </div>
   <div class="panel">
@@ -228,12 +237,12 @@
       <div class="panel">
         <h2>History</h2>
         <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online</div><div class="trend" id="histPlayers"></div></div>
-          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score</div><div class="trend" id="histScore"></div></div>
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Players online <b class="trendval" id="histPlayersVal">-</b></div><div class="trend" id="histPlayers"></div></div>
+          <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">Top score <b class="trendval" id="histScoreVal">-</b></div><div class="trend" id="histScore"></div></div>
         </div>
       </div>
       <div class="panel">
-        <h2>Live activity</h2>
+        <h2>Live activity<span class="sortctl">sort<select id="activitySort"><option value="newest">newest first</option><option value="oldest">oldest first</option><option value="player">player A-Z</option><option value="cmd">action A-Z</option></select></span></h2>
         <div id="activity"></div>
       </div>
     </div>
@@ -245,7 +254,7 @@
     <div>
       <div class="panel">
         <h2>Performance</h2>
-        <div class="tscroll"><table>
+        <div class="tscroll"><table data-sort="perf">
           <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
                  <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
                  <th>room</th></tr></thead>
@@ -280,19 +289,39 @@
   </div>
   <div class="panel">
     <h2>Open sell orders (anywhere in the world)</h2>
-    <div class="tscroll"><table>
+    <div class="tscroll"><table data-sort="orders">
       <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>seller</th><th>posted</th></tr></thead>
       <tbody id="orders"></tbody>
     </table></div>
     <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
   </div>
   <div class="panel">
+    <h2>Item market <span class="legend">one item at a time · sell side only (no buy orders exist)</span></h2>
+    <select id="steamItem"></select>
+    <span class="sortctl">window<select id="steamRange"><option value="0">session</option><option value="25">last 25 fills</option><option value="10">last 10 fills</option></select></span>
+    <div class="statrow" style="margin-top:8px">
+      <div class="stat"><div class="v" id="st-lowask">-</div><div class="l">lowest ask</div></div>
+      <div class="stat"><div class="v" id="st-med">-</div><div class="l">median (window)</div></div>
+      <div class="stat"><div class="v" id="st-vol">-</div><div class="l">fills (window)</div></div>
+    </div>
+    <div class="dim" style="font-size:11px;margin:8px 0 4px">Median sale price (line) + fills per bucket (bars)</div>
+    <div class="trend" id="st-chart" style="height:110px"></div>
+    <p class="empty" id="st-nochart" style="display:none">No sales in this window yet.</p>
+    <div class="dim" style="font-size:11px;margin:8px 0 4px" id="st-ladderHead"></div>
+    <div id="st-ladder"></div>
+    <div class="tscroll"><table data-sort="steamOrders">
+      <thead><tr><th>price</th><th>qty</th><th>seller</th><th>posted</th></tr></thead>
+      <tbody id="steamOrders"></tbody>
+    </table></div>
+    <p class="empty" id="noSteamOrders" style="display:none">No open orders for this item.</p>
+  </div>
+  <div class="panel">
     <h2>Price per completed sale</h2>
-    <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">One point per sale, oldest to newest — empty until the first trade</div><div class="trend" id="m-priceHist"></div></div>
+    <div style="flex:1;min-width:200px"><div class="dim" style="font-size:11px;margin-bottom:4px">One point per sale, oldest to newest — empty until the first trade <b class="trendval" id="m-priceHistVal">-</b></div><div class="trend" id="m-priceHist"></div></div>
   </div>
   <div class="panel">
     <h2>Buy &amp; sell history <span class="legend"><span class="buy">■</span> buyer <span class="sell">■</span> seller</span></h2>
-    <div class="tscroll"><table>
+    <div class="tscroll"><table data-sort="tradeHistory">
       <thead><tr><th>#</th><th>time</th><th>buyer</th><th>seller</th><th>item</th><th>price</th><th>tax</th><th>seller gets</th></tr></thead>
       <tbody id="tradeHistory"></tbody>
     </table></div>
@@ -307,12 +336,12 @@
   </div>
   <div class="panel">
     <h2>Elite bosses (GM spawned)</h2>
-     <table><thead><tr><th>name</th><th>room</th><th>hp</th><th>attack</th></tr></thead>
+     <table data-sort="bosses"><thead><tr><th>name</th><th>room</th><th>hp</th><th>attack</th></tr></thead>
            <tbody id="bosses"></tbody></table>
     <p class="empty" id="noBosses" style="display:none">No GM bosses alive.</p>
   </div>
   <div class="panel">
-    <h2>Instanced party dungeons</h2>
+    <h2>Instanced party dungeons<span class="sortctl">sort<select id="dungeonSort"><option value="floor-desc">max floor, high first</option><option value="floor-asc">max floor, low first</option><option value="party-desc">party size, big first</option><option value="party-asc">party size, small first</option></select></span></h2>
     <div id="dungeons"></div>
   </div>
 </div>
@@ -320,7 +349,7 @@
 <div id="view-agents" class="tabview">
   <div class="panel">
     <h2>Live roster</h2>
-    <div class="tscroll cap"><table>
+    <div class="tscroll cap"><table data-sort="agents">
       <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
              <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
              <th>room</th><th>last action</th></tr></thead>
@@ -329,7 +358,7 @@
     <p class="empty" id="noAgents" style="display:none">No online players.</p>
   </div>
   <div class="panel">
-    <h2>Recent agent actions</h2>
+    <h2>Recent agent actions<span class="sortctl">sort<select id="agentActivitySort"><option value="newest">newest first</option><option value="oldest">oldest first</option><option value="player">player A-Z</option><option value="cmd">action A-Z</option></select></span></h2>
     <div id="agentActivity"></div>
   </div>
 </div>
@@ -344,14 +373,14 @@
   </div>
   <div class="panel">
     <h2>Catalog</h2>
-    <div class="tscroll"><table>
+    <div class="tscroll"><table data-sort="questCatalog">
       <thead><tr><th>quest</th><th>giver</th><th>room</th><th>reward</th>
              <th>active</th><th>turn-ins</th></tr></thead>
       <tbody id="questCatalog"></tbody>
     </table></div>
   </div>
   <div class="panel">
-    <h2>Recent turn-ins <span class="legend">who turned in what, when</span></h2>
+    <h2>Recent turn-ins <span class="legend">who turned in what, when</span><span class="sortctl">sort<select id="questFeedSort"><option value="newest">newest first</option><option value="oldest">oldest first</option><option value="player">player A-Z</option><option value="quest">quest A-Z</option></select></span></h2>
     <div id="questFeed"></div>
   </div>
 </div>
@@ -371,7 +400,7 @@
   </div>
   <div class="panel">
     <h2>Material on the ground</h2>
-    <div class="tscroll"><table>
+    <div class="tscroll"><table data-sort="matSupply">
       <thead><tr><th>item</th><th>units</th><th>rooms</th></tr></thead>
       <tbody id="matSupply"></tbody>
     </table></div>
@@ -379,7 +408,7 @@
   </div>
   <div class="panel">
     <h2>Listed supply</h2>
-    <table>
+    <table data-sort="matOrders">
       <thead><tr><th>item</th><th>listings</th><th>min price</th></tr></thead>
       <tbody id="matOrders"></tbody>
     </table>
@@ -388,8 +417,8 @@
   <div class="panel">
     <h2>Recipe browser <span class="legend">all craftable recipes</span></h2>
     <input id="recipeSearch" placeholder="filter by result or ingredient…" style="width:100%;margin-bottom:8px">
-    <div class="tscroll"><table>
-      <thead><tr><th>result</th><th>ingredients</th><th>tier</th><th>category</th></tr></thead>
+    <div class="tscroll"><table data-sort="recipeRows">
+      <thead><tr><th>result</th><th>tier</th><th>category</th><th>ingredients</th></tr></thead>
       <tbody id="recipeRows"></tbody>
     </table></div>
     <p class="empty" id="noRecipes" style="display:none">No recipes match.</p>
@@ -560,6 +589,52 @@ function setHTMLEl(el, key, html) {
   if (lastHTML[key] === html) return;
   lastHTML[key] = html;
   el.innerHTML = html;
+}
+
+// Column sorting (owner sort rule): every data table sorts by every
+// column, asc+desc -- click a header to sort, click again to flip.
+// Column 0 ("#") always restores snapshot order. Div-lists (feeds,
+// activity, dungeons) sort via a key select in their panel header.
+const sortState = {}; // tbodyId -> {col, dir}
+function sortRows(tbodyId, rows, keyFns, defCol, defDir) {
+  const st = sortState[tbodyId] || (sortState[tbodyId] = {col: defCol, dir: defDir});
+  const fn = keyFns[st.col];
+  const indexed = rows.map((r, i) => [i, r]);
+  indexed.sort((a, b) => {
+    let c;
+    if (fn == null) c = a[0] - b[0];
+    else {
+      const x = fn(a[1]), y = fn(b[1]);
+      c = (typeof x === "number" && typeof y === "number")
+        ? x - y : String(x ?? "").localeCompare(String(y ?? ""));
+    }
+    return (c || 0) * st.dir;
+  });
+  return indexed.map(p => p[1]);
+}
+// Div-list sort modes, shared shape: [label, keyFn, dir].
+function sortDivList(rows, mode, modes, defMode) {
+  const m = modes[mode] || modes[defMode];
+  return rows.slice().sort((a, b) => {
+    const x = m[1](a), y = m[1](b);
+    const c = (typeof x === "number" && typeof y === "number")
+      ? x - y : String(x ?? "").localeCompare(String(y ?? ""));
+    return (c || 0) * m[2];
+  });
+}
+function bindSortTables() {
+  for (const table of document.querySelectorAll("table[data-sort]")) {
+    const id = table.dataset.sort;
+    table.querySelectorAll("thead th").forEach((th, i) => {
+      th.title = (th.title ? th.title + " " : "") + "(click to sort)";
+      th.addEventListener("click", () => {
+        const st = sortState[id] || (sortState[id] = {col: 0, dir: 1});
+        if (st.col === i) st.dir = -st.dir;
+        else { st.col = i; st.dir = 1; }
+        if (lastState) renderAll(lastState);
+      });
+    });
+  }
 }
 
 function hpbar(hp, max) {
@@ -881,8 +956,20 @@ function renderRooms(rooms) {
     </div>`).join(""));
 }
 
+const PLAYER_COLS = [
+  null,
+  p => p.name || "",
+  p => p.level ?? 1,
+  p => p.score ?? 0,
+  p => p.kills ?? 0,
+  p => p.deaths ?? 0,
+  p => p.gold ?? 0,
+  p => p.max_hp ? p.hp / p.max_hp : 0,
+  p => p.room || "",
+];
 function renderPerf(players) {
-  setHTML("perf", players.map((p, i) => `
+  const rows = sortRows("perf", players, PLAYER_COLS, 3, -1);
+  setHTML("perf", rows.map((p, i) => `
     <tr>
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
@@ -972,11 +1059,20 @@ function resizeCharts() {
 }
 window.addEventListener("resize", resizeCharts);
 
+// Always-visible current value beside each chart title (owner round 3:
+// no numberless charts). Last sample wins; "-" while empty.
+function setTrendVal(id, v) {
+  const el = $(id + "Val");
+  if (el) el.textContent = v == null ? "-" : v;
+}
 function renderHistory(history) {
   const h = history || [];
-  trendChart("histPlayers", h.map(x => x.players_online), "blue");
-  trendChart("histScore", h.map(x =>
-    (x.top_scores && x.top_scores[0]) ? x.top_scores[0].score : 0), "purple");
+  const ps = h.map(x => x.players_online);
+  const ss = h.map(x => (x.top_scores && x.top_scores[0]) ? x.top_scores[0].score : 0);
+  trendChart("histPlayers", ps, "blue");
+  trendChart("histScore", ss, "purple");
+  setTrendVal("histPlayers", ps.length ? ps[ps.length - 1] : null);
+  setTrendVal("histScore", ss.length ? ss[ss.length - 1] : null);
 }
 
 // One activity row, shared by the snapshot renderer and the SSE stream
@@ -991,10 +1087,22 @@ function activityRow(a) {
         ${a.detail ? `<span class="d"> ${esc(a.detail)}</span>` : ""}</span>
     </div>`;
 }
-// Newest-80 row strings (oldest first) + high-water seq for the stream
-// cursor. Snapshot ticks rebuild wholesale (resync); stream appends.
-let actRows = [];
+// Newest-80 entries + high-water seq for the stream cursor. Snapshot
+// ticks rebuild wholesale (resync); the stream appends. Display order is
+// user-sortable (owner sort rule); the window stays newest-by-seq.
+let actData = [];
 let actMaxSeq = 0;
+const ACT_MODES = {
+  newest: ["newest", a => a.seq ?? -1, -1],
+  oldest: ["oldest", a => a.seq ?? -1, 1],
+  player: ["player", a => a.name || "", 1],
+  cmd: ["cmd", a => a.cmd || "", 1],
+};
+function renderActivityView() {
+  const mode = ($("activitySort") || {}).value || "newest";
+  const rows = sortDivList(actData, mode, ACT_MODES, "newest");
+  setHTML("activity", rows.map(activityRow).join("") || `<span class="empty">No activity yet.</span>`);
+}
 function renderActivity(activity) {
   // Display cap (PERF): the server keeps 100 rows; the newest 80 render.
   // Nothing a glanceable dashboard needs lives beyond that.
@@ -1005,8 +1113,8 @@ function renderActivity(activity) {
     if ((a.seq ?? 0) > mx) mx = a.seq;
   }
   actMaxSeq = mx;
-  actRows = rows.map(activityRow);
-  setHTML("activity", actRows.join("") || `<span class="empty">No activity yet.</span>`);
+  actData = rows;
+  renderActivityView();
 }
 
 let actSource = null;
@@ -1023,9 +1131,9 @@ function actStream() {
       try { a = JSON.parse(ev.data); } catch (e) { return; }
       if (!a || (a.seq ?? 0) <= actMaxSeq) return;
       actMaxSeq = a.seq;
-      actRows.push(activityRow(a));
-      while (actRows.length > 80) actRows.shift();
-      setHTML("activity", actRows.join(""));
+      actData.push(a);
+      while (actData.length > 80) actData.shift();
+      renderActivityView();
     };
   } catch (e) { /* streaming unavailable: snapshot poll still fills */ }
 }
@@ -1038,13 +1146,16 @@ function renderMarket(m) {
   $("m-trades").textContent = m.trade_count ?? 0;
   $("g-treasury").textContent = treasury.toFixed(1);
   if (typeof updateGMCosts === "function") updateGMCosts();
-  const orders = m.orders || [];
+  const orders = sortRows("orders", m.orders || [],
+    [null, o => o.id, o => o.item || "", o => o.price ?? 0, o => o.seller || "", o => o.ts ?? 0], 3, 1);
   setHTML("orders", orders.map((o, i) => `
     <tr><td>${i+1}</td><td>${esc(o.id)}</td><td>${esc(o.item)}</td>
         <td><b>${o.price}</b></td><td class="sell">${esc(o.seller)}</td>
         <td>${esc(o.ts)}</td></tr>`).join(""));
   $("noOrders").style.display = orders.length ? "none" : "";
-  const history = m.history || [];
+  const history = sortRows("tradeHistory", m.history || [],
+    [null, h => h.ts ?? h.time ?? "", h => h.buyer || "", h => h.seller || "",
+     h => h.item || "", h => h.price ?? 0, h => h.tax ?? 0, h => h.payout ?? 0], 1, -1);
   setHTML("tradeHistory", history.map((h, i) => `
     <tr><td>${i+1}</td><td>${esc(h.time ?? h.ts)}</td><td class="buy">${esc(h.buyer)}</td>
         <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}</td>
@@ -1052,7 +1163,123 @@ function renderMarket(m) {
   $("noTrades").style.display = history.length ? "none" : "";
   // Price-per-sale chart as a uPlot area (new in 2/4: v1 shows the
   // table only; the series already rides in the snapshot).
-  trendChart("m-priceHist", history.map(h => h.price), "amber");
+  const prices = history.map(h => h.price);
+  trendChart("m-priceHist", prices, "amber");
+  setTrendVal("m-priceHist", prices.length ? prices[prices.length - 1] : null);
+}
+
+function median(xs) {
+  if (!xs.length) return null;
+  const s = xs.slice().sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+let steamItem = null;
+let steamItemKey = "";
+// Per-item market view (owner steam-market spec, adapted not copied):
+// picker + sell ladder + median/volume chart + stats + item orders.
+// Sell side ONLY (no buy orders exist in our market); no cumulative
+// depth (with 1-per-order asks it is just the ladder integral).
+function renderSteam(market) {
+  const orders = market.orders || [], fills = market.history || [];
+  const names = [...new Set([...orders.map(o => o.item), ...fills.map(h => h.item)]
+    .filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  const key = names.join("\n");
+  if (key !== steamItemKey) {
+    steamItemKey = key;
+    if (!names.includes(steamItem)) steamItem = names[0] ?? null;
+    setHTML("steamItem", names.map(n =>
+      `<option value="${esc(n)}"${n === steamItem ? " selected" : ""}>${esc(n)}</option>`).join(""));
+  }
+  const item = steamItem;
+  const itemOrders = orders.filter(o => o.item === item);
+  const itemFills = fills.filter(h => h.item === item);
+  const range = parseInt((($("steamRange") || {}).value || "0"), 10) || 0;
+  const window = range > 0 ? itemFills.slice(-range) : itemFills;
+  const wprices = window.map(h => h.price);
+  // Stats row.
+  const asks = itemOrders.map(o => o.price);
+  $("st-lowask").textContent = asks.length ? Math.min(...asks) + "g" : "-";
+  const med = median(wprices);
+  $("st-med").textContent = med == null ? "-" : med + "g";
+  $("st-vol").textContent = window.length;
+  // Median + volume chart: up to 6 contiguous buckets over the window,
+  // median price per bucket (line, left) + fill count (bars, right).
+  const el = $("st-chart");
+  const H = 110;
+  const old = charts["st-chart"];
+  if (!el || typeof uPlot === "undefined") return;
+  if (!window.length) {
+    if (old) { try { old.destroy(); } catch (e) {} delete charts["st-chart"]; }
+    el.innerHTML = "";
+    $("st-nochart").style.display = "";
+    return;
+  }
+  $("st-nochart").style.display = "none";
+  const B = Math.min(6, window.length);
+  const per = Math.ceil(window.length / B);
+  const meds = [], vols = [];
+  for (let i = 0; i < window.length; i += per) {
+    const grp = wprices.slice(i, i + per);
+    meds.push(median(grp));
+    vols.push(grp.length);
+  }
+  const xs = meds.map((_, i) => i);
+  const dataKey = meds.join(",") + "|" + vols.join(",") + "|" + range;
+  const w = el.clientWidth || 0;
+  const pal = themePalette();
+  let u = old;
+  if (!u || u._dataKey !== dataKey) {
+    if (u) { try { u.destroy(); } catch (e) {} }
+    const grid = cssVar("--border", "#2a333d"), font = cssVar("--dim", "#8b98a5");
+    u = charts["st-chart"] = new uPlot({
+      width: el.clientWidth || 260,
+      height: H,
+      scales: {x: {time: false}, v: {}},
+      series: [{},
+        {stroke: pal.amber, width: 1.5, fill: pal.amber + "26"},
+        {scale: "v", paths: uPlot.paths.bars({size: [0.6, 100]}),
+         stroke: pal.blue, fill: pal.blue + "55"}],
+      axes: [
+        {stroke: font, grid: {stroke: grid}, font: "10px monospace"},
+        {scale: "v", side: 1, stroke: font, grid: {show: false}, font: "10px monospace"},
+      ],
+      legend: {show: false},
+      cursor: {show: false},
+    }, [xs, meds, vols], el);
+    u._dataKey = dataKey;
+    u._sizedW = 0;
+  }
+  if (w && w !== u._sizedW) {
+    try { u.setSize({width: w, height: H}); u._sizedW = w; }
+    catch (e) {}
+  }
+  // Readout for this chart is the stats row above (lowest ask / median),
+  // satisfying the always-visible-value rule without a seventh caption.
+  // Sell ladder: price levels ascending (quantity = order count, since
+  // every order is quantity 1); lowest 8 levels, then a tail bucket.
+  const levels = new Map();
+  for (const o of itemOrders) levels.set(o.price, (levels.get(o.price) || 0) + 1);
+  const sorted = [...levels.entries()].sort((a, b) => a[0] - b[0]);
+  const shown = sorted.slice(0, 8), tail = sorted.slice(8);
+  const total = itemOrders.length;
+  setHTML("st-ladderHead", item == null ? "" :
+    `${total} for sale starting at ${sorted.length ? sorted[0][0] + "g" : "-"}`);
+  setHTML("st-ladder", shown.map(([p, n]) => `
+    <div class="row"><span class="t">${p}g</span>
+      <span class="c">× ${n} order${n === 1 ? "" : "s"}</span></div>`).join("") +
+    (tail.length ? `
+    <div class="row"><span class="t">${tail[0][0]}g or more</span>
+      <span class="c">× ${tail.reduce((a, [, n]) => a + n, 0)} order(s)</span></div>` : "") ||
+    `<span class="empty">No open orders for this item.</span>`);
+  // That item's open orders (sortable like every table).
+  const srows = sortRows("steamOrders", itemOrders,
+    [o => o.price ?? 0, () => 1, o => o.seller || "", o => o.ts ?? 0], 0, 1);
+  setHTML("steamOrders", srows.map(o => `
+    <tr><td><b>${o.price}</b></td><td>1</td><td class="sell">${esc(o.seller)}</td>
+        <td>${esc(o.ts)}</td></tr>`).join(""));
+  $("noSteamOrders").style.display = srows.length ? "none" : "";
 }
 
 function mmss(secs) {
@@ -1072,7 +1299,10 @@ function renderBuffs(b) {
 }
 
 function renderBosses(bosses) {
-  setHTML("bosses", bosses.map(b => `
+  const rows = sortRows("bosses", bosses,
+    [b => b.name || "", b => b.room || "",
+     b => b.max_hp ? b.hp / b.max_hp : 0, b => b.attack ?? 0], 2, -1);
+  setHTML("bosses", rows.map(b => `
     <tr><td><b>${esc(b.name)}</b></td><td>${esc(b.room)}</td>
         <td>${b.hp}/${b.max_hp}</td><td>${b.attack}</td></tr>`).join(""));
   $("noBosses").style.display = bosses.length ? "none" : "";
@@ -1083,7 +1313,16 @@ function renderDungeons(dungeons) {
     setHTML("dungeons", `<span class="empty">No dungeons opened yet. Players enter through the graveyard's 'enter' doorway.</span>`);
     return;
   }
-  setHTML("dungeons", dungeons.map(d => `
+  // Sortable instances (owner sort rule): max floor or party size.
+  const mode = ($("dungeonSort") || {}).value || "floor-desc";
+  const modes = {
+    "floor-desc": ["floor", d => d.max_floor_reached || 0, -1],
+    "floor-asc": ["floor", d => d.max_floor_reached || 0, 1],
+    "party-desc": ["party", d => (d.party || []).length, -1],
+    "party-asc": ["party", d => (d.party || []).length, 1],
+  };
+  const rows = sortDivList(dungeons, mode, modes, "floor-desc");
+  setHTML("dungeons", rows.map(d => `
     <div class="dung">
       <h3>Dungeon ${esc(d.id)} <span class="tag alive">${esc((d.party || []).join(", ") || "solo")}</span>
           <span class="tag">max floor ${d.max_floor_reached || 0}</span></h3>
@@ -1097,8 +1336,10 @@ function renderDungeons(dungeons) {
     </div>`).join(""));
 }
 
+const AGENT_COLS = [...PLAYER_COLS, p => p.last_action || ""];
 function renderAgents(players) {
-  setHTML("agents", players.map((p, i) => `
+  const rows = sortRows("agents", players, AGENT_COLS, 3, -1);
+  setHTML("agents", rows.map((p, i) => `
     <tr>
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
@@ -1116,11 +1357,17 @@ function renderAgents(players) {
   for (const p of players) {
     for (const a of (p.recent_actions || [])) feed.push({who: p.name, ...a});
   }
-  // Newest first by monotonic seq; HH:MM:SS strings sort wrong across
-  // midnight (/oc round), so they are only the fallback for old entries.
-  feed.sort((a, b) => ((b.seq ?? -1) - (a.seq ?? -1)) ||
-    String(b.time).localeCompare(String(a.time)));
-  setHTML("agentActivity", feed.slice(0, 15).map(a => `
+  // Sortable feed (owner sort rule); default newest-first by monotonic
+  // seq (HH:MM:SS strings sort wrong across midnight, fallback only).
+  const mode = ($("agentActivitySort") || {}).value || "newest";
+  const feedModes = {
+    newest: ["newest", a => a.seq ?? -1, -1],
+    oldest: ["oldest", a => a.seq ?? -1, 1],
+    player: ["player", a => a.who || "", 1],
+    cmd: ["cmd", a => a.cmd || "", 1],
+  };
+  const feedRows = sortDivList(feed, mode, feedModes, "newest");
+  setHTML("agentActivity", feedRows.slice(0, 15).map(a => `
     <div class="row">
       <span class="t">${esc(a.time)}</span>
       <span class="n">${esc(a.who)}</span>
@@ -1134,15 +1381,48 @@ function renderQuests(q) {
   const active = qs.active || {}, completions = qs.completions || {};
   $("q-active").textContent = Object.values(active).reduce((a, b) => a + (b || 0), 0);
   $("q-turnins").textContent = qs.turnins_last_min ?? 0;
-  setHTML("questCatalog", (qs.catalog || []).map(c => `
-    <tr><td><b>${esc(c.id)}</b><br><span class="dim">${esc(c.brief || "")}</span></td>
+  // Full turn-in chain per quest (owner round 3: the brief alone hides
+  // the hand-over step). Steps mirror the server gates: accept first, do
+  // the work, the giver must be present in their room, then hand the goods
+  // over (consumed). Dashboard-only text; game rules live in server.py.
+  const chainFor = c => {
+    const g = `${c.giver_name || "the giver"} (${c.room || "?"})`;
+    if (c.id === "guard_charm")
+      return `1. accept from ${g} · 2. craft the ${c.result_name || "charm"} · ` +
+             `3. bring it to ${g} (must be there) · 4. hand it over — it is consumed`;
+    if (c.id === "delver") {
+      const n = c.floors_required ?? 1;
+      return `1. accept from ${g} · 2. clear ${n} dungeon floor${n === 1 ? "" : "s"} ` +
+             `in your party's instance · 3. report back to ${g}`;
+    }
+    if (c.id === "remedy")
+      return `1. accept from ${g} · 2. gather 3 Healing Herbs · ` +
+             `3. bring them to ${g} (must be there) · 4. hand them over — consumed`;
+    if (c.id === "tonic")
+      return `1. accept from ${g} · 2. brew 1 Fortitude Tonic (Iron Ore + Mountain Berry) · ` +
+             `3. bring it to ${g} (must be there) · 4. hand it over — consumed`;
+    return `1. accept from ${g} · 2. do the work · 3. bring the goods to ${g} · 4. hand them over`;
+  };
+  const rows = sortRows("questCatalog", qs.catalog || [],
+    [c => c.id || "", c => c.giver_name || "", c => c.room || "",
+     c => c.reward_xp ?? 0, c => active[c.id] ?? 0, c => completions[c.id] ?? 0], 4, -1);
+  setHTML("questCatalog", rows.map(c => `
+    <tr><td><b>${esc(c.id)}</b><br><span class="dim">${esc(c.brief || "")}</span>` +
+        `<br><span class="dim">turn-in: ${esc(chainFor(c))}</span></td>
         <td>${esc(c.giver_name || "")}</td><td>${esc(c.room || "")}</td>
         <td>${c.reward_xp ?? 0} XP + ${c.reward_gold ?? 0}g</td>
         <td>${active[c.id] ?? 0}</td><td>${completions[c.id] ?? 0}</td></tr>`).join(""));
-  // Per-quest turn-in feed (owner round 2): who turned in what, when --
-  // newest first, from the snapshot's recent_turnins ring.
+  // Per-quest turn-in feed (owner round 2): who turned in what, when.
+  // Sortable (owner sort rule); default newest-first via feed seq.
   const brief = Object.fromEntries((qs.catalog || []).map(c => [c.id, c.brief || c.id]));
-  const feed = (qs.recent_turnins || []).slice().reverse();
+  const feedModes = {
+    newest: ["newest", t => t.seq ?? -1, -1],
+    oldest: ["oldest", t => t.seq ?? -1, 1],
+    player: ["player", t => t.name || "", 1],
+    quest: ["quest", t => t.qid || "", 1],
+  };
+  const feed = sortDivList(qs.recent_turnins || [],
+    (($("questFeedSort") || {}).value || "newest"), feedModes, "newest");
   setHTML("questFeed", feed.map(t => `
     <div class="row">
       <span class="t">${esc(t.t)}</span>
@@ -1153,19 +1433,23 @@ function renderQuests(q) {
 }
 
 function renderRecipes(recipes) {
-  // Recipe browser (owner round 2): every known recipe with ingredients,
-  // filterable by result or component. Reads the search box live.
+  // Recipe browser (owner round 2 + spec): every known recipe, filterable
+  // by result or component, sortable by result / tier / category asc+desc
+  // (click headers). Ingredients column is LAST, never second.
   const q = ($("recipeSearch").value || "").toLowerCase().trim();
-  const rows = (recipes || []).filter(r => {
+  const filtered = (recipes || []).filter(r => {
     if (!q) return true;
     const hay = [r.result, r.category, String(r.tier),
                  ...(r.inputs || []).map(i => i.item)].join(" ").toLowerCase();
     return q.split(/\s+/).every(w => hay.includes(w));
   });
+  const rows = sortRows("recipeRows", filtered,
+    [r => r.result || "", r => r.tier ?? 0, r => r.category || "",
+     r => (r.inputs || []).map(i => i.item).join(" ")], 0, 1);
   setHTML("recipeRows", rows.map(r => `
     <tr><td><b>${esc(r.result)}</b>${r.result_qty > 1 ? ` ×${r.result_qty}` : ""}</td>
-        <td>${(r.inputs || []).map(i => `${i.qty}× ${esc(i.item)}`).join(", ")}</td>
-        <td>${r.tier ?? "-"}</td><td>${esc(r.category || "-")}</td></tr>`).join(""));
+        <td>${r.tier ?? "-"}</td><td>${esc(r.category || "-")}</td>
+        <td>${(r.inputs || []).map(i => `${i.qty}× ${esc(i.item)}`).join(", ")}</td></tr>`).join(""));
   $("noRecipes").style.display = rows.length ? "none" : "";
 }
 
@@ -1181,9 +1465,11 @@ function renderCrafting(rooms, market, activity, recipes) {
       (roomsOf[it] ||= new Set()).add(r.name);
     }
   }
-  const srows = Object.entries(supply).sort((a, b) => b[1] - a[1]).slice(0, 15);
-  setHTML("matSupply", srows.map(([it, n]) => `
-    <tr><td>${esc(it)}</td><td>${n}</td><td>${esc([...roomsOf[it]].join(", "))}</td></tr>`).join(""));
+  const srows = sortRows("matSupply",
+    Object.entries(supply).map(([it, n]) => ({it, n, rooms: [...roomsOf[it]].join(", ")})),
+    [r => r.it, r => r.n, r => r.rooms], 1, -1).slice(0, 15);
+  setHTML("matSupply", srows.map(r => `
+    <tr><td>${esc(r.it)}</td><td>${r.n}</td><td>${esc(r.rooms)}</td></tr>`).join(""));
   $("noSupply").style.display = srows.length ? "none" : "";
   const byItem = {};
   for (const o of ((market || {}).orders || [])) {
@@ -1191,9 +1477,11 @@ function renderCrafting(rooms, market, activity, recipes) {
     b.n++;
     if (o.price < b.min) b.min = o.price;
   }
-  const orows = Object.entries(byItem).sort((a, b) => b[1].n - a[1].n);
-  setHTML("matOrders", orows.map(([it, b]) => `
-    <tr><td>${esc(it)}</td><td>${b.n}</td><td>${b.min}</td></tr>`).join(""));
+  const orows = sortRows("matOrders",
+    Object.entries(byItem).map(([it, b]) => ({it, n: b.n, min: b.min})),
+    [r => r.it, r => r.n, r => r.min], 1, -1);
+  setHTML("matOrders", orows.map(r => `
+    <tr><td>${esc(r.it)}</td><td>${r.n}</td><td>${r.min}</td></tr>`).join(""));
   $("noMatOrders").style.display = orows.length ? "none" : "";
   const flow = {gather: 0, craft: 0, take: 0, buy: 0, sell: 0};
   for (const a of activity || []) {
@@ -1265,6 +1553,19 @@ $("recipeSearch").addEventListener("input", () => {
   if (lastState) renderRecipes(lastState.recipes || []);
 });
 
+// Sort controls (owner sort rule): table headers bind via data-sort;
+// div-list selects re-render the active tab on change.
+bindSortTables();
+for (const id of ["questFeedSort", "agentActivitySort", "activitySort", "dungeonSort", "steamRange"]) {
+  $(id)?.addEventListener("change", () => {
+    if (lastState) renderAll(lastState);
+  });
+}
+$("steamItem")?.addEventListener("change", e => {
+  steamItem = e.target.value || null;
+  if (lastState) renderSteam(lastState.market || {});
+});
+
 let activeTab = "overview";
 
 function renderOverview(s) {
@@ -1292,10 +1593,15 @@ function renderOverview(s) {
     pill.style.color = "var(--dim)";
   }
   const hist = s.history || [];
-  trendChart("ovPlayers", hist.map(h => h.players_online), "blue");
-  trendChart("ovScore", hist.map(h =>
-    (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0), "purple");
-  trendChart("ovVolume", hist.map(h => h.market_orders ?? 0), "amber");
+  const ops = hist.map(h => h.players_online);
+  const osc = hist.map(h => (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0);
+  const ovo = hist.map(h => h.market_orders ?? 0);
+  trendChart("ovPlayers", ops, "blue");
+  trendChart("ovScore", osc, "purple");
+  trendChart("ovVolume", ovo, "amber");
+  setTrendVal("ovPlayers", ops.length ? ops[ops.length - 1] : null);
+  setTrendVal("ovScore", osc.length ? osc[osc.length - 1] : null);
+  setTrendVal("ovVolume", ovo.length ? ovo[ovo.length - 1] : null);
   const acts = (s.activity || []).slice(-10).reverse();
   setHTML("ovActivity", acts.length ? acts.map(a => `
     <div class="row">
@@ -1321,7 +1627,10 @@ const TAB_SECTIONS = {
     ["scores", s => renderScores(s.scores || [])],
     ["character tracker", s => renderTracker(s.players || [])],
   ],
-  market: [["market", s => renderMarket(s.market || {orders: [], history: []})]],
+  market: [
+    ["market", s => renderMarket(s.market || {orders: [], history: []})],
+    ["steam", s => renderSteam(s.market || {orders: [], history: []})],
+  ],
   dungeon: [
     ["buffs", s => renderBuffs(s.buffs || {})],
     ["bosses", s => renderBosses(s.bosses || [])],

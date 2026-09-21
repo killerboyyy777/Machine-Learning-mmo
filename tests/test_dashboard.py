@@ -149,7 +149,7 @@ for tok in ("EventSource", "/api/activity/stream", "activityRow",
 assert ".score.toFixed" not in html2, "v2: unguarded toFixed survives"
 assert "s.server.players_online" not in html2, "v2: unguarded s.server survives"
 assert "cmd-\" + (cmd" in html2 or 'cmd-" + (cmd' in html2
-assert "b.seq" in html2 and "localeCompare" in html2
+assert "a.seq ?? -1" in html2 and "localeCompare" in html2
 assert "No scores recorded yet." in html2
 # Server lane: seq field, fan-out registry, SSE route, start timestamp.
 import re as _re
@@ -157,6 +157,34 @@ _srv = open(_os.path.join(_os.path.dirname(__file__), "..", "server.py")).read()
 for tok in ('"seq": activity_seq', "activity_subscribers",
             "text/event-stream", '"start_ts": START_TIME'):
     assert tok in _srv, f"server: split-lane token {tok} missing"
+# Shelter veto: market is outdoor.
+assert _world["rooms"]["market"]["shelter"] is False
+# Quest panel states the full turn-in chain, not just the brief.
+assert "turn-in:" in html2 and "hand it over" in html2
+# Chart readouts: always-visible current value per graph.
+for wid in ("ovPlayersVal", "ovScoreVal", "ovVolumeVal",
+            "histPlayersVal", "histScoreVal", "m-priceHistVal"):
+    assert f'id="{wid}"' in html2, f"v2: missing readout {wid}"
+assert ".trendval" in html2 and "setTrendVal" in html2
+# Sort rule: every data table sortable + div-list controls present.
+for tid in ("perf", "agents", "orders", "tradeHistory", "bosses",
+            "matSupply", "matOrders", "questCatalog", "recipeRows",
+            "steamOrders"):
+    assert f'data-sort="{tid}"' in html2, f"v2: table {tid} not sortable"
+for wid in ("questFeedSort", "agentActivitySort", "activitySort",
+            "dungeonSort"):
+    assert f'id="{wid}"' in html2, f"v2: missing sort control {wid}"
+assert "function sortRows" in html2 and "bindSortTables()" in html2
+# Recipe spec: ingredients column last, sortable result/tier/category.
+ri = html2.index('data-sort="recipeRows"')
+assert ri < html2.index("<th>tier</th>") < html2.index("<th>category</th>")
+assert html2.index("<th>category</th>") < html2.index("<th>ingredients</th>")
+# Steam-market panel: picker, range, stats, ladder, orders, median/volume.
+for wid in ("steamItem", "steamRange", "st-lowask", "st-med", "st-vol",
+            "st-chart", "st-ladder", "st-ladderHead", "steamOrders",
+            "noSteamOrders"):
+    assert f'id="{wid}"' in html2, f"v2: missing steam widget {wid}"
+assert "uPlot.paths.bars" in html2 and "Item market" in html2
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
 assert "setInterval(tick" not in html2, "v2: 1s setInterval loop still present"
