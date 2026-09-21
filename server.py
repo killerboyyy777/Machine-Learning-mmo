@@ -3444,7 +3444,8 @@ def _commission_snapshot():
          "reward_gold": c.get("reward_gold", 0),
          "reward_xp": c.get("reward_xp", 0),
          "status": c.get("status", "open"),
-         "filled_by": c.get("filled_by")}
+         "filled_by": c.get("filled_by"),
+         "created_ts": c.get("created_ts", 0)}
         for c in cmds
     ]
 

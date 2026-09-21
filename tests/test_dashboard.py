@@ -190,7 +190,9 @@ for wid in ("commissions", "noCommissions"):
     assert f'id="{wid}"' in html2, f"v2: missing commissions widget {wid}"
 assert 'data-sort="commissions"' in html2
 assert "renderCommissions" in html2
-for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot"):
+assert "<th>posted</th>" in html2 and "fmtAge" in html2
+for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot",
+            '"created_ts": c.get("created_ts", 0)'):
     assert tok in _srv, f"server: commissions token {tok} missing"
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.

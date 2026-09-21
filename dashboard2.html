@@ -386,7 +386,7 @@
   <div class="panel">
     <h2>Commissions board <span class="legend">open bounties + recent fills</span></h2>
     <div class="tscroll"><table data-sort="commissions">
-      <thead><tr><th>#</th><th>target</th><th>kills</th><th>bounty</th><th>poster</th><th>status</th><th>filled by</th></tr></thead>
+      <thead><tr><th>#</th><th>target</th><th>kills</th><th>bounty</th><th>poster</th><th>status</th><th>filled by</th><th>posted</th></tr></thead>
       <tbody id="commissions"></tbody>
     </table></div>
     <p class="empty" id="noCommissions" style="display:none">No commissions posted yet.</p>
@@ -1384,13 +1384,23 @@ function renderAgents(players) {
     </div>`).join("") || `<span class="empty">No tracked actions yet.</span>`);
 }
 
+// Seconds-epoch to compact age ("3m", "2h", "4d"); future/unknown -> "-".
+function fmtAge(ts) {
+  if (!ts) return "-";
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+}
 function renderCommissions(commissions) {
   // Kill-commission board (owner commissions spec): additive snapshot key,
   // Quests-adjacent panel, sortable per the sort rule. Newest first.
-  const rows = sortRows("commissions", commissions || [],
+  const rows = sortRows("commissions", commissions,
     [c => c.id ?? 0, c => c.target || "", c => c.required_kills ?? 0,
      c => (c.reward_gold ?? 0) + (c.reward_xp ?? 0), c => c.poster || "",
-     c => c.status === "open" ? 0 : 1, c => c.filled_by || ""], 0, -1);
+     c => c.status === "open" ? 0 : 1, c => c.filled_by || "",
+     c => c.created_ts ?? 0], 0, -1);
   setHTML("commissions", rows.map(c => {
     const open = c.status === "open";
     return `
@@ -1398,7 +1408,8 @@ function renderCommissions(commissions) {
         <td>${c.reward_gold ?? 0}g + ${c.reward_xp ?? 0}xp</td>
         <td>${esc(c.poster || "")}</td>
         <td>${open ? `<span class="tag alive">open</span>` : `<span class="dim">${esc(c.status || "")}</span>`}</td>
-        <td>${esc(c.filled_by || "-")}</td></tr>`; }).join(""));
+        <td>${esc(c.filled_by || "-")}</td>
+        <td>${fmtAge(c.created_ts)} ago</td></tr>`; }).join(""));
   $("noCommissions").style.display = rows.length ? "none" : "";
 }
 
