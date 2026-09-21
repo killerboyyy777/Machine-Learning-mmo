@@ -185,6 +185,11 @@ for wid in ("steamItem", "steamRange", "st-lowask", "st-med", "st-vol",
             "noSteamOrders"):
     assert f'id="{wid}"' in html2, f"v2: missing steam widget {wid}"
 assert "uPlot.paths.bars" in html2 and "Item market" in html2
+# Hover readouts: cursor + setCursor hook + timestamps on every chart.
+assert html2.count("setCursor") >= 2, "v2: hover hooks missing"
+assert "fmtTs" in html2 and ".u-cursor-x" in html2
+assert "drag: {x: false, y: false}" in html2
+assert 'id="st-tip"' in html2
 # Commissions board: Quests-adjacent sortable panel + snapshot key.
 for wid in ("commissions", "noCommissions"):
     assert f'id="{wid}"' in html2, f"v2: missing commissions widget {wid}"

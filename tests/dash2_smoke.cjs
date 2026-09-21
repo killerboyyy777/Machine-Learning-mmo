@@ -51,7 +51,7 @@ const sandbox = {
   },
   window: { devicePixelRatio: 1, addEventListener() {} },
   uPlot: class {
-    constructor(o, d) { this.data = d; this.constructor.created++; }
+    constructor(o, d) { this.opts = o; this.data = d; this.constructor.created++; }
     setData(d) { this.data = d; this.constructor.updated++; }
     setSize() { PERF.sized++; }
     destroy() { this.constructor.destroyed++; }
@@ -178,8 +178,25 @@ const cHtml = els["commissions"]._html;
 if (cHtml.indexOf("#2") > cHtml.indexOf("#1")) { failed++; console.error("FAIL commissions not newest-first"); }
 if (!cHtml.includes(">open<") || !cHtml.includes("wolf")) { failed++; console.error("FAIL commissions content"); }
 if (!cHtml.includes(" ago</td>")) { failed++; console.error("FAIL commissions posted-age missing"); }
+// Hover hooks: drive the stored setCursor fns with a fake cursor.
+// Trend chart: idx 1 shows "value @ time", null restores current.
+const ovU = vm.runInContext("charts['ovPlayers']", sandbox);
+const hook = ovU.opts.hooks.setCursor[0];
+hook({ cursor: { idx: 1 }, data: [[0, 1], [5, 6]], _times: ["a", "b"], _current: 9 });
+if (els["ovPlayersVal"]._text !== "6 @ b") { failed++; console.error("FAIL hover show: " + els["ovPlayersVal"]._text); }
+hook({ cursor: { idx: null }, data: [[0, 1], [5, 6]], _times: ["a", "b"], _current: 9 });
+if (els["ovPlayersVal"]._text !== "9") { failed++; console.error("FAIL hover restore: " + els["ovPlayersVal"]._text); }
+// Steam chart: idx 0 shows the bucket label, null restores the caption.
+const stU = vm.runInContext("charts['st-chart']", sandbox);
+const stHook = stU.opts.hooks.setCursor[0];
+stHook({ cursor: { idx: 0 }, _labels: ["8g median · 2 fills"] });
+if (els["st-tip"]._text !== "8g median · 2 fills") { failed++; console.error("FAIL steam hover: " + els["st-tip"]._text); }
+stHook({ cursor: { idx: null }, _labels: [] });
+if (els["st-tip"]._text !== "hover a bucket for its median + fills") {
+  failed++; console.error("FAIL steam hover restore: " + els["st-tip"]._text);
+}
 if (failed) { console.error(`PROVE_FAIL (${failed})`); process.exit(1); }
-console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions)");
+console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover)");
 
 // North-up GEO + tile OVERLAP on the town subgraph (real world.json exits).
 const geoRooms = [

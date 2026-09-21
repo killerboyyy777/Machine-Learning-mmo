@@ -178,6 +178,8 @@
   .trend { height: 80px; overflow: hidden; }
   .trend .uplot { width: 100%; position: relative; }
   .trend .u-under, .trend .u-over { position: absolute; left: 0; top: 0; }
+  /* uPlot hover crosshair layers (same absolute-positioning reason). */
+  .trend .u-cursor-x, .trend .u-cursor-y { position: absolute; }
   .trend canvas { position: absolute; left: 0; top: 0; display: block; max-width: 100%; }
 </style>
 </head>
@@ -304,7 +306,7 @@
       <div class="stat"><div class="v" id="st-med">-</div><div class="l">median (window)</div></div>
       <div class="stat"><div class="v" id="st-vol">-</div><div class="l">fills (window)</div></div>
     </div>
-    <div class="dim" style="font-size:11px;margin:8px 0 4px">Median sale price (line) + fills per bucket (bars)</div>
+    <div class="dim" style="font-size:11px;margin:8px 0 4px">Median sale price (line) + fills per bucket (bars) · <span id="st-tip">hover a bucket for its median + fills</span></div>
     <div class="trend" id="st-chart" style="height:110px"></div>
     <p class="empty" id="st-nochart" style="display:none">No sales in this window yet.</p>
     <div class="dim" style="font-size:11px;margin:8px 0 4px" id="st-ladderHead"></div>
@@ -1011,7 +1013,15 @@ function themePalette() {
     ? {blue: "#0b6bcb", purple: "#6e3ac9", amber: "#8a5a00"}
     : {blue: "#79c0ff", purple: "#d2a8ff", amber: "#ffb454"};
 }
-function trendChart(id, values, colorKey) {
+// Epoch seconds to HH:MM:SS for hover timestamps.
+function fmtTs(ts) {
+  try {
+    const d = new Date((ts || 0) * 1000);
+    const p = n => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  } catch (e) { return ""; }
+}
+function trendChart(id, values, colorKey, times) {
   const el = document.getElementById(id);
   if (!el || typeof uPlot === "undefined") return;
   const pal = themePalette();
@@ -1043,12 +1053,28 @@ function trendChart(id, values, colorKey) {
         {show: !live, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
       ],
       legend: {show: false},
-      cursor: {show: false},
+      // Hover readout (owner verdict: historical points need values):
+      // vertical crosshair only, drag-zoom off, and a setCursor hook that
+      // writes value + timestamp into the title readout; mouse-out
+      // restores the current value. No legend div (it would break the
+      // 80px containment the round-3 fix established).
+      cursor: {show: true, x: true, y: false, drag: {x: false, y: false}},
+      hooks: {setCursor: [uu => {
+        const rl = $(id + "Val");
+        if (!rl) return;
+        const idx = uu.cursor.idx;
+        if (idx == null) { rl.textContent = uu._current ?? "-"; return; }
+        const v = uu.data && uu.data[1] ? uu.data[1][idx] : null;
+        const t = (uu._times || [])[idx];
+        rl.textContent = (v ?? "-") + (t ? " @ " + t : "");
+      }]},
     }, data, el);
     u._empty = !live;
   } else {
     u.setData(data);
   }
+  u._times = times || [];
+  u._current = live ? values[values.length - 1] : null;
   u._dataKey = dataKey;
   u._w = w;
   // Refit on width change only: a chart sized while its tab was hidden
@@ -1072,13 +1098,16 @@ window.addEventListener("resize", resizeCharts);
 function setTrendVal(id, v) {
   const el = $(id + "Val");
   if (el) el.textContent = v == null ? "-" : v;
+  // The hover hook restores this on mouse-out; keep it in sync.
+  if (charts[id]) charts[id]._current = v;
 }
 function renderHistory(history) {
   const h = history || [];
   const ps = h.map(x => x.players_online);
   const ss = h.map(x => (x.top_scores && x.top_scores[0]) ? x.top_scores[0].score : 0);
-  trendChart("histPlayers", ps, "blue");
-  trendChart("histScore", ss, "purple");
+  const ts = h.map(x => fmtTs(x.ts));
+  trendChart("histPlayers", ps, "blue", ts);
+  trendChart("histScore", ss, "purple", ts);
   setTrendVal("histPlayers", ps.length ? ps[ps.length - 1] : null);
   setTrendVal("histScore", ss.length ? ss[ss.length - 1] : null);
 }
@@ -1172,7 +1201,8 @@ function renderMarket(m) {
   // Price-per-sale chart as a uPlot area (new in 2/4: v1 shows the
   // table only; the series already rides in the snapshot).
   const prices = history.map(h => h.price);
-  trendChart("m-priceHist", prices, "amber");
+  const ptimes = history.map(h => h.time || fmtTs(h.ts));
+  trendChart("m-priceHist", prices, "amber", ptimes);
   setTrendVal("m-priceHist", prices.length ? prices[prices.length - 1] : null);
 }
 
@@ -1254,11 +1284,22 @@ function renderSteam(market) {
         {scale: "v", side: 1, stroke: font, grid: {show: false}, font: "10px monospace"},
       ],
       legend: {show: false},
-      cursor: {show: false},
+      // Hover readout like the trend charts: bucket median + fills in
+      // the tip caption below (no timestamps exist at bucket granularity).
+      cursor: {show: true, x: true, y: false, drag: {x: false, y: false}},
+      hooks: {setCursor: [uu => {
+        const tip = $("st-tip");
+        if (!tip) return;
+        const idx = uu.cursor.idx;
+        tip.textContent = idx == null
+          ? "hover a bucket for its median + fills"
+          : ((uu._labels || [])[idx] || "");
+      }]},
     }, [xs, meds, vols], el);
     u._dataKey = dataKey;
     u._sizedW = 0;
   }
+  u._labels = meds.map((m, i) => `${m}g median · ${vols[i]} fill${vols[i] === 1 ? "" : "s"}`);
   if (w && w !== u._sizedW) {
     try { u.setSize({width: w, height: H}); u._sizedW = w; }
     catch (e) {}
@@ -1633,9 +1674,10 @@ function renderOverview(s) {
   const ops = hist.map(h => h.players_online);
   const osc = hist.map(h => (h.top_scores && h.top_scores[0]) ? h.top_scores[0].score : 0);
   const ovo = hist.map(h => h.market_orders ?? 0);
-  trendChart("ovPlayers", ops, "blue");
-  trendChart("ovScore", osc, "purple");
-  trendChart("ovVolume", ovo, "amber");
+  const ots = hist.map(h => fmtTs(h.ts));
+  trendChart("ovPlayers", ops, "blue", ots);
+  trendChart("ovScore", osc, "purple", ots);
+  trendChart("ovVolume", ovo, "amber", ots);
   setTrendVal("ovPlayers", ops.length ? ops[ops.length - 1] : null);
   setTrendVal("ovScore", osc.length ? osc[osc.length - 1] : null);
   setTrendVal("ovVolume", ovo.length ? ovo[ovo.length - 1] : null);
