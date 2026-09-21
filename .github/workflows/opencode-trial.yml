@@ -4,7 +4,7 @@ on:
     types: [created]
 jobs:
   opencode:
-    if: startsWith(github.event.comment.body, '/oc ')
+    if: github.actor == 'killerboyyy777' && startsWith(github.event.comment.body, '/oc ')
     runs-on: ubuntu-latest
     permissions:
       contents: read
