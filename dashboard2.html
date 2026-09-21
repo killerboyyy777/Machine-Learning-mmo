@@ -960,7 +960,7 @@ function renderRooms(rooms) {
       ${r.npcs.map(n => `<span class="tag ${n.alive ? "alive" : "dead"}">${esc(n.name)}
           ${n.alive ? (n.max_hp ? ` (${n.hp}/${n.max_hp})` : "") : " (dead)"}</span>`).join("")}
       ${r.items.map(i => `<span class="tag itemtag">${esc(i)}</span>`).join("")}
-      ${(r.gold > 0) ? `<span class="tag itemtag">💰 ${esc(r.gold)} gold (death drop)</span>` : ""}
+      ${(r.gold > 0) ? `<span class="tag itemtag">${esc(r.gold)} gold (death drop)</span>` : ""}
       ${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}
       ${(!r.players.length && !r.npcs.length && !r.items.length) ? `<span class="empty">empty</span>` : ""}
     </div>`).join(""));
@@ -1477,7 +1477,7 @@ function renderQuests(q) {
       return `1. accept from ${g} · 2. gather 3 Healing Herbs · ` +
              `3. bring them to ${g} (must be there) · 4. hand them over — consumed`;
     if (c.id === "tonic")
-      return `1. accept from ${g} · 2. brew 1 Fortitude Tonic (Iron Ore + Mountain Berry) · ` +
+      return `1. accept from ${g} · 2. brew 1 Fortitude Tonic (Iron Ore + Mountain Berry + Mountain Herb) · ` +
              `3. bring it to ${g} (must be there) · 4. hand it over — consumed`;
     return `1. accept from ${g} · 2. do the work · 3. bring the goods to ${g} · 4. hand them over`;
   };
