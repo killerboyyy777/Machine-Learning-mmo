@@ -3,6 +3,13 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Dashboard revamp 4/4: swap (#207): dashboard2.html promoted to the
+  canonical dashboard.html (old file deleted with the swap; /v2 kept as
+  an alias serving the same file). Covered by the test_dashboard.py
+  contract block (tab/view pairing, JS-referenced ids, default tab,
+  snapshot-server markers), the test_snapshot_contract.py snapshot-shape
+  pin, and the tests/dash2_smoke.cjs runtime harness. Rollback is a
+  rename (restore both files from git).
 - Live dashboard v2 rebuild (#209, 3/4 in review): parallel /v2 UI over
   read-only GET /api/state (additive keys only) - Overview health cards +
   uPlot trends, north-up world map with pan/zoom/room drawer and

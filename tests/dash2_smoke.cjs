@@ -1,4 +1,6 @@
-// Runtime smoke for dashboard2.html (manual visual-proof tool, #209).
+// Runtime smoke for the canonical dashboard.html (manual visual-proof
+// tool, #209 revamp through the #207 swap which promoted dashboard2.html).
+// (Kept filename: history. It tests dashboard.html now.)
 //
 // Executes the REAL inline script against DOM stubs with three snapshots
 // (live-shaped, EMPTY {}, live-twice for change-guard idempotence) plus
@@ -14,7 +16,7 @@ const vm = require("vm");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
-const html = fs.readFileSync(path.join(ROOT, "dashboard2.html"), "utf8");
+const html = fs.readFileSync(path.join(ROOT, "dashboard.html"), "utf8");
 const realIds = new Set([...html.matchAll(/id="([\w-]+)"/g)].map(m => m[1]));
 
 const PERF = { htmlWrites: 0, mapRepaints: 0, sized: 0 };
