@@ -188,6 +188,10 @@ assert "uPlot.paths.bars" in html2 and "Item market" in html2
 # Hover readouts: cursor + setCursor hook + timestamps on every chart.
 assert html2.count("setCursor") >= 2, "v2: hover hooks missing"
 assert "fmtTs" in html2 and ".u-cursor-x" in html2
+# Theme micro-fix: toggle invalidates the map key AND repaints at once.
+assert 'lastMapKey = "";' in html2
+i = html2.index('$("themeToggle").addEventListener')
+assert "renderAll(lastState)" in html2[i:i + 1200], "v2: toggle does not repaint at once"
 assert "drag: {x: false, y: false}" in html2
 assert 'id="st-tip"' in html2
 # Commissions board: Quests-adjacent sortable panel + snapshot key.

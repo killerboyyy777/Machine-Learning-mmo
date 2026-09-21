@@ -195,8 +195,18 @@ stHook({ cursor: { idx: null }, _labels: [] });
 if (els["st-tip"]._text !== "hover a bucket for its median + fills") {
   failed++; console.error("FAIL steam hover restore: " + els["st-tip"]._text);
 }
+// Theme invalidation: identical rooms skip repaint; clearing the key
+// (what the toggle handler does) repaints exactly once.
+const roomsOnce = live.rooms;
+vm.runInContext("renderWorldMap", sandbox)(roomsOnce);
+const mm0 = PERF.mapRepaints;
+vm.runInContext("renderWorldMap", sandbox)(roomsOnce);
+if (PERF.mapRepaints !== mm0) { failed++; console.error("FAIL map guard skipped"); }
+vm.runInContext('lastMapKey = ""', sandbox);
+vm.runInContext("renderWorldMap", sandbox)(roomsOnce);
+if (PERF.mapRepaints !== mm0 + 1) { failed++; console.error("FAIL theme invalidate repaint"); }
 if (failed) { console.error(`PROVE_FAIL (${failed})`); process.exit(1); }
-console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover)");
+console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme)");
 
 // North-up GEO + tile OVERLAP on the town subgraph (real world.json exits).
 const geoRooms = [

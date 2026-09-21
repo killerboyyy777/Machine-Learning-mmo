@@ -1991,14 +1991,17 @@ $("themeToggle").addEventListener("click", () => {
   if (light) root.dataset.theme = "light";
   else delete root.dataset.theme;
   try { localStorage.setItem("dash2-theme", light ? "light" : "dark"); } catch (e) {}
-  // Charts bake themed colors/axes at creation: drop them so the next tick
-  // rebuilds themed. The map re-reads tokens on every render already, but
-  // its repaint guard needs invalidating or it would keep the old paint.
+  // Charts bake themed colors/axes at creation: drop them so they rebuild
+  // themed. The map re-reads tokens on every render already, but its
+  // repaint guard needs invalidating or it would keep the old paint.
+  // Repaint the active tab NOW (theme micro-fix: no waiting for the next
+  // 2s tick); other tabs rebuild/repaint when visited.
   lastMapKey = "";
   for (const [id, u] of Object.entries(charts)) {
     try { u.destroy(); } catch (e) {}
     delete charts[id];
   }
+  if (lastState) renderAll(lastState);
 });
 
 // Throttled poll loop (PERF): 2s visible, 10s hidden. The 1s cadence
