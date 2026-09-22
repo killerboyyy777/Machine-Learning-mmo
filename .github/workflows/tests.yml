@@ -103,6 +103,7 @@ jobs:
           node-version: "22"
       - run: pip install websockets==17.1
       - run: node --version
+      - run: (google-chrome --version || chromium --version || true)
       - run: echo '{}' > scores.json
       - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.ci.log 2>&1 &
       - run: sleep 5

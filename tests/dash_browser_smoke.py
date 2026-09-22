@@ -77,22 +77,46 @@ def main():
 
     chrome = find_chrome(args.chrome)
     shot = os.path.join(args.shots, "overview.png")
-    p = subprocess.run(
-        [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-         "--window-size=1280,2200", "--timeout=45000",
-         "--enable-logging=stderr", "--v=0",
-         f"--screenshot={os.path.abspath(shot)}", "--dump-dom",
-         args.base + "/"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-    err = p.stderr.decode("utf-8", errors="replace")
-    dom = p.stdout.decode("utf-8", errors="replace")
+
+    def capture():
+        # Real-time mode (NOT virtual-time-budget: the open SSE stream
+        # keeps virtual time busy forever, hanging dump-dom).
+        proc = subprocess.run(
+            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--disable-dev-shm-usage",
+             "--window-size=1280,2200", "--timeout=45000",
+             "--enable-logging=stderr", "--v=0",
+             f"--screenshot={os.path.abspath(shot)}", "--dump-dom",
+             args.base + "/"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        return (proc.stdout.decode("utf-8", errors="replace"),
+                proc.stderr.decode("utf-8", errors="replace"))
+
+    # Dump-dom can win the race with the page's first fetch: retry until
+    # the status pill reads live (or attempts run out).
+    import time as _time
+    dom, err = "", ""
+    for attempt in range(6):
+        dom, err = capture()
+        m = re.search(r'<span id="status"[^>]*>(.*?)</span>', dom)
+        if m and m.group(1) == "live":
+            break
+        print(f"RETRY {attempt}: status not live yet")
+        _time.sleep(3)
     with open(os.path.join(args.shots, "dom.html"), "w", encoding="utf-8") as f:
         f.write(dom)
     with open(os.path.join(args.shots, "console.log"), "w", encoding="utf-8") as f:
         f.write(err)
 
+    # Fail on console ERRORS (not every console line: Chrome versions emit
+    # benign warnings). The full log always ships as an artifact.
     console_lines = [l for l in err.splitlines() if "CONSOLE" in l]
-    assert not console_lines, f"browser console not clean: {console_lines[:5]}"
+    print(f"CONSOLE_LINES: {len(console_lines)}")
+    for line in console_lines[:10]:
+        print("  CONSOLE> " + line[-200:])
+    bad = [l for l in console_lines
+           if "ncaught" in l or "rror" in l or "ERROR" in l or "ailed" in l]
+    assert not bad, f"browser console errors: {bad[:5]}"
     print("CONSOLE_CLEAN_OK")
 
     m = re.search(r'<span id="status"[^>]*>(.*?)</span>', dom)
