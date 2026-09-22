@@ -46,7 +46,6 @@ Key design:
 """
 
 import asyncio
-import json
 import random
 import sys
 from pathlib import Path
@@ -61,10 +60,17 @@ import torch.nn as nn
 import torch.optim as optim
 
 from ml_env import (
-    TextMMOEnv, ACTIONS, N_ACTIONS, OBS_SIZE, flatten_obs,
-    market_tax, market_net, TAX_RATE, TAX_MINIMUM,
-    QUESTS, QUEST_REWARD_POINTS, QUEST_DELVER_REWARD_POINTS,
-    quest_stage, quest_charm_cost, quest_charm_net,
+    TextMMOEnv,
+    ACTIONS,
+    N_ACTIONS,
+    OBS_SIZE,
+    flatten_obs,
+    market_net,
+    QUESTS,
+    QUEST_REWARD_POINTS,
+    QUEST_DELVER_REWARD_POINTS,
+    quest_charm_cost,
+    quest_charm_net,
 )
 from versioning import checkpoint_version, version_notes
 
@@ -77,6 +83,7 @@ def _fmt_loss(v) -> str:
 # ---------------------------------------------------------------------------
 # Random Network Distillation (curiosity) -- see TorchDQNAgent below
 # ---------------------------------------------------------------------------
+
 
 class RNDNet(nn.Module):
     """Small MLP embedding observations into a k-dim curiosity space."""
@@ -96,6 +103,7 @@ class RNDNet(nn.Module):
 # ---------------------------------------------------------------------------
 # Q-Network architecture with auxiliary heads + market value head
 # ---------------------------------------------------------------------------
+
 
 class DQN(nn.Module):
     """MLP with shared trunk + 5 output heads:
@@ -122,7 +130,7 @@ class DQN(nn.Module):
             nn.ReLU(),
         )
         self.q_head = nn.Linear(hidden, n_actions)
-        self.gold_head = nn.Linear(hidden, 1)   # predicted gold this step
+        self.gold_head = nn.Linear(hidden, 1)  # predicted gold this step
         self.loot_head = nn.Linear(hidden, 1)  # predicted loot value this step
         self.market_head = nn.Linear(hidden, 1)  # predicted market P&L this step
         self.quest_head = nn.Linear(hidden, 1)  # predicted quest score this step
@@ -144,6 +152,7 @@ class DQN(nn.Module):
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
+
 
 class TorchDQNAgent:
     """DQN agent with auxiliary gold/loot/market/quest prediction heads.
@@ -235,11 +244,15 @@ class TorchDQNAgent:
         # running error std so the scale stays stable through training.
         self.rnd_lambda = rnd_lambda
         self.rnd_ema = rnd_ema
-        self.rnd_target = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(self.device)
+        self.rnd_target = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(
+            self.device
+        )
         self.rnd_target.eval()
         for p in self.rnd_target.parameters():
             p.requires_grad_(False)
-        self.rnd_pred = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(self.device)
+        self.rnd_pred = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(
+            self.device
+        )
         self.rnd_opt = optim.Adam(self.rnd_pred.parameters(), lr=rnd_lr)
         self._rnd_lr = rnd_lr
         self._rnd_mean = 0.0
@@ -277,7 +290,12 @@ class TorchDQNAgent:
 
     # ---- action selection ---------------------------------------------------
 
-    def act(self, features: list[float], epsilon: float | None = None, mask: list[int] | None = None) -> int:
+    def act(
+        self,
+        features: list[float],
+        epsilon: float | None = None,
+        mask: list[int] | None = None,
+    ) -> int:
         if epsilon is None:
             epsilon = self._epsilon()
         valid = [a for a in range(N_ACTIONS) if mask is None or mask[a]]
@@ -307,7 +325,7 @@ class TorchDQNAgent:
         raw = float(self._rnd_error(x).item())
         self._rnd_mean += self.rnd_ema * (raw - self._rnd_mean)
         self._rnd_var += self.rnd_ema * ((raw - self._rnd_mean) ** 2 - self._rnd_var)
-        std = max(1e-4, self._rnd_var ** 0.5)
+        std = max(1e-4, self._rnd_var**0.5)
         return max(0.0, (raw - self._rnd_mean) / std)
 
     def update_rnd(self, states: torch.Tensor) -> float:
@@ -330,7 +348,9 @@ class TorchDQNAgent:
 
     # ---- auxiliary supervision from environment ---------------------------
 
-    def _compute_auxiliary(self, transition: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _compute_auxiliary(
+        self, transition: dict
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (gold, loot, market, quest) targets for this transition.
 
         gold: delta in player gold
@@ -368,14 +388,26 @@ class TorchDQNAgent:
         # Sample minibatch
         available = [i for i, t in enumerate(self.replay) if t is not None]
         if len(available) < self.batch_size:
-            return {"td": None, "gold": None, "loot": None, "market": None,
-                    "quest": None, "rnd": None}
+            return {
+                "td": None,
+                "gold": None,
+                "loot": None,
+                "market": None,
+                "quest": None,
+                "rnd": None,
+            }
         indices = random.sample(available, self.batch_size)
         batch = [self.replay[i] for i in indices if self.replay[i] is not None]
 
         if len(batch) < self.batch_size:
-            return {"td": None, "gold": None, "loot": None, "market": None,
-                    "quest": None, "rnd": None}
+            return {
+                "td": None,
+                "gold": None,
+                "loot": None,
+                "market": None,
+                "quest": None,
+                "rnd": None,
+            }
 
         # ---- build tensors from batch ----
         states = torch.tensor(
@@ -396,22 +428,34 @@ class TorchDQNAgent:
 
         # ---- auxiliary targets ----
         gold_targets = torch.tensor(
-            [b.get("gold_delta", 0.0) for b in batch], dtype=torch.float32, device=self.device
+            [b.get("gold_delta", 0.0) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
         )
         loot_targets = torch.tensor(
-            [b.get("loot_delta", 0.0) for b in batch], dtype=torch.float32, device=self.device
+            [b.get("loot_delta", 0.0) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
         )
         market_targets = torch.tensor(
-            [b.get("market_pnl", 0.0) for b in batch], dtype=torch.float32, device=self.device
+            [b.get("market_pnl", 0.0) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
         )
         quest_targets = torch.tensor(
-            [b.get("quest_reward", 0.0) for b in batch], dtype=torch.float32, device=self.device
+            [b.get("quest_reward", 0.0) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
         )
         intrinsic_targets = torch.tensor(
-            [b.get("quest_intrinsic", 0.0) for b in batch], dtype=torch.float32, device=self.device
+            [b.get("quest_intrinsic", 0.0) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
         )
         rnd_targets = torch.tensor(
-            [b.get("rnd_bonus", 0.0) for b in batch], dtype=torch.float32, device=self.device
+            [b.get("rnd_bonus", 0.0) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
         )
 
         # ---- current Q-values for the actions taken ----
@@ -419,10 +463,15 @@ class TorchDQNAgent:
         q_vals = self.q.get_q(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # ---- TD target on the shaped reward ----
-        # r = score + quest-intrinsic + RND curiosity (both exploration
-        # bonuses ride the TD target; the predictor itself trains below).
-        shaped = (rewards + self.intrinsic_lambda * intrinsic_targets
-                  + self.rnd_lambda * rnd_targets)
+        # r = score + quest-intrinsic + quest-reward + RND curiosity (the
+        # exploration bonuses and turn-in points ride the TD target; the
+        # predictor itself trains below).
+        shaped = (
+            rewards
+            + self.intrinsic_lambda * intrinsic_targets
+            + self.rnd_lambda * rnd_targets
+            + quest_targets
+        )
         with torch.no_grad():
             target_q = self.target.get_q(next_states).max(1)[0]
             td_targets = shaped + self.gamma * target_q * (1.0 - dones)
@@ -443,8 +492,12 @@ class TorchDQNAgent:
         quest_loss = nn.functional.l1_loss(pred_quest, quest_targets)
 
         # ---- total loss ----
-        total_loss = (td_loss + self.aux_lambda * (gold_loss + loot_loss)
-                      + self.market_lambda * market_loss + self.quest_lambda * quest_loss)
+        total_loss = (
+            td_loss
+            + self.aux_lambda * (gold_loss + loot_loss)
+            + self.market_lambda * market_loss
+            + self.quest_lambda * quest_loss
+        )
 
         self.optimizer.zero_grad()
         total_loss.backward()
@@ -475,23 +528,27 @@ class TorchDQNAgent:
         if path is None:
             path = str(Path(__file__).with_name("ml_weights.json"))
         tmp = str(path) + ".tmp"
-        torch.save({
-            "q_state_dict": self.q.state_dict(),
-            "target_state_dict": self.target.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "rnd_pred_state_dict": self.rnd_pred.state_dict(),
-            "rnd_opt_state_dict": self.rnd_opt.state_dict(),
-            "rnd_mean": self._rnd_mean,
-            "rnd_var": self._rnd_var,
-            "epsilon": self._epsilon(),
-            "training_steps": self.t_step,
-            "learn_step": self.learn_step,
-            "best_score": self.best_score,
-            "obs_size": OBS_SIZE,
-            "n_actions": N_ACTIONS,
-            "version": checkpoint_version(OBS_SIZE, N_ACTIONS),
-        }, tmp)
+        torch.save(
+            {
+                "q_state_dict": self.q.state_dict(),
+                "target_state_dict": self.target.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "rnd_pred_state_dict": self.rnd_pred.state_dict(),
+                "rnd_opt_state_dict": self.rnd_opt.state_dict(),
+                "rnd_mean": self._rnd_mean,
+                "rnd_var": self._rnd_var,
+                "epsilon": self._epsilon(),
+                "training_steps": self.t_step,
+                "learn_step": self.learn_step,
+                "best_score": self.best_score,
+                "obs_size": OBS_SIZE,
+                "n_actions": N_ACTIONS,
+                "version": checkpoint_version(OBS_SIZE, N_ACTIONS),
+            },
+            tmp,
+        )
         import os
+
         os.replace(tmp, path)
         print(f"Weights saved to {path} (epsilon={self._epsilon():.3f})")
 
@@ -535,8 +592,10 @@ class TorchDQNAgent:
             # Shape mismatch: e.g. checkpoints saved before the quest block
             # grew OBS_SIZE/N_ACTIONS (or changed head count). Warn and keep
             # the fresh network instead of crashing the run.
-            print(f"Weights at {path} don't match current obs/action size "
-                  f"(OBS_SIZE={OBS_SIZE}, N_ACTIONS={N_ACTIONS}), starting fresh: {e}")
+            print(
+                f"Weights at {path} don't match current obs/action size "
+                f"(OBS_SIZE={OBS_SIZE}, N_ACTIONS={N_ACTIONS}), starting fresh: {e}"
+            )
             return False
         print(f"Weights loaded from {path}")
         return True
@@ -623,7 +682,9 @@ class TorchDQNAgent:
                 prev_ids = {o["id"]: o for o in (self._prev_own_orders or [])}
                 cur_ids = {o["id"]: o for o in (info.get("own_orders") or [])}
                 market_pnl = sum(
-                    market_net(o["price"]) for i, o in prev_ids.items() if i not in cur_ids
+                    market_net(o["price"])
+                    for i, o in prev_ids.items()
+                    if i not in cur_ids
                 )
             self._prev_own_orders = info.get("own_orders") or []
 
@@ -641,10 +702,12 @@ class TorchDQNAgent:
             tonic_turned = bool((byq.get("tonic") or {}).get("turned_in"))
             remedy_accepted = bool((byq.get("remedy") or {}).get("accepted"))
             tonic_accepted = bool((byq.get("tonic") or {}).get("accepted"))
-            quest_reward = ((float(QUEST_REWARD_POINTS) if guard_turned else 0.0)
-                            + (float(QUEST_DELVER_REWARD_POINTS) if delver_turned else 0.0)
-                            + (float(QUESTS["remedy"]["reward_points"]) if remedy_turned else 0.0)
-                            + (float(QUESTS["tonic"]["reward_points"]) if tonic_turned else 0.0))
+            quest_reward = (
+                (float(QUEST_REWARD_POINTS) if guard_turned else 0.0)
+                + (float(QUEST_DELVER_REWARD_POINTS) if delver_turned else 0.0)
+                + (float(QUESTS["remedy"]["reward_points"]) if remedy_turned else 0.0)
+                + (float(QUESTS["tonic"]["reward_points"]) if tonic_turned else 0.0)
+            )
             if guard_turned:
                 quest_turnins += 1
             if delver_turned:
@@ -738,8 +801,12 @@ class TorchDQNAgent:
         print(f"Quest accepts: {quest_accepts}  Quest turn-ins: {quest_turnins}")
         print(f"Delver accepts: {quest2_accepts}  Delver turn-ins: {quest2_turnins}")
         print(f"Intrinsic exploration bonus total: {intrinsic_total:.1f}")
-        print("Action usage:", {_ACTIONS[i]: c for i, c in enumerate(action_counts) if c})
-        print("Weights saved to torch_agents/ml_weights.json (separate from ml/ml_weights.json)")
+        print(
+            "Action usage:", {_ACTIONS[i]: c for i, c in enumerate(action_counts) if c}
+        )
+        print(
+            "Weights saved to torch_agents/ml_weights.json (separate from ml/ml_weights.json)"
+        )
         await env.close()
 
 
@@ -747,19 +814,32 @@ class TorchDQNAgent:
 # Quick smoke-test entry point
 # ---------------------------------------------------------------------------
 
+
 async def _demo():
-    from ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, flatten_obs, QUESTS, quest_charm_cost, quest_charm_net
+    from ml_env import (
+        ACTIONS,
+        N_ACTIONS,
+        flatten_obs,
+        QUESTS,
+        quest_charm_net,
+    )
 
     env = TextMMOEnv("TorchDemo")
     obs = await env.reset()
     flat = flatten_obs(obs)
     print(f"Observation size: {len(flat)} floats, {N_ACTIONS} actions")
     print(f"Action space: {ACTIONS[:5]}... (first 5 of {N_ACTIONS})")
-    print(f"Quest catalog: {list(QUESTS)} (guard_charm: accept->craft charm->turn in; "
-          f"delver: accept->clear floors->turn in; both repeatable)")
-    print(f"Charm econ: mats cost {quest_charm_cost()}g at merchant vs quest gold "
-          f"{QUESTS['guard_charm']['reward_gold']}g -> net {quest_charm_net():+}g (XP/score upside separate)")
-    print(f"Quest stage now: {obs.get('quest_stage')}/{obs.get('quest2_stage')}  giver_here={obs.get('quest_giver_here')}")
+    print(
+        f"Quest catalog: {list(QUESTS)} (guard_charm: accept->craft charm->turn in; "
+        f"delver: accept->clear floors->turn in; both repeatable)"
+    )
+    print(
+        f"Charm econ: mats cost {quest_charm_cost()}g at merchant vs quest gold "
+        f"{QUESTS['guard_charm']['reward_gold']}g -> net {quest_charm_net():+}g (XP/score upside separate)"
+    )
+    print(
+        f"Quest stage now: {obs.get('quest_stage')}/{obs.get('quest2_stage')}  giver_here={obs.get('quest_giver_here')}"
+    )
 
     action = random.randrange(N_ACTIONS)
     print(f"Sample action: {ACTIONS[action]}")
@@ -772,20 +852,40 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="PyTorch DQN agent for the text MMO.")
-    parser.add_argument("--demo", action="store_true", help="quick smoke-test: one random env step")
-    parser.add_argument("--name", default="TorchBot", help="character name (reuse across runs to keep training)")
-    parser.add_argument("--url", default="ws://localhost:8765", help="game WebSocket URL")
-    parser.add_argument("--steps", type=int, default=2000, help="total training steps this run")
-    parser.add_argument("--save-every", type=int, default=500, help="checkpoint weights every N steps")
-    parser.add_argument("--rnd-lambda", type=float, default=0.1, help="RND curiosity weight (0 disables)")
-    parser.add_argument("--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate")
+    parser.add_argument(
+        "--demo", action="store_true", help="quick smoke-test: one random env step"
+    )
+    parser.add_argument(
+        "--name",
+        default="TorchBot",
+        help="character name (reuse across runs to keep training)",
+    )
+    parser.add_argument(
+        "--url", default="ws://localhost:8765", help="game WebSocket URL"
+    )
+    parser.add_argument(
+        "--steps", type=int, default=2000, help="total training steps this run"
+    )
+    parser.add_argument(
+        "--save-every", type=int, default=500, help="checkpoint weights every N steps"
+    )
+    parser.add_argument(
+        "--rnd-lambda",
+        type=float,
+        default=0.1,
+        help="RND curiosity weight (0 disables)",
+    )
+    parser.add_argument(
+        "--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate"
+    )
     args = parser.parse_args()
 
     if args.demo:
         asyncio.run(_demo())
         return
-    agent = TorchDQNAgent(name=args.name, url=args.url,
-                          rnd_lambda=args.rnd_lambda, rnd_lr=args.rnd_lr)
+    agent = TorchDQNAgent(
+        name=args.name, url=args.url, rnd_lambda=args.rnd_lambda, rnd_lr=args.rnd_lr
+    )
     agent.load_weights()
     asyncio.run(agent.train(total_steps=args.steps, save_every=args.save_every))
 
