@@ -147,9 +147,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - run: pip install websockets==17.1
+      - run: pip install websockets==17.1 playwright
       - run: node --version
-      - run: (google-chrome --version || chromium --version || true)
+      - run: python -m playwright install --with-deps firefox
       - run: echo '{}' > scores.json
       - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.ci.log 2>&1 &
       - run: sleep 5

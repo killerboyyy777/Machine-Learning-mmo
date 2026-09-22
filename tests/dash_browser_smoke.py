@@ -1,49 +1,29 @@
-"""Headless-Chrome smoke for the canonical dashboard (CI browser proof).
+"""Headless-Firefox smoke for the canonical dashboard (CI browser proof).
 
-Loads / (and the /v2 alias) in headless Chrome with one live bot moving:
-fails on ANY browser console message, requires the status pill to read
-exactly "live" (no render-issue banner), requires trend canvases present,
-and always writes screenshots + DOM + console log under dashshots/ for
-the CI artifact upload.
+Uses Playwright with its BUNDLED Firefox (downloaded into the tool cache
+by `python -m playwright install firefox`) - never a system browser, and
+headless-only always (browser rule, owner 09-22). Loads / (and the /v2
+alias) with one live bot moving: fails on console errors or uncaught page
+errors, requires the status pill to read exactly "live" (no render-issue
+banner), requires trend canvases present, and always writes screenshots +
+DOM + console log under dashshots/ for the CI artifact upload.
 
 Run: python tests/dash_browser_smoke.py [--base URL] [--ws URL]
   (CI starts the server first, same as the live job.)
-Needs: headless Chrome/Chromium on PATH, websockets (pip).
+Needs: playwright + firefox engine (`python -m playwright install
+  firefox`), websockets (pip).
 """
 
 import argparse
 import asyncio
 import json
 import os
-import re
-import shutil
-import subprocess
 import urllib.request
 
 import websockets
 import websockets.exceptions
-
-# Browser rule (owner 09-22): headless-only always, and the project must
-# never depend on a dev machine's system Chrome. Discovery is PATH-only
-# (CI runners preinstall Chrome); no hardcoded install paths, no
-# `chrome --version` probe (it can flash/focus a visible window where a
-# Chrome singleton is running).
-CHROME_CANDIDATES = ("google-chrome", "chromium", "chromium-browser")
-
-
-def find_chrome(explicit=None):
-    if explicit:
-        return explicit
-    for name in CHROME_CANDIDATES:
-        found = shutil.which(name)
-        if found:
-            return found
-    raise SystemExit(
-        "no headless Chrome on PATH "
-        f"(tried {', '.join(CHROME_CANDIDATES)}); "
-        "the node stub (node tests/dash2_smoke.cjs) "
-        "covers dashboard logic with zero browser"
-    )
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright
 
 
 async def bot(ws_url):
@@ -69,7 +49,7 @@ async def bot(ws_url):
             except quiet:
                 pass
             await asyncio.sleep(1)
-    print("SMOKE_BOT_OK")
+    print("SMOKE_BOT_OK", flush=True)
 
 
 def main():
@@ -77,7 +57,6 @@ def main():
     ap.add_argument("--base", default="http://127.0.0.1:8766")
     ap.add_argument("--ws", default="ws://127.0.0.1:8765")
     ap.add_argument("--shots", default="dashshots")
-    ap.add_argument("--chrome", default=None)
     args = ap.parse_args()
 
     os.makedirs(args.shots, exist_ok=True)
@@ -86,83 +65,69 @@ def main():
     root = urllib.request.urlopen(args.base + "/", timeout=10).read()
     alias = urllib.request.urlopen(args.base + "/v2", timeout=10).read()
     assert root == alias and len(root) > 10000, "route mismatch"
-    print(f"ROUTES_OK ({len(root)} bytes)")
+    print(f"ROUTES_OK ({len(root)} bytes)", flush=True)
 
     asyncio.run(bot(args.ws))
 
-    chrome = find_chrome(args.chrome)
-    print("CHROME:", chrome)
+    console_errors = []
+    page_errors = []
+    dom = ""
     shot = os.path.join(args.shots, "overview.png")
-
-    def capture():
-        # Real-time mode (NOT virtual-time-budget: the open SSE stream
-        # keeps virtual time busy forever, hanging dump-dom).
-        proc = subprocess.run(
-            [
-                chrome,
-                "--headless=new",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--window-size=1280,2200",
-                "--timeout=45000",
-                "--enable-logging=stderr",
-                "--v=0",
-                f"--screenshot={os.path.abspath(shot)}",
-                "--dump-dom",
-                args.base + "/",
-            ],
-            capture_output=True,
-            check=False,
-            timeout=180,
+    with sync_playwright() as pw:
+        browser = pw.firefox.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 2200})
+        page.on(
+            "console",
+            lambda msg: console_errors.append(msg) if msg.type == "error" else None,
         )
-        return (
-            proc.stdout.decode("utf-8", errors="replace"),
-            proc.stderr.decode("utf-8", errors="replace"),
-        )
-
-    # Dump-dom can win the race with the page's first fetch: retry until
-    # the status pill reads live (or attempts run out).
-    import time as _time
-
-    dom, err = "", ""
-    for attempt in range(6):
-        dom, err = capture()
-        m = re.search(r'<span id="status"[^>]*>(.*?)</span>', dom)
-        if m and m.group(1) == "live":
-            break
-        print(f"RETRY {attempt}: status not live yet")
-        _time.sleep(3)
+        page.on("pageerror", lambda err: page_errors.append(str(err)))
+        # The dump can win the race with the page's first fetch: reload
+        # until the status pill reads live (or attempts run out).
+        for attempt in range(6):
+            page.goto(args.base + "/", wait_until="load", timeout=30000)
+            try:
+                page.wait_for_function(
+                    "document.getElementById('status').textContent === 'live'",
+                    timeout=15000,
+                )
+                break
+            except PlaywrightTimeout:
+                print(f"RETRY {attempt}: status not live yet", flush=True)
+        dom = page.content()
+        page.screenshot(path=os.path.abspath(shot), full_page=True)
+        browser.close()
     with open(os.path.join(args.shots, "dom.html"), "w", encoding="utf-8") as f:
         f.write(dom)
     with open(os.path.join(args.shots, "console.log"), "w", encoding="utf-8") as f:
-        f.write(err)
+        f.write("\n".join([m.text for m in console_errors] + page_errors))
 
-    # Fail on console ERRORS (not every console line: Chrome versions emit
-    # benign warnings). The full log always ships as an artifact.
-    console_lines = [l for l in err.splitlines() if "CONSOLE" in l]
-    print(f"CONSOLE_LINES: {len(console_lines)}")
-    for line in console_lines[:10]:
-        print("  CONSOLE> " + line[-200:])
-    bad = [
-        l
-        for l in console_lines
-        if "ncaught" in l or "rror" in l or "ERROR" in l or "ailed" in l
-    ]
-    assert not bad, f"browser console errors: {bad[:5]}"
-    print("CONSOLE_CLEAN_OK")
+    print(
+        f"CONSOLE_ERRORS: {len(console_errors)} PAGE_ERRORS: {len(page_errors)}",
+        flush=True,
+    )
+    for m in console_errors[:5]:
+        print("  CONSOLE> " + m.text[-200:], flush=True)
+    for e in page_errors[:5]:
+        print("  PAGEERROR> " + e[-200:], flush=True)
+    assert (
+        not console_errors
+    ), f"browser console errors: {[m.text for m in console_errors][:3]}"
+    assert not page_errors, f"uncaught page errors: {page_errors[:3]}"
+    print("CONSOLE_CLEAN_OK", flush=True)
 
-    m = re.search(r'<span id="status"[^>]*>(.*?)</span>', dom)
+    import re as _re
+
+    m = _re.search(r'<span id="status"[^>]*>(.*?)</span>', dom)
     assert m and m.group(1) == "live", f"status pill: {m.group(1) if m else 'missing'}"
-    print("STATUS_LIVE_OK")
+    print("STATUS_LIVE_OK", flush=True)
 
     n_canvas = dom.count("<canvas")
     assert n_canvas >= 4, f"only {n_canvas} canvases rendered"
-    print(f"CANVAS_OK ({n_canvas})")
+    print(f"CANVAS_OK ({n_canvas})", flush=True)
 
     assert os.path.exists(shot) and os.path.getsize(shot) > 10000, "screenshot missing"
-    print("SHOT_OK")
-    print("BROWSER_SMOKE_OK")
+    print("SHOT_OK", flush=True)
+    print("BROWSER_SMOKE_OK", flush=True)
 
 
 main()
