@@ -41,6 +41,8 @@ import random
 import signal
 import time
 
+import websockets
+
 try:
     from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
     from .ml_client import LinearQAgent
@@ -64,6 +66,11 @@ except ImportError:
 _HERE = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS_FILE = os.path.join(_HERE, "ml_weights.json")
 BEST_FILE = os.path.join(_HERE, "ml_best.json")
+
+# Reconnect backoff for a down/restarting server (#330): capped exponential
+# so the farm survives a brief outage instead of dying on the first error.
+RESET_BACKOFF_BASE = 1.0
+RESET_BACKOFF_MAX = 30.0
 
 
 def load_json(path, default):
@@ -172,8 +179,26 @@ class BotRunner:
         self.score = obs["score_raw"]
         self.recent_rewards = []
 
+    async def _reset_with_retry(self):
+        """Connect with backoff + re-login so a down/restarting server never
+        kills the whole farm (#330). reset() raises ConnectionError when the
+        server is unreachable; retry with capped exponential backoff until
+        the farm is stopped (Ctrl+C still interrupts)."""
+        attempt = 0
+        while not self.farm.stop.is_set():
+            try:
+                await self.reset()
+                return
+            except (ConnectionError, OSError, websockets.ConnectionClosed) as e:
+                attempt += 1
+                delay = min(RESET_BACKOFF_MAX,
+                            RESET_BACKOFF_BASE * (2 ** min(attempt - 1, 5)))
+                print(f"[farm] {self.name}: server unreachable "
+                      f"({e.__class__.__name__}); reconnecting in {delay:.1f}s")
+                await asyncio.sleep(delay)
+
     async def run(self):
-        await self.reset()
+        await self._reset_with_retry()
         if self.policy is not None:
             await self.run_scripted()
             return
@@ -182,7 +207,11 @@ class BotRunner:
                 self.farm.stop.set()
                 break
             action = self.farm.agent.act(self.features, self.farm.epsilon_now(), self.env.valid_action_mask())
-            next_obs, reward, done, info = await self.env.step(action)
+            try:
+                next_obs, reward, done, info = await self.env.step(action)
+            except (ConnectionError, OSError, websockets.ConnectionClosed):
+                await self._reset_with_retry()
+                continue
             next_features = flatten_obs(next_obs)
             self.farm.agent.update(self.features, action, reward, next_features, done)
             self.farm.agent.training_steps += 1
@@ -196,7 +225,7 @@ class BotRunner:
             self.total_steps += 1
 
             if done:
-                await self.reset()
+                await self._reset_with_retry()
         await self.env.close()
 
     async def run_scripted(self):
@@ -207,7 +236,11 @@ class BotRunner:
                 self.farm.stop.set()
                 break
             action = self.policy.select(self.env)
-            next_obs, reward, done, _info = await self.env.step(action)
+            try:
+                next_obs, reward, done, _info = await self.env.step(action)
+            except (ConnectionError, OSError, websockets.ConnectionClosed):
+                await self._reset_with_retry()
+                continue
             self.features = flatten_obs(next_obs)
             self.score = next_obs["score_raw"]
             self.recent_rewards.append(reward)
@@ -216,7 +249,7 @@ class BotRunner:
             self.farm.steps += 1
             self.total_steps += 1
             if done:
-                await self.reset()
+                await self._reset_with_retry()
         await self.env.close()
 
 

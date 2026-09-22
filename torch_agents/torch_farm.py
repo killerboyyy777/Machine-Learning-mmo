@@ -53,9 +53,6 @@ class TorchFarm:
             return
         self.agent.save_weights(self.args.weights)
         self.last_save_step = self.steps
-        if self.last_best_score > self.agent.best_score:
-            self.agent.best_score = self.last_best_score
-            self.agent.save_weights(self.args.best_weights)
 
 
 class Runner:
@@ -169,6 +166,12 @@ class Runner:
                 self.farm.steps += 1
                 if self.score > self.farm.last_best_score:
                     self.farm.last_best_score = self.score
+                    # Snapshot immediately so the saved best never lags the
+                    # achieving step (#327): the boundary checkpoint would
+                    # otherwise write (possibly degraded) later weights under
+                    # this peak's score metadata.
+                    self.farm.agent.best_score = self.score
+                    self.farm.agent.save_weights(self.farm.args.best_weights)
                 await self.farm.checkpoint()
 
                 if done:
