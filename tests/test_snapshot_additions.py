@@ -2,6 +2,7 @@
 
 Conventions: ASCII-only.
 """
+
 import os
 import sys
 
@@ -33,11 +34,15 @@ def test_commissions_snapshot():
 
         snap = srv._commission_snapshot()
         # Cap check: length is 100
-        assert len(snap) == 100, f"Expected 100 commissions in snapshot, got {len(snap)}"
+        assert (
+            len(snap) == 100
+        ), f"Expected 100 commissions in snapshot, got {len(snap)}"
 
         # Order check: newest-first (descending ID)
         ids = [c["id"] for c in snap]
-        assert ids == list(range(120, 20, -1)), "Snapshot is not newest-first or truncated improperly"
+        assert ids == list(
+            range(120, 20, -1)
+        ), "Snapshot is not newest-first or truncated improperly"
 
         # Truncation check: IDs 1..20 are absent, 21..120 are present
         assert 120 in ids, "Newest commission ID 120 missing"
@@ -47,7 +52,11 @@ def test_commissions_snapshot():
 
         # All statuses check
         snap_statuses = {c["status"] for c in snap}
-        assert snap_statuses == {"open", "filled", "cancelled"}, f"Missing statuses in snapshot: {snap_statuses}"
+        assert snap_statuses == {
+            "open",
+            "filled",
+            "cancelled",
+        }, f"Missing statuses in snapshot: {snap_statuses}"
 
         # Verify world_snapshot() commissions key matches
         world_snap = srv.world_snapshot()
@@ -72,17 +81,21 @@ def test_recent_turnins():
         # Simulate 60 quest turnins
         for i in range(1, 61):
             srv.quest_feed_seq += 1
-            srv.quest_turnin_feed.append({
-                "seq": srv.quest_feed_seq,
-                "t": "12:00:00",
-                "name": f"player_{i}",
-                "qid": "rat_catcher"
-            })
+            srv.quest_turnin_feed.append(
+                {
+                    "seq": srv.quest_feed_seq,
+                    "t": "12:00:00",
+                    "name": f"player_{i}",
+                    "qid": "rat_catcher",
+                }
+            )
             while len(srv.quest_turnin_feed) > srv.TURNIN_FEED_SIZE:
                 del srv.quest_turnin_feed[0]
 
         # Ring buffer size check: capped at 50
-        assert len(srv.quest_turnin_feed) == 50, f"Expected 50 items in ring, got {len(srv.quest_turnin_feed)}"
+        assert (
+            len(srv.quest_turnin_feed) == 50
+        ), f"Expected 50 items in ring, got {len(srv.quest_turnin_feed)}"
 
         # Eviction check: seq 1..10 evicted, 11..60 present in ring
         ring_seqs = [t["seq"] for t in srv.quest_turnin_feed]
@@ -99,16 +112,24 @@ def test_recent_turnins():
         recent_seqs = [t["seq"] for t in recent]
         # Verify evicted items 1..10 are absent from recent_turnins
         for evicted_seq in range(1, 11):
-            assert evicted_seq not in recent_seqs, f"Evicted seq {evicted_seq} present in recent_turnins"
+            assert (
+                evicted_seq not in recent_seqs
+            ), f"Evicted seq {evicted_seq} present in recent_turnins"
 
         # Raw feed slice in snapshot is chronological (newest at recent[-1])
-        assert recent[-1]["seq"] == 60, f"Expected newest seq 60 at end of recent_turnins feed, got {recent[-1]['seq']}"
+        assert (
+            recent[-1]["seq"] == 60
+        ), f"Expected newest seq 60 at end of recent_turnins feed, got {recent[-1]['seq']}"
 
         # In newest-first order (e.g. recent[::-1]): newest seq 60 is first, descending sequence
         newest_first = recent[::-1]
-        assert newest_first[0]["seq"] == 60, f"Expected newest seq 60 first in newest-first order, got {newest_first[0]['seq']}"
+        assert (
+            newest_first[0]["seq"] == 60
+        ), f"Expected newest seq 60 first in newest-first order, got {newest_first[0]['seq']}"
         for idx in range(len(newest_first) - 1):
-            assert newest_first[idx]["seq"] > newest_first[idx + 1]["seq"], "newest_first order is not strictly descending"
+            assert (
+                newest_first[idx]["seq"] > newest_first[idx + 1]["seq"]
+            ), "newest_first order is not strictly descending"
 
         print("QUEST_TURNINS_SNAPSHOT_OK")
     finally:
@@ -134,8 +155,12 @@ def test_recipes_snapshot():
         # Verify raw item ID vs resolved display name
         raw_rec = srv.RECIPES.get(r["id"], {})
         raw_result_id = raw_rec.get("result", r["id"])
-        expected_result_name = srv.ITEM_DEFS.get(raw_result_id, {}).get("name", raw_result_id)
-        assert r["result"] == expected_result_name, f"Result name not resolved for {r['id']}"
+        expected_result_name = srv.ITEM_DEFS.get(raw_result_id, {}).get(
+            "name", raw_result_id
+        )
+        assert (
+            r["result"] == expected_result_name
+        ), f"Result name not resolved for {r['id']}"
 
         for inp in r["inputs"]:
             assert "item" in inp and isinstance(inp["item"], str)
@@ -149,6 +174,7 @@ def test_steam_medians():
     # computed from server.py's market history snapshot data.
     orig_history = list(srv.market_history)
     try:
+
         def get_steam_item_median_from_snapshot(item_name):
             snap = srv.world_snapshot()
             fills = snap.get("market", {}).get("history", [])
@@ -165,19 +191,70 @@ def test_steam_medians():
         assert get_steam_item_median_from_snapshot("Wolf Pelt") is None
 
         # Test odd count fill set from snapshot (3 fills: 10, 30, 20 -> sorted: 10, 20, 30 -> median 20)
-        srv.market_history.extend([
-            {"time": "12:00", "ts": 100, "buyer": "a", "seller": "b", "item": "Wolf Pelt", "price": 10, "tax": 1, "payout": 9},
-            {"time": "12:01", "ts": 101, "buyer": "a", "seller": "b", "item": "Wolf Pelt", "price": 30, "tax": 3, "payout": 27},
-            {"time": "12:02", "ts": 102, "buyer": "a", "seller": "b", "item": "Wolf Pelt", "price": 20, "tax": 2, "payout": 18},
-            {"time": "12:03", "ts": 103, "buyer": "a", "seller": "b", "item": "Iron Ore", "price": 100, "tax": 10, "payout": 90},
-        ])
-        assert get_steam_item_median_from_snapshot("Wolf Pelt") == 20.0, "Odd count median failed on snapshot history"
+        srv.market_history.extend(
+            [
+                {
+                    "time": "12:00",
+                    "ts": 100,
+                    "buyer": "a",
+                    "seller": "b",
+                    "item": "Wolf Pelt",
+                    "price": 10,
+                    "tax": 1,
+                    "payout": 9,
+                },
+                {
+                    "time": "12:01",
+                    "ts": 101,
+                    "buyer": "a",
+                    "seller": "b",
+                    "item": "Wolf Pelt",
+                    "price": 30,
+                    "tax": 3,
+                    "payout": 27,
+                },
+                {
+                    "time": "12:02",
+                    "ts": 102,
+                    "buyer": "a",
+                    "seller": "b",
+                    "item": "Wolf Pelt",
+                    "price": 20,
+                    "tax": 2,
+                    "payout": 18,
+                },
+                {
+                    "time": "12:03",
+                    "ts": 103,
+                    "buyer": "a",
+                    "seller": "b",
+                    "item": "Iron Ore",
+                    "price": 100,
+                    "tax": 10,
+                    "payout": 90,
+                },
+            ]
+        )
+        assert (
+            get_steam_item_median_from_snapshot("Wolf Pelt") == 20.0
+        ), "Odd count median failed on snapshot history"
 
         # Test even count fill set from snapshot (4 fills: 10, 30, 20, 40 -> sorted: 10, 20, 30, 40 -> median 25.0)
         srv.market_history.append(
-            {"time": "12:04", "ts": 104, "buyer": "a", "seller": "b", "item": "Wolf Pelt", "price": 40, "tax": 4, "payout": 36}
+            {
+                "time": "12:04",
+                "ts": 104,
+                "buyer": "a",
+                "seller": "b",
+                "item": "Wolf Pelt",
+                "price": 40,
+                "tax": 4,
+                "payout": 36,
+            }
         )
-        assert get_steam_item_median_from_snapshot("Wolf Pelt") == 25.0, "Even count median failed on snapshot history"
+        assert (
+            get_steam_item_median_from_snapshot("Wolf Pelt") == 25.0
+        ), "Even count median failed on snapshot history"
 
         print("STEAM_MEDIAN_SNAPSHOT_OK")
     finally:
