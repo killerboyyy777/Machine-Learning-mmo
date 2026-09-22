@@ -10,6 +10,7 @@ Run: python tests/dash_browser_smoke.py [--base URL] [--ws URL]
   (CI starts the server first, same as the live job.)
 Needs: headless Chrome/Chromium on PATH, websockets (pip).
 """
+
 import argparse
 import asyncio
 import json
@@ -17,13 +18,17 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import urllib.request
 
 import websockets
+import websockets.exceptions
 
-CHROME_CANDIDATES = ("google-chrome", "chromium", "chromium-browser",
-                     r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+# Browser rule (owner 09-22): headless-only always, and the project must
+# never depend on a dev machine's system Chrome. Discovery is PATH-only
+# (CI runners preinstall Chrome); no hardcoded install paths, no
+# `chrome --version` probe (it can flash/focus a visible window where a
+# Chrome singleton is running).
+CHROME_CANDIDATES = ("google-chrome", "chromium", "chromium-browser")
 
 
 def find_chrome(explicit=None):
@@ -33,25 +38,35 @@ def find_chrome(explicit=None):
         found = shutil.which(name)
         if found:
             return found
-        if os.path.exists(name):
-            return name
-    raise SystemExit("no headless Chrome found "
-                     f"(tried {', '.join(CHROME_CANDIDATES)})")
+    raise SystemExit(
+        "no headless Chrome on PATH "
+        f"(tried {', '.join(CHROME_CANDIDATES)}); "
+        "the node stub (node tests/dash2_smoke.cjs) "
+        "covers dashboard logic with zero browser"
+    )
 
 
 async def bot(ws_url):
+    # Drain/read timeouts and dropped sockets end the bot quietly; anything
+    # else fails loudly (CI must not swallow real breakage).
+    quiet = (
+        asyncio.TimeoutError,
+        ConnectionResetError,
+        OSError,
+        websockets.exceptions.ConnectionClosed,
+    )
     async with websockets.connect(ws_url) as ws:
         await ws.send(json.dumps({"cmd": "login", "name": "SmokeBot"}))
         for _ in range(5):
             try:
                 await asyncio.wait_for(ws.recv(), timeout=2)
-            except Exception:
+            except quiet:
                 break
         for direction in ("north", "south", "east"):
             await ws.send(json.dumps({"cmd": "move", "dir": direction}))
             try:
                 await asyncio.wait_for(ws.recv(), timeout=2)
-            except Exception:
+            except quiet:
                 pass
             await asyncio.sleep(1)
     print("SMOKE_BOT_OK")
@@ -76,25 +91,40 @@ def main():
     asyncio.run(bot(args.ws))
 
     chrome = find_chrome(args.chrome)
+    print("CHROME:", chrome)
     shot = os.path.join(args.shots, "overview.png")
 
     def capture():
         # Real-time mode (NOT virtual-time-budget: the open SSE stream
         # keeps virtual time busy forever, hanging dump-dom).
         proc = subprocess.run(
-            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-             "--disable-dev-shm-usage",
-             "--window-size=1280,2200", "--timeout=45000",
-             "--enable-logging=stderr", "--v=0",
-             f"--screenshot={os.path.abspath(shot)}", "--dump-dom",
-             args.base + "/"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-        return (proc.stdout.decode("utf-8", errors="replace"),
-                proc.stderr.decode("utf-8", errors="replace"))
+            [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--window-size=1280,2200",
+                "--timeout=45000",
+                "--enable-logging=stderr",
+                "--v=0",
+                f"--screenshot={os.path.abspath(shot)}",
+                "--dump-dom",
+                args.base + "/",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=180,
+        )
+        return (
+            proc.stdout.decode("utf-8", errors="replace"),
+            proc.stderr.decode("utf-8", errors="replace"),
+        )
 
     # Dump-dom can win the race with the page's first fetch: retry until
     # the status pill reads live (or attempts run out).
     import time as _time
+
     dom, err = "", ""
     for attempt in range(6):
         dom, err = capture()
@@ -114,8 +144,11 @@ def main():
     print(f"CONSOLE_LINES: {len(console_lines)}")
     for line in console_lines[:10]:
         print("  CONSOLE> " + line[-200:])
-    bad = [l for l in console_lines
-           if "ncaught" in l or "rror" in l or "ERROR" in l or "ailed" in l]
+    bad = [
+        l
+        for l in console_lines
+        if "ncaught" in l or "rror" in l or "ERROR" in l or "ailed" in l
+    ]
     assert not bad, f"browser console errors: {bad[:5]}"
     print("CONSOLE_CLEAN_OK")
 

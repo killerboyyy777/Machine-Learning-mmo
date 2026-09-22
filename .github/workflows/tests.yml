@@ -90,6 +90,29 @@ jobs:
       - run: pip install -r requirements.txt pip-audit
       - run: pip-audit -r requirements.txt
 
+  lint:
+    name: Lint changed Python files (black + ruff, no mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install black ruff
+      - run: |
+          base=$(git merge-base origin/master HEAD)
+          files=$(git diff --name-only "$base"...HEAD -- '*.py')
+          if [ -z "$files" ]; then echo "no python files changed"; exit 0; fi
+          echo "$files"
+          echo "$files" | xargs -d '\n' black --check --diff
+      - run: |
+          base=$(git merge-base origin/master HEAD)
+          files=$(git diff --name-only "$base"...HEAD -- '*.py')
+          if [ -z "$files" ]; then echo "no python files changed"; exit 0; fi
+          echo "$files" | xargs -d '\n' ruff check
+
   node-harness:
     name: Dashboard smoke (node stub + headless Chrome)
     runs-on: ubuntu-latest
