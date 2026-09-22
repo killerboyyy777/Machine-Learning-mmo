@@ -137,7 +137,7 @@ jobs:
           exit $fail
 
   node-harness:
-    name: Dashboard smoke (node stub + headless Chrome)
+    name: Dashboard smoke (node stub + headless Firefox)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
