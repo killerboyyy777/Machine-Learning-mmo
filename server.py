@@ -3927,9 +3927,16 @@ async def main():
         if VERBOSE:
             print(f"Server 0.5 (instanced dungeon, parties, market, GM) on ws://{HOST}:{PORT}")
             print(f"GM stream on ws://{GM_HOST}:{GM_PORT}")
-        game_server = await websockets.serve(handle_connection, HOST, PORT)
+        # ping_interval=None: never proactively drop idle clients (#330). The
+        # default 20s ping/20s timeout killed any client that doesn't pong
+        # (raw-ws wanderers, slow loops), while the library clients auto-pong
+        # and were fine. A TCP-close still ends handle_connection (cleanup in
+        # its finally), and _outbound_writer reaps a dead socket on send-fail.
+        game_server = await websockets.serve(
+            handle_connection, HOST, PORT, ping_interval=None)
         try:
-            gm_server = await websockets.serve(handle_gm_connection, GM_HOST, GM_PORT)
+            gm_server = await websockets.serve(
+                handle_gm_connection, GM_HOST, GM_PORT, ping_interval=None)
         except Exception:
             # Don't leak the game listener when the GM bind fails (#242).
             game_server.close()
