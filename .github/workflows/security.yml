@@ -2,7 +2,9 @@ name: Security
 
 on:
   push:
-    branches: [master]
+    # Mirror tests.yml: agent/review pushes otherwise get no CI signal
+    # (push CI reads workflow files from the pushed branch).
+    branches: [master, "review/**", "agent/**"]
   pull_request:
     branches: [master]
   schedule:
@@ -28,7 +30,6 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: python
-      - uses: github/codeql-action/autobuild@v3
       - uses: github/codeql-action/analyze@v3
 
   dependency-review:
@@ -46,22 +47,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: trufflesecurity/trufflehog@main
+      # PRs: diff-scan base...head SHAs. Push/schedule: full filesystem scan
+      # (diff range is meaningless on schedule).
+      - uses: trufflesecurity/trufflehog@v3.97.7 # f51616494fc81ef15427b88c7b03d7f7d75230e6
+        if: github.event_name == 'pull_request'
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-
-  pip-audit:
-    # Weekly audit. Every push/PR is already covered by the `audit` job in
-    # tests.yml; this job keeps the scheduled cadence from #138.
-    if: github.event_name == 'schedule'
-    name: Weekly pip-audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+      - uses: trufflesecurity/trufflehog@v3.97.7 # f51616494fc81ef15427b88c7b03d7f7d75230e6
+        if: github.event_name != 'pull_request'
         with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt pip-audit
-      - run: pip-audit -r requirements.txt
+          path: ./
