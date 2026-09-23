@@ -139,7 +139,7 @@ DEFAULT_URL = "ws://localhost:8765"
 # Sent on login; the server echoes its own version in `welcome`. Mismatches
 # only warn (see version_match in step info) -- old version-less clients
 # keep working unchanged.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # --- Fixed vocab, built once from world.json --------------------------------
 # Room ids come straight from room events, but NPCs/items are reported by

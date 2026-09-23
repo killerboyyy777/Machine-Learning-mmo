@@ -41,7 +41,7 @@ docker compose --profile torch up --build    # torch farm (builds CPU torch)
 torch only in the `torch` profile). The GM stream stays inside the compose
 network (`TEXTMMO_GM_HOST=0.0.0.0` so `soak` can snapshot tables) and is not
 published to the host — GM has no auth, so publish `8767` only on trusted
-machines. Protocol unchanged (`PROTOCOL_VERSION = 1`).
+machines. Protocol v2 (`PROTOCOL_VERSION = 2`; see CHANGELOG).
 
 ## Quickstart
 

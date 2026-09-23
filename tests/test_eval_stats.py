@@ -22,15 +22,15 @@ from ml_env import TextMMOEnv
 import server as srv
 
 # --- #72: client and server speak the same version ---
-assert ENV_PROTO == srv.PROTOCOL_VERSION == 1
+assert ENV_PROTO == srv.PROTOCOL_VERSION == 2
 print("PROTO_CONSTANTS_OK")
 
 env = TextMMOEnv("VerTest")
 vi = env._version_info()
-assert vi == {"protocol_version": 1, "server_version": None, "version_match": True}, vi
-env._state["server_version"] = 1
-assert env._version_info()["version_match"] is True
+assert vi == {"protocol_version": 2, "server_version": None, "version_match": True}, vi
 env._state["server_version"] = 2
+assert env._version_info()["version_match"] is True
+env._state["server_version"] = 1
 assert env._version_info()["version_match"] is False
 print("VERSION_INFO_OK")
 

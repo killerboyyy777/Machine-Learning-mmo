@@ -842,6 +842,114 @@ async def main():
     unplayer(rich)
     print("DEATH_SCALE_OK")
 
+    # --- XP loss on death (#334): percentual of total XP, de-levels ---
+    old_pct = srv.XP_LOSS_PCT
+    srv.XP_LOSS_PCT = 10.0
+    loser = mkplayer("XpLoser", 40009, room="market")
+    lentry = srv.get_score_entry("XpLoser")
+    lentry["level"] = 5
+    lentry["xp"] = 0.0
+    lentry["xp_to_next"] = srv.xp_to_next(5)
+    lentry["score"] = 0.0
+    before_total = srv.total_xp(lentry)
+    await srv.respawn_player(loser)
+    assert lentry["level"] < 5, lentry["level"]
+    assert abs(srv.total_xp(lentry) - before_total * 0.9) < 1.0
+    assert loser.max_hp == 20 + srv.LEVEL_HP_PER_LEVEL * (lentry["level"] - 1)
+    assert loser.base_attack == 3 + srv.LEVEL_ATK_PER_LEVEL * (lentry["level"] - 1)
+    unplayer(loser)
+    srv.XP_LOSS_PCT = old_pct
+    print("XP_LOSS_OK")
+
+    # --- Item drops are zone-gated (#334): risk rooms scatter the pack, ---
+    # --- safe lands keep the gold-only rule.                              ---
+    srv.ROOMS["market"]["risk"] = True
+    risker = mkplayer("RiskTaker", 40010, room="market")
+    risker.gold = 0
+    risker.inventory = ["treant_bark", "iron_ore", "rat_tail", "rusty_sword"]
+    risker.equipped = "rusty_sword"
+    rentry = srv.get_score_entry("RiskTaker")
+    rentry["score"] = 100.0
+    rentry["level"] = 1
+    rentry["xp"] = 0.0
+    rentry["xp_to_next"] = srv.xp_to_next(1)
+    await srv.respawn_player(risker)
+    assert "treant_bark" not in risker.inventory
+    assert "iron_ore" not in risker.inventory
+    assert "rat_tail" not in risker.inventory
+    assert "rusty_sword" in risker.inventory  # equipped slot protected first
+    ground = srv.room_items["market"]
+    assert ground.count("treant_bark") == 1 and ground.count("iron_ore") == 1
+    # floor-value penalty: treant_bark 10 + iron_ore 8 + rat_tail 1 = 19
+    expect_pen = srv.DEATH_PENALTY + srv.DEATH_SCORE_PER_GOLD_LOST * 19
+    assert abs(rentry["score"] - (100.0 - expect_pen)) < 1e-9, (rentry["score"], expect_pen)
+    del srv.ROOMS["market"]["risk"]
+    for iid in ["treant_bark", "iron_ore", "rat_tail"]:
+        if iid in srv.room_items["market"]:
+            srv.room_items["market"].remove(iid)
+    unplayer(risker)
+
+    safer = mkplayer("SafeKeeper", 40011, room="town_square")
+    safer.gold = 0
+    safer.inventory = ["treant_bark", "iron_ore"]
+    sentry = srv.get_score_entry("SafeKeeper")
+    sentry["score"] = 100.0
+    sentry["level"] = 1
+    sentry["xp"] = 0.0
+    sentry["xp_to_next"] = srv.xp_to_next(1)
+    await srv.respawn_player(safer)
+    assert "treant_bark" in safer.inventory and "iron_ore" in safer.inventory
+    assert sentry["score"] == 100.0 - srv.DEATH_PENALTY
+    unplayer(safer)
+    print("ITEM_DROP_ZONE_OK")
+
+    # --- Quests never un-accept on death (#334) ---
+    quester = mkplayer("DeadQuester", 40012, room="town_square")
+    qentry = srv.get_score_entry("DeadQuester")
+    qentry["quest_guard_active"] = True
+    qentry["quest_delver_active"] = True
+    qentry["level"] = 1
+    qentry["xp"] = 0.0
+    qentry["xp_to_next"] = srv.xp_to_next(1)
+    qentry["score"] = 0.0
+    await srv.respawn_player(quester)
+    assert srv.get_score_entry("DeadQuester").get("quest_guard_active") is True
+    assert srv.get_score_entry("DeadQuester").get("quest_delver_active") is True
+    unplayer(quester)
+    print("QUEST_SURVIVES_DEATH_OK")
+
+    # --- Death telegraph preview (#334): worst-case accounting in stats ---
+    srv.ROOMS["market"]["risk"] = True
+    previewer = mkplayer("Preview", 40013, room="market")
+    previewer.gold = 100
+    previewer.inventory = ["treant_bark", "rusty_sword"]
+    pentry = srv.get_score_entry("Preview")
+    pentry["level"] = 3
+    pentry["xp"] = 0.0
+    pentry["xp_to_next"] = srv.xp_to_next(3)
+    pv = srv.death_preview(previewer)
+    assert pv["risk_zone"] is True
+    assert pv["gold_dropped"] == 40 and pv["gold_lost"] == 10
+    assert "Treant Bark" in pv["items_at_risk"]
+    assert pv["xp_loss_pct"] == srv.XP_LOSS_PCT
+    assert pv["level_after"] < 3
+    del srv.ROOMS["market"]["risk"]
+    unplayer(previewer)
+    print("DEATH_PREVIEW_OK")
+
+    # --- death_preview defensive lookup (#353): an inventory id missing ---
+    # --- from ITEM_DEFS must not crash the per-tick stats view.          ---
+    srv.ROOMS["market"]["risk"] = True
+    ghost = mkplayer("GhostItem", 40014, room="market")
+    ghost.gold = 0
+    ghost.inventory = ["bogus_item_id", "rat_tail"]
+    gview = srv.stats_view(ghost)
+    assert gview["death_preview"]["items_at_risk"] == ["bogus_item_id", "Rat Tail"], \
+        gview["death_preview"]["items_at_risk"]
+    del srv.ROOMS["market"]["risk"]
+    unplayer(ghost)
+    print("DEATH_PREVIEW_DEFENSIVE_OK")
+
     srv.send = orig_send
 
     # --- Crafting recipe profitability: low-tier recipes should not destroy ---
