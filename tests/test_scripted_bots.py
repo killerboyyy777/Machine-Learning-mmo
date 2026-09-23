@@ -21,7 +21,8 @@ from ml.ml_botfarm import (
     MarketFlipperPolicy,
     MarketMakerPolicy,
 )
-from ml.ml_env import ACTIONS, TextMMOEnv
+from ml.ml_env import ACTIONS, QUEST_GIVER_NAME, TextMMOEnv
+from ml.plugins.scripted import CrafterPolicy, PartyLeaderPolicy, QuesterPolicy
 
 
 def fresh_env():
@@ -61,7 +62,6 @@ assert selected(DungeonClearerPolicy(), env) == "move_enter"
 print("DUNGEON_ENTER_OK")
 
 # --- dungeon role: giver present, no quest -> accept (not turn_in) (#235) ---
-from ml.ml_env import QUEST_GIVER_NAME
 env = fresh_env()
 env._state["npc_names"] = [QUEST_GIVER_NAME]
 env._state["quest_delver_active"] = False
@@ -150,6 +150,9 @@ for cls in (
     MarketFlipperPolicy,
     MarketMakerPolicy,
     CommissionerPolicy,
+    QuesterPolicy,
+    CrafterPolicy,
+    PartyLeaderPolicy,
 ):
     env = fresh_env()
     env._state["hp"] = 2
@@ -158,21 +161,70 @@ for cls in (
     assert got == "use", (cls.__name__, got)
 print("HEAL_FIRST_OK")
 
+# --- quester role: giver present, guard quest inactive -> accept ---
+env = fresh_env()
+env._state["npc_names"] = [QUEST_GIVER_NAME]
+env._state["quest_guard_active"] = False
+env._state["guard_charm_crafted"] = False
+assert selected(QuesterPolicy(), env) == "quest_accept", selected(QuesterPolicy(), env)
+env._state["quest_guard_active"] = True
+env._state["guard_charm_crafted"] = True
+assert selected(QuesterPolicy(), env) == "quest_turn_in"
+print("QUESTER_ACCEPT_OK")
+
+# --- quester role: no giver, charm mats held -> craft_charm ---
+env = fresh_env()
+env._state["npc_names"] = []
+env._state["quest_guard_active"] = True
+env._state["inv_names"] = ["Treant Bark", "Troll Hide", "Ectoplasm"]
+assert selected(QuesterPolicy(), env) == "craft_charm"
+print("QUESTER_CRAFT_OK")
+
+# --- crafter role: iron ore held -> craft_arrows ---
+env = fresh_env()
+env._state["npc_names"] = []
+env._state["inv_names"] = ["Iron Ore"]
+assert selected(CrafterPolicy(), env) == "craft_arrows"
+print("CRAFTER_CRAFT_OK")
+
+# --- party-leader role: another player present, even step -> invite ---
+env = fresh_env()
+env._state["player_names"] = ["PartyTest", "Other"]
+env._state["party_size"] = 1
+env._state["npc_names"] = []
+env._step_count = 0
+assert selected(PartyLeaderPolicy(), env) == "party_invite"
+env._step_count = 1
+assert selected(PartyLeaderPolicy(), env) == "party_accept"
+print("PARTY_LEADER_INVITE_OK")
+
+# --- party-leader role: already in a party -> descend ---
+env = fresh_env()
+env._state["player_names"] = ["PartyTest"]
+env._state["party_size"] = 2
+env._state["npc_names"] = []
+env._state["exits"] = ["enter", "north"]
+assert selected(PartyLeaderPolicy(), env) == "move_enter"
+print("PARTY_LEADER_DESCEND_OK")
+
 # --- mixed assignment round-robins roles ---
 farm = types.SimpleNamespace(
     args=types.SimpleNamespace(name_prefix="T", url="ws://x", scripted="mixed")
 )
-roles = [BotRunner(i, farm).policy.name for i in range(6)]
+roles = [BotRunner(i, farm).policy.name for i in range(8)]
 assert roles == ["gather", "dungeon", "market", "maker", "commissioner",
-                 "gather"], roles
+                 "quester", "crafter", "party_leader"], roles
 farm.args.scripted = "dungeon"
 assert BotRunner(0, farm).policy.name == "dungeon"
 farm.args.scripted = "commissioner"
 assert BotRunner(0, farm).policy.name == "commissioner"
+farm.args.scripted = "quester"
+assert BotRunner(0, farm).policy.name == "quester"
 farm.args.scripted = "none"
 assert BotRunner(0, farm).policy is None
 print("MIXED_ASSIGN_OK")
 
 assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market", "maker",
-                                  "commissioner"}
+                                  "commissioner", "quester", "crafter",
+                                  "party_leader"}
 print("ALL_SCRIPTED_OK")
