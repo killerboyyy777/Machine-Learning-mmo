@@ -88,6 +88,80 @@ def save_json(path, data):
     os.replace(tmp, path)
 
 
+def parse_roles(spec, bots):
+    """Parse a --roles SPEC into a role list of length `bots`.
+
+    SPEC is comma-separated ``role:count`` entries (e.g.
+    ``gather:8,dungeon:4,market:3,maker:4,commissioner:2``) plus an optional
+    ``flex:role`` that fills any bots not covered by explicit counts. Without
+    ``flex``, leftover bots round-robin over SCRIPTED_NAMES (the current
+    default). Raises ValueError on unknown/duplicate roles, bad counts, or
+    counts exceeding --bots.
+    """
+    counts = []
+    seen = set()
+    flex = None
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(f"--roles: expected role:count, got {part!r}")
+        name, _, cstr = part.partition(":")
+        name = name.strip()
+        cstr = cstr.strip()
+        if name == "flex":
+            if flex is not None:
+                raise ValueError("--roles: only one 'flex' entry is allowed")
+            if cstr not in SCRIPTED_POLICIES:
+                raise ValueError(f"--roles: unknown flex role {cstr!r}")
+            flex = cstr
+            continue
+        if name not in SCRIPTED_POLICIES:
+            raise ValueError(
+                f"--roles: unknown role {name!r} "
+                f"(valid: {', '.join(SCRIPTED_NAMES)})"
+            )
+        if name in seen:
+            raise ValueError(f"--roles: duplicate role {name!r}")
+        seen.add(name)
+        try:
+            n = int(cstr)
+        except ValueError:
+            raise ValueError(f"--roles: invalid count {cstr!r} for {name!r}") from None
+        if n < 0:
+            raise ValueError(f"--roles: negative count for {name!r}")
+        counts.append((name, n))
+    total = sum(n for _, n in counts)
+    if total > bots:
+        raise ValueError(
+            f"--roles: explicit counts sum to {total}, exceeds --bots {bots}"
+        )
+    roles = [name for name, n in counts for _ in range(n)]
+    remaining = bots - total
+    if remaining:
+        if flex is not None:
+            roles.extend([flex] * remaining)
+        else:
+            roles.extend(
+                SCRIPTED_NAMES[i % len(SCRIPTED_NAMES)] for i in range(total, bots)
+            )
+    return roles
+
+
+def build_role_list(args):
+    """Resolve the per-bot role list from --roles or the legacy --scripted
+    flag. Returns a list of length args.bots (None entries = RL training)."""
+    if getattr(args, "roles", None):
+        return parse_roles(args.roles, args.bots)
+    mode = getattr(args, "scripted", "none")
+    if not mode or mode == "none":
+        return [None] * args.bots
+    if mode in SCRIPTED_POLICIES:
+        return [mode] * args.bots
+    return [SCRIPTED_NAMES[i % len(SCRIPTED_NAMES)] for i in range(args.bots)]
+
+
 class Farm:
     """Shared state + policy. All bots update the same agent; only one event
     loop ever touches it, so no locking is needed (coordinated stepping)."""
@@ -99,6 +173,7 @@ class Farm:
         self.epsilon = args.epsilon_start
         self.agent = LinearQAgent(OBS_SIZE, N_ACTIONS)
         self.bots = []
+        self.role_list = build_role_list(args)
 
         self.best_fitness = float("-inf")
         self.best_score = float("-inf")
@@ -160,12 +235,8 @@ class BotRunner:
         self.recent_rewards = []
         self.score = 0.0
         self.total_steps = 0
-        mode = getattr(farm.args, "scripted", "none")
-        if mode and mode != "none":
-            role = mode if mode in SCRIPTED_POLICIES else SCRIPTED_NAMES[index % len(SCRIPTED_NAMES)]
-            self.policy = SCRIPTED_POLICIES[role]()
-        else:
-            self.policy = None
+        role = farm.role_list[index]
+        self.policy = SCRIPTED_POLICIES[role]() if role else None
 
     def fitness(self):
         r = self.recent_rewards
@@ -289,12 +360,21 @@ def parse_args():
                             "mixed"),
                    help="run fixed behavior-tree baselines instead of training "
                         "(one role each, or round-robin with 'mixed')")
+    p.add_argument("--roles", default=None,
+                   help="explicit per-role counts, e.g. "
+                        "gather:8,dungeon:4,market:3,maker:4,commissioner:2,"
+                        "flex:gather (flex fills the remainder); overrides "
+                        "--scripted")
     p.add_argument("--epsilon-start", type=float, default=1.0)
     p.add_argument("--epsilon-end", type=float, default=0.05)
     p.add_argument("--epsilon-decay-steps", type=int, default=5000)
     args = p.parse_args()
     if args.bots < 1:
         p.error("--bots must be >= 1")
+    try:
+        build_role_list(args)
+    except ValueError as e:
+        p.error(str(e))
     args.weights = os.path.abspath(args.weights)
     return args
 

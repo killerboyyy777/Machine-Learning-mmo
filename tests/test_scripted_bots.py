@@ -8,6 +8,7 @@ and --scripted=mixed assigns roles round-robin.
 import os
 import sys
 import types
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -20,6 +21,8 @@ from ml.ml_botfarm import (
     GatherSellPolicy,
     MarketFlipperPolicy,
     MarketMakerPolicy,
+    build_role_list,
+    parse_roles,
 )
 from ml.ml_env import ACTIONS, QUEST_GIVER_NAME, TextMMOEnv
 from ml.plugins.scripted import CrafterPolicy, PartyLeaderPolicy, QuesterPolicy
@@ -209,20 +212,38 @@ print("PARTY_LEADER_DESCEND_OK")
 
 # --- mixed assignment round-robins roles ---
 farm = types.SimpleNamespace(
-    args=types.SimpleNamespace(name_prefix="T", url="ws://x", scripted="mixed")
+    args=types.SimpleNamespace(name_prefix="T", url="ws://x", scripted="mixed",
+                               bots=8, roles=None),
+    role_list=build_role_list(
+        types.SimpleNamespace(scripted="mixed", bots=8, roles=None)
+    ),
 )
 roles = [BotRunner(i, farm).policy.name for i in range(8)]
 assert roles == ["gather", "dungeon", "market", "maker", "commissioner",
                  "quester", "crafter", "party_leader"], roles
 farm.args.scripted = "dungeon"
+farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy.name == "dungeon"
 farm.args.scripted = "commissioner"
+farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy.name == "commissioner"
 farm.args.scripted = "quester"
+farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy.name == "quester"
 farm.args.scripted = "none"
+farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy is None
 print("MIXED_ASSIGN_OK")
+
+# --- --roles explicit split ---
+farm.args.roles = "gather:8,dungeon:4,market:3,maker:4,commissioner:2,flex:gather"
+farm.args.bots = 21
+farm.role_list = build_role_list(farm.args)
+got = [BotRunner(i, farm).policy.name for i in range(21)]
+assert Counter(got) == {"gather": 8, "dungeon": 4, "market": 3, "maker": 4,
+                        "commissioner": 2}, Counter(got)
+assert parse_roles(farm.args.roles, farm.args.bots) == farm.role_list
+print("ROLES_SPLIT_OK")
 
 assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market", "maker",
                                   "commissioner", "quester", "crafter",
