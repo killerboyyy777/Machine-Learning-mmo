@@ -10,11 +10,16 @@ party invite/accept/shared dungeon, and the dashboard snapshot.
 Note: the raw protocol requires FULL direction names (north/south/...,
 up/down/enter) -- shorthand like `w` is rejected by the server.
 """
-import asyncio, json, re, time
+import asyncio, json, os, re, time
 import websockets
 
-URI = "ws://127.0.0.1:8765"
-GM_URI = "ws://127.0.0.1:8767"
+# Ports are overridable so the same live protocol test can run on this
+# seat's allowed :8770+ range (CI keeps the default 8765/8766/8767).
+GAME_PORT = int(os.environ.get("TEXTMMO_TEST_PORT", "8765"))
+HTTP_PORT = int(os.environ.get("TEXTMMO_TEST_HTTP_PORT", "8766"))
+GM_PORT = int(os.environ.get("TEXTMMO_TEST_GM_PORT", "8767"))
+URI = f"ws://127.0.0.1:{GAME_PORT}"
+GM_URI = f"ws://127.0.0.1:{GM_PORT}"
 
 async def recv(ws, timeout=3.0, want_type=None):
     deadline = time.time() + timeout
@@ -102,6 +107,40 @@ async def fight_until_room(ws, target_room, dir_to_target, max_rounds=40):
     raise RuntimeError(f"Could not reach {target_room}")
 
 
+async def enter_dungeon_floor(ws, floor=1, attempts=6, timeout=5.0):
+    """Move 'enter' and wait for the settled dungeon floor view.
+
+    Entering the archway races a stale pre-entry (graveyard) room view
+    against the new floor view under CI load, so a first-event-wins read
+    can capture the graveyard view (is_dungeon=False) and fail the floor
+    assert. Poll room events until the floor settles, re-syncing with
+    `look` when the buffer runs dry (settled-state polling, no blind
+    sleep retries)."""
+    await send(ws, {"cmd": "move", "dir": "enter"})
+    for _ in range(attempts):
+        room = await recv(ws, want_type="room", timeout=timeout)
+        if room is not None and room.get("is_dungeon") and room.get("dungeon_floor") == floor:
+            return room
+        await send(ws, {"cmd": "look"})
+    return None
+
+
+async def wait_party(ws, size=2, attempts=6, timeout=5.0):
+    """Poll party_info until the roster settles at `size` members.
+
+    A's party_info races B's accept across two connections (no ordering
+    guarantee), so the first party event can still show a one-member
+    roster. Re-request party_info until the members settle instead of
+    taking the first event blindly (no blind sleep retries)."""
+    ev = None
+    for _ in range(attempts):
+        await send(ws, {"cmd": "party_info"})
+        ev = await recv(ws, want_type="party", timeout=timeout)
+        if ev is not None and len(ev.get("members", [])) >= size:
+            return ev
+    return ev
+
+
 async def main():
     A = await websockets.connect(URI)
     B = await websockets.connect(URI)
@@ -171,7 +210,7 @@ async def main():
     await gm_heal_full("LiveA")
 
     # ---- A: enter dungeon (solo auto-party, floor 1)
-    droom = await move_for_room(A, "enter")
+    droom = await enter_dungeon_floor(A)
     assert droom is not None and droom["is_dungeon"] is True and droom["dungeon_floor"] == 1, droom
     assert set(droom["exits"]) == {"up"}
     assert droom["party_size"] >= 1
@@ -258,15 +297,14 @@ async def main():
     await drain(A, 1.0)
     await send(B, {"cmd": "party_accept"})
     await drain(B, 1.0)
-    await send(A, {"cmd": "party_info"})
-    pi = await recv(A, want_type="party", timeout=5.0)
+    pi = await wait_party(A, size=2)
     assert pi is not None and len(pi["members"]) == 2 and pi["leader"] == "LiveA", pi
     print("PARTY_OK")
     await gm_heal_full("LiveA")
     await gm_heal_full("LiveB")
 
     # party dungeon instance is shared
-    da = await move_for_room(A, "enter")
+    da = await enter_dungeon_floor(A)
     assert da is not None and da["is_dungeon"] and da["dungeon_floor"] == 1
     assert da["party_size"] == 2, da
     print("PARTY_DUNGEON_SHARED")
@@ -289,12 +327,12 @@ async def main():
 
     # ---- Dashboard snapshot has the new sections
     import urllib.request
-    state = json.loads(urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=3).read())
+    state = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3).read())
     assert isinstance(state["dungeons"], list) and len(state["dungeons"]) >= 1
     assert state["market"]["treasury"] == 275.0 - sum(heal_spent), state["market"]
     assert state["market"]["collected_lifetime"] == 5.0, state["market"]
     assert "buffs" in state and "bosses" in state
-    assert state["server"]["ws_port"] == 8765
+    assert state["server"]["ws_port"] == GAME_PORT
     town = next(r for r in state["rooms"] if r["id"] == "town_square")
     assert {e["dir"] for e in town["exits"]} == {"north", "east", "south", "west"}
     assert any(e["to"] == "market" and e["to_name"] == "Market" for e in town["exits"])
