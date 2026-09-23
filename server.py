@@ -38,7 +38,7 @@ GM_PORT = 8767
 # breaking protocol change. Clients SHOULD send their version on login;
 # mismatches only warn (see ml_env version_match) -- old version-less
 # clients keep working unchanged.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # Scoring anti-grind tuning
 ACTION_WINDOW = 20
@@ -231,11 +231,13 @@ def xp_to_next(level):
 def total_xp_to_level(level):
     """Cumulative XP required to reach a level (exclusive of progress within it).
 
-    Closed form of sum(xp_to_next(l) for l in 1..level-1) = XP_BASE *
-    (XP_GROWTH^(level-1) - 1) / (XP_GROWTH - 1)."""
+    Sum of the rounded per-level thresholds, matching exactly the thresholds
+    award_xp() enforces when it levels a character up. Using the closed form
+    here drifts from that sum (e.g. level 5: 812.5 vs 813) and would make
+    de-leveling disagree with leveling."""
     if level <= 1:
         return 0.0
-    return XP_BASE * (XP_GROWTH ** (level - 1) - 1) / (XP_GROWTH - 1)
+    return float(sum(xp_to_next(i) for i in range(1, level)))
 
 
 def total_xp(entry):
@@ -253,7 +255,7 @@ def apply_xp_loss(entry, pct):
     lost = before * pct / 100.0
     new_total = max(0.0, before - lost)
     levels_lost = []
-    while entry["level"] > 1 and new_total < total_xp_to_level(entry["level"]):
+    while entry["level"] > 1 and new_total < total_xp_to_level(entry["level"]) - 1e-9:
         entry["level"] -= 1
         levels_lost.append(entry["level"])
     entry["xp"] = new_total - total_xp_to_level(entry["level"])
@@ -1439,7 +1441,7 @@ def stats_view(player):
         "xp": round(entry["xp"], 2) if entry else 0,
         "xp_to_next": entry["xp_to_next"] if entry else xp_to_next(1),
         "party_size": len(party.member_ids) if party else 1,
-        "inv": [ITEM_DEFS[i]["name"] for i in player.inventory][:20],
+        "inv": [ITEM_DEFS.get(i, {}).get("name", i) for i in player.inventory][:20],
         "market_orders": len(market_orders),
         "market_slots": entry.get("market_slots", MARKET_ORDER_SLOTS_BASE) if entry else MARKET_ORDER_SLOTS_BASE,
         "quest_guard_active": bool(entry.get("quest_guard_active", False)) if entry else False,
@@ -1503,7 +1505,7 @@ def death_preview(player):
         "gold_carried": gold,
         "gold_dropped": dropped,
         "gold_lost": lost,
-        "items_at_risk": [ITEM_DEFS[i]["name"] for i in items_at_risk],
+        "items_at_risk": [ITEM_DEFS.get(i, {}).get("name", i) for i in items_at_risk],
         "xp_loss_pct": XP_LOSS_PCT,
         "xp_loss": round(xp_lost, 2),
         "level_after": _level_after_xp_loss(entry, XP_LOSS_PCT),
@@ -1516,7 +1518,7 @@ def _level_after_xp_loss(entry, pct):
         return 1
     new_total = max(0.0, total_xp(entry) * (1.0 - pct / 100.0))
     lvl = entry["level"]
-    while lvl > 1 and new_total < total_xp_to_level(lvl):
+    while lvl > 1 and new_total < total_xp_to_level(lvl) - 1e-9:
         lvl -= 1
     return lvl
 
@@ -1534,9 +1536,9 @@ async def respawn_player(player):
 
     # Item drops are zone-gated (#334): safe lands keep the gold-only rule;
     # #157 risk zones additionally scatter the unequipped pack as floor
-    # piles. Unequipped items drop first (equipped weapon/armor/offhand are
-    # only ever at risk once the unequipped pack is exhausted, and only
-    # under a percentage cap).
+    # piles. Unequipped items drop first; equipped weapon/armor/offhand are
+    # protected (never dropped), so only the unequipped pack is at risk, and
+    # only up to a percentage cap.
     dropped_items = []
     if _room_is_risk(death_room):
         unequipped = [iid for iid in player.inventory
@@ -1569,7 +1571,7 @@ async def respawn_player(player):
     if dropped > 0 or lost > 0:
         text += f" You dropped {dropped} gold where you fell and lost {lost} gold outright."
     if dropped_items:
-        names = ", ".join(ITEM_DEFS[i]["name"] for i in dropped_items)
+        names = ", ".join(ITEM_DEFS.get(i, {}).get("name", i) for i in dropped_items)
         text += f" Your pack scattered: {names}."
     if levels_lost:
         text += f" You lost {XP_LOSS_PCT:g}% XP ({round(xp_lost, 1)}), falling back to level {entry['level']}."
@@ -1578,7 +1580,7 @@ async def respawn_player(player):
         "text": text,
         "gold_dropped": dropped,
         "gold_lost": lost,
-        "items_dropped": [ITEM_DEFS[i]["name"] for i in dropped_items],
+        "items_dropped": [ITEM_DEFS.get(i, {}).get("name", i) for i in dropped_items],
         "xp_lost": round(xp_lost, 2),
         "level": entry["level"],
     })

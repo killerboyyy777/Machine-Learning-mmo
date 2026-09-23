@@ -937,6 +937,19 @@ async def main():
     unplayer(previewer)
     print("DEATH_PREVIEW_OK")
 
+    # --- death_preview defensive lookup (#353): an inventory id missing ---
+    # --- from ITEM_DEFS must not crash the per-tick stats view.          ---
+    srv.ROOMS["market"]["risk"] = True
+    ghost = mkplayer("GhostItem", 40014, room="market")
+    ghost.gold = 0
+    ghost.inventory = ["bogus_item_id", "rat_tail"]
+    gview = srv.stats_view(ghost)
+    assert gview["death_preview"]["items_at_risk"] == ["bogus_item_id", "Rat Tail"], \
+        gview["death_preview"]["items_at_risk"]
+    del srv.ROOMS["market"]["risk"]
+    unplayer(ghost)
+    print("DEATH_PREVIEW_DEFENSIVE_OK")
+
     srv.send = orig_send
 
     # --- Crafting recipe profitability: low-tier recipes should not destroy ---

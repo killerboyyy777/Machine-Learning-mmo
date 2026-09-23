@@ -3,6 +3,20 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Economy tuning pass (#334): death cost rebalanced on the income side --
+  gather-node score halved (world.json 2 -> 1), room-discovery reward cut
+  to 2 points/2 XP (was 5/5, now `DISCOVERY_POINTS`/`DISCOVERY_XP`
+  constants), and XP loss on death locked at 5% of total XP (`XP_LOSS_PCT`,
+  natural de-level with no cap). Death rules completed: safe lands drop
+  gold only; #157 risk zones additionally scatter the unequipped pack (floor
+  value, equipped gear protected); a new `death_preview` key rides on every
+  `stats` event and the `death` event gains `gold_dropped`, `gold_lost`,
+  `items_dropped`, `xp_lost`, and `level` fields. `PROTOCOL_VERSION` bumped
+  to 2 (additive; old clients warn on mismatch). Review fixes (#353):
+  defensive item lookup in `death_preview`/`respawn_player` (a missing item
+  id no longer crashes the per-tick `stats` view), `total_xp_to_level` now
+  sums the rounded thresholds so de-leveling matches leveling exactly, and
+  the item-drop comment was corrected to match the implemented behaviour.
 - Dashboard revamp 4/4: swap (#207): dashboard2.html promoted to the
   canonical dashboard.html (old file deleted with the swap; /v2 kept as
   an alias serving the same file). Covered by the test_dashboard.py
