@@ -18,7 +18,6 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import websockets
-from os import path
 from os.path import join, dirname, abspath
 
 WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
