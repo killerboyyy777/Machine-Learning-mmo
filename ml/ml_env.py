@@ -165,6 +165,12 @@ for _npc in srv.WORLD["npcs"].values():
     for _iid, _price in ((_npc.get("shop") or {}).items()):
         MERCHANT_PRICES.setdefault(_iid, _price)
 
+# Display names of items that heal (mirror server.py heal_amount), used to
+# count healing supplies for the adaptive descent-readiness hint (#335).
+HEAL_ITEM_NAMES = {
+    v["name"] for v in srv.ITEM_DEFS.values() if v.get("heal_amount", 0) > 0
+}
+
 # Stall-slot terms, mirroring server.py (getattr fallbacks as elsewhere).
 MARKET_SLOTS_BASE = getattr(srv, "MARKET_ORDER_SLOTS_BASE", 3)
 MARKET_SLOT_PRICE_BASE = getattr(srv, "MARKET_SLOT_PRICE_BASE", 50)
@@ -676,6 +682,7 @@ def flatten_obs(obs):
         + [obs["arrows_norm"]]
         + [obs["buff_attack"], obs["buff_dr"]]
         + [obs["ammo_best_norm"], obs["defense_norm"]]
+        + [obs["adaptive_score"]]  # descent-readiness hint (#335), appended last
     )
 
 
@@ -694,6 +701,7 @@ OBS_SIZE = (
     + 1                                    # arrows_norm (ammo-family count; bows eat one per shot)
     + 2                                    # buff block (attack active, damage-reduction active)
     + 2                                    # gear block (best ammo bonus, worn defense)
+    + 1                                    # adaptive descent-readiness hint (#335)
 )
 
 
@@ -739,6 +747,7 @@ class TextMMOEnv:
             "level": 1, "xp": 0.0, "xp_to_next": 100.0,
             "equipped": None, "armor": None, "offhand": None, "defense": 0,
             "inv_names": [],
+            "deaths": 0,
             # Server-authoritative pack load + cap from the stats event
             # (None until the first stats lands; pack_units() falls back
             # to counting inv_names meanwhile).
@@ -892,6 +901,7 @@ class TextMMOEnv:
             self._state["level"] = event.get("level", self._state["level"])
         elif t == "death":
             self._state["hp"] = self._state["max_hp"]
+            self._state["deaths"] = self._state.get("deaths", 0) + 1
         elif t == "error":
             pass
 
@@ -1747,6 +1757,20 @@ class TextMMOEnv:
         ammo_best_norm = (max(held_bonus) / 2.0) if held_bonus else 0.0
         defense_norm = min(float(s.get("defense", 0) or 0), 10.0) / 10.0
 
+        # Adaptive descent-readiness hint (#335): own level + gear + healing
+        # supplies + floor depth, minus personal death history. Observation
+        # only -- the server never gates on it. Clamped to [0, 50] for a
+        # bounded feature; owned-past inputs only (no fog-of-war leak).
+        heal_count = sum(1 for n in (s["inv_names"] or []) if n in HEAL_ITEM_NAMES)
+        adaptive = (
+            float(s.get("level", 1))
+            + float(s.get("defense", 0) or 0)
+            + 2.0 * heal_count
+            + (float(s.get("dungeon_floor", 0) or 0) if s.get("is_dungeon") else 0.0)
+            - 3.0 * float(s.get("deaths", 0) or 0)
+        )
+        adaptive_norm = min(max(adaptive, 0.0), 50.0) / 50.0
+
         obs = {
             "room_onehot": room_onehot,
             "is_dungeon": is_dungeon,
@@ -1795,6 +1819,7 @@ class TextMMOEnv:
             "buff_dr": 1.0 if s.get("buff_damage_reduction_amount", 0) > 0 else 0.0,
             "ammo_best_norm": ammo_best_norm,
             "defense_norm": defense_norm,
+            "adaptive_score": adaptive_norm,
             # Not part of flatten_obs() -- handy for debugging/logging only:
             "room_id": s["room_id"],
             "score_raw": s["score"],

@@ -96,6 +96,10 @@ PARTY_INVITE_TTL_SECONDS = 300
 # farm the safest floor forever. 60s breaks the loop's cadence while a
 # legit regroup barely notices it.
 DUNGEON_REENTER_DELAY_SECONDS = 60
+# Escalating re-entry delay (#335/#343): each consecutive dungeon death
+# lengthens the next re-entry wait by this many seconds on top of the base
+# DUNGEON_REENTER_DELAY_SECONDS. Clearing a floor resets the streak.
+DUNGEON_REENTER_DELAY_GROWTH_SECONDS = 60
 
 TAX_RATE = 0.10
 TAX_MINIMUM = 1
@@ -431,6 +435,12 @@ _party_counter = itertools.count(1)
 _pending_party_invites = {}   # invitee player.id -> {"party", "ts", "inviter"} (invitation)
 _commission_counter = itertools.count(1)
 
+# Group-vs-solo dungeon clear log (#335): one record per floor clear, kept
+# bounded for the dashboard's party-exception panel. contributors counts the
+# credited clearers (1 = solo, >1 = supported group).
+DUNGEON_CLEAR_LOG_CAP = 200
+dungeon_clear_log = []
+
 # (COMMISSION_TTL_SECONDS lives with the other commission tunables above
 # _apply_config so server_config.json -- and --config overlays -- can set it.)
 _last_commission_prune = 0.0
@@ -707,6 +717,8 @@ def get_score_entry(name):
     entry.setdefault("tax_paid", 0.0)        # market tax they bore (seller side)
     entry.setdefault("market_slots", MARKET_ORDER_SLOTS_BASE)  # open sell-order cap (expandable)
     entry.setdefault("dungeon_floors_cleared", 0)
+    entry.setdefault("dungeon_death_streak", 0)
+    entry.setdefault("dungeon_reenter_delay", DUNGEON_REENTER_DELAY_SECONDS)
     entry.setdefault("quest_guard_active", False)
     entry.setdefault("guard_charm_crafted", False)
     entry.setdefault("quest_delver_active", False)
@@ -1022,6 +1034,26 @@ def _player_defense(player):
         if slot and slot in ITEM_DEFS:
             total += int(ITEM_DEFS[slot].get("defense", 0))
     return total
+
+
+def adaptive_score(player):
+    """Advisory descent-readiness hint (#335): own level + gear + healing
+    supplies, plus floor depth, minus personal death history. Observation
+    and snapshot only -- nothing in the server gates on it."""
+    entry = get_score_entry(player.name)
+    heals = sum(
+        1
+        for iid in player.inventory
+        if ITEM_DEFS.get(iid, {}).get("heal_amount", 0) > 0
+    )
+    floor = floor_from_room(player.room) if dungeon_for_room(player.room) else 0
+    return (
+        entry.get("level", 1)
+        + _player_defense(player)
+        + 2 * heals
+        + (floor or 0)
+        - 3 * entry.get("deaths", 0)
+    )
 
 
 def _player_damage_reduction(player):
@@ -1389,6 +1421,8 @@ async def respawn_player(player):
     player.gold -= (dropped + lost)
     await apply_death_penalty(player, dropped + lost + _sheltered_gold(player.name))
     death_room = player.room
+    if dungeon_for_room(death_room):
+        _stamp_dungeon_death(player)
     if dropped > 0:
         room_gold[death_room] = room_gold.get(death_room, 0) + dropped
     player.hp = player.max_hp
@@ -1489,11 +1523,27 @@ def _stamp_dungeon_leave(player, party):
         mark_scores_dirty()
 
 
+def _stamp_dungeon_death(player):
+    """Death inside the dungeon stamps an escalating re-entry delay (#335/#343):
+    the base delay grows per consecutive death-at-depth and resets on clear.
+    Closes the death-teleport loophole (death must abandon like party-leave)."""
+    entry = get_score_entry(player.name)
+    streak = entry.get("dungeon_death_streak", 0) + 1
+    entry["dungeon_death_streak"] = streak
+    entry["dungeon_reenter_delay"] = (
+        DUNGEON_REENTER_DELAY_SECONDS
+        + (streak - 1) * DUNGEON_REENTER_DELAY_GROWTH_SECONDS
+    )
+    entry["dungeon_left_ts"] = time.time()
+    mark_scores_dirty()
+
+
 async def _enter_dungeon(player):
     entry = get_score_entry(player.name)
-    wait = DUNGEON_REENTER_DELAY_SECONDS - (time.time() - entry.get("dungeon_left_ts", 0))
+    delay = entry.get("dungeon_reenter_delay", DUNGEON_REENTER_DELAY_SECONDS)
+    wait = delay - (time.time() - entry.get("dungeon_left_ts", 0))
     if wait > 0:
-        await send(player, {"type": "error", "text": f"The archway rejects you for {int(wait)}s more (you abandoned an uncleared descent)."})
+        await send(player, {"type": "error", "text": f"The archway rejects you for {int(wait)}s more (you abandoned an uncleared descent); descent readiness {adaptive_score(player)}."})
         return
     party = _auto_create_party(player)
     if party.dungeon_id not in dungeons:
@@ -1812,9 +1862,18 @@ async def cmd_attack(player, msg):
             for p in players_in_room(player.room):
                 if not p.name or p.name.lower() not in _earned:
                     continue
-                get_score_entry(p.name)["dungeon_floors_cleared"] += 1
+                _ce = get_score_entry(p.name)
+                _ce["dungeon_floors_cleared"] += 1
+                _ce["dungeon_death_streak"] = 0
                 await award_points(p, clear_pts, f"cleared Dungeon Floor {floor_no}")
                 await award_xp(p.name, clear_xp, f"cleared Dungeon Floor {floor_no}")
+            dungeon_clear_log.append({
+                "floor": floor_no,
+                "contributors": len(_earned),
+                "solo": len(_earned) <= 1,
+                "ts": time.time(),
+            })
+            del dungeon_clear_log[:-DUNGEON_CLEAR_LOG_CAP]
             await broadcast_room(player.room, {
                 "type": "message",
                 "text": "The hall falls silent. The sealed exits grind open, revealing the way onward and a gleaming blade."
@@ -3456,6 +3515,21 @@ def _commission_snapshot():
     ]
 
 
+def _dungeon_clears_snapshot():
+    """Group-vs-solo clear stats (#335): how far each formation got, plus the
+    recent clear log. Open evaluation -- whether supported groups clear what
+    solos cannot is a data question, not an assertion."""
+    solo = [c for c in dungeon_clear_log if c["solo"]]
+    groups = [c for c in dungeon_clear_log if not c["solo"]]
+    return {
+        "solo_clears": len(solo),
+        "group_clears": len(groups),
+        "solo_max_floor": max((c["floor"] for c in solo), default=0),
+        "group_max_floor": max((c["floor"] for c in groups), default=0),
+        "recent": list(dungeon_clear_log)[-20:],
+    }
+
+
 def world_snapshot():
     rooms = []
     for rid, r in ROOMS.items():
@@ -3477,6 +3551,7 @@ def world_snapshot():
             "score_history": [s for _, s in _score_history.get(p.name.lower(), [])],
             "kills": e.get("kills", 0), "deaths": e.get("deaths", 0),
             "gold": p.gold, "hp": p.hp, "max_hp": p.max_hp, "defense": _player_defense(p),
+            "adaptive_score": adaptive_score(p),
             "variety": round(compute_variety(e), 2), "room": p.room,
             "last_action": (track_log.get(p.name, [{}])[-1].get("cmd", "") if track_log.get(p.name) else ""),
             "recent_actions": list(track_log.get(p.name, [])),
@@ -3523,6 +3598,7 @@ def world_snapshot():
         "dungeons": dungeon_views,
         "quests": _quest_snapshot(),
         "commissions": _commission_snapshot(),
+        "dungeon_clears": _dungeon_clears_snapshot(),
         "recipes": RECIPE_VIEWS,
         "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),
                     "items": sorted([v["name"] for v in ITEM_DEFS.values()]),

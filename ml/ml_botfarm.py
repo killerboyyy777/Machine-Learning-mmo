@@ -285,7 +285,8 @@ def parse_args():
     p.add_argument("--weights", default=WEIGHTS_FILE)
     p.add_argument("--scripted", default="none",
                    choices=("none", "gather", "dungeon", "market", "maker",
-                            "commissioner", "mixed"),
+                            "commissioner", "quester", "crafter", "party_leader",
+                            "mixed"),
                    help="run fixed behavior-tree baselines instead of training "
                         "(one role each, or round-robin with 'mixed')")
     p.add_argument("--epsilon-start", type=float, default=1.0)

@@ -9,9 +9,9 @@ mask -- the fixed comparison point for RL runs.
 import random
 
 try:
-    from ..ml_env import ACTIONS, QUEST_GIVER_NAME
+    from ..ml_env import ACTIONS, MAREN_NAME, QUEST_GIVER_NAME
 except ImportError:
-    from ml_env import ACTIONS, QUEST_GIVER_NAME
+    from ml_env import ACTIONS, MAREN_NAME, QUEST_GIVER_NAME
 
 from . import AgentPlugin, register
 
@@ -204,12 +204,108 @@ class CommissionerPlugin(ScriptedPolicy):
         yield self._first_valid(env, self.WANDER, mask)
 
 
+@register
+class QuesterPlugin(ScriptedPolicy):
+    """Quest-chain specialist (#335): accept the guard/remedy/tonic quests
+    at their givers, gather-or-craft the required inputs, then turn in.
+    One priority chain drives the full accept -> work -> turn-in loop."""
+
+    name = "quester"
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("attack", "take"), mask)
+        npcs = s.get("npc_names") or []
+        if QUEST_GIVER_NAME in npcs:
+            if s.get("guard_charm_crafted"):
+                yield self._first_valid(env, ("quest_turn_in",), mask)
+            elif not s.get("quest_guard_active"):
+                yield self._first_valid(env, ("quest_accept",), mask)
+        if MAREN_NAME in npcs:
+            if s.get("quest_remedy_ready"):
+                yield self._first_valid(env, ("quest3_turn_in",), mask)
+            elif not s.get("quest_remedy_active"):
+                yield self._first_valid(env, ("quest3_accept",), mask)
+            if s.get("quest_tonic_ready"):
+                yield self._first_valid(env, ("quest4_turn_in",), mask)
+            elif not s.get("quest_tonic_active"):
+                yield self._first_valid(env, ("quest4_accept",), mask)
+        yield self._first_valid(
+            env,
+            ("craft_charm", "craft_fortitude_tonic", "craft", "gather", "take"),
+            mask,
+        )
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+@register
+class CrafterPlugin(ScriptedPolicy):
+    """Production specialist (#335): gather or buy inputs, craft by recipe,
+    then sell or use the output. Exercises the craft paths (arrows, iron,
+    oils, tonics, charm, blades) under load."""
+
+    name = "crafter"
+
+    def plan(self, env, mask):
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("gather", "take"), mask)
+        yield self._first_valid(env, ("buy", "buy_arrows"), mask)
+        yield self._first_valid(
+            env,
+            (
+                "craft_arrows",
+                "craft_iron",
+                "craft_iron_arrow",
+                "craft_sharpening_oil",
+                "craft_fortitude_tonic",
+                "craft_ironhide_draught",
+                "craft_serpentbrand",
+                "craft_wardens_blade",
+                "craft_charm",
+                "craft",
+            ),
+            mask,
+        )
+        yield self._first_valid(env, ("sell", "market_post"), mask)
+        yield self._first_valid(env, ("equip", "use"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+@register
+class PartyLeaderPlugin(ScriptedPolicy):
+    """Group leader (#335): form a party and invite whoever shares the room,
+    then lead dungeon descents as a group. Alternates invite/accept so a
+    lone leader keeps cycling until a partner accepts."""
+
+    name = "party_leader"
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._first_valid(env, ("attack",), mask)
+        if s.get("party_size", 1) <= 1:
+            if env._step_count % 2 == 0:
+                yield self._first_valid(env, ("party_invite",), mask)
+            else:
+                yield self._first_valid(env, ("party_accept",), mask)
+        yield self._first_valid(env, ("equip", "buy", "take"), mask)
+        yield self._first_valid(env, ("move_enter", "move_down"), mask)
+        yield self._random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
 # Backward-compatible aliases (ml_botfarm and its tests import these).
 GatherSellPolicy = GatherPlugin
 DungeonClearerPolicy = DungeonPlugin
 MarketFlipperPolicy = MarketPlugin
 MarketMakerPolicy = MakerPlugin
 CommissionerPolicy = CommissionerPlugin
+QuesterPolicy = QuesterPlugin
+CrafterPolicy = CrafterPlugin
+PartyLeaderPolicy = PartyLeaderPlugin
 
 SCRIPTED_POLICIES = {
     "gather": GatherSellPolicy,
@@ -217,5 +313,8 @@ SCRIPTED_POLICIES = {
     "market": MarketFlipperPolicy,
     "maker": MarketMakerPolicy,
     "commissioner": CommissionerPolicy,
+    "quester": QuesterPolicy,
+    "crafter": CrafterPolicy,
+    "party_leader": PartyLeaderPolicy,
 }
 SCRIPTED_NAMES = tuple(SCRIPTED_POLICIES)
