@@ -45,10 +45,30 @@ ACTION_WINDOW = 20
 MIN_HISTORY_FOR_VARIETY = 5
 MIN_VARIETY = 0.2
 DIFFICULTY_K = 50.0
+# Income-side tuning (#334): discovery is a fixed reward per NEW room and was
+# the largest single income source for exploration-heavy (gather-loop) bots,
+# so it is lowered to keep playstyles convergent rather than exploration
+# dominating. Gather node score is tuned in world.json (node "score" field).
+DISCOVERY_POINTS = 2
+DISCOVERY_XP = 2
 DEATH_PENALTY = 5.0
 DEATH_GOLD_DROP_PCT = 40   # of carried gold drops as a floor pile on death
 DEATH_GOLD_LOST_PCT = 10   # of carried gold vanishes permanently on death
 DEATH_SCORE_PER_GOLD_LOST = 0.1  # extra score penalty per gold removed on death (floor: DEATH_PENALTY)
+# Item drops on death are ZONE-GATED (#334): safe lands keep the gold-only
+# rule; a #157 risk zone additionally scatters DEATH_ITEM_DROP_PCT% of the
+# unequipped inventory as floor piles. The dropped items' FLOOR value (the
+# static "value" field, never the market price) feeds the wealth-scaled
+# score penalty so price swings cannot move the punishment.
+DEATH_ITEM_DROP_PCT = 100
+# XP loss on death (#334): percentual of total XP, so higher level = more
+# absolute loss, and dropping below a level threshold levels down naturally
+# (no separate de-level system, no cap on levels lost). Calibrated against
+# time-to-recover (see tuning pass report): 5/10/15% brackets measured at
+# ~6.5 XP/min safe-grind rate give level-10 recovery of 58/115/173 min and
+# level-20 worst-case 57/114/170 hours; 10%+ becomes "deletion not
+# punishment" at the high end, so 5% is the locked default.
+XP_LOSS_PCT = 5.0
 ALLY_ATTACK_BONUS_PER_PLAYER = 1
 ALLY_ATTACK_BONUS_CAP = 3
 TEAMWORK_BONUS_PER_EXTRA_CONTRIBUTOR = 0.2
@@ -206,6 +226,40 @@ GM_SLAY_MIN_COST = 10
 
 def xp_to_next(level):
     return round(XP_BASE * XP_GROWTH ** (level - 1))
+
+
+def total_xp_to_level(level):
+    """Cumulative XP required to reach a level (exclusive of progress within it).
+
+    Closed form of sum(xp_to_next(l) for l in 1..level-1) = XP_BASE *
+    (XP_GROWTH^(level-1) - 1) / (XP_GROWTH - 1)."""
+    if level <= 1:
+        return 0.0
+    return XP_BASE * (XP_GROWTH ** (level - 1) - 1) / (XP_GROWTH - 1)
+
+
+def total_xp(entry):
+    """A character's total accumulated XP (level progress plus current bar)."""
+    return total_xp_to_level(entry.get("level", 1)) + entry.get("xp", 0.0)
+
+
+def apply_xp_loss(entry, pct):
+    """Remove pct% of total XP, recomputing level/xp/xp_to_next downward.
+
+    Returns the list of levels dropped (empty when nothing was lost)."""
+    before = total_xp(entry)
+    if before <= 0 or pct <= 0:
+        return []
+    lost = before * pct / 100.0
+    new_total = max(0.0, before - lost)
+    levels_lost = []
+    while entry["level"] > 1 and new_total < total_xp_to_level(entry["level"]):
+        entry["level"] -= 1
+        levels_lost.append(entry["level"])
+    entry["xp"] = new_total - total_xp_to_level(entry["level"])
+    entry["xp_to_next"] = xp_to_next(entry["level"])
+    mark_scores_dirty()
+    return levels_lost
 
 
 # ---------------------------------------------------------------------------
@@ -594,6 +648,16 @@ def gather_nodes_in_room(room_id):
     return [n for n in gather_nodes.values() if n["room"] == room_id and n["available"]]
 
 
+def _room_is_risk(room_id):
+    """True when a surface room is a #157 risk zone (item drops on death).
+
+    Dungeon floors are not #157 zones; they keep the gold-only death rule.
+    Safe-vs-risk is decided by the room's "risk" flag alone -- the Wild
+    does not exist yet (#336), so no wild-set geography is consulted."""
+    room = ROOMS.get(room_id)
+    return bool(room and room.get("risk"))
+
+
 # ---------------------------------------------------------------------------
 # Scoring system
 # ---------------------------------------------------------------------------
@@ -857,7 +921,8 @@ async def award_points(player, base_points, reason):
 
 async def apply_death_penalty(player, gold_lost=0):
     """Score penalty scales with wealth lost: a flat floor for broke
-    characters, plus per gold removed (dropped pile + vanished)."""
+    characters, plus per gold removed (dropped pile + vanished + the floor
+    value of any items scattered in a risk zone)."""
     entry = get_score_entry(player.name)
     entry["deaths"] += 1
     penalty = DEATH_PENALTY + DEATH_SCORE_PER_GOLD_LOST * max(0, gold_lost)
@@ -1390,6 +1455,7 @@ def stats_view(player):
             for category, value in player.active_buffs.items()
             if value.get("remaining", 0) > 0
         },
+        "death_preview": death_preview(player),
     }
 
 
@@ -1410,29 +1476,112 @@ def _sheltered_gold(name):
     return escrow + entry.get("gold_bank", 0)
 
 
+def death_preview(player):
+    """Worst-case death loss in the player's current room (telegraph, #334).
+
+    Read-only; shows the maximum the death rules could take right now so a
+    player can weigh the risk before entering a zone or carrying wealth.
+    The accounting breakdown is echoed back on the actual death event."""
+    if not player.name:
+        return {"risk_zone": False, "gold_carried": 0, "gold_dropped": 0,
+                "gold_lost": 0, "items_at_risk": [], "xp_loss_pct": XP_LOSS_PCT,
+                "xp_loss": 0.0, "level_after": 1}
+    entry = get_score_entry(player.name)
+    gold = player.gold or 0
+    dropped = (gold * DEATH_GOLD_DROP_PCT) // 100
+    lost = (gold * DEATH_GOLD_LOST_PCT) // 100
+    risk = _room_is_risk(player.room)
+    items_at_risk = []
+    if risk:
+        unequipped = [iid for iid in player.inventory
+                      if iid not in (player.equipped, player.armor, player.offhand)]
+        n = max(0, len(unequipped) * DEATH_ITEM_DROP_PCT // 100)
+        items_at_risk = unequipped[:n]
+    xp_lost = total_xp(entry) * XP_LOSS_PCT / 100.0
+    return {
+        "risk_zone": risk,
+        "gold_carried": gold,
+        "gold_dropped": dropped,
+        "gold_lost": lost,
+        "items_at_risk": [ITEM_DEFS[i]["name"] for i in items_at_risk],
+        "xp_loss_pct": XP_LOSS_PCT,
+        "xp_loss": round(xp_lost, 2),
+        "level_after": _level_after_xp_loss(entry, XP_LOSS_PCT),
+    }
+
+
+def _level_after_xp_loss(entry, pct):
+    """Resulting level if pct% of total XP were removed right now."""
+    if entry["level"] <= 1:
+        return 1
+    new_total = max(0.0, total_xp(entry) * (1.0 - pct / 100.0))
+    lvl = entry["level"]
+    while lvl > 1 and new_total < total_xp_to_level(lvl):
+        lvl -= 1
+    return lvl
+
+
 async def respawn_player(player):
     # Death drop: 40% of carried gold stays as a floor pile where you died,
     # 10% vanishes permanently, the rest stays with you. Sheltered wealth
     # (escrow, bank) can't be split -- it isn't carried -- but it counts
     # toward the score penalty, so offloading gold pre-death buys no
     # discount on dying.
+    death_room = player.room
     dropped = (player.gold * DEATH_GOLD_DROP_PCT) // 100
     lost = (player.gold * DEATH_GOLD_LOST_PCT) // 100
     player.gold -= (dropped + lost)
-    await apply_death_penalty(player, dropped + lost + _sheltered_gold(player.name))
-    death_room = player.room
+
+    # Item drops are zone-gated (#334): safe lands keep the gold-only rule;
+    # #157 risk zones additionally scatter the unequipped pack as floor
+    # piles. Unequipped items drop first (equipped weapon/armor/offhand are
+    # only ever at risk once the unequipped pack is exhausted, and only
+    # under a percentage cap).
+    dropped_items = []
+    if _room_is_risk(death_room):
+        unequipped = [iid for iid in player.inventory
+                      if iid not in (player.equipped, player.armor, player.offhand)]
+        n = max(0, len(unequipped) * DEATH_ITEM_DROP_PCT // 100)
+        dropped_items = unequipped[:n]
+        for iid in dropped_items:
+            player.inventory.remove(iid)
+            _add_ground(death_room, iid)
+
+    item_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) for iid in dropped_items)
+    await apply_death_penalty(
+        player, dropped + lost + _sheltered_gold(player.name) + item_value
+    )
+
+    # XP loss (#334): percentual of total XP, no cap, natural de-level.
+    entry = get_score_entry(player.name)
+    xp_lost = total_xp(entry) * XP_LOSS_PCT / 100.0
+    levels_lost = apply_xp_loss(entry, XP_LOSS_PCT)
+
     if dungeon_for_room(death_room):
         _stamp_dungeon_death(player)
     if dropped > 0:
         room_gold[death_room] = room_gold.get(death_room, 0) + dropped
-    player.hp = player.max_hp
+    sync_player_level(player)
     remove_member(player)
     player.room = START_ROOM
     add_member(player)
     text = "You died and wake up back in Town Square."
     if dropped > 0 or lost > 0:
         text += f" You dropped {dropped} gold where you fell and lost {lost} gold outright."
-    await send(player, {"type": "death", "text": text})
+    if dropped_items:
+        names = ", ".join(ITEM_DEFS[i]["name"] for i in dropped_items)
+        text += f" Your pack scattered: {names}."
+    if levels_lost:
+        text += f" You lost {XP_LOSS_PCT:g}% XP ({round(xp_lost, 1)}), falling back to level {entry['level']}."
+    await send(player, {
+        "type": "death",
+        "text": text,
+        "gold_dropped": dropped,
+        "gold_lost": lost,
+        "items_dropped": [ITEM_DEFS[i]["name"] for i in dropped_items],
+        "xp_lost": round(xp_lost, 2),
+        "level": entry["level"],
+    })
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
     if death_room != player.room:
@@ -1724,8 +1873,8 @@ async def cmd_move(player, msg):
     entry = get_score_entry(player.name)
     if player.room not in entry["rooms_visited"]:
         entry["rooms_visited"].append(player.room)
-        await award_points(player, 5, f"discovered {ROOMS[player.room]['name']}")
-        await award_xp(player.name, 5, f"discovered {ROOMS[player.room]['name']}")
+        await award_points(player, DISCOVERY_POINTS, f"discovered {ROOMS[player.room]['name']}")
+        await award_xp(player.name, DISCOVERY_XP, f"discovered {ROOMS[player.room]['name']}")
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
     await broadcast_room(player.room, {"type": "message", "text": f"{player.name} arrives."}, exclude=player)
