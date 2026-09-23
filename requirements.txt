@@ -12,8 +12,9 @@ websockets==17.1
 numpy==2.5.3
 
 # PyTorch (CPU) — only needed for the deep-learning agent
-# (`torch_agents/dqn_agent.py`). Install separately with:
-#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+# (`torch_agents/dqn_agent.py`). Training deps live in
+# requirements-train.txt (not installed by default):
+#     pip install -r requirements-train.txt
 # (torch 2.14.0+cpu verified on Python 3.14)
 #
 # Pinned deps above are audited by pip-audit in CI (see #58):

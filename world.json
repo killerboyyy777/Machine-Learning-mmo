@@ -650,13 +650,13 @@
     "deep_catacombs": ["rusty_sword"]
   },
   "gather_nodes": {
-    "pine_timber_node": {"room": "lumber_camp", "item": "pine_timber", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 2, "score": 2},
-    "heron_feather_node": {"room": "heron_nest", "item": "heron_feather", "min_yield": 1, "max_yield": 2, "respawn_seconds": 45, "xp": 3, "score": 2},
-    "reed_fiber_node": {"room": "reed_beds", "item": "reed_fiber", "min_yield": 1, "max_yield": 3, "respawn_seconds": 20, "xp": 2, "score": 2},
-    "springwater_node": {"room": "healing_spring", "item": "springwater", "min_yield": 1, "max_yield": 2, "respawn_seconds": 25, "xp": 2, "score": 2},
-    "mountain_herb_node": {"room": "highland_trail", "item": "mountain_herb", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 3, "score": 2},
-    "resin_node": {"room": "pinewood_thicket", "item": "resin", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 2},
-    "scrap_iron_node": {"room": "smithy", "item": "scrap_iron", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 2},
-    "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 2}
+    "pine_timber_node": {"room": "lumber_camp", "item": "pine_timber", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 2, "score": 1},
+    "heron_feather_node": {"room": "heron_nest", "item": "heron_feather", "min_yield": 1, "max_yield": 2, "respawn_seconds": 45, "xp": 3, "score": 1},
+    "reed_fiber_node": {"room": "reed_beds", "item": "reed_fiber", "min_yield": 1, "max_yield": 3, "respawn_seconds": 20, "xp": 2, "score": 1},
+    "springwater_node": {"room": "healing_spring", "item": "springwater", "min_yield": 1, "max_yield": 2, "respawn_seconds": 25, "xp": 2, "score": 1},
+    "mountain_herb_node": {"room": "highland_trail", "item": "mountain_herb", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 3, "score": 1},
+    "resin_node": {"room": "pinewood_thicket", "item": "resin", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
+    "scrap_iron_node": {"room": "smithy", "item": "scrap_iron", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
+    "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1}
   }
 }

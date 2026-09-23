@@ -15,7 +15,6 @@ import asyncio
 import os
 import signal
 import sys
-import time
 from pathlib import Path
 
 # Make sibling imports work however this file is launched: `python
@@ -25,9 +24,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml"))
 
 from dqn_agent import TorchDQNAgent
-from ml_env import (ACTIONS, N_ACTIONS, QUEST_DELVER_REWARD_POINTS,
-                    QUEST_REWARD_POINTS, QUESTS, TextMMOEnv, flatten_obs,
-                    market_net, quest_charm_net)
+from ml_env import (
+    ACTIONS,
+    N_ACTIONS,
+    QUEST_DELVER_REWARD_POINTS,
+    QUEST_REWARD_POINTS,
+    QUESTS,
+    TextMMOEnv,
+    flatten_obs,
+    market_net,
+    quest_charm_net,
+)
 
 
 class TorchFarm:
@@ -44,7 +51,9 @@ class TorchFarm:
         self.runners = []
 
     def should_stop(self):
-        return self.stop.is_set() or (self.args.steps > 0 and self.steps >= self.args.steps)
+        return self.stop.is_set() or (
+            self.args.steps > 0 and self.steps >= self.args.steps
+        )
 
     async def checkpoint(self, force=False):
         if not force and self.steps < self.args.save_every:
@@ -53,9 +62,6 @@ class TorchFarm:
             return
         self.agent.save_weights(self.args.weights)
         self.last_save_step = self.steps
-        if self.last_best_score > self.agent.best_score:
-            self.agent.best_score = self.last_best_score
-            self.agent.save_weights(self.args.best_weights)
 
 
 class Runner:
@@ -120,44 +126,65 @@ class Runner:
         if (by_quest.get("tonic") or {}).get("turned_in"):
             quest_reward += float(QUESTS["tonic"]["reward_points"])
         quest_intrinsic = 0.0
-        if any((by_quest.get(q) or {}).get("accepted")
-               for q in ("guard_charm", "delver", "remedy", "tonic")):
+        if any(
+            (by_quest.get(q) or {}).get("accepted")
+            for q in ("guard_charm", "delver", "remedy", "tonic")
+        ):
             quest_intrinsic += agent.intrinsic_accept
         if qinfo.get("crafted_charm") or qinfo.get("delver_became_ready"):
             quest_intrinsic += agent.intrinsic_progress
+        for mat_key in ("quest_mat_bark", "quest_mat_hide", "quest_mat_ecto"):
+            if float(next_obs.get(mat_key, 0.0)) > float(
+                (self.obs or {}).get(mat_key, 0.0)
+            ):
+                quest_intrinsic += agent.intrinsic_progress
 
         rnd_bonus = agent.rnd_bonus(next_features) if agent.rnd_lambda else 0.0
 
-        return (gold_delta, loot_delta, market_pnl, quest_reward,
-                quest_intrinsic, rnd_bonus)
+        return (
+            gold_delta,
+            loot_delta,
+            market_pnl,
+            quest_reward,
+            quest_intrinsic,
+            rnd_bonus,
+        )
 
     async def run(self):
         await self.reset()
         try:
             while not self.farm.should_stop():
                 epsilon = self.farm.agent._epsilon()
-                action_index = self.farm.agent.act(self.features, epsilon, self.env.valid_action_mask())
+                action_index = self.farm.agent.act(
+                    self.features, epsilon, self.env.valid_action_mask()
+                )
                 action_name = ACTIONS[action_index]
                 next_obs, reward, done, info = await self.env.step(action_index)
                 next_features = flatten_obs(next_obs)
-                (gold_delta, loot_delta, market_pnl, quest_reward,
-                 quest_intrinsic, rnd_bonus) = self.transition_targets(
-                    next_obs, next_features, info, action_name
-                )
+                (
+                    gold_delta,
+                    loot_delta,
+                    market_pnl,
+                    quest_reward,
+                    quest_intrinsic,
+                    rnd_bonus,
+                ) = self.transition_targets(next_obs, next_features, info, action_name)
 
-                self.farm.agent.store({
-                    "state": self.features,
-                    "action": action_index,
-                    "reward": reward,
-                    "next_state": next_features,
-                    "done": done,
-                    "gold_delta": gold_delta,
-                    "loot_delta": loot_delta,
-                    "market_pnl": market_pnl,
-                    "quest_reward": quest_reward,
-                    "quest_intrinsic": quest_intrinsic,
-                    "rnd_bonus": rnd_bonus,
-                })
+                self.farm.agent.store(
+                    {
+                        "state": self.features,
+                        "action": action_index,
+                        "reward": reward,
+                        "next_state": next_features,
+                        "done": done,
+                        "gold_delta": gold_delta,
+                        "loot_delta": loot_delta,
+                        "market_pnl": market_pnl,
+                        "quest_reward": quest_reward,
+                        "quest_intrinsic": quest_intrinsic,
+                        "rnd_bonus": rnd_bonus,
+                    }
+                )
                 self.farm.agent.t_step += 1
                 # learn() self-gates on minibatch fill (#222).
                 self.farm.agent.learn()
@@ -169,6 +196,12 @@ class Runner:
                 self.farm.steps += 1
                 if self.score > self.farm.last_best_score:
                     self.farm.last_best_score = self.score
+                    # Snapshot immediately so the saved best never lags the
+                    # achieving step (#327): the boundary checkpoint would
+                    # otherwise write (possibly degraded) later weights under
+                    # this peak's score metadata.
+                    self.farm.agent.best_score = self.score
+                    self.farm.agent.save_weights(self.farm.args.best_weights)
                 await self.farm.checkpoint()
 
                 if done:
@@ -187,8 +220,10 @@ async def main_async(args):
         except (NotImplementedError, ValueError):
             pass
 
-    print(f"[torch-farm] {args.agents} agents sharing one DQN, {N_ACTIONS} actions, "
-          f"{args.steps or 'unlimited'} total steps")
+    print(
+        f"[torch-farm] {args.agents} agents sharing one DQN, {N_ACTIONS} actions, "
+        f"{args.steps or 'unlimited'} total steps"
+    )
     tasks = [asyncio.create_task(r.run(), name=r.name) for r in farm.runners]
     try:
         await asyncio.gather(*tasks)
@@ -207,13 +242,28 @@ async def main_async(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Shared-policy multi-agent Torch trainer.")
-    parser.add_argument("--agents", type=int, default=4, help="concurrent agents (default 4)")
-    parser.add_argument("--name-prefix", default="TorchFarm", help="fresh character name prefix")
+    parser = argparse.ArgumentParser(
+        description="Shared-policy multi-agent Torch trainer."
+    )
+    parser.add_argument(
+        "--agents", type=int, default=4, help="concurrent agents (default 4)"
+    )
+    parser.add_argument(
+        "--name-prefix", default="TorchFarm", help="fresh character name prefix"
+    )
     parser.add_argument("--url", default="ws://localhost:8765")
-    parser.add_argument("--steps", type=int, default=0, help="total shared steps; 0 runs until stopped")
-    parser.add_argument("--save-every", type=int, default=500, help="shared checkpoint interval in steps")
-    parser.add_argument("--weights", default=None, help="shared current checkpoint path")
+    parser.add_argument(
+        "--steps", type=int, default=0, help="total shared steps; 0 runs until stopped"
+    )
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=500,
+        help="shared checkpoint interval in steps",
+    )
+    parser.add_argument(
+        "--weights", default=None, help="shared current checkpoint path"
+    )
     parser.add_argument("--best-weights", default=None, help="best checkpoint path")
     args = parser.parse_args()
     if args.agents < 1:
@@ -221,8 +271,16 @@ def parse_args():
     if args.steps < 0 or args.save_every < 1:
         parser.error("--steps must be >= 0 and --save-every must be >= 1")
     here = os.path.dirname(os.path.abspath(__file__))
-    args.weights = os.path.abspath(args.weights) if args.weights else os.path.join(here, "ml_farm_weights.json")
-    args.best_weights = os.path.abspath(args.best_weights) if args.best_weights else os.path.join(here, "ml_farm_best.json")
+    args.weights = (
+        os.path.abspath(args.weights)
+        if args.weights
+        else os.path.join(here, "ml_farm_weights.json")
+    )
+    args.best_weights = (
+        os.path.abspath(args.best_weights)
+        if args.best_weights
+        else os.path.join(here, "ml_farm_best.json")
+    )
     return args
 
 

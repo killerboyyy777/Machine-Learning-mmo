@@ -26,6 +26,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python tests/test_server_unit.py
       - run: python tests/test_quest_grind.py
+      - run: python tests/test_snapshot_additions.py
       - run: python tests/test_conductor.py
       - run: python tests/test_reward_modes.py
       - run: python tests/test_scripted_bots.py
@@ -35,6 +36,7 @@ jobs:
       - run: python tests/test_env_reset.py
       - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
+      - run: python tests/test_snapshot_contract.py
       - run: python tests/test_scores_backup.py
       - run: python tests/test_training_loops.py
       - run: python tests/test_conductor_run.py
@@ -89,3 +91,75 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt pip-audit
       - run: pip-audit -r requirements.txt
+
+  lint:
+    # No-new-violations gate (file-level black --check punishes touching
+    # legacy files, proven by 106 on server.py/registry.py): for each
+    # changed file, black must not go clean->dirty vs merge-base, and ruff
+    # must not gain violations vs merge-base. New files must be clean.
+    # mypy stays advisory (not gated).
+    name: Lint changed Python files (no-new-violations black + ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install black ruff
+      - run: |
+          base=$(git merge-base origin/master HEAD)
+          files=$(git diff --name-only "$base"...HEAD -- '*.py')
+          if [ -z "$files" ]; then echo "no python files changed"; exit 0; fi
+          echo "$files"
+          fail=0
+          for f in $files; do
+            [ -f "$f" ] || continue
+            # black: fail only on clean(base)->dirty(head) transitions.
+            base_ok=0
+            if git show "$base:$f" 2>/dev/null | black --check - >/dev/null 2>&1; then
+              base_ok=1
+            fi
+            if [ "$base_ok" = "1" ] && ! black --check "$f" >/dev/null 2>&1; then
+              echo "BLACK-REGRESSION: $f clean at base, dirty at head"
+              black --check --diff "$f" || true
+              fail=1
+            fi
+            # ruff: fail only when the violation count grows vs base.
+            base_n=$(git show "$base:$f" 2>/dev/null | ruff check --output-format=concise --stdin-filename "$f" - 2>/dev/null | grep -cE ':[0-9]+:[0-9]+: ' || true)
+            head_n=$(ruff check --output-format=concise -- "$f" 2>/dev/null | grep -cE ':[0-9]+:[0-9]+: ' || true)
+            if [ "${head_n:-0}" -gt "${base_n:-0}" ]; then
+              echo "RUFF-REGRESSION: $f base=$base_n head=$head_n"
+              ruff check -- "$f" || true
+              fail=1
+            fi
+          done
+          exit $fail
+
+  node-harness:
+    name: Dashboard smoke (node stub + headless Firefox)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: pip install websockets==17.1 playwright
+      - run: node --version
+      - run: python -m playwright install --with-deps firefox
+      - run: echo '{}' > scores.json
+      - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.ci.log 2>&1 &
+      - run: sleep 5
+      - run: node tests/dash2_smoke.cjs
+      - run: python tests/dash_browser_smoke.py
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: dashboard-shots
+          path: |
+            dashshots/
+            server.ci.log
