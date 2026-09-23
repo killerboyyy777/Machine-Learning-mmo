@@ -1,0 +1,25 @@
+name: Security (weekly)
+
+# Schedule-only scans. Kept in a separate file so no job in here ever shows
+# as SKIPPED on pull_request -- none of these jobs must be added to the
+# required-checks ruleset (see scripts/enable-protection.sh).
+on:
+  schedule:
+    - cron: "0 0 * * 1" # Weekly
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    # Every push/PR is already covered by the `audit` job in tests.yml;
+    # this keeps the weekly cadence from #138.
+    name: Weekly pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pip-audit
+      - run: pip-audit -r requirements.txt

@@ -12,6 +12,10 @@
 # - No pull_request rule on purpose: the owner cannot approve their own
 #   PRs, so any approval requirement deadlocks solo-dev merges. Re-add
 #   required_approving_review_count when a second human joins.
+# - Security workflow jobs (CodeQL, Dependency review, Secret scan) stay
+#   NON-required on purpose (#138): dependency-review SKIPs on push and the
+#   weekly jobs SKIP on PRs, so requiring them would block every merge.
+#   Do not add them to required_status_checks below.
 set -euo pipefail
 PAYLOAD="$(mktemp)"
 trap 'rm -f "$PAYLOAD"' EXIT

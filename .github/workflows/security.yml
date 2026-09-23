@@ -1,0 +1,61 @@
+name: Security
+
+on:
+  push:
+    # Mirror tests.yml: agent/review pushes otherwise get no CI signal
+    # (push CI reads workflow files from the pushed branch).
+    branches: [master, "review/**", "agent/**"]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 0 * * 1" # Weekly
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (python)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - uses: github/codeql-action/analyze@v3
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4
+
+  secrets:
+    name: Secret scan (trufflehog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # PRs: diff-scan base...head SHAs. Push/schedule: full filesystem scan
+      # (diff range is meaningless on schedule).
+      - uses: trufflesecurity/trufflehog@v3.97.7 # f51616494fc81ef15427b88c7b03d7f7d75230e6
+        if: github.event_name == 'pull_request'
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+      - uses: trufflesecurity/trufflehog@v3.97.7 # f51616494fc81ef15427b88c7b03d7f7d75230e6
+        if: github.event_name != 'pull_request'
+        with:
+          path: ./
