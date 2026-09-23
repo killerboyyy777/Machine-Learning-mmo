@@ -682,7 +682,7 @@ def flatten_obs(obs):
         + [obs["arrows_norm"]]
         + [obs["buff_attack"], obs["buff_dr"]]
         + [obs["ammo_best_norm"], obs["defense_norm"]]
-        + [obs["adaptive_score"]]  # descent-readiness hint (#335), appended last
+        + [obs.get("adaptive_score", 0.0)]  # descent-readiness hint (#335), appended last
     )
 
 
