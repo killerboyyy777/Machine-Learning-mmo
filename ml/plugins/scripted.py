@@ -9,9 +9,9 @@ mask -- the fixed comparison point for RL runs.
 import random
 
 try:
-    from ..ml_env import ACTIONS, MAREN_NAME, QUEST_GIVER_NAME
+    from ..ml_env import ACTIONS, MAREN_NAME, MERCHANT_PRICES, QUEST_GIVER_NAME
 except ImportError:
-    from ml_env import ACTIONS, MAREN_NAME, QUEST_GIVER_NAME
+    from ml_env import ACTIONS, MAREN_NAME, MERCHANT_PRICES, QUEST_GIVER_NAME
 
 from . import AgentPlugin, register
 
@@ -30,6 +30,28 @@ class ScriptedPolicy(AgentPlugin):
     agent_type = "scripted"
     # Ordered fallback when nothing role-specific fires.
     WANDER = ("rest", "look")
+    # Circuit breaker (#357): this many consecutive picks of the SAME action
+    # with zero state change bans that action for STUCK_BAN_STEPS steps,
+    # forcing a subgoal switch instead of a blind-repeat loop on a stale
+    # mask. Safe idles (look/rest) never count and never ban -- they are
+    # the hold behavior, not the loop.
+    STUCK_LIMIT = 15
+    STUCK_BAN_STEPS = 60
+    STUCK_IDLE = ("look", "rest")
+    STUCK_KEYS = (
+        "score", "level", "xp", "gold", "room_id", "hp", "max_hp",
+        "party_size", "is_dungeon", "dungeon_floor", "room_gold",
+        "equipped", "armor", "offhand", "deaths", "last_combat",
+        "market_orders", "quest_guard_active", "guard_charm_crafted",
+        "quest_delver_active", "quest_delver_ready", "quest_remedy_active",
+        "quest_remedy_ready", "quest_tonic_active", "quest_tonic_ready",
+    )
+
+    def __init__(self, **config):
+        super().__init__(**config)
+        self._stuck_sig = None
+        self._stuck_n = 0
+        self._stuck_ban = {}
 
     def _valid(self, env):
         return env.valid_action_mask()
@@ -68,11 +90,83 @@ class ScriptedPolicy(AgentPlugin):
             return None
         return self._first_valid(env, ("heal", "use", "rest"), mask)
 
+    def _stuck_state_sig(self, env):
+        """Hashable snapshot of every state field a scripted action can
+        observably change (combat log and quest flags included, so fights
+        and quest progress never count as stuck)."""
+        s = env._state
+        vals = []
+        for k in self.STUCK_KEYS:
+            v = s.get(k)
+            if isinstance(v, float):
+                v = round(v, 3)
+            elif isinstance(v, list):
+                v = tuple(sorted(str(x) for x in v))
+            vals.append(v)
+        inv = tuple(sorted(str(n) for n in (s.get("inv_names") or [])))
+        npc = tuple(sorted(str(n) for n in (s.get("npc_names") or [])))
+        exits = tuple(sorted(str(e) for e in (s.get("exits") or [])))
+        comms = tuple(sorted(
+            (c.get("id"), str(c.get("poster"))) for c in (s.get("open_commissions") or [])
+            if isinstance(c, dict)
+        ))
+        return (tuple(vals), inv, npc, exits, comms)
+
+    def _check_stuck(self, env, action):
+        """Count consecutive same-action picks with an unchanged snapshot.
+        Returns True once the count reaches STUCK_LIMIT (also records the
+        ban); safe-idle actions and one-shot observations never count."""
+        if ACTIONS[action] in self.STUCK_IDLE:
+            self._stuck_sig = None
+            self._stuck_n = 0
+            return False
+        sig = (action, self._stuck_state_sig(env))
+        if sig == self._stuck_sig:
+            self._stuck_n += 1
+        else:
+            self._stuck_sig = sig
+            self._stuck_n = 1
+        if self._stuck_n >= self.STUCK_LIMIT:
+            step = getattr(env, "_step_count", 0)
+            self._stuck_ban[action] = step + self.STUCK_BAN_STEPS
+            self._stuck_sig = None
+            self._stuck_n = 0
+            return True
+        return False
+
+    def _stuck_escalate(self, env, mask, banned):
+        """Fallback when the circuit breaker fires: heal first, else move
+        away, else look (forced refresh). Skips the just-banned action so
+        the escalate cannot re-pick the stuck loop. Returns an index."""
+        pick = self._heal_first(env, mask)
+        if pick is not None and pick != banned:
+            return pick
+        moves = [i for i, a in enumerate(ACTIONS)
+                 if a.startswith("move_") and mask and i < len(mask)
+                 and mask[i] and i != banned]
+        if moves:
+            return moves[0]
+        look = self._idx("look")
+        if look is not None and look != banned:
+            return look
+        for action in self.plan(env, mask):
+            if action is not None and action != banned:
+                return action
+        return self._idx("look")
+
     def select(self, env):
         mask = self._valid(env)
-        for step in self.plan(env, mask):
-            if step is not None:
-                return step
+        step = getattr(env, "_step_count", 0)
+        for expired in [a for a, until in self._stuck_ban.items() if step >= until]:
+            del self._stuck_ban[expired]
+        for action in self.plan(env, mask):
+            if action is None:
+                continue
+            if self._stuck_ban.get(action, 0) > step:
+                continue
+            if not self._check_stuck(env, action):
+                return action
+            return self._stuck_escalate(env, mask, action) or self._idx("look")
         return self._idx("look")
 
     def plan(self, env, mask):
@@ -113,13 +207,15 @@ class DungeonPlugin(ScriptedPolicy):
         yield self._first_valid(env, ("equip", "buy", "take"), mask)
         giver_here = QUEST_GIVER_NAME in (s.get("npc_names") or [])
         if giver_here:
-            # Both delver actions are mask-ungated, so order by quest state
-            # (#235): turn_in-first made accept unreachable, starving the
-            # quest the specialist exists to work.
-            if s.get("quest_delver_active"):
-                yield self._first_valid(env, ("quest2_turn_in", "quest2_accept"), mask)
-            else:
-                yield self._first_valid(env, ("quest2_accept", "quest2_turn_in"), mask)
+            # Delver quest state gates the giver branch (#357): accept once
+            # to get active, turn in only when ready. Active-but-not-ready
+            # must fall through to the dungeon descent below -- the
+            # pre-#357 mask-order form repeated quest2_turn_in forever
+            # because failed turn-ins only send messages, never state.
+            if not s.get("quest_delver_active"):
+                yield self._first_valid(env, ("quest2_accept",), mask)
+            elif s.get("quest_delver_ready"):
+                yield self._first_valid(env, ("quest2_turn_in",), mask)
         yield self._first_valid(env, ("move_enter", "move_down"), mask)
         yield self._random_move(env, mask)
         yield self._first_valid(env, self.WANDER, mask)
@@ -154,9 +250,30 @@ class MakerPlugin(ScriptedPolicy):
 
     name = "maker"
 
+    def _broke(self, env):
+        """True when the maker cannot buy anything merchant-side: gold below
+        the cheapest merchant price with nothing sellable/postable on hand.
+        A broke maker must wait/rest for fees/regeneration, never wander
+        into hostile rooms (the #357 baseline death loop)."""
+        s = env._state
+        cheapest = min(MERCHANT_PRICES.values()) if MERCHANT_PRICES else 2
+        if s.get("gold", 0) >= cheapest:
+            return False
+        return self._first_valid(
+            env, ("sell", "market_post", "market_cancel"), env.valid_action_mask()
+        ) is None
+
     def plan(self, env, mask):
         s = env._state
         yield self._heal_first(env, mask)
+        if self._broke(env):
+            # Hold solvently: refresh toward free income instead of spending
+            # gold or wandering. take/gather earn without capital; rest/look
+            # hold in place without moving; buy_arrows is merchant-gated the
+            # same as buy, so it stays out of the broke branch.
+            yield self._first_valid(env, ("take", "gather", "rest", "look"), mask)
+            yield self._first_valid(env, ("market_list", "commission_list"), mask)
+            return
         yield self._first_valid(env, ("take",), mask)
         if not s.get("market_state"):
             yield self._first_valid(env, ("market_list",), mask)

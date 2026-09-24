@@ -69,8 +69,19 @@ env = fresh_env()
 env._state["npc_names"] = [QUEST_GIVER_NAME]
 env._state["quest_delver_active"] = False
 assert selected(DungeonClearerPolicy(), env) == "quest2_accept"
+# --- dungeon role: active + ready -> turn_in; active-but-not-ready must
+# fall through to the descent instead of repeating turn-in (#357) ---
 env._state["quest_delver_active"] = True
+env._state["quest_delver_ready"] = True
 assert selected(DungeonClearerPolicy(), env) == "quest2_turn_in"
+# Active-but-not-ready falls through to the descent on a fresh observation
+# (masks cache per-observation, so set exits before the first select).
+env = fresh_env()
+env._state["npc_names"] = [QUEST_GIVER_NAME]
+env._state["quest_delver_active"] = True
+env._state["quest_delver_ready"] = False
+env._state["exits"] = ["enter", "north"]
+assert selected(DungeonClearerPolicy(), env) == "move_enter"
 print("DELVER_ACCEPT_OK")
 
 # --- market role: no snapshot yet -> list ---
@@ -103,9 +114,33 @@ print("MAKER_BUY_OK")
 
 # --- maker role: stale snapshot -> list first ---
 env = fresh_env()
+env._state["gold"] = 10
 env._state["market_state"] = None
 assert selected(MarketMakerPolicy(), env) == "market_list"
 print("MAKER_LIST_OK")
+
+# --- maker role: broke (no gold, nothing sellable) -> hold, never wander
+# into hostile rooms (#357) ---
+env = fresh_env()
+env._state["gold"] = 0
+env._state["inv_names"] = []
+assert selected(MarketMakerPolicy(), env) == "look"
+print("MAKER_BROKE_OK")
+
+# --- circuit breaker: same action + frozen state 15x -> escalate (#357) ---
+env = fresh_env()
+env._state["npc_names"] = [QUEST_GIVER_NAME]
+env._state["quest_delver_active"] = True
+env._state["quest_delver_ready"] = False
+env._state["exits"] = ["enter", "north"]
+env._step_count = 0
+pol = DungeonClearerPolicy()
+for _ in range(14):
+    env._step_count += 1
+    assert selected(pol, env) == "move_enter"
+env._step_count += 1
+assert selected(pol, env) != "move_enter"
+print("STUCK_BREAK_OK")
 
 # --- commissioner role: empty board, even step -> list ---
 env = fresh_env()
