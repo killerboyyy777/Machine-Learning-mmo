@@ -2301,6 +2301,12 @@ async def cmd_craft(player, msg):
     for iid, qty in recipe["inputs"].items():
         for _ in range(qty):
             player.inventory.remove(iid)
+        if player.equipped == iid and iid not in player.inventory:
+            player.equipped = None
+        if player.armor == iid and iid not in player.inventory:
+            player.armor = None
+        if player.offhand == iid and iid not in player.inventory:
+            player.offhand = None
     result = recipe["result"]
     try:
         output_qty = max(1, int(recipe.get("output_qty", 1)))

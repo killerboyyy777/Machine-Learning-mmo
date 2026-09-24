@@ -1504,6 +1504,17 @@ async def main():
     crafter = mkplayer("Crafter", 50005, room="town_square")
     await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
     assert inbox[-1]["type"] == "error" and "dungeon_shard_10" in inbox[-1]["text"], inbox[-1]
+
+    # Ghost-equip regression test: equipping an ingredient then crafting clears slot
+    crafter.inventory = ["dungeon_shard_10", "iron_plate", "ectoplasm", "ectoplasm"]
+    await srv.cmd_equip(crafter, {"item": "Iron Plate Armor"})
+    assert crafter.armor == "iron_plate"
+    assert srv._player_defense(crafter) == 3
+    await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
+    assert "iron_plate" not in crafter.inventory
+    assert crafter.armor is None
+    assert srv._player_defense(crafter) == 0
+
     unplayer(crafter)
     print("RELIC_CRAFT_OK")
 
