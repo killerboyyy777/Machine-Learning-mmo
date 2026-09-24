@@ -2274,11 +2274,11 @@ async def cmd_sell(player, msg):
         return
     value = ITEM_DEFS.get(iid, {}).get("value", 1)
     player.inventory.remove(iid)
-    if player.equipped == iid:
+    if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
-    if player.armor == iid:
+    if player.armor == iid and iid not in player.inventory:
         player.armor = None
-    if player.offhand == iid:
+    if player.offhand == iid and iid not in player.inventory:
         player.offhand = None
     player.gold += value
     await send(player, {"type": "message", "text": f"You sell {ITEM_DEFS[iid]['name']} for {value} gold."})
@@ -2301,6 +2301,12 @@ async def cmd_craft(player, msg):
     for iid, qty in recipe["inputs"].items():
         for _ in range(qty):
             player.inventory.remove(iid)
+        if player.equipped == iid and iid not in player.inventory:
+            player.equipped = None
+        if player.armor == iid and iid not in player.inventory:
+            player.armor = None
+        if player.offhand == iid and iid not in player.inventory:
+            player.offhand = None
     result = recipe["result"]
     try:
         output_qty = max(1, int(recipe.get("output_qty", 1)))
@@ -2849,6 +2855,13 @@ async def cmd_quest(player, msg):
         if qid == "guard_charm":
             # Guaranteed present by the gate above: unconditional consume.
             player.inventory.remove(QUEST_CHARM_RESULT)
+            charm_gone = QUEST_CHARM_RESULT not in player.inventory
+            if player.equipped == QUEST_CHARM_RESULT and charm_gone:
+                player.equipped = None
+            if player.armor == QUEST_CHARM_RESULT and charm_gone:
+                player.armor = None
+            if player.offhand == QUEST_CHARM_RESULT and charm_gone:
+                player.offhand = None
             entry["guard_charm_crafted"] = False
             entry["quest_guard_active"] = False
         elif qid == "delver":
@@ -2858,6 +2871,12 @@ async def cmd_quest(player, msg):
             for iid, qty in quest.get("inputs", {}).items():
                 for _ in range(qty):
                     player.inventory.remove(iid)
+                if player.equipped == iid and iid not in player.inventory:
+                    player.equipped = None
+                if player.armor == iid and iid not in player.inventory:
+                    player.armor = None
+                if player.offhand == iid and iid not in player.inventory:
+                    player.offhand = None
             _set_quest_active(entry, qid, False)
         _record_turnin()
         await send(player, {"type": "message", "text": f"{quest['giver_name']}: Excellent work! Here's your reward: "
@@ -3030,11 +3049,11 @@ async def cmd_market_post(player, msg):
         await send(player, {"type": "error", "text": f"Market stall full ({own_open}/{slots}). Use market_expand (next slot {nxt} gold) or cancel an order."})
         return
     player.inventory.remove(iid)
-    if player.equipped == iid:
+    if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
-    if player.armor == iid:
+    if player.armor == iid and iid not in player.inventory:
         player.armor = None
-    if player.offhand == iid:
+    if player.offhand == iid and iid not in player.inventory:
         player.offhand = None
     oid = next(_id_counter)
     market_orders.append({"id": oid, "seller": player.name, "item": iid, "price": price, "ts": time.time()})
