@@ -3,9 +3,6 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
-- Fix ghost-equip slot reference retention: `cmd_craft` and `cmd_quest` (turn-in)
-  now clear equipment slot references (`equipped`, `armor`, `offhand`) when a
-  consumed ingredient/item is no longer present in inventory.
 - Scripted-bot deadlock fixes (#357, review #358): every role gets a stuck
   circuit breaker (15 same-action/no-change picks bans the action for 60
   steps, then escalates to heal/move-away/look; look/rest are safe-idle
@@ -13,6 +10,9 @@ All notable changes to the text MMO engine are recorded here.
   ready; broke makers hold solvently instead of wandering into death
   loops, still fight when hostile-adjacent, and count holdings (not the
   location-gated mask) so holders never camp forever.
+- Fix ghost-equip slot reference retention: `cmd_craft` and `cmd_quest` (turn-in)
+  now clear equipment slot references (`equipped`, `armor`, `offhand`) when a
+  consumed ingredient/item is no longer present in inventory.
 - Economy tuning pass (#334): death cost rebalanced on the income side --
   gather-node score halved (world.json 2 -> 1), room-discovery reward cut
   to 2 points/2 XP (was 5/5, now `DISCOVERY_POINTS`/`DISCOVERY_XP`
