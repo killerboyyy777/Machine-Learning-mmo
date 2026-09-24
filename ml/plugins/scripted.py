@@ -281,9 +281,7 @@ class MakerPlugin(ScriptedPolicy):
         if s.get("inv_names"):
             return False
         ms = s.get("market_state") or {}
-        if any(o.get("seller") == env.name for o in (ms.get("orders") or [])):
-            return False
-        return True
+        return not any(o.get("seller") == env.name for o in (ms.get("orders") or []))
 
     def plan(self, env, mask):
         s = env._state
