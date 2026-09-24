@@ -1515,6 +1515,66 @@ async def main():
     assert crafter.armor is None
     assert srv._player_defense(crafter) == 0
 
+    # Extended regression: weapon-slot, offhand-slot, multi-copy retention, stats_view assertion
+    crafter.inventory = [
+        "warden_trophy", "iron_ore", "iron_ore", "serpent_scale",  # for wardens_blade (weapon)
+        "warden_trophy", "troll_hide", "troll_hide", "pine_timber", "pine_timber",  # for deep_bulwark (offhand)
+        "iron_plate", "iron_plate",  # 2x iron_plate for multi-copy test
+        "dungeon_shard_10", "ectoplasm", "ectoplasm",  # for relic_aegis with multi-copy iron_plate
+    ]
+    # Equip iron_ore? iron_ore is not equippable, but warden's trophy is junk.
+    # Let's craft warden's blade, equip it, then craft deep_bulwark which uses warden_trophy (not blade).
+    # To test weapon-slot ghost equip: craft serpentbrand (weapon, uses serpent_scale, iron_ore, resin), equip it, craft something using iron_ore when 1 iron_ore held.
+    crafter.inventory = ["iron_ore", "mountain_berry", "mountain_herb"]  # for fortitude_tonic (quest tonic)
+    # Let's use recipe "iron_plate" which uses "iron_ore" x2, "wolf_pelt" x1, "scrap_iron" x1.
+    # Or craft_wardens_blade which uses warden_trophy, iron_ore x2, serpent_scale x1.
+    # What if we have a weapon recipe that consumes a weapon?
+    # Recipe 'relic_aegis' consumes iron_plate (armor).
+    # Recipe 'deep_bulwark' consumes warden_trophy, troll_hide x2, pine_timber x2 -> produces deep_bulwark (offhand).
+    # Let's test offhand: equip deep_bulwark, but is deep_bulwark an input for any recipe? No.
+    # But any item in offhand slot (e.g. if we set crafter.offhand = "iron_ore" or "troll_hide"):
+    # If troll_hide is in offhand slot and consumed by deep_bulwark craft:
+    crafter.inventory = ["warden_trophy", "troll_hide", "troll_hide", "pine_timber", "pine_timber"]
+    crafter.offhand = "troll_hide"
+    await srv.cmd_craft(crafter, {"recipe": "deep_bulwark"})
+    assert "troll_hide" not in crafter.inventory
+    assert crafter.offhand is None  # cleared offhand slot!
+
+    # Weapon-slot test:
+    crafter.inventory = ["warden_trophy", "iron_ore", "iron_ore", "serpent_scale"]
+    crafter.equipped = "warden_trophy"
+    await srv.cmd_craft(crafter, {"recipe": "wardens_blade"})
+    assert "warden_trophy" not in crafter.inventory
+    assert crafter.equipped is None  # cleared weapon slot!
+
+    # Multi-copy retention test: 2x iron_plate in inventory, 1 equipped. Craft relic_aegis (uses 1x iron_plate).
+    crafter.inventory = ["iron_plate", "iron_plate", "dungeon_shard_10", "ectoplasm", "ectoplasm"]
+    await srv.cmd_equip(crafter, {"item": "Iron Plate Armor"})
+    assert crafter.armor == "iron_plate"
+    await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
+    assert crafter.inventory.count("iron_plate") == 1
+    assert crafter.armor == "iron_plate"  # 1 copy remains in inventory, slot retained!
+
+    # Stats_view outbound assertion
+    st = srv.stats_view(crafter)
+    assert st["armor"] == "Iron Plate Armor"
+    assert st["equipped"] is None
+    assert st["offhand"] is None
+
+    # Quest turn_in slot clearing regression test
+    sister = srv.Player(ws=FakeWS(), id=50006, name="SisterPlayer", logged_in=True, room="healing_spring")
+    srv.add_member(sister)
+    s_entry = srv.get_score_entry("SisterPlayer")
+    await srv.cmd_quest(sister, {"action": "accept", "quest": "remedy"})
+    sister.inventory = ["healing_herb", "healing_herb", "healing_herb"]
+    sister.equipped = "healing_herb"
+    await srv.cmd_quest(sister, {"action": "turn_in", "quest": "remedy"})
+    assert "healing_herb" not in sister.inventory
+    assert sister.equipped is None  # cleared equipped slot on quest turn_in!
+    st_s = srv.stats_view(sister)
+    assert st_s["equipped"] is None
+
+    unplayer(sister)
     unplayer(crafter)
     print("RELIC_CRAFT_OK")
 

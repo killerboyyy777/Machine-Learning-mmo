@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Fix ghost-equip slot reference retention: `cmd_craft` and `cmd_quest` (turn-in)
+  now clear equipment slot references (`equipped`, `armor`, `offhand`) when a
+  consumed ingredient/item is no longer present in inventory.
 - Economy tuning pass (#334): death cost rebalanced on the income side --
   gather-node score halved (world.json 2 -> 1), room-discovery reward cut
   to 2 points/2 XP (was 5/5, now `DISCOVERY_POINTS`/`DISCOVERY_XP`
