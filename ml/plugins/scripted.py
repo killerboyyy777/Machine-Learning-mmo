@@ -107,15 +107,26 @@ class ScriptedPolicy(AgentPlugin):
         npc = tuple(sorted(str(n) for n in (s.get("npc_names") or [])))
         exits = tuple(sorted(str(e) for e in (s.get("exits") or [])))
         comms = tuple(sorted(
-            (c.get("id"), str(c.get("poster"))) for c in (s.get("open_commissions") or [])
+            (c.get("id"), str(c.get("poster")), str(c.get("target")),
+             c.get("required_kills"), c.get("reward_gold"))
+            for c in (s.get("open_commissions") or [])
             if isinstance(c, dict)
         ))
-        return (tuple(vals), inv, npc, exits, comms)
+        # Full order tuples, not just the count: a refresh that swaps orders
+        # at a constant count is still a changed world (#358).
+        market = tuple(sorted(
+            (str(o.get("seller")), str(o.get("item")), o.get("price"))
+            for o in ((s.get("market_state") or {}).get("orders") or [])
+            if isinstance(o, dict)
+        ))
+        gather = tuple(sorted(str(g) for g in (s.get("gatherables") or [])))
+        return (tuple(vals), inv, npc, exits, comms, market, gather)
 
     def _check_stuck(self, env, action):
         """Count consecutive same-action picks with an unchanged snapshot.
         Returns True once the count reaches STUCK_LIMIT (also records the
-        ban); safe-idle actions and one-shot observations never count."""
+        ban); safe-idle actions (look/rest) never count -- they are the
+        hold behavior, not the loop."""
         if ACTIONS[action] in self.STUCK_IDLE:
             self._stuck_sig = None
             self._stuck_n = 0
@@ -166,7 +177,12 @@ class ScriptedPolicy(AgentPlugin):
                 continue
             if not self._check_stuck(env, action):
                 return action
-            return self._stuck_escalate(env, mask, action) or self._idx("look")
+            # Escalate returns an action INDEX (0 is a real move), so the
+            # fallback needs an explicit None check, not `or` (#358).
+            esc = self._stuck_escalate(env, mask, action)
+            if esc is not None:
+                return esc
+            return self._idx("look")
         return self._idx("look")
 
     def plan(self, env, mask):
@@ -251,21 +267,30 @@ class MakerPlugin(ScriptedPolicy):
     name = "maker"
 
     def _broke(self, env):
-        """True when the maker cannot buy anything merchant-side: gold below
-        the cheapest merchant price with nothing sellable/postable on hand.
-        A broke maker must wait/rest for fees/regeneration, never wander
-        into hostile rooms (the #357 baseline death loop)."""
+        """True when the maker has no path to gold: pocket change below the
+        cheapest merchant price, nothing held that could sell or post, and
+        no own open orders to cancel or relist. Holdings-based (inventory
+        plus own orders), never mask-based: sell needs a merchant in-room
+        and cancel needs a fresh book snapshot, so mask validity conflates
+        'cannot liquidate HERE' with 'nothing to liquidate' and camps
+        holders forever (the broke branch never moves)."""
         s = env._state
         cheapest = min(MERCHANT_PRICES.values()) if MERCHANT_PRICES else 2
         if s.get("gold", 0) >= cheapest:
             return False
-        return self._first_valid(
-            env, ("sell", "market_post", "market_cancel"), env.valid_action_mask()
-        ) is None
+        if s.get("inv_names"):
+            return False
+        ms = s.get("market_state") or {}
+        if any(o.get("seller") == env.name for o in (ms.get("orders") or [])):
+            return False
+        return True
 
     def plan(self, env, mask):
         s = env._state
         yield self._heal_first(env, mask)
+        # Broke bots still fight (#358): the hold below must never leave a
+        # maker mauled by a hostile it could have attacked for free.
+        yield self._first_valid(env, ("attack",), mask)
         if self._broke(env):
             # Hold solvently: refresh toward free income instead of spending
             # gold or wandering. take/gather earn without capital; rest/look

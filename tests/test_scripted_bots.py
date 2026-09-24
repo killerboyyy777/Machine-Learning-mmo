@@ -127,6 +127,24 @@ env._state["inv_names"] = []
 assert selected(MarketMakerPolicy(), env) == "look"
 print("MAKER_BROKE_OK")
 
+# --- broke maker with a hostile present still fights (#358) ---
+env = fresh_env()
+env._state["npc_names"] = [hostile]
+env._state["gold"] = 0
+env._state["inv_names"] = []
+assert selected(MarketMakerPolicy(), env) == "attack"
+print("MAKER_BROKE_ATTACK_OK")
+
+# --- holdings count even away from a merchant: gold 0 + pack held, no
+# merchant in view -> not broke, refresh the book, never camp (#358) ---
+env = fresh_env()
+env._state["gold"] = 0
+env._state["inv_names"] = ["Rat Tail"]
+env._state["npc_names"] = []
+env._state["market_state"] = None
+assert selected(MarketMakerPolicy(), env) == "market_list"
+print("MAKER_HOLDINGS_NOT_BROKE_OK")
+
 # --- circuit breaker: same action + frozen state 15x -> escalate (#357) ---
 env = fresh_env()
 env._state["npc_names"] = [QUEST_GIVER_NAME]
@@ -141,6 +159,46 @@ for _ in range(14):
 env._step_count += 1
 assert selected(pol, env) != "move_enter"
 print("STUCK_BREAK_OK")
+
+# --- escalate resolving to index 0 must not collapse to look: 0 is a
+# real move (falsy-index bug, #358) ---
+assert ACTIONS[0].startswith("move_"), ACTIONS[0]
+env = fresh_env()
+env._step_count = 0
+atk = ACTIONS.index("attack")
+mask = [0] * len(ACTIONS)
+mask[0] = 1
+env.valid_action_mask = lambda: mask
+pol = GatherSellPolicy()
+pol.plan = lambda e, m: iter([atk])
+for _ in range(14):
+    env._step_count += 1
+    assert pol.select(env) == atk
+env._step_count += 1
+got = pol.select(env)
+assert got == 0, got
+print("ESCALATE_ZERO_OK")
+
+# --- stuck signature sees book churn, node changes, bounty values (#358) ---
+def _sig(**kw):
+    e = fresh_env()
+    for k, v in kw.items():
+        e._state[k] = v
+    return GatherSellPolicy()._stuck_state_sig(e)
+
+
+_book5 = {"orders": [{"seller": "Other", "item": "Rat Tail", "price": 5}]}
+_book6 = {"orders": [{"seller": "Other", "item": "Rat Tail", "price": 6}]}
+assert _sig() != _sig(market_state=_book5)
+assert _sig(market_state=_book5) != _sig(market_state=_book6)
+assert _sig() != _sig(gatherables=["Iron Vein"])
+_c1 = [{"id": 1, "poster": "Other", "target": "rat", "required_kills": 3,
+        "reward_gold": 10}]
+_c2 = [{"id": 1, "poster": "Other", "target": "rat", "required_kills": 2,
+        "reward_gold": 10}]
+assert _sig() != _sig(open_commissions=_c1)
+assert _sig(open_commissions=_c1) != _sig(open_commissions=_c2)
+print("SIG_COVERAGE_OK")
 
 # --- commissioner role: empty board, even step -> list ---
 env = fresh_env()
