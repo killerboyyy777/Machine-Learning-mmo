@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import time
-import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server as srv
@@ -1564,7 +1563,7 @@ async def main():
     # Quest turn_in slot clearing regression test
     sister = srv.Player(ws=FakeWS(), id=50006, name="SisterPlayer", logged_in=True, room="healing_spring")
     srv.add_member(sister)
-    s_entry = srv.get_score_entry("SisterPlayer")
+    srv.get_score_entry("SisterPlayer")
     await srv.cmd_quest(sister, {"action": "accept", "quest": "remedy"})
     sister.inventory = ["healing_herb", "healing_herb", "healing_herb"]
     sister.equipped = "healing_herb"
