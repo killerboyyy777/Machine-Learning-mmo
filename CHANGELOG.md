@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Fix ghost-equip slot reference retention (#361 salvage): `cmd_craft` and
+  `cmd_quest` (turn-in) now clear equipment slot references (`equipped`,
+  `armor`, `offhand`) when a consumed ingredient/item is no longer present
+  in inventory; `cmd_sell` and `cmd_market_post` only clear when the sold
+  copy was the last one held.
 - Scripted-bot deadlock fixes (#357, review #358): every role gets a stuck
   circuit breaker (15 same-action/no-change picks bans the action for 60
   steps, then escalates to heal/move-away/look; look/rest are safe-idle

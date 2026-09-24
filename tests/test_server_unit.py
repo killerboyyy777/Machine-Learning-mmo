@@ -1503,6 +1503,57 @@ async def main():
     crafter = mkplayer("Crafter", 50005, room="town_square")
     await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
     assert inbox[-1]["type"] == "error" and "dungeon_shard_10" in inbox[-1]["text"], inbox[-1]
+
+    # Ghost-equip regression (#361 salvage): consuming an equipped item
+    # clears the slot only when no copy remains in inventory.
+    crafter.inventory = ["dungeon_shard_10", "iron_plate", "ectoplasm", "ectoplasm"]
+    await srv.cmd_equip(crafter, {"item": "Iron Plate Armor"})
+    assert crafter.armor == "iron_plate"
+    assert srv._player_defense(crafter) == 3
+    await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
+    assert "iron_plate" not in crafter.inventory
+    assert crafter.armor is None
+    assert srv._player_defense(crafter) == 0
+
+    # Offhand slot: consumed troll_hide clears the slot when fully gone.
+    crafter.inventory = ["warden_trophy", "troll_hide", "troll_hide", "pine_timber", "pine_timber"]
+    crafter.offhand = "troll_hide"
+    await srv.cmd_craft(crafter, {"recipe": "deep_bulwark"})
+    assert "troll_hide" not in crafter.inventory
+    assert crafter.offhand is None
+
+    # Weapon slot: consumed warden_trophy clears the slot when fully gone.
+    crafter.inventory = ["warden_trophy", "iron_ore", "iron_ore", "serpent_scale"]
+    crafter.equipped = "warden_trophy"
+    await srv.cmd_craft(crafter, {"recipe": "wardens_blade"})
+    assert "warden_trophy" not in crafter.inventory
+    assert crafter.equipped is None
+
+    # Multi-copy retention: 2x iron_plate, 1 equipped; crafting relic_aegis
+    # consumes one copy and must retain the armor slot.
+    crafter.inventory = ["iron_plate", "iron_plate", "dungeon_shard_10", "ectoplasm", "ectoplasm"]
+    await srv.cmd_equip(crafter, {"item": "Iron Plate Armor"})
+    assert crafter.armor == "iron_plate"
+    await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
+    assert crafter.inventory.count("iron_plate") == 1
+    assert crafter.armor == "iron_plate"
+    st = srv.stats_view(crafter)
+    assert st["armor"] == "Iron Plate Armor"
+    assert st["equipped"] is None
+    assert st["offhand"] is None
+
+    # Quest turn_in slot clearing: consumed herbs clear the weapon slot.
+    sister = srv.Player(ws=FakeWS(), id=50006, name="SisterPlayer", logged_in=True, room="healing_spring")
+    srv.add_member(sister)
+    srv.get_score_entry("SisterPlayer")
+    await srv.cmd_quest(sister, {"action": "accept", "quest": "remedy"})
+    sister.inventory = ["healing_herb", "healing_herb", "healing_herb"]
+    sister.equipped = "healing_herb"
+    await srv.cmd_quest(sister, {"action": "turn_in", "quest": "remedy"})
+    assert "healing_herb" not in sister.inventory
+    assert sister.equipped is None
+    assert srv.stats_view(sister)["equipped"] is None
+    unplayer(sister)
     unplayer(crafter)
     print("RELIC_CRAFT_OK")
 
