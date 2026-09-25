@@ -129,7 +129,7 @@ DUNGEON_REENTER_DELAY_MAX_SECONDS = 600
 # (flat penalty + gold loss + XP loss are untouched) -- only the upside
 # moves. Clear score scales 30/40/50 for floors 1/2/3 (was 20/25/30).
 DUNGEON_CLEAR_BASE_PTS = 20
-DUNGEON_CLEAR_PTS_PER_FLOOR = 10
+DUNGEON_CLEAR_PTS_PER_FLOOR = 15
 DUNGEON_CLEAR_BASE_XP = 25
 DUNGEON_CLEAR_XP_PER_FLOOR = 20
 
@@ -3185,9 +3185,9 @@ async def cmd_market_buy(player, msg):
     # score on top of the flat 2. Wash-proof: self-deals are refused above
     # (#188), circular wash burns 10% tax per leg, and award_points still
     # runs every award through variety x diminish.
-    await award_points(player, 2 + price // 20, "made a market purchase")  # R3: halve buyer bonus
+    await award_points(player, 2 + price // 10, "made a market purchase")
     await award_xp(player.name, 3, "made a market purchase")
-    await award_points_to_name(choice["seller"], 2 + min(tax, 3), "made a market sale")  # R3: cap seller tax credit
+    await award_points_to_name(choice["seller"], 2 + tax, "made a market sale")
     await award_xp(choice["seller"], 3, "made a market sale")
     await send(player, stats_view(player))
 
