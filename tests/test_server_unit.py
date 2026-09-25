@@ -902,6 +902,29 @@ async def main():
     unplayer(safer)
     print("ITEM_DROP_ZONE_OK")
 
+    # --- Duplicate equipped items in risk zones drop unequipped instances ---
+    srv.ROOMS["market"]["risk"] = True
+    duper = mkplayer("DupEquip", 40015, room="market")
+    duper.gold = 0
+    duper.inventory = ["rusty_sword", "rusty_sword"]
+    duper.equipped = "rusty_sword"
+    dentry = srv.get_score_entry("DupEquip")
+    dentry["score"] = 100.0
+    dentry["level"] = 1
+    dentry["xp"] = 0.0
+    dentry["xp_to_next"] = srv.xp_to_next(1)
+
+    pv_dup = srv.death_preview(duper)
+    assert pv_dup["items_at_risk"] == ["Rusty Sword"], pv_dup["items_at_risk"]
+
+    await srv.respawn_player(duper)
+    assert duper.inventory == ["rusty_sword"]
+    assert srv.room_items["market"].count("rusty_sword") == 1
+    del srv.ROOMS["market"]["risk"]
+    srv.room_items["market"].remove("rusty_sword")
+    unplayer(duper)
+    print("ITEM_DROP_DUPLICATE_EQUIP_OK")
+
     # --- Quests never un-accept on death (#334) ---
     quester = mkplayer("DeadQuester", 40012, room="town_square")
     qentry = srv.get_score_entry("DeadQuester")

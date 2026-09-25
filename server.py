@@ -1098,6 +1098,15 @@ def _inventory_units(player):
     return max(0, units)
 
 
+def _unequipped_inventory(player):
+    """Return inventory items not consumed by active equipment slots."""
+    items = list(player.inventory)
+    for slot in (player.equipped, player.armor, player.offhand):
+        if slot and slot in items:
+            items.remove(slot)
+    return items
+
+
 def _pack_full(player):
     return _inventory_units(player) >= INVENTORY_CAP
 
@@ -1507,8 +1516,7 @@ def death_preview(player):
     risk = _room_is_risk(player.room)
     items_at_risk = []
     if risk:
-        unequipped = [iid for iid in player.inventory
-                      if iid not in (player.equipped, player.armor, player.offhand)]
+        unequipped = _unequipped_inventory(player)
         n = max(0, len(unequipped) * DEATH_ITEM_DROP_PCT // 100)
         items_at_risk = unequipped[:n]
     xp_lost = total_xp(entry) * XP_LOSS_PCT / 100.0
@@ -1553,8 +1561,7 @@ async def respawn_player(player):
     # only up to a percentage cap.
     dropped_items = []
     if _room_is_risk(death_room):
-        unequipped = [iid for iid in player.inventory
-                      if iid not in (player.equipped, player.armor, player.offhand)]
+        unequipped = _unequipped_inventory(player)
         n = max(0, len(unequipped) * DEATH_ITEM_DROP_PCT // 100)
         dropped_items = unequipped[:n]
         for iid in dropped_items:
