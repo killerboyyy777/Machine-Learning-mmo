@@ -1176,6 +1176,15 @@ function actStream() {
   } catch (e) { /* streaming unavailable: snapshot poll still fills */ }
 }
 
+// GM-tab treasury binding: the GM readout + cost labels refresh on every
+// tick while the GM tab is active, not only when the market tab renders.
+// Text-only writes, no layout shift.
+function renderTreasury(m) {
+  const treasury = m.treasury ?? 0;
+  $("g-treasury").textContent = treasury.toFixed(1);
+  if (typeof updateGMCosts === "function") updateGMCosts();
+}
+
 function renderMarket(m) {
   // Partial-snapshot tolerant like v1 (#246): every field defaults.
   const treasury = m.treasury ?? 0;
@@ -1723,7 +1732,10 @@ const TAB_SECTIONS = {
   ],
   crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [])]],
   config: [["config", s => renderConfig(s)]],
-  gm: [["gm catalog", s => populateDatalists(s.catalog || {})]],
+  gm: [
+    ["gm catalog", s => populateDatalists(s.catalog || {})],
+    ["treasury", s => renderTreasury(s.market || {})],
+  ],
 };
 
 function renderAll(s) {
@@ -1828,6 +1840,9 @@ function gmOpen() {
     gmws.onmessage = ev => {
       try { gmlog(JSON.parse(ev.data).text || ev.data); }
       catch { gmlog(ev.data); }
+      // A GM ack may have spent treasury: pull a fresh snapshot now so the
+      // readout and cost labels correct within a round trip, not next poll.
+      if (typeof tick === "function") tick();
     };
     gmws.onclose = () => {
       $("g-status").textContent = "ws: disconnected — click a button to reconnect";
