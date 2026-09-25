@@ -184,4 +184,17 @@ assert "location.hostname" in gm.group(1), "gmOpen ignores page origin"
 assert "ws://127.0.0.1" not in gm.group(1), "gmOpen still hardcodes loopback"
 print("GM_ORIGIN_OK")
 
+# --- GM-tab treasury live binding (V5 follow-up): the GM readout must
+# refresh on snapshot ticks while the GM tab is active, and on GM ack ---
+rt = re.search(r"function renderTreasury\(m\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert rt, "renderTreasury not found"
+rtb = rt.group(1)
+assert "m.treasury ?? 0" in rtb, "treasury default missing"
+assert '"g-treasury"' in rtb, "g-treasury write missing"
+assert "updateGMCosts" in rtb, "cost labels not refreshed"
+gmsec = re.search(r"gm: \[(.*?)\n  \],", html, re.DOTALL)
+assert gmsec and "renderTreasury" in gmsec.group(1), "gm tab has no treasury section"
+assert re.search(r"gmws\.onmessage[\s\S]{0,400}?tick\(\)", html), "GM ack does not pull a fresh tick"
+print("TREASURY_LIVE_OK")
+
 print("ALL_DASHBOARD_OK")
