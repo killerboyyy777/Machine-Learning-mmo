@@ -11,6 +11,9 @@ All notable changes to the text MMO engine are recorded here.
   (buyer 2 + price//10, seller 2 + tax; self-deals still refused, circular
   wash burns 10% tax per leg). Cooldown capped (#351): the escalating
   dungeon re-entry delay clamps at 600s (`DUNGEON_REENTER_DELAY_MAX_SECONDS`).
+  Round 2 steepened deep-floor clear score (40/55/70 f1/2/3). Round 3 trims
+  the two overshoots: relic values to 3 + floor*6 (+26% over S0) and trade
+  score to buyer 2 + price//20 / seller 2 + min(tax, 3).
 - Fix ghost-equip slot reference retention (#361 salvage): `cmd_craft` and
   `cmd_quest` (turn-in) now clear equipment slot references (`equipped`,
   `armor`, `offhand`) when a consumed ingredient/item is no longer present

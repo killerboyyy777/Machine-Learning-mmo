@@ -458,7 +458,7 @@ class Dungeon:
         shard = f"dungeon_shard_{n}"
         # Relic items are registered on demand so loot scales with depth
         # without pre-generating thousands of floors at startup.
-        ITEM_DEFS.setdefault(shard, {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 4 + n * 8})
+        ITEM_DEFS.setdefault(shard, {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 3 + n * 6})  # R3: +26% over S0
         for k in range(count):
             f.guards.append({
                 "id": f"dg_{self.id}_{n}_{k}",
@@ -3185,9 +3185,9 @@ async def cmd_market_buy(player, msg):
     # score on top of the flat 2. Wash-proof: self-deals are refused above
     # (#188), circular wash burns 10% tax per leg, and award_points still
     # runs every award through variety x diminish.
-    await award_points(player, 2 + price // 10, "made a market purchase")
+    await award_points(player, 2 + price // 20, "made a market purchase")  # R3: halve buyer bonus
     await award_xp(player.name, 3, "made a market purchase")
-    await award_points_to_name(choice["seller"], 2 + tax, "made a market sale")
+    await award_points_to_name(choice["seller"], 2 + min(tax, 3), "made a market sale")  # R3: cap seller tax credit
     await award_xp(choice["seller"], 3, "made a market sale")
     await send(player, stats_view(player))
 
