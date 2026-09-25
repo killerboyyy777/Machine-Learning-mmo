@@ -4,7 +4,6 @@ Monitors per-floor performance and shifts agents toward more rewarding floors.
 Uses a simple proportional controller: floors with higher average reward get
 more agents, floors with lower reward lose agents.
 """
-import random
 
 
 class Mixer:
@@ -16,7 +15,7 @@ class Mixer:
         self.min_per_floor = min_per_floor
         self.max_per_floor = max_per_floor
         self._floor_rewards = {f: [] for f in floor_ids}  # recent rewards per floor
-        self._floor_agents = {f: [] for f in floor_ids}   # agent_ids per floor
+        self._floor_agents = {f: [] for f in floor_ids}  # agent_ids per floor
         self._cursor = 0  # round-robin cursor shared by assign calls
 
     def assign_one(self, agent_id):
@@ -75,14 +74,17 @@ class Mixer:
         target = {}
         for f in self.floor_ids:
             prop = floor_means[f] / total_mean
-            target[f] = max(self.min_per_floor,
-                            min(self.max_per_floor, int(prop * total_agents)))
+            target[f] = max(
+                self.min_per_floor, min(self.max_per_floor, int(prop * total_agents))
+            )
 
         counts = {f: len(self._floor_agents[f]) for f in self.floor_ids}
-        donors = [[f, counts[f] - target[f]] for f in self.floor_ids
-                  if counts[f] > target[f]]
-        receivers = [[f, target[f] - counts[f]] for f in self.floor_ids
-                     if counts[f] < target[f]]
+        donors = [
+            [f, counts[f] - target[f]] for f in self.floor_ids if counts[f] > target[f]
+        ]
+        receivers = [
+            [f, target[f] - counts[f]] for f in self.floor_ids if counts[f] < target[f]
+        ]
         di, ri = 0, 0
         while di < len(donors) and ri < len(receivers):
             df, ds = donors[di]
@@ -104,7 +106,9 @@ class Mixer:
         return {
             f: {
                 "agents": len(self._floor_agents[f]),
-                "mean_reward": round(sum(self._floor_rewards[f]) / max(1, len(self._floor_rewards[f])), 4),
+                "mean_reward": round(
+                    sum(self._floor_rewards[f]) / max(1, len(self._floor_rewards[f])), 4
+                ),
             }
             for f in self.floor_ids
         }
