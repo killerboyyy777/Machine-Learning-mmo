@@ -3,6 +3,14 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Convergence tuning round 1: dungeon risk-pay up -- clear score now
+  30/40/50 for floors 1/2/3 (was 20/25/30, new `DUNGEON_CLEAR_BASE_PTS` /
+  `DUNGEON_CLEAR_PTS_PER_FLOOR` constants), clear XP up similarly, relic
+  loot values doubled, delver quest up to 40 XP / 20 gold / 15 score.
+  Trade score (#352): market fills now pay price-scaled score to both sides
+  (buyer 2 + price//10, seller 2 + tax; self-deals still refused, circular
+  wash burns 10% tax per leg). Cooldown capped (#351): the escalating
+  dungeon re-entry delay clamps at 600s (`DUNGEON_REENTER_DELAY_MAX_SECONDS`).
 - Fix ghost-equip slot reference retention (#361 salvage): `cmd_craft` and
   `cmd_quest` (turn-in) now clear equipment slot references (`equipped`,
   `armor`, `offhand`) when a consumed ingredient/item is no longer present
