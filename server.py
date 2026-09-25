@@ -3180,14 +3180,16 @@ async def cmd_market_buy(player, msg):
         del market_history[0]
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"You buy {ITEM_DEFS.get(choice['item'], {}).get('name', choice['item'])} for {price} gold."})
-    # Trade score (#352): filling an order is real value-add (liquidity for
-    # the seller, goods for the buyer), so both sides earn price-scaled
-    # score on top of the flat 2. Wash-proof: self-deals are refused above
-    # (#188), circular wash burns 10% tax per leg, and award_points still
-    # runs every award through variety x diminish.
-    await award_points(player, 2 + price // 10, "made a market purchase")
+    # Trade score (#352, moderated R3): filling an order is real
+    # value-add (liquidity for the seller, goods for the buyer), so both
+    # sides earn price-scaled score. R3 halved both channels after R2
+    # showed market income overshooting (106/hr/bot): buyer base 2->1
+    # with price//20, seller base 2->1 with tax//2. Wash-proof: self-deals
+    # are refused above (#188), circular wash burns 10% tax per leg, and
+    # award_points still runs every award through variety x diminish.
+    await award_points(player, 1 + price // 20, "made a market purchase")
     await award_xp(player.name, 3, "made a market purchase")
-    await award_points_to_name(choice["seller"], 2 + tax, "made a market sale")
+    await award_points_to_name(choice["seller"], 1 + tax // 2, "made a market sale")
     await award_xp(choice["seller"], 3, "made a market sale")
     await send(player, stats_view(player))
 

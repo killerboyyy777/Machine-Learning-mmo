@@ -10,8 +10,9 @@ All notable changes to the text MMO engine are recorded here.
   over S0; round 1 briefly doubled them), delver quest up to 40 XP /
   20 gold / 15 score.
   Trade score (#352): market fills now pay price-scaled score to both sides
-  (buyer 2 + price//10, seller 2 + tax; self-deals still refused, circular
-  wash burns 10% tax per leg). Cooldown capped (#351): the escalating
+  (buyer 1 + price//20, seller 1 + tax//2 -- round 3 halved both channels
+  after round 2 showed market income overshooting; self-deals still refused,
+  circular wash burns 10% tax per leg). Cooldown capped (#351): the escalating
   dungeon re-entry delay clamps at 600s (`DUNGEON_REENTER_DELAY_MAX_SECONDS`).
 - Fix ghost-equip slot reference retention (#361 salvage): `cmd_craft` and
   `cmd_quest` (turn-in) now clear equipment slot references (`equipped`,
