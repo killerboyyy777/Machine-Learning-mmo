@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Mob spawn cap raised (overnight validation): `MOB_EXTRA_SPAWNS` (1, in
+  server_config.json economy) spawns one extra concurrent instance per
+  HOSTILE template (ids `<nid>__x1`), doubling the hostile population from
+  20 to 40 live mobs for #337 bounty / dungeon-crown headroom. Friendlies
+  never duplicate; combat and respawn paths are id-keyed and unchanged.
 - Standing buy orders (#158): two-sided market books. `market_buy_order`
   posts an escrowed bid (100% of price held up front, one indivisible
   stack-lot, no quantity field); new bids sweep the cheapest resting sell at

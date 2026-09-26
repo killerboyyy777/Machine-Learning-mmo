@@ -24,6 +24,12 @@ WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
 SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
 
 NPC_TICK_SECONDS = 3
+# Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
+# template. Old behavior = 0 (one live instance per template, cap near
+# floor); 1 doubles the hostile population. Friendlies (guard, merchant,
+# healer) never duplicate. All combat/respawn paths are id-keyed, so extra
+# instances just work; name-targeting hits the first alive match.
+MOB_EXTRA_SPAWNS = 1
 HOST = "0.0.0.0"
 PORT = 8765
 # GM stream bind: loopback-only by default (no auth -- see SECURITY.md).
@@ -311,6 +317,10 @@ gather_nodes = {
 npcs = {}
 for nid, tmpl in WORLD["npcs"].items():
     npcs[nid] = {**tmpl, "id": nid, "alive": True, "respawn_at": None, "contributors": {}}
+    if tmpl.get("hostile") and MOB_EXTRA_SPAWNS > 0:
+        for i in range(1, MOB_EXTRA_SPAWNS + 1):
+            xid = f"{nid}__x{i}"
+            npcs[xid] = {**tmpl, "id": xid, "alive": True, "respawn_at": None, "contributors": {}}
 
 RECIPES = WORLD.get("recipes", {})
 
