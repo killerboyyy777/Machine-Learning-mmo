@@ -3294,7 +3294,6 @@ async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
 
 
 async def cmd_market_buy(player, msg):
-    global tax_treasury, tax_collected_lifetime
     oid = msg.get("id", None)
     choice = None
     if oid is not None:
