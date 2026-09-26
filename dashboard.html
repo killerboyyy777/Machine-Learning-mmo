@@ -297,11 +297,21 @@
     <p class="empty" id="noOrders" style="display:none">No orders posted.</p>
   </div>
   <div class="panel">
-    <h2>Item market <span class="legend">one item at a time · sell side only (no buy orders exist)</span></h2>
+    <h2>Open buy orders (escrowed bids, market room to manage)</h2>
+    <div class="tscroll"><table data-sort="bidOrders">
+      <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>buyer</th><th>posted</th></tr></thead>
+      <tbody id="bidOrders"></tbody>
+    </table></div>
+    <p class="empty" id="noBids" style="display:none">No buy orders posted.</p>
+  </div>
+  <div class="panel">
+    <h2>Item market <span class="legend">one item at a time · asks + bids with spread</span></h2>
     <select id="steamItem"></select>
     <span class="sortctl">window<select id="steamRange"><option value="0">session</option><option value="25">last 25 fills</option><option value="10">last 10 fills</option></select></span>
     <div class="statrow" style="margin-top:8px">
       <div class="stat"><div class="v" id="st-lowask">-</div><div class="l">lowest ask</div></div>
+      <div class="stat"><div class="v" id="st-highbid">-</div><div class="l">highest bid</div></div>
+      <div class="stat"><div class="v" id="st-spread">-</div><div class="l">spread</div></div>
       <div class="stat"><div class="v" id="st-med">-</div><div class="l">median (window)</div></div>
       <div class="stat"><div class="v" id="st-vol">-</div><div class="l">fills (window)</div></div>
     </div>
@@ -1200,12 +1210,19 @@ function renderMarket(m) {
         <td><b>${o.price}</b></td><td class="sell">${esc(o.seller)}</td>
         <td>${esc(o.ts)}</td></tr>`).join(""));
   $("noOrders").style.display = orders.length ? "none" : "";
+  const bids = sortRows("bidOrders", m.bids || [],
+    [null, b => b.id, b => b.item || "", b => b.price ?? 0, b => b.buyer || "", b => b.ts ?? 0], 3, 1);
+  setHTML("bidOrders", bids.map((b, i) => `
+    <tr><td>${i+1}</td><td>${esc(b.id)}</td><td>${esc(b.item)}</td>
+        <td><b>${b.price}</b></td><td class="buy">${esc(b.buyer)}</td>
+        <td>${esc(b.ts)}</td></tr>`).join(""));
+  $("noBids").style.display = bids.length ? "none" : "";
   const history = sortRows("tradeHistory", m.history || [],
     [null, h => h.ts ?? h.time ?? "", h => h.buyer || "", h => h.seller || "",
      h => h.item || "", h => h.price ?? 0, h => h.tax ?? 0, h => h.payout ?? 0], 1, -1);
   setHTML("tradeHistory", history.map((h, i) => `
     <tr><td>${i+1}</td><td>${esc(h.time ?? h.ts)}</td><td class="buy">${esc(h.buyer)}</td>
-        <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}</td>
+        <td class="sell">${esc(h.seller)}</td><td>${esc(h.item)}${h.via ? ` <span class="dim">via ${esc(h.via)}</span>` : ""}</td>
         <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join(""));
   $("noTrades").style.display = history.length ? "none" : "";
   // Price-per-sale chart as a uPlot area (new in 2/4: v1 shows the
@@ -1226,13 +1243,14 @@ function median(xs) {
 let steamItem = null;
 let steamItemKey = "";
 // Per-item market view (owner steam-market spec, adapted not copied):
-// picker + sell ladder + median/volume chart + stats + item orders.
-// Sell side ONLY (no buy orders exist in our market); no cumulative
-// depth (with 1-per-order asks it is just the ladder integral).
+// picker + ask ladder + bid ladder + spread + median/volume chart + stats
+// + item orders. Two-sided book (#158); no cumulative depth (with
+// 1-per-order lots each ladder is just its level integral).
 function renderSteam(market) {
-  const orders = market.orders || [], fills = market.history || [];
-  const names = [...new Set([...orders.map(o => o.item), ...fills.map(h => h.item)]
-    .filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  const orders = market.orders || [], fills = market.history || [],
+    allBids = market.bids || [];
+  const names = [...new Set([...orders.map(o => o.item), ...fills.map(h => h.item),
+    ...allBids.map(b => b.item)].filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
   const key = names.join("\n");
   if (key !== steamItemKey) {
     steamItemKey = key;
@@ -1242,13 +1260,18 @@ function renderSteam(market) {
   }
   const item = steamItem;
   const itemOrders = orders.filter(o => o.item === item);
+  const itemBids = allBids.filter(b => b.item === item);
   const itemFills = fills.filter(h => h.item === item);
   const range = parseInt((($("steamRange") || {}).value || "0"), 10) || 0;
   const window = range > 0 ? itemFills.slice(-range) : itemFills;
   const wprices = window.map(h => h.price);
   // Stats row.
   const asks = itemOrders.map(o => o.price);
+  const bidPx = itemBids.map(b => b.price);
   $("st-lowask").textContent = asks.length ? Math.min(...asks) + "g" : "-";
+  $("st-highbid").textContent = bidPx.length ? Math.max(...bidPx) + "g" : "-";
+  $("st-spread").textContent = (asks.length && bidPx.length)
+    ? (Math.min(...asks) - Math.max(...bidPx)) + "g" : "-";
   const med = median(wprices);
   $("st-med").textContent = med == null ? "-" : med + "g";
   $("st-vol").textContent = window.length;
@@ -1324,13 +1347,27 @@ function renderSteam(market) {
   const shown = sorted.slice(0, 8), tail = sorted.slice(8);
   const total = itemOrders.length;
   setHTML("st-ladderHead", item == null ? "" :
-    `${total} for sale starting at ${sorted.length ? sorted[0][0] + "g" : "-"}`);
+    `${total} for sale starting at ${sorted.length ? sorted[0][0] + "g" : "-"}` +
+    (bidPx.length ? ` · ${itemBids.length} wanted up to ${Math.max(...bidPx)}g` : ""));
+  // Bid ladder: price levels descending (quantity = bid count, every bid
+  // is one indivisible stack-lot); top 8 levels, then a tail bucket.
+  const blevels = new Map();
+  for (const b of itemBids) blevels.set(b.price, (blevels.get(b.price) || 0) + 1);
+  const bsorted = [...blevels.entries()].sort((a, b) => b[0] - a[0]);
+  const bshown = bsorted.slice(0, 8), btail = bsorted.slice(8);
   setHTML("st-ladder", shown.map(([p, n]) => `
     <div class="row"><span class="t">${p}g</span>
       <span class="c">× ${n} order${n === 1 ? "" : "s"}</span></div>`).join("") +
     (tail.length ? `
     <div class="row"><span class="t">${tail[0][0]}g or more</span>
-      <span class="c">× ${tail.reduce((a, [, n]) => a + n, 0)} order(s)</span></div>` : "") ||
+      <span class="c">× ${tail.reduce((a, [, n]) => a + n, 0)} order(s)</span></div>` : "") +
+    (bshown.length ? `<div class="dim" style="font-size:11px;margin:6px 0 2px">bids</div>` +
+      bshown.map(([p, n]) => `
+    <div class="row"><span class="t buy">${p}g</span>
+      <span class="c">× ${n} bid${n === 1 ? "" : "s"}</span></div>`).join("") +
+      (btail.length ? `
+    <div class="row"><span class="t buy">${btail[btail.length - 1][0]}g or less</span>
+      <span class="c">× ${btail.reduce((a, [, n]) => a + n, 0)} bid(s)</span></div>` : "") : "") ||
     `<span class="empty">No open orders for this item.</span>`);
   // That item's open orders (sortable like every table).
   const srows = sortRows("steamOrders", itemOrders,

@@ -1073,6 +1073,109 @@ async def main():
     unplayer(patsy)
     print("WASH_TRADE_OK")
 
+    # buy orders #158: escrowed bid fills vs cheapest sell at ask price
+    bbuyer = mkplayer("Bidder", 50010, room="market")
+    bbuyer.gold = 200
+    basker = mkplayer("Asker", 50011, room="market")
+    basker.gold = 50
+    basker.inventory.append("healing_herb")
+    await srv.cmd_market_post(basker, {"item": herb_name, "price": 10})
+    await srv.cmd_market_buy_order(bbuyer, {"item": herb_name, "price": 12})
+    assert not any(o["seller"] == "Asker" for o in srv.market_orders)
+    assert not any(b["buyer"] == "Bidder" for b in srv.market_bids)
+    assert "healing_herb" in bbuyer.inventory  # filled
+    assert bbuyer.gold == 200 - 13 + 2  # escrow 12 + fee 1, refund 2
+    assert basker.gold == 50 + 9  # ask price 10 minus tax 1
+    assert srv.market_history[-1].get("via") == "ask"
+    unplayer(bbuyer)
+    unplayer(basker)
+    print("BID_ESCROW_FILL_OK")
+
+    # post-sweep: resting bid lifts a newly posted ask at the BID price
+    bbuyer2 = mkplayer("Bidder2", 50012, room="market")
+    bbuyer2.gold = 200
+    await srv.cmd_market_buy_order(bbuyer2, {"item": herb_name, "price": 12})
+    assert any(b["buyer"] == "Bidder2" for b in srv.market_bids)  # rests
+    basker2 = mkplayer("Asker2", 50013, room="market")
+    basker2.gold = 50
+    basker2.inventory.append("healing_herb")
+    await srv.cmd_market_post(basker2, {"item": herb_name, "price": 10})
+    assert not any(b["buyer"] == "Bidder2" for b in srv.market_bids)
+    assert not any(o["seller"] == "Asker2" for o in srv.market_orders)
+    assert "healing_herb" in bbuyer2.inventory
+    assert basker2.gold == 50 + 11  # bid price 12 minus tax 1
+    assert srv.market_history[-1].get("via") == "bid"
+    unplayer(bbuyer2)
+    unplayer(basker2)
+    print("BID_SWEEP_OK")
+
+    # wash-proof: own ask never matches own bid
+    ww = mkplayer("Wash2", 50014, room="market")
+    ww.gold = 200
+    ww.inventory.append("healing_herb")
+    await srv.cmd_market_post(ww, {"item": herb_name, "price": 10})
+    await srv.cmd_market_buy_order(ww, {"item": herb_name, "price": 12})
+    assert any(o["seller"] == "Wash2" for o in srv.market_orders)
+    assert any(b["buyer"] == "Wash2" for b in srv.market_bids)
+    assert ww.gold == 200 - 13  # escrow + fee held, no fill
+    await srv.cmd_market_cancel(ww, {"id": next(
+        o["id"] for o in srv.market_orders if o["seller"] == "Wash2")})
+    await srv.cmd_market_cancel(ww, {"id": next(
+        b["id"] for b in srv.market_bids if b["buyer"] == "Wash2")})
+    unplayer(ww)
+    print("BID_WASH_OK")
+
+    # modify: relist fee, keeps id+ts, sweeps once
+    rat_name = srv.ITEM_DEFS["rat_tail"]["name"]
+    bmod = mkplayer("BidMod", 50015, room="market")
+    bmod.gold = 200
+    await srv.cmd_market_buy_order(bmod, {"item": rat_name, "price": 8})
+    bid0 = next(b for b in srv.market_bids if b["buyer"] == "BidMod")
+    assert bmod.gold == 200 - 9  # escrow 8 + fee 1
+    await srv.cmd_market_buy_modify(bmod, {"id": bid0["id"], "price": 9})
+    bid1 = next(b for b in srv.market_bids if b["buyer"] == "BidMod")
+    assert bid1["id"] == bid0["id"] and bid1["ts"] == bid0["ts"]
+    amod = mkplayer("AskMod", 50016, room="market")
+    amod.gold = 50
+    amod.inventory.append("rat_tail")
+    await srv.cmd_market_post(amod, {"item": rat_name, "price": 10})
+    await srv.cmd_market_buy_modify(bmod, {"id": bid0["id"], "price": 12})
+    assert not any(b["buyer"] == "BidMod" for b in srv.market_bids)
+    assert "rat_tail" in bmod.inventory
+    assert srv.market_history[-1].get("via") == "ask"
+    unplayer(bmod)
+    unplayer(amod)
+    print("BID_MODIFY_OK")
+
+    # cancel: escrow refunded, fee sunk, room-gated
+    bcan = mkplayer("BidCan", 50017, room="market")
+    bcan.gold = 200
+    await srv.cmd_market_buy_order(bcan, {"item": rat_name, "price": 8})
+    assert bcan.gold == 191
+    bcan.room = "town_square"
+    await srv.cmd_market_cancel(bcan, {"id": next(
+        b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")})
+    assert any(b["buyer"] == "BidCan" for b in srv.market_bids)  # refused
+    bcan.room = "market"
+    await srv.cmd_market_cancel(bcan, {"id": next(
+        b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")})
+    assert not any(b["buyer"] == "BidCan" for b in srv.market_bids)
+    assert bcan.gold == 199  # refund 8, fee 1 sunk
+    unplayer(bcan)
+    print("BID_CANCEL_OK")
+
+    # expiry: stale bids refunded by prune
+    bexp = mkplayer("BidExp", 50018, room="market")
+    bexp.gold = 200
+    await srv.cmd_market_buy_order(bexp, {"item": rat_name, "price": 8})
+    stale = next(b for b in srv.market_bids if b["buyer"] == "BidExp")
+    stale["ts"] = __import__("time").time() - srv.MARKET_ORDER_TTL_SECONDS - 1
+    await srv.prune_market_orders()
+    assert not any(b["buyer"] == "BidExp" for b in srv.market_bids)
+    assert bexp.gold == 199  # escrow refunded, fee sunk
+    unplayer(bexp)
+    print("BID_EXPIRE_OK")
+
     # commission XP cap + kill consumption (#189)
     rich = mkplayer("RichPoster", 50003)
     rich.gold = 1000000
