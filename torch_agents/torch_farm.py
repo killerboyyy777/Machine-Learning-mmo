@@ -12,6 +12,7 @@ Run from the repository root:
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -47,7 +48,22 @@ class TorchFarm:
         self.agent = TorchDQNAgent(name=args.name_prefix + "Shared", url=args.url)
         loaded = self.agent.load_weights(args.weights)
         if not loaded and args.best_weights and os.path.exists(args.best_weights):
-            self.agent.load_weights(args.best_weights)
+            loaded = self.agent.load_weights(args.best_weights)
+        if loaded:
+            # Seed from the restored peak: score > -inf is always true on
+            # the first step, which used to clobber the best file with an
+            # early worse score (#378).
+            self.last_best_score = self.agent.best_score
+        self._farm_state_path = args.weights + ".farm.json"
+        try:
+            with open(self._farm_state_path) as f:
+                _st = json.load(f)
+            # Persisted counters survive restarts so --steps resumes the
+            # remaining budget instead of re-running the full window (#378).
+            self.steps = int(_st.get("steps", 0))
+            self.last_save_step = int(_st.get("last_save_step", -1))
+        except (OSError, ValueError):
+            pass
         self.runners = []
 
     def should_stop(self):
@@ -62,6 +78,13 @@ class TorchFarm:
             return
         self.agent.save_weights(self.args.weights)
         self.last_save_step = self.steps
+        try:
+            with open(self._farm_state_path, "w") as f:
+                json.dump(
+                    {"steps": self.steps, "last_save_step": self.last_save_step}, f
+                )
+        except OSError:
+            pass
 
 
 class Runner:
@@ -133,11 +156,10 @@ class Runner:
             quest_intrinsic += agent.intrinsic_accept
         if qinfo.get("crafted_charm") or qinfo.get("delver_became_ready"):
             quest_intrinsic += agent.intrinsic_progress
-        for mat_key in ("quest_mat_bark", "quest_mat_hide", "quest_mat_ecto"):
-            if float(next_obs.get(mat_key, 0.0)) > float(
-                (self.obs or {}).get(mat_key, 0.0)
-            ):
-                quest_intrinsic += agent.intrinsic_progress
+        # No per-material loop (unlike an earlier farm revision): the
+        # single-agent bonus is deliberately NOT farmable per pickup
+        # (dqn_agent train(): accept + progress transitions only), and the
+        # farm docstring promises that same objective (#378).
 
         rnd_bonus = agent.rnd_bonus(next_features) if agent.rnd_lambda else 0.0
 

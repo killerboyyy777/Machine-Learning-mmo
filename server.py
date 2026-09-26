@@ -723,6 +723,8 @@ def save_scores():
     # The previous good copy rotates aside first, so there is always a
     # fallback generation even if this write itself goes bad.
     # Returns success: callers must not clear-dirty on failure (#373).
+    # Serialization failures (a corrupt SCORES value) report False like
+    # I/O errors instead of propagating out of the save path.
     tmp = SCORES_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
@@ -735,7 +737,7 @@ def save_scores():
                 except OSError:
                     pass
         os.replace(tmp, SCORES_FILE)
-    except OSError:
+    except (OSError, TypeError, ValueError):
         return False
     return True
 
@@ -747,7 +749,7 @@ _scores_dirty = False
 # Long-term bounds: fresh-name bot farming must not grow SCORES (and
 # scores.json) without limit. Entries untouched for TTL_SECONDS are evicted;
 # if the table still exceeds ENTRY_MAX, the stalest go first. Online players
-# and entries owed banked gold are never evicted.
+# and entries owed banked gold or banked items are never evicted.
 SCORE_ENTRY_MAX = 2000
 SCORE_ENTRY_TTL_SECONDS = 7 * 24 * 3600
 _last_score_prune = 0.0
@@ -2121,8 +2123,9 @@ async def cmd_attack(player, msg):
             # (floors counter, score, XP). Idle walk-ins get the room view
             # and nothing else; their delver baselines never advance (#195.3).
             # First clear only: respawn re-arms `cleared` for the exits, but
-            # rewards must not re-mint (#373).
-            first_clear = _ff is None or not _ff.clear_rewarded
+            # rewards must not re-mint (#373). A missing floor object pays
+            # nothing and logs nothing (no phantom clear entries).
+            first_clear = _ff is not None and not _ff.clear_rewarded
             if _ff is not None:
                 _ff.clear_rewarded = True
             for p in players_in_room(player.room):
