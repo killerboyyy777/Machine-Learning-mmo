@@ -1362,6 +1362,37 @@ async def main():
         unplayer(p)
     print("PARTY_SWITCH_RELOCATE_OK")
 
+    # --- Party leader switch: old party reassigns leader when leader accepts new party invite ---
+    leader_old = mkplayer("LeaderOld", 50028)
+    member_old = mkplayer("MemberOld", 50029)
+    inviter_new = mkplayer("InviterNew", 50030)
+    srv.add_member(leader_old)
+    srv.add_member(member_old)
+    srv.add_member(inviter_new)
+
+    p_old = srv._auto_create_party(leader_old)
+    p_old.member_ids.add(member_old.id)
+    member_old.party_id = p_old.id
+
+    p_new = srv._auto_create_party(inviter_new)
+    srv._pending_party_invites[leader_old.id] = {
+        "party": p_new,
+        "ts": _time.time(),
+        "inviter": inviter_new.id,
+    }
+
+    await srv.cmd_party_accept(leader_old, {})
+    assert leader_old.party_id == p_new.id
+    assert leader_old.id not in p_old.member_ids
+    assert p_old.leader_id == member_old.id, (p_old.leader_id, member_old.id)
+
+    for p in (p_old, p_new):
+        if p.id in srv.parties:
+            srv._delete_party(p)
+    for p in (leader_old, member_old, inviter_new):
+        unplayer(p)
+    print("PARTY_SWITCH_LEADER_OK")
+
     # collusion cap: seeded history evicts least-frequent first, keeps newcomer
     clposter = mkplayer("CollabPoster", 50026)
     clposter.gold = 100000
