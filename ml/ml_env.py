@@ -1473,13 +1473,15 @@ class TextMMOEnv:
                 return {"cmd": "craft", "recipe": "sharpening_oil"}
             return None
         if action == "craft_fortitude_tonic":
-            # 1x Iron Ore + 1x Mountain Berry -> 1 Fortitude Tonic (tier 2, damage reduction +1)
+            # 1x Iron Ore + 1x Mountain Berry + 1x Mountain Herb -> 1 Fortitude Tonic (tier 2, damage reduction +1)
             have = {}
             for name in s["inv_names"] or []:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("fortitude_tonic", {}).get("inputs", {"iron_ore": 1, "mountain_berry": 1})
+            need = srv.RECIPES.get("fortitude_tonic", {}).get(
+                "inputs", {"iron_ore": 1, "mountain_berry": 1, "mountain_herb": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "fortitude_tonic"}
             return None

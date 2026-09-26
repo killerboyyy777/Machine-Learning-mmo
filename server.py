@@ -2470,10 +2470,11 @@ async def cmd_commission_post(player, msg):
         # ML env posts with no args; default to a simple rat bounty.
         target = "rat"
         required_kills = required_kills or 1
-    # Targets must name something real: fills credit kills by substring,
-    # so a nonsense target is trivially fillable off incidental kills.
-    if not any(target in n.get("name", "").lower()
-               or target in str(n.get("id", "")).lower() for n in all_npcs()):
+    # Targets must name something real AND fillable: fills credit kills
+    # from the name-keyed kill log, so an id-only fragment (NPC ids differ
+    # from display names, e.g. "healer" vs "Sister Maren") would pass
+    # validation yet never fill, locking escrow forever. Name-match only.
+    if not any(target in n.get("name", "").lower() for n in all_npcs()):
         await send(
             player,
             {
@@ -2950,9 +2951,15 @@ async def cmd_quest(player, msg):
                   "Bring me 3 Healing Herbs from the wilds and I will make it worth your while: "
                   f"{QUEST_REMEDY_XP} XP and {QUEST_REMEDY_GOLD} gold. Come back any time."})
         else:
-            await send(player, {"type": "message", "text": "Sister Maren: The wounded need something stronger than herbs. "
-                  "Brew a Fortitude Tonic (Iron Ore and Mountain Berry) and bring it to me for "
-                  f"{QUEST_TONIC_XP} XP and {QUEST_TONIC_GOLD} gold. I will always have work for you."})
+            await send(
+                player,
+                {
+                    "type": "message",
+                    "text": "Sister Maren: The wounded need something stronger than herbs. "
+                    "Brew a Fortitude Tonic (Iron Ore, Mountain Berry, and Mountain Herb) and bring it to me for "
+                    f"{QUEST_TONIC_XP} XP and {QUEST_TONIC_GOLD} gold. I will always have work for you.",
+                },
+            )
         await send(player, stats_view(player))
     elif action == "turn_in":
         if not _quest_active(entry, qid):
