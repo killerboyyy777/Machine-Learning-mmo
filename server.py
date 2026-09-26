@@ -409,6 +409,10 @@ class DungeonFloor:
     # dungeon kill before its per-NPC dict is wiped, so floor-clear credit
     # (and delver progress) can require contribution (#195.3).
     contributors: set = field(default_factory=set)
+    # Clear rewards (floors counter, score, XP, clear log) fire once per
+    # floor instance: guard respawns re-arm `cleared` for the exits, but
+    # must not re-mint rewards (#373).
+    clear_rewarded: bool = False
 
 
 class Dungeon:
@@ -718,6 +722,7 @@ def save_scores():
     # Atomic write: a kill mid-flush must never leave a truncated scores.json.
     # The previous good copy rotates aside first, so there is always a
     # fallback generation even if this write itself goes bad.
+    # Returns success: callers must not clear-dirty on failure (#373).
     tmp = SCORES_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
@@ -731,7 +736,8 @@ def save_scores():
                     pass
         os.replace(tmp, SCORES_FILE)
     except OSError:
-        pass
+        return False
+    return True
 
 
 SCORES = load_scores()
@@ -770,7 +776,7 @@ def prune_score_entries(now=None):
             entry = SCORES[key]
         if key in online:
             continue
-        if entry.get("gold_bank", 0):
+        if entry.get("gold_bank", 0) or entry.get("item_bank"):
             continue
         del SCORES[key]
         for tk in [k for k in track_log if k.lower() == key]:
@@ -786,8 +792,7 @@ async def scores_save_loop():
     while True:
         await asyncio.sleep(SCORES_SAVE_SECONDS)
         prune_score_entries()
-        if _scores_dirty:
-            save_scores()
+        if _scores_dirty and save_scores():
             _scores_dirty = False
 
 
@@ -2115,21 +2120,29 @@ async def cmd_attack(player, msg):
             # Contribution-gated: only present contributors earn the clear
             # (floors counter, score, XP). Idle walk-ins get the room view
             # and nothing else; their delver baselines never advance (#195.3).
+            # First clear only: respawn re-arms `cleared` for the exits, but
+            # rewards must not re-mint (#373).
+            first_clear = _ff is None or not _ff.clear_rewarded
+            if _ff is not None:
+                _ff.clear_rewarded = True
             for p in players_in_room(player.room):
                 if not p.name or p.name.lower() not in _earned:
+                    continue
+                if not first_clear:
                     continue
                 _ce = get_score_entry(p.name)
                 _ce["dungeon_floors_cleared"] += 1
                 _ce["dungeon_death_streak"] = 0
                 await award_points(p, clear_pts, f"cleared Dungeon Floor {floor_no}")
                 await award_xp(p.name, clear_xp, f"cleared Dungeon Floor {floor_no}")
-            dungeon_clear_log.append({
-                "floor": floor_no,
-                "contributors": len(_earned),
-                "solo": len(_earned) <= 1,
-                "ts": time.time(),
-            })
-            del dungeon_clear_log[:-DUNGEON_CLEAR_LOG_CAP]
+            if first_clear:
+                dungeon_clear_log.append({
+                    "floor": floor_no,
+                    "contributors": len(_earned),
+                    "solo": len(_earned) <= 1,
+                    "ts": time.time(),
+                })
+                del dungeon_clear_log[:-DUNGEON_CLEAR_LOG_CAP]
             await broadcast_room(player.room, {
                 "type": "message",
                 "text": "The hall falls silent. The sealed exits grind open, revealing the way onward and a gleaming blade."
@@ -2457,6 +2470,18 @@ async def cmd_commission_post(player, msg):
         # ML env posts with no args; default to a simple rat bounty.
         target = "rat"
         required_kills = required_kills or 1
+    # Targets must name something real: fills credit kills by substring,
+    # so a nonsense target is trivially fillable off incidental kills.
+    if not any(target in n.get("name", "").lower()
+               or target in str(n.get("id", "")).lower() for n in all_npcs()):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"No known creature matches '{target}'. Bounty target must name a real NPC.",
+            },
+        )
+        return
     if required_kills <= 0:
         required_kills = 1
     # Unfillable bounties lock escrow forever (open listings are never
@@ -2801,7 +2826,7 @@ QUESTS = {
         "result": None,
         "result_name": None,
         "objective": "craft",
-        "brief": "brew 1 Fortitude Tonic (Iron Ore + Mountain Berry) and bring it",
+        "brief": "brew 1 Fortitude Tonic (Iron Ore + Mountain Berry + Mountain Herb) and bring it",
         "reward_xp": QUEST_TONIC_XP,
         "reward_gold": QUEST_TONIC_GOLD,
         "reward_points": QUEST_TONIC_POINTS,
