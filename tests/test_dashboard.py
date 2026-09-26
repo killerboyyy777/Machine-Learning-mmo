@@ -9,7 +9,6 @@ the swap; its blocks were removed, not ported.
 """
 import os
 import re
-import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # --- canonical dashboard contract (#207 swap of the #205 revamp) ---
@@ -104,7 +103,6 @@ assert "cmd-\" + (cmd" in html or 'cmd-" + (cmd' in html
 assert "a.seq ?? -1" in html and "localeCompare" in html
 assert "No scores recorded yet." in html
 # Server lane: seq field, fan-out registry, SSE route, start timestamp.
-import re as _re
 _srv = open(_os.path.join(_os.path.dirname(__file__), "..", "server.py")).read()
 for tok in ('"seq": activity_seq', "activity_subscribers",
             "text/event-stream", '"start_ts": START_TIME'):
