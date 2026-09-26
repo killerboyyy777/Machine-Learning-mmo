@@ -2992,6 +2992,8 @@ async def cmd_party_accept(player, msg):
         old.member_ids.discard(player.id)
         if not old.member_ids:
             _delete_party(old)
+        elif old.leader_id == player.id:
+            old.leader_id = next(iter(old.member_ids))
     party.member_ids.add(player.id)
     player.party_id = party.id
     await _notify_party(party, f"{player.name} joins the party.")
