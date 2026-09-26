@@ -26,7 +26,7 @@ from ml.plugins import (
 
 # --- built-ins registered ---
 discover()
-assert {"linear", "torch", "gather", "dungeon", "market", "maker",
+assert {"linear", "torch", "gather", "dungeon", "market",
         "commissioner"} <= set(REGISTRY)
 print("BUILTINS_OK")
 

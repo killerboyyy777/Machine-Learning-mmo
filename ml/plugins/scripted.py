@@ -1,7 +1,8 @@
 """Scripted behavior-tree baselines as plugins (moved from ml_botfarm.py).
 
 Each role is a registered plugin (``gather``/``dungeon``/``market``/
-``maker``/``commissioner``) sharing the ``ScriptedPolicy`` priority-list
+``commissioner``/``quester``/``crafter``/``party_leader``) sharing the
+``ScriptedPolicy`` priority-list
 machinery. No learning, just behavior trees over the env's valid-action
 mask -- the fixed comparison point for RL runs.
 """
@@ -9,9 +10,9 @@ mask -- the fixed comparison point for RL runs.
 import random
 
 try:
-    from ..ml_env import ACTIONS, MAREN_NAME, MERCHANT_PRICES, QUEST_GIVER_NAME
+    from ..ml_env import ACTIONS, MAREN_NAME, QUEST_GIVER_NAME
 except ImportError:
-    from ml_env import ACTIONS, MAREN_NAME, MERCHANT_PRICES, QUEST_GIVER_NAME
+    from ml_env import ACTIONS, MAREN_NAME, QUEST_GIVER_NAME
 
 from . import AgentPlugin, register
 
@@ -257,56 +258,6 @@ class MarketPlugin(ScriptedPolicy):
 
 
 @register
-class MakerPlugin(ScriptedPolicy):
-    """Liquidity provider: keeps two-sided flow up so economic agents
-    always have a counterparty. Unlike the flipper (waits for margin),
-    the maker buys on the market every chance it gets, posts whatever
-    the book takes, merchants the rest, and deepens its own stall --
-    spread income over volume, not cherry-picked arbitrage."""
-
-    name = "maker"
-
-    def _broke(self, env):
-        """True when the maker has no path to gold: pocket change below the
-        cheapest merchant price, nothing held that could sell or post, and
-        no own open orders to cancel or relist. Holdings-based (inventory
-        plus own orders), never mask-based: sell needs a merchant in-room
-        and cancel needs a fresh book snapshot, so mask validity conflates
-        'cannot liquidate HERE' with 'nothing to liquidate' and camps
-        holders forever (the broke branch never moves)."""
-        s = env._state
-        cheapest = min(MERCHANT_PRICES.values()) if MERCHANT_PRICES else 2
-        if s.get("gold", 0) >= cheapest:
-            return False
-        if s.get("inv_names"):
-            return False
-        ms = s.get("market_state") or {}
-        return not any(o.get("seller") == env.name for o in (ms.get("orders") or []))
-
-    def plan(self, env, mask):
-        s = env._state
-        yield self._heal_first(env, mask)
-        # Broke bots still fight (#358): the hold below must never leave a
-        # maker mauled by a hostile it could have attacked for free.
-        yield self._first_valid(env, ("attack",), mask)
-        if self._broke(env):
-            # Hold solvently: refresh toward free income instead of spending
-            # gold or wandering. take/gather earn without capital; rest/look
-            # hold in place without moving; buy_arrows is merchant-gated the
-            # same as buy, so it stays out of the broke branch.
-            yield self._first_valid(env, ("take", "gather", "rest", "look"), mask)
-            yield self._first_valid(env, ("market_list", "commission_list"), mask)
-            return
-        yield self._first_valid(env, ("take",), mask)
-        if not s.get("market_state"):
-            yield self._first_valid(env, ("market_list",), mask)
-        yield self._first_valid(env, ("market_buy", "market_post"), mask)
-        yield self._first_valid(env, ("sell", "market_expand"), mask)
-        yield self._random_move(env, mask)
-        yield self._first_valid(env, self.WANDER, mask)
-
-
-@register
 class CommissionerPlugin(ScriptedPolicy):
     """Bounty driver: deterministic post -> kill -> fill -> cancel cycle so
     commission paths (caps, kill verification/consumption, collusion curve,
@@ -441,7 +392,6 @@ class PartyLeaderPlugin(ScriptedPolicy):
 GatherSellPolicy = GatherPlugin
 DungeonClearerPolicy = DungeonPlugin
 MarketFlipperPolicy = MarketPlugin
-MarketMakerPolicy = MakerPlugin
 CommissionerPolicy = CommissionerPlugin
 QuesterPolicy = QuesterPlugin
 CrafterPolicy = CrafterPlugin
@@ -451,7 +401,6 @@ SCRIPTED_POLICIES = {
     "gather": GatherSellPolicy,
     "dungeon": DungeonClearerPolicy,
     "market": MarketFlipperPolicy,
-    "maker": MarketMakerPolicy,
     "commissioner": CommissionerPolicy,
     "quester": QuesterPolicy,
     "crafter": CrafterPolicy,

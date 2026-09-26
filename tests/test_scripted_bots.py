@@ -20,7 +20,6 @@ from ml.ml_botfarm import (
     DungeonClearerPolicy,
     GatherSellPolicy,
     MarketFlipperPolicy,
-    MarketMakerPolicy,
     build_role_list,
     parse_roles,
 )
@@ -103,47 +102,6 @@ env._state["market_state"] = {"orders": [{"item": "Healing Herb", "price": 10,
                                            "seller": "Other"}]}
 assert selected(MarketFlipperPolicy(), env) == "market_buy"
 print("MARKET_BUY_OK")
-
-# --- maker role: fresh snapshot, nothing to post -> buys (bid side) ---
-env = fresh_env()
-env._state["gold"] = 100
-env._state["market_state"] = {"orders": [{"item": "Healing Herb", "price": 10,
-                                           "seller": "Other"}]}
-assert selected(MarketMakerPolicy(), env) == "market_buy"
-print("MAKER_BUY_OK")
-
-# --- maker role: stale snapshot -> list first ---
-env = fresh_env()
-env._state["gold"] = 10
-env._state["market_state"] = None
-assert selected(MarketMakerPolicy(), env) == "market_list"
-print("MAKER_LIST_OK")
-
-# --- maker role: broke (no gold, nothing sellable) -> hold, never wander
-# into hostile rooms (#357) ---
-env = fresh_env()
-env._state["gold"] = 0
-env._state["inv_names"] = []
-assert selected(MarketMakerPolicy(), env) == "look"
-print("MAKER_BROKE_OK")
-
-# --- broke maker with a hostile present still fights (#358) ---
-env = fresh_env()
-env._state["npc_names"] = [hostile]
-env._state["gold"] = 0
-env._state["inv_names"] = []
-assert selected(MarketMakerPolicy(), env) == "attack"
-print("MAKER_BROKE_ATTACK_OK")
-
-# --- holdings count even away from a merchant: gold 0 + pack held, no
-# merchant in view -> not broke, refresh the book, never camp (#358) ---
-env = fresh_env()
-env._state["gold"] = 0
-env._state["inv_names"] = ["Rat Tail"]
-env._state["npc_names"] = []
-env._state["market_state"] = None
-assert selected(MarketMakerPolicy(), env) == "market_list"
-print("MAKER_HOLDINGS_NOT_BROKE_OK")
 
 # --- circuit breaker: same action + frozen state 15x -> escalate (#357) ---
 env = fresh_env()
@@ -244,7 +202,6 @@ for cls in (
     GatherSellPolicy,
     DungeonClearerPolicy,
     MarketFlipperPolicy,
-    MarketMakerPolicy,
     CommissionerPolicy,
     QuesterPolicy,
     CrafterPolicy,
@@ -312,8 +269,8 @@ farm = types.SimpleNamespace(
     ),
 )
 roles = [BotRunner(i, farm).policy.name for i in range(8)]
-assert roles == ["gather", "dungeon", "market", "maker", "commissioner",
-                 "quester", "crafter", "party_leader"], roles
+assert roles == ["gather", "dungeon", "market", "commissioner",
+                 "quester", "crafter", "party_leader", "gather"], roles
 farm.args.scripted = "dungeon"
 farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy.name == "dungeon"
@@ -328,17 +285,17 @@ farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy is None
 print("MIXED_ASSIGN_OK")
 
-# --- --roles explicit split ---
-farm.args.roles = "gather:8,dungeon:4,market:3,maker:4,commissioner:2,flex:gather"
-farm.args.bots = 21
+# --- --roles explicit split (maker retired: share to flipper/gather) ---
+farm.args.roles = "gather:8,dungeon:4,market:7,commissioner:2,flex:gather"
+farm.args.bots = 24
 farm.role_list = build_role_list(farm.args)
-got = [BotRunner(i, farm).policy.name for i in range(21)]
-assert Counter(got) == {"gather": 8, "dungeon": 4, "market": 3, "maker": 4,
+got = [BotRunner(i, farm).policy.name for i in range(24)]
+assert Counter(got) == {"gather": 11, "dungeon": 4, "market": 7,
                         "commissioner": 2}, Counter(got)
 assert parse_roles(farm.args.roles, farm.args.bots) == farm.role_list
 print("ROLES_SPLIT_OK")
 
-assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market", "maker",
+assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market",
                                   "commissioner", "quester", "crafter",
                                   "party_leader"}
 print("ALL_SCRIPTED_OK")

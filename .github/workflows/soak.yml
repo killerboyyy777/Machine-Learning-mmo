@@ -30,7 +30,7 @@ jobs:
       - run: echo '{}' > scores.json
       - run: TEXTMMO_GM_SEED=700 nohup python server.py --config ml/conductor/soak_server_config.json > server.soak.log 2>&1 &
       - run: sleep 5
-      - run: python ml/conductor/soak.py --agents ${{ inputs.agents || 50 }} --duration ${{ inputs.duration || 3600 }} --min-agents 40 --server-log server.soak.log --slot linear --slot linear --slot gather --slot dungeon --slot market --slot maker --slot commissioner
+      - run: python ml/conductor/soak.py --agents ${{ inputs.agents || 50 }} --duration ${{ inputs.duration || 3600 }} --min-agents 40 --server-log server.soak.log --slot linear --slot linear --slot gather --slot dungeon --slot market --slot commissioner
       - uses: actions/upload-artifact@v7
         if: always()
         with:
