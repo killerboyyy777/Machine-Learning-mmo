@@ -51,7 +51,7 @@ try:
     from .plugins.scripted import (
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
-        MarketMakerPolicy, CommissionerPolicy,
+        CommissionerPolicy,
     )
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
@@ -60,7 +60,7 @@ except ImportError:
     from plugins.scripted import (
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
-        MarketMakerPolicy, CommissionerPolicy,
+        CommissionerPolicy,
     )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -92,7 +92,7 @@ def parse_roles(spec, bots):
     """Parse a --roles SPEC into a role list of length `bots`.
 
     SPEC is comma-separated ``role:count`` entries (e.g.
-    ``gather:8,dungeon:4,market:3,maker:4,commissioner:2``) plus an optional
+    ``gather:8,dungeon:4,market:7,commissioner:2``) plus an optional
     ``flex:role`` that fills any bots not covered by explicit counts. Without
     ``flex``, leftover bots round-robin over SCRIPTED_NAMES (the current
     default). Raises ValueError on unknown/duplicate roles, bad counts, or
@@ -355,16 +355,16 @@ def parse_args():
     p.add_argument("--reward-window", type=int, default=200, help="rolling reward window for fitness")
     p.add_argument("--weights", default=WEIGHTS_FILE)
     p.add_argument("--scripted", default="none",
-                   choices=("none", "gather", "dungeon", "market", "maker",
+                   choices=("none", "gather", "dungeon", "market",
                             "commissioner", "quester", "crafter", "party_leader",
                             "mixed"),
                    help="run fixed behavior-tree baselines instead of training "
                         "(one role each, or round-robin with 'mixed')")
     p.add_argument("--roles", default=None,
-                   help="explicit per-role counts, e.g. "
-                        "gather:8,dungeon:4,market:3,maker:4,commissioner:2,"
-                        "flex:gather (flex fills the remainder); overrides "
-                        "--scripted")
+                    help="explicit per-role counts, e.g. "
+                         "gather:11,dungeon:4,market:7,commissioner:2,"
+                         "flex:gather (flex fills the remainder); overrides "
+                         "--scripted")
     p.add_argument("--epsilon-start", type=float, default=1.0)
     p.add_argument("--epsilon-end", type=float, default=0.05)
     p.add_argument("--epsilon-decay-steps", type=int, default=5000)

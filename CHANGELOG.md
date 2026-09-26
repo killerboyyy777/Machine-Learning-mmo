@@ -3,6 +3,12 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Maker role retired: books survived without makers (V5 variant: 2525
+  trades, no death spiral), so the `maker` scripted policy, its launcher
+  entries (`--scripted` choice, `--roles` specs), and its tests are removed.
+  Maker share redistributes to flipper/gather (default frame is now 11
+  gather / 4 dungeon / 7 market / 2 commissioner over 24 bots). No behavior
+  change to the remaining roles.
 - Convergence tuning: dungeon risk-pay up -- clear score now 40/55/70 for
   floors 1/2/3 (was 20/25/30; new `DUNGEON_CLEAR_BASE_PTS` /
   `DUNGEON_CLEAR_PTS_PER_FLOOR`, steepened for deep floors in round 2),
