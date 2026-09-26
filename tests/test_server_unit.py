@@ -1933,4 +1933,105 @@ async def main():
     srv.SCORES.pop(purse_name.lower(), None)
     print("STARTING_PURSE_OK")
 
+    # --- Bughunt batch 1 regressions ---
+    # (1) tonic brief names all three recipe inputs (#379)
+    assert "Mountain Herb" in srv.QUESTS["tonic"]["brief"], srv.QUESTS["tonic"]["brief"]
+    print("TONIC_BRIEF_OK")
+
+    # (2) floor clear pays once: guard respawn re-arms the exits, never
+    # re-mints rewards or the clear log (#373)
+    refarmer = mkplayer("Refarmer", 61001, hp=200, max_hp=200)
+    await srv.cmd_move(refarmer, {"dir": "south"})
+    await srv._enter_dungeon(refarmer)
+    rd = srv.dungeon_for_room(refarmer.room)
+    assert rd is not None
+    rfno = srv.floor_from_room(refarmer.room)
+
+    async def _clear_room():
+        for _ in range(60):
+            guard = next(
+                (g for g in srv.npcs_in_room(refarmer.room) if g["alive"]), None
+            )
+            if guard is None:
+                break
+            await srv.cmd_attack(refarmer, {"target": guard["id"]})
+
+    await _clear_room()
+    rentry = srv.get_score_entry("Refarmer")
+    assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get("dungeon_floors_cleared")
+    rfloor = rd.floors[rfno]
+    assert rfloor.clear_rewarded is True
+    refarmer.hp = refarmer.max_hp
+    for _g in rfloor.guards:
+        srv.respawn_npc(_g)  # real respawn path: exits re-arm, rewards must not
+    assert rfloor.cleared is False
+    await _clear_room()
+    assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get("dungeon_floors_cleared")
+    for p in list(srv.parties.values()):
+        if refarmer.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(refarmer)
+    print("REFARM_ONCE_OK")
+
+    # (3) id-only bounty targets rejected: fills credit the name-keyed
+    # kill log, so "healer" (id of "Sister Maren") could never fill and
+    # would lock escrow forever (#373)
+    idposter = mkplayer("IdPoster", 61002)
+    idposter.gold = 500
+    _n_before = len(srv._commissions)
+    await srv.cmd_commission_post(
+        idposter, {"target": "healer", "required_kills": 1, "reward_gold": 10, "reward_xp": 0}
+    )
+    assert (
+        inbox[-1]["type"] == "error" and "No known creature" in inbox[-1]["text"]
+    ), inbox[-1]
+    assert len(srv._commissions) == _n_before and idposter.gold == 500
+    await srv.cmd_commission_post(
+        idposter, {"target": "sister", "required_kills": 1, "reward_gold": 10, "reward_xp": 0}
+    )
+    _cid = max(srv._commissions)
+    assert srv._commissions[_cid]["status"] == "open" and idposter.gold == 490
+    await srv.cmd_commission_cancel(idposter, {"commission_id": _cid})
+    assert srv._commissions[_cid]["status"] == "cancelled"
+    unplayer(idposter)
+    print("BOUNTY_TARGET_OK")
+
+    # (4) save_scores reports success; the save loop keeps dirty queued
+    # mutations on failure instead of silently dropping them (#373)
+    import tempfile as _tf
+
+    _real_scores = srv.SCORES_FILE
+    _tmpd = _tf.mkdtemp()
+    srv.SCORES_FILE = os.path.join(_tmpd, "scores.json")
+    assert srv.save_scores() is True
+    assert os.path.isfile(srv.SCORES_FILE)
+    srv.SCORES_FILE = "/nonexistent_dir_xyz_abc/scores.json"
+    assert srv.save_scores() is False
+    _was_dirty = srv._scores_dirty
+    srv._scores_dirty = True
+    if srv._scores_dirty and srv.save_scores():
+        srv._scores_dirty = False
+    assert srv._scores_dirty is True  # failure keeps the mutation queued
+    srv.SCORES_FILE = _real_scores
+    srv._scores_dirty = _was_dirty
+    os.remove(os.path.join(_tmpd, "scores.json"))
+    os.rmdir(_tmpd)
+    print("SAVE_BOOL_OK")
+
+    # (5) prune spares item-banked entries like gold-banked ones (#374)
+    _old = time.time() - srv.SCORE_ENTRY_TTL_SECONDS - 10
+    _eb = srv.get_score_entry("PruneBanked")
+    _eb["last_seen"] = _old
+    _eb["item_bank"] = ["rusty_sword"]
+    _ec = srv.get_score_entry("PruneClean")
+    _ec["last_seen"] = _old
+    srv._last_score_prune = 0.0
+    srv.prune_score_entries()
+    assert "prunebanked" in srv.SCORES and "pruneclean" not in srv.SCORES, sorted(
+        srv.SCORES
+    )
+    del srv.SCORES["prunebanked"]
+    srv._last_score_prune = time.time()
+    print("PRUNE_BANK_OK")
+
 asyncio.run(main())

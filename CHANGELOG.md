@@ -3,6 +3,15 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Bughunt batch 1: tonic quest brief now lists all three recipe inputs
+  (#379); dungeon floor-clear rewards fire once per floor instance --
+  guard respawns re-arm the exits but never re-mint (#373); bounty
+  targets must substring-match a real NPC display name, since fills
+  credit the name-keyed kill log (id-only fragments locked escrow
+  forever) (#373); `save_scores` returns success and the save loop keeps
+  dirty queued on failure (#373); quest turn-in points supervise the aux
+  quest head only, no longer double-count in the TD target (#378);
+  score prune spares item-banked entries like gold-banked ones (#374).
 - Standing buy orders (#158): two-sided market books. `market_buy_order`
   posts an escrowed bid (100% of price held up front, one indivisible
   stack-lot, no quantity field); new bids sweep the cheapest resting sell at
