@@ -463,14 +463,15 @@ class TorchDQNAgent:
         q_vals = self.q.get_q(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # ---- TD target on the shaped reward ----
-        # r = score + quest-intrinsic + quest-reward + RND curiosity (the
-        # exploration bonuses and turn-in points ride the TD target; the
-        # predictor itself trains below).
+        # r = score + quest-intrinsic + RND curiosity (the exploration
+        # bonuses ride the TD target; the predictor itself trains below).
+        # Turn-in points already live inside `rewards` (score-delta), so
+        # quest_targets must NOT ride the TD target too (#378); they
+        # supervise the aux quest head only.
         shaped = (
             rewards
             + self.intrinsic_lambda * intrinsic_targets
             + self.rnd_lambda * rnd_targets
-            + quest_targets
         )
         with torch.no_grad():
             target_q = self.target.get_q(next_states).max(1)[0]

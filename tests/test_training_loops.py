@@ -115,4 +115,39 @@ if HAVE_TORCH:
             tagent.q.q_head.bias.detach().tolist())
     print("TORCH_LOOP_OK")
 
+    # --- TD target excludes turn-in points: quest_reward already lives
+    # inside the score-delta reward, so adding it again double-counts
+    # quest chains ~2x (#378). gamma/lambdas zeroed => target == reward.
+    from unittest.mock import patch as _patch
+
+    import torch as _torch
+
+    dagent = TorchDQNAgent(replay_size=16, batch_size=8)
+    dagent.gamma = 0.0
+    dagent.intrinsic_lambda = 0.0
+    dagent.rnd_lambda = 0.0
+    for _ in range(16):
+        dagent.store({
+            "state": [0.1] * OBS_SIZE,
+            "action": 0,
+            "reward": 1.0,
+            "next_state": [0.1] * OBS_SIZE,
+            "done": False,
+            "gold_delta": 0.0, "loot_delta": 0.0, "market_pnl": 0.0,
+            "quest_reward": 100.0, "quest_intrinsic": 0.0, "rnd_bonus": 0.0,
+        })
+    dagent.t_step = 16
+    _seen = {}
+    _real_smooth = _torch.nn.functional.smooth_l1_loss
+
+    def _spy(inp, tgt, *a, **k):
+        _seen["tgt"] = tgt.detach().clone()
+        return _real_smooth(inp, tgt, *a, **k)
+
+    with _patch.object(_torch.nn.functional, "smooth_l1_loss", _spy):
+        dagent.learn()
+    assert _seen, "td loss never computed"
+    assert _torch.allclose(_seen["tgt"], _torch.ones_like(_seen["tgt"])), _seen["tgt"]
+    print("TD_DEDUP_OK")
+
 print("ALL_TRAINING_LOOPS_OK")
