@@ -3,6 +3,16 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Standing buy orders (#158): two-sided market books. `market_buy_order`
+  posts an escrowed bid (100% of price held up front, one indivisible
+  stack-lot, no quantity field); new bids sweep the cheapest resting sell at
+  or below the bid, and new sells lift the best resting bid at or above the
+  ask (resting side sets the fill price). Broker fee on create + relist fee
+  on modify (percent of new value, `BROKER_FEE_PCT`/`RELIST_FEE_PCT` in
+  server_config.json), sunk to the treasury. Order slots are shared with
+  asks (`MARKET_ORDER_SLOTS_BASE`); bid create/modify/cancel require the
+  market room, fills stay global. No self-matching (wash-proof, same guards
+  as #352 trade score). Dashboard shows the buy book + per-item spread.
 - Maker role retired: books survived without makers (V5 variant: 2525
   trades, no death spiral), so the `maker` scripted policy, its launcher
   entries (`--scripted` choice, `--roles` specs), and its tests are removed.

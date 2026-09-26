@@ -114,11 +114,15 @@ class ScriptedPolicy(AgentPlugin):
             if isinstance(c, dict)
         ))
         # Full order tuples, not just the count: a refresh that swaps orders
-        # at a constant count is still a changed world (#358).
+        # at a constant count is still a changed world (#358). Bids ride
+        # alongside asks (#158) so bidding bots see their own book move.
         market = tuple(sorted(
-            (str(o.get("seller")), str(o.get("item")), o.get("price"))
-            for o in ((s.get("market_state") or {}).get("orders") or [])
-            if isinstance(o, dict)
+            [("ask", str(o.get("seller")), str(o.get("item")), o.get("price"))
+             for o in ((s.get("market_state") or {}).get("orders") or [])
+             if isinstance(o, dict)]
+            + [("bid", str(b.get("buyer")), str(b.get("item")), b.get("price"))
+               for b in ((s.get("market_state") or {}).get("bids") or [])
+               if isinstance(b, dict)]
         ))
         gather = tuple(sorted(str(g) for g in (s.get("gatherables") or [])))
         return (tuple(vals), inv, npc, exits, comms, market, gather)
@@ -241,7 +245,8 @@ class DungeonPlugin(ScriptedPolicy):
 @register
 class MarketPlugin(ScriptedPolicy):
     """Economic specialist: keep the market snapshot fresh, list high-margin
-    holdings, buy fills, merchant-sell the rest."""
+    holdings, buy fills, post standing bids that force sellers down (#158),
+    merchant-sell the rest."""
 
     name = "market"
 
@@ -252,6 +257,7 @@ class MarketPlugin(ScriptedPolicy):
         if not s.get("market_state"):
             yield self._first_valid(env, ("market_list",), mask)
         yield self._first_valid(env, ("market_post", "market_buy"), mask)
+        yield self._first_valid(env, ("market_buy_order",), mask)
         yield self._first_valid(env, ("sell", "market_list"), mask)
         yield self._random_move(env, mask)
         yield self._first_valid(env, self.WANDER, mask)

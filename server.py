@@ -567,6 +567,22 @@ async def prune_market_orders(now=None):
         await send(seller, {"type": "message",
                             "text": f"Your market order #{o['id']} ({name}) expired after a day unfilled; the item is back in your pack."})
         await send(seller, stats_view(seller))
+    for b in list(market_bids):
+        if now - b.get("ts", now) <= MARKET_ORDER_TTL_SECONDS:
+            continue
+        market_bids.remove(b)
+        buyer = _online_player(b.get("buyer", ""))
+        if buyer is not None:
+            buyer.gold += b["price"]
+            mark_scores_dirty()
+            await send(buyer, {"type": "message",
+                                "text": f"Your bid #{b['id']} expired after a day unfilled; {b['price']} gold escrow is back in your purse."})
+            await send(buyer, stats_view(buyer))
+        else:
+            entry = get_score_entry(str(b.get("buyer", "")))
+            entry["gold_bank"] = entry.get("gold_bank", 0) + b["price"]
+            mark_scores_dirty()
+        pruned += 1
     return pruned
 
 
@@ -791,6 +807,7 @@ def get_score_entry(name):
     entry.setdefault("xp", 0.0)
     entry.setdefault("xp_to_next", xp_to_next(1))
     entry.setdefault("gold_bank", 0)         # coin earned while offline
+    entry.setdefault("item_bank", [])        # items won while offline/pack-full
     entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
     entry.setdefault("tax_paid", 0.0)        # market tax they bore (seller side)
     entry.setdefault("market_slots", MARKET_ORDER_SLOTS_BASE)  # open sell-order cap (expandable)
@@ -1214,10 +1231,22 @@ def remove_member(player):
 # ---------------------------------------------------------------------------
 
 market_orders = []
+market_bids = []
 MARKET_HISTORY_SIZE = 50
 market_history = []
 tax_treasury = float(os.environ.get("TEXTMMO_GM_SEED", 0) or 0)
 tax_collected_lifetime = 0.0
+
+# Standing-bid (buy order) fees (#158): broker fee on bid creation, relist
+# fee on bid modify, both as a percent of the (new) bid value, sunk to the
+# GM treasury. Config-overridable like every other economy knob.
+BROKER_FEE_PCT = 5.0
+RELIST_FEE_PCT = 5.0
+
+
+def _broker_fee(value, pct):
+    """Sunk bid-management fee: percent of value, at least 1 gold."""
+    return max(1, int(value * pct / 100 + 0.5))
 
 
 def item_suggested_price(iid):
@@ -1237,6 +1266,53 @@ def _market_order_dict(order):
         "item": ITEM_DEFS.get(iid, {}).get("name", iid),
         "price": order["price"], "ts": order.get("ts", 0),
     }
+
+
+def _market_bid_dict(bid):
+    iid = bid["item"]
+    return {
+        "id": bid["id"], "buyer": bid["buyer"],
+        "item": ITEM_DEFS.get(iid, {}).get("name", iid),
+        "price": bid["price"], "ts": bid.get("ts", 0),
+    }
+
+
+def _own_open_orders(name):
+    """Asks + bids resting for one identity (shared stall slots, #158)."""
+    low = str(name or "").lower()
+    return (sum(1 for o in market_orders if str(o.get("seller", "")).lower() == low)
+            + sum(1 for b in market_bids if str(b.get("buyer", "")).lower() == low))
+
+
+def _online_player(name):
+    for p in players_by_name.get(str(name or "").lower(), ()):
+        if p.logged_in:
+            return p
+    return None
+
+
+def _best_ask_for_bid(iid, buyer_name, max_price):
+    """Cheapest non-own ask at or below the bid (price-time priority)."""
+    low = str(buyer_name or "").lower()
+    cands = [o for o in market_orders
+             if o.get("item") == iid
+             and str(o.get("seller", "")).lower() != low
+             and o.get("price", 0) <= max_price]
+    if not cands:
+        return None
+    return min(cands, key=lambda o: (o.get("price", 0), o.get("ts", 0), o.get("id", 0)))
+
+
+def _best_bid_for_ask(iid, seller_name, min_price):
+    """Highest non-own bid at or above the ask (price-time priority)."""
+    low = str(seller_name or "").lower()
+    cands = [b for b in market_bids
+             if b.get("item") == iid
+             and str(b.get("buyer", "")).lower() != low
+             and b.get("price", 0) >= min_price]
+    if not cands:
+        return None
+    return min(cands, key=lambda b: (-b.get("price", 0), b.get("ts", 0), b.get("id", 0)))
 
 
 def _market_trade_dict(trade):
@@ -1489,14 +1565,17 @@ async def sync_room(room_id):
 
 
 def _sheltered_gold(name):
-    """Gold that escapes the death split: open-commission escrow plus any
-    banked gold. Posting a bounty (or banking) before a risky fight must
-    not shrink the death penalty to the broke-character floor (#195.5)."""
+    """Gold that escapes the death split: open-commission escrow plus resting
+    buy-order escrow plus any banked gold. Posting a bounty, resting a bid
+    (or banking) before a risky fight must not shrink the death penalty to
+    the broke-character floor (#195.5)."""
     entry = get_score_entry(name)
     escrow = sum(c.get("escrow", 0) for c in _commissions.values()
                  if c.get("status") == "open"
                  and str(c.get("poster", "")).lower() == name.lower())
-    return escrow + entry.get("gold_bank", 0)
+    bids = sum(b.get("price", 0) for b in market_bids
+               if str(b.get("buyer", "")).lower() == name.lower())
+    return escrow + bids + entry.get("gold_bank", 0)
 
 
 def death_preview(player):
@@ -1824,6 +1903,12 @@ async def cmd_login(player, msg):
         player.gold += entry["gold_bank"]
         entry["gold_bank"] = 0
         mark_scores_dirty()
+    banked = entry.get("item_bank", []) or []
+    if banked:
+        player.inventory.extend(banked)
+        entry["item_bank"] = []
+        mark_scores_dirty()
+        await send(player, {"type": "message", "text": f"{len(banked)} stored item(s) arrive in your pack."})
     if not entry.get("starting_purse_claimed"):
         # First-ever login only (flag persists in scores.json): returning
         # characters keep whatever they hold. TTL-evicted entries re-grant
@@ -2592,7 +2677,7 @@ async def cmd_help(player, msg):
         "Commands: login look move attack take gather drop equip use rest heal buy sell craft "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
-        "market_post market_list market_cancel market_buy market_expand quest"
+        "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest"
     )})
 
 # ---------------------------------------------------------------------------
@@ -3041,6 +3126,7 @@ async def cmd_market_list(player, msg):
     await send(player, {
         "type": "market",
         "orders": [_market_order_dict(o) for o in market_orders],
+        "bids": [_market_bid_dict(b) for b in market_bids],
         "treasury": round(tax_treasury, 2),
         "tax_treasury": round(tax_treasury, 2),
         "tax_collected_lifetime": round(tax_collected_lifetime, 2),
@@ -3065,7 +3151,8 @@ async def cmd_market_post(player, msg):
     slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
     # Case-insensitive: variants share one score entry, so they share one
     # stall too (otherwise "Alice"+"alice" doubles the slot cap for free).
-    own_open = sum(1 for o in market_orders if o["seller"].lower() == player.name.lower())
+    # Asks and standing bids share the stall (#158).
+    own_open = _own_open_orders(player.name)
     if own_open >= slots:
         nxt = market_slot_price(slots)
         await send(player, {"type": "error", "text": f"Market stall full ({own_open}/{slots}). Use market_expand (next slot {nxt} gold) or cancel an order."})
@@ -3078,8 +3165,25 @@ async def cmd_market_post(player, msg):
     if player.offhand == iid and iid not in player.inventory:
         player.offhand = None
     oid = next(_id_counter)
-    market_orders.append({"id": oid, "seller": player.name, "item": iid, "price": price, "ts": time.time()})
+    ask = {"id": oid, "seller": player.name, "item": iid, "price": price, "ts": time.time()}
+    market_orders.append(ask)
     mark_scores_dirty()
+    # Standing-bid sweep (#158): a new ask lifts the best resting bid at or
+    # above its price (wash-proof: own bids never match). The resting bid
+    # set the price, so the fill books at the BID price; the bidder prepaid
+    # exactly that, so there is no refund.
+    bid = _best_bid_for_ask(iid, player.name, price)
+    if bid is not None:
+        market_orders.remove(ask)
+        market_bids.remove(bid)
+        buyer_obj = _online_player(bid["buyer"])
+        await _settle_market_fill(buyer_obj, bid["buyer"], player.name, iid, bid["price"], "bid")
+        if buyer_obj is not None:
+            await send(buyer_obj, {"type": "message", "text": f"Your bid #{bid['id']} fills: {ITEM_DEFS.get(iid, {}).get('name', iid)} for {bid['price']} gold."})
+            await send(buyer_obj, stats_view(buyer_obj))
+        await send(player, {"type": "message", "text": f"Your listing (order #{oid}) fills a standing bid at {bid['price']} gold."})
+        await send(player, stats_view(player))
+        return
     await send(player, {"type": "message", "text": f"Listed {ITEM_DEFS[iid]['name']} for {price} gold (order #{oid})."})
     await send(player, stats_view(player))
 
@@ -3098,6 +3202,17 @@ async def cmd_market_cancel(player, msg):
             player.inventory.append(o["item"])
             mark_scores_dirty()
             await send(player, {"type": "message", "text": f"Cancelled order #{oid}."})
+            await send(player, stats_view(player))
+            return
+    for b in list(market_bids):
+        if b["id"] == oid and b["buyer"].lower() == player.name.lower():
+            if player.room != "market":
+                await send(player, {"type": "error", "text": "Bids are managed from the market room."})
+                return
+            market_bids.remove(b)
+            await credit_gold(player.name, b["price"])
+            mark_scores_dirty()
+            await send(player, {"type": "message", "text": f"Cancelled bid #{oid} (escrow {b['price']} refunded)."})
             await send(player, stats_view(player))
             return
     await send(player, {"type": "error", "text": f"No order #{oid} of yours."})
@@ -3121,8 +3236,64 @@ async def cmd_market_expand(player, msg):
     await send(player, stats_view(player))
 
 
-async def cmd_market_buy(player, msg):
+async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
+    """Settle one indivisible stack-lot fill at `price` (the resting side set
+    it: `via` is 'bid' when a resting bid is lifted, 'ask' when a resting ask
+    is taken). Gold movement for the trade itself stays with the caller
+    (buyers pay now, bid escrow was prepaid); this handles tax, seller
+    payout, buyer delivery (item_bank when the buyer is offline or pack-full),
+    history, and both sides' trade score."""
     global tax_treasury, tax_collected_lifetime
+    # Commercial rounding, documented (#195.8): half away from zero, not
+    # Python's banker's half-even (round(2.5) == 2 surprises sellers), and
+    # the tax never eats the whole price -- 1g trades used to pay the
+    # seller 0. Conservation holds: tax + payout == price, always.
+    if price > 1:
+        tax = max(TAX_MINIMUM, min(int(price * TAX_RATE + 0.5), price - 1))
+    else:
+        tax = 0
+    seller_payout = price - tax
+    tax_treasury += tax
+    tax_collected_lifetime += tax
+    buyer_entry = get_score_entry(buyer_name)
+    seller_entry = get_score_entry(seller_name)
+    buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
+    seller_entry["tax_paid"] = seller_entry.get("tax_paid", 0.0) + tax
+    # credit_gold pays live sellers directly (spendable immediately) and
+    # banks it for offline ones.
+    await credit_gold(seller_name, seller_payout)
+    delivered = False
+    if buyer is not None and not _pack_full(buyer):
+        buyer.inventory.append(iid)
+        delivered = True
+    if not delivered:
+        # Offline or pack-full buyer: the item waits in their bank, handed
+        # over at login (escrow already covered the price).
+        buyer_entry.setdefault("item_bank", []).append(iid)
+    market_history.append({
+        "time": time.strftime("%H:%M:%S"), "ts": time.time(),
+        "buyer": buyer_name, "seller": seller_name,
+        "item": ITEM_DEFS.get(iid, {}).get("name", iid),
+        "price": price, "tax": tax, "payout": seller_payout, "via": via,
+    })
+    while len(market_history) > MARKET_HISTORY_SIZE:
+        del market_history[0]
+    mark_scores_dirty()
+    # Trade score (#352, moderated R3): filling an order is real
+    # value-add (liquidity for the seller, goods for the buyer), so both
+    # sides earn price-scaled score. Wash-proof: self-deals are refused at
+    # every entry (#188), circular wash burns 10% tax per leg, and
+    # award_points still runs every award through variety x diminish.
+    if buyer is not None:
+        await award_points(buyer, 1 + price // 20, "made a market purchase")
+    else:
+        await award_points_to_name(buyer_name, 1 + price // 20, "made a market purchase")
+    await award_xp(buyer_name, 3, "made a market purchase")
+    await award_points_to_name(seller_name, 1 + tax // 2, "made a market sale")
+    await award_xp(seller_name, 3, "made a market sale")
+
+
+async def cmd_market_buy(player, msg):
     oid = msg.get("id", None)
     choice = None
     if oid is not None:
@@ -3158,48 +3329,121 @@ async def cmd_market_buy(player, msg):
         await send(player, {"type": "error", "text": _pack_full_error()})
         return
     price = choice["price"]
-    # Commercial rounding, documented (#195.8): half away from zero, not
-    # Python's banker's half-even (round(2.5) == 2 surprises sellers), and
-    # the tax never eats the whole price -- 1g trades used to pay the
-    # seller 0. Conservation holds: tax + payout == price, always.
-    if price > 1:
-        tax = max(TAX_MINIMUM, min(int(price * TAX_RATE + 0.5), price - 1))
-    else:
-        tax = 0
-    seller_payout = price - tax
     player.gold -= price
-    tax_treasury += tax
-    tax_collected_lifetime += tax
     market_orders.remove(choice)
-    player.inventory.append(choice["item"])
-    buyer_entry = get_score_entry(player.name)
-    seller_entry = get_score_entry(choice["seller"])
-    buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
-    seller_entry["tax_paid"] = seller_entry.get("tax_paid", 0.0) + tax
-    # credit_gold pays live sellers directly (spendable immediately) and
-    # banks it for offline ones.
-    await credit_gold(choice["seller"], seller_payout)
-    market_history.append({
-        "time": time.strftime("%H:%M:%S"), "ts": time.time(),
-        "buyer": player.name, "seller": choice["seller"],
-        "item": ITEM_DEFS.get(choice["item"], {}).get("name", choice["item"]),
-        "price": price, "tax": tax, "payout": seller_payout,
-    })
-    while len(market_history) > MARKET_HISTORY_SIZE:
-        del market_history[0]
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"You buy {ITEM_DEFS.get(choice['item'], {}).get('name', choice['item'])} for {price} gold."})
-    # Trade score (#352, moderated R3): filling an order is real
-    # value-add (liquidity for the seller, goods for the buyer), so both
-    # sides earn price-scaled score. R3 halved both channels after R2
-    # showed market income overshooting (106/hr/bot): buyer base 2->1
-    # with price//20, seller base 2->1 with tax//2. Wash-proof: self-deals
-    # are refused above (#188), circular wash burns 10% tax per leg, and
-    # award_points still runs every award through variety x diminish.
-    await award_points(player, 1 + price // 20, "made a market purchase")
-    await award_xp(player.name, 3, "made a market purchase")
-    await award_points_to_name(choice["seller"], 1 + tax // 2, "made a market sale")
-    await award_xp(choice["seller"], 3, "made a market sale")
+    await _settle_market_fill(player, player.name, choice["seller"], choice["item"], price, "ask")
+    await send(player, stats_view(player))
+
+
+async def cmd_market_buy_order(player, msg):
+    global tax_treasury
+    if player.room != "market":
+        await send(player, {"type": "error", "text": "Bids are managed from the market room."})
+        return
+    iid = find_item_by_name(list(ITEM_DEFS.keys()), str(msg.get("item", "")))
+    if not iid:
+        await send(player, {"type": "error", "text": "No such item."})
+        return
+    try:
+        price = int(msg.get("price", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0
+    if price <= 0:
+        price = item_suggested_price(iid)
+    fee = _broker_fee(price, BROKER_FEE_PCT)
+    entry = get_score_entry(player.name)
+    slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
+    own_open = _own_open_orders(player.name)
+    if own_open >= slots:
+        nxt = market_slot_price(slots)
+        await send(player, {"type": "error", "text": f"Market stall full ({own_open}/{slots}). Use market_expand (next slot {nxt} gold) or cancel an order."})
+        return
+    if player.gold < price + fee:
+        await send(player, {"type": "error", "text": f"You need {price + fee} gold (bid {price} + broker fee {fee})."})
+        return
+    player.gold -= price + fee
+    tax_treasury = round(tax_treasury + fee, 2)
+    oid = next(_id_counter)
+    bid = {"id": oid, "buyer": player.name, "item": iid, "price": price, "ts": time.time()}
+    market_bids.append(bid)
+    mark_scores_dirty()
+    # Creation sweep (#158): a new bid lifts the cheapest resting ask at or
+    # below its price (wash-proof: own asks never match). The resting ask
+    # set the price, so the fill books at the ASK price and the bidder is
+    # refunded the difference from prepaid escrow.
+    ask = _best_ask_for_bid(bid["item"], bid["buyer"], price)
+    if ask is not None:
+        market_bids.remove(bid)
+        market_orders.remove(ask)
+        refund = price - ask["price"]
+        if refund > 0:
+            await credit_gold(player.name, refund)
+        seller_obj = _online_player(ask["seller"])
+        await _settle_market_fill(player, player.name, ask["seller"], iid, ask["price"], "ask")
+        if seller_obj is not None:
+            await send(seller_obj, {"type": "message", "text": f"Your listing (order #{ask['id']}) fills a standing bid at {ask['price']} gold."})
+            await send(seller_obj, stats_view(seller_obj))
+        await send(player, {"type": "message", "text": f"Your bid #{oid} fills immediately at {ask['price']} gold."})
+        await send(player, stats_view(player))
+        return
+    iname = ITEM_DEFS.get(iid, {}).get("name", iid)
+    await send(player, {"type": "message", "text": f"Bid #{oid}: buying {iname} for {price} gold (fee {fee})."})
+    await send(player, stats_view(player))
+
+
+async def cmd_market_buy_modify(player, msg):
+    global tax_treasury
+    if player.room != "market":
+        await send(player, {"type": "error", "text": "Bids are managed from the market room."})
+        return
+    try:
+        oid = int(msg.get("id", 0) or 0)
+    except (TypeError, ValueError):
+        oid = 0
+    bid = None
+    for b in market_bids:
+        if b["id"] == oid and b["buyer"].lower() == player.name.lower():
+            bid = b
+            break
+    if bid is None:
+        await send(player, {"type": "error", "text": f"No bid #{msg.get('id')}."})
+        return
+    try:
+        new_price = int(msg.get("price", 0) or 0)
+    except (TypeError, ValueError):
+        new_price = 0
+    if new_price <= 0:
+        new_price = item_suggested_price(bid["item"])
+    fee = _broker_fee(new_price, RELIST_FEE_PCT)
+    old_price = bid["price"]
+    player.gold += old_price
+    if player.gold < new_price + fee:
+        player.gold -= old_price
+        await send(player, {"type": "error", "text": f"You need {new_price + fee} gold (bid {new_price} + relist fee {fee})."})
+        return
+    player.gold -= new_price + fee
+    tax_treasury = round(tax_treasury + fee, 2)
+    bid["price"] = new_price
+    mark_scores_dirty()
+    # Modify keeps id and queue position; sweep once like a new bid.
+    ask = _best_ask_for_bid(bid["item"], bid["buyer"], new_price)
+    if ask is not None:
+        market_bids.remove(bid)
+        market_orders.remove(ask)
+        refund = new_price - ask["price"]
+        if refund > 0:
+            await credit_gold(player.name, refund)
+        seller_obj = _online_player(ask["seller"])
+        await _settle_market_fill(player, player.name, ask["seller"], bid["item"], ask["price"], "ask")
+        if seller_obj is not None:
+            await send(seller_obj, {"type": "message", "text": f"Your listing (order #{ask['id']}) fills a standing bid at {ask['price']} gold."})
+            await send(seller_obj, stats_view(seller_obj))
+        await send(player, {"type": "message", "text": f"Your bid #{oid} fills immediately at {ask['price']} gold."})
+        await send(player, stats_view(player))
+        return
+    await send(player, {"type": "message", "text": f"Bid #{oid} now {new_price} gold (relist fee {fee})."})
     await send(player, stats_view(player))
 
 # ---------------------------------------------------------------------------
@@ -3561,6 +3805,8 @@ HANDLERS = {
     "market_cancel": cmd_market_cancel,
     "market_buy": cmd_market_buy,
     "market_expand": cmd_market_expand,
+    "market_buy_order": cmd_market_buy_order,
+    "market_buy_modify": cmd_market_buy_modify,
     "quest": cmd_quest,
     "commission_post": cmd_commission_post,
     "commission_list": cmd_commission_list,
@@ -3581,6 +3827,8 @@ SCORE_ARG_EXTRACTORS = {
     "heal": lambda msg: "heal",
     "market_post": lambda msg: str(msg.get("item", "")).lower(),
     "market_buy": lambda msg: str(msg.get("id", "")).lower(),
+    "market_buy_order": lambda msg: str(msg.get("item", "")).lower(),
+    "market_buy_modify": lambda msg: str(msg.get("id", "")).lower(),
     "quest": lambda msg: str(msg.get("action", "")).lower(),
     "commission_post": lambda msg: str(msg.get("target") or msg.get("required_kills", "")).lower(),
     "commission_fill": lambda msg: str(msg.get("commission_id", "")).lower(),
@@ -3791,6 +4039,10 @@ def world_snapshot():
                    "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM, "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
                    "orders": [{"id": o["id"], "seller": o["seller"], "item": ITEM_DEFS.get(o["item"], {}).get("name", o["item"]),
                                "price": o["price"], "ts": o.get("ts", 0)} for o in market_orders],
+                   "bids": [{"id": b["id"], "buyer": b["buyer"], "item": ITEM_DEFS.get(b["item"], {}).get("name", b["item"]),
+                             "price": b["price"], "ts": b.get("ts", 0)} for b in market_bids],
+                   "spread": {"best_bid": max((b["price"] for b in market_bids), default=None),
+                              "best_ask": min((o["price"] for o in market_orders), default=None)},
                    "history": list(market_history)},
         "buffs": buffs_view,
         "bosses": bosses,

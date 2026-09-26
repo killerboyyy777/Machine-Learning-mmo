@@ -194,6 +194,14 @@ def best_market_ask(orders, iid, exclude_seller=None):
     return min(asks) if asks else None
 
 
+def best_market_bid(bids, iid, exclude_buyer=None):
+    """Highest open bid for an item from other buyers (None if no bids)."""
+    name = srv.ITEM_DEFS.get(iid, {}).get("name", iid)
+    prices = [b["price"] for b in bids or []
+              if b.get("item") == name and b.get("buyer") != exclude_buyer]
+    return max(prices) if prices else None
+
+
 def flip_margin(iid, orders, exclude_seller=None):
     """Expected profit of listing over merchant sale: best ask minus tax
     minus merchant value. None when no comparable ask exists (the market
@@ -378,6 +386,17 @@ def market_tax(price):
 def market_net(price):
     """Gold the seller actually receives for a sale at `price`."""
     return price - market_tax(price)
+
+
+# Standing-bid broker terms, mirroring server.py (#158; getattr fallbacks
+# as elsewhere).
+BROKER_FEE_PCT = getattr(srv, "BROKER_FEE_PCT", 5.0)
+
+
+def broker_fee(price):
+    """Gold sunk to the treasury on bid create/modify (server formula:
+    percent of value, minimum 1 gold). Mirrors _broker_fee exactly."""
+    return max(1, int(price * BROKER_FEE_PCT / 100 + 0.5))
 
 
 def inventory_value(names):
@@ -635,7 +654,9 @@ ACTIONS = (
         # Sister Maren's chains (#183): accept/turn_in mirror the guard and
         # delver actions. Appended last (never-shift rule); pre-#194
         # checkpoints restart fresh.
-        "quest3_accept", "quest3_turn_in", "quest4_accept", "quest4_turn_in"]
+        "quest3_accept", "quest3_turn_in", "quest4_accept", "quest4_turn_in",
+        # Standing buy order (#158): escrowed bid from the market room.
+        "market_buy_order"]
 )
 N_ACTIONS = len(ACTIONS)
 
@@ -647,7 +668,7 @@ STAGE2_UNLOCK = ({"gather", "quest_accept", "quest_turn_in",
                  | {a for a in ACTIONS if a == "craft" or a.startswith("craft_")})
 STAGE3_UNLOCK = {"market_post", "market_buy", "market_cancel", "market_expand",
                  "commission_post", "commission_list", "commission_fill",
-                 "commission_cancel"}
+                 "commission_cancel", "market_buy_order"}
 
 
 def flatten_obs(obs):
@@ -1197,9 +1218,10 @@ class TextMMOEnv:
         self._flip_table = rows
 
     def _detect_fill(self, action, gold_before, inv_before):
-        """Heuristic fill detection for our own market_buy: inventory grew and
-        gold dropped => we bought at gold_before - gold_after."""
-        if action != "market_buy":
+        """Heuristic fill detection for our own market_buy / market_buy_order:
+        inventory grew and gold dropped => we bought at
+        gold_before - gold_after (bid fills include the sunk broker fee)."""
+        if action != "market_buy" and action != "market_buy_order":
             return None
         after = self._state["inv_names"] or []
         if len(after) > len(inv_before):
@@ -1603,8 +1625,10 @@ class TextMMOEnv:
             # respected -- expand instead once full. Same keep rules as sell.
             # Priced, not zero (#194): undercut the best ask by 1 when the
             # book prices the item, else merchant value + 1.
-            own_open = sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
-                           if o.get("seller") == self.name)
+            own_open = (sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
+                             if o.get("seller") == self.name)
+                        + sum(1 for b in ((s.get("market_state") or {}).get("bids") or [])
+                              if b.get("buyer") == self.name))
             if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
                 return None
             cands = [(r["margin"] if r["margin"] is not None else 1, r["value"], r["name"])
@@ -1635,13 +1659,43 @@ class TextMMOEnv:
                 if s.get("gold", 0) < cheapest:
                     return None
             return {"cmd": "market_buy"}
+        if action == "market_buy_order":
+            # Standing bid from the market room only (#158): escrow the bid
+            # price plus the broker fee up front. Bid one below the most
+            # overpriced non-own ask (never below merchant + 1) so resting
+            # sellers compete downward; the server sweeps on create.
+            if s.get("room_id") != "market":
+                return None
+            ms = s.get("market_state") or {}
+            bids = ms.get("bids") or []
+            asks = ms.get("orders") or []
+            own_open = (sum(1 for o in asks if o.get("seller") == self.name)
+                        + sum(1 for b in bids if b.get("buyer") == self.name))
+            if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
+                return None
+            others = [o for o in asks if o.get("seller") != self.name]
+            if not others:
+                return None
+            top = max(others, key=lambda o: o.get("price", 0))
+            iid = srv.find_item_by_name(list(srv.ITEM_DEFS), top.get("item", ""))
+            if not iid:
+                return None
+            price = max(merchant_value(iid) + 1, top.get("price", 0) - 1)
+            if s.get("gold", 0) < price + broker_fee(price):
+                return None
+            return {"cmd": "market_buy_order", "item": top.get("item"), "price": price}
         if action == "market_cancel":
-            # Cancel our own cheapest standing order if we have any.
+            # Cancel our own cheapest standing order if we have any (asks
+            # first; bids need the market room, like server-side).
             ms = s.get("market_state")
             if ms and ms.get("orders"):
-                mine = [o for o in ms["orders"] if o["seller"] == self.name]
+                mine = [o for o in ms["orders"] if o.get("seller") == self.name]
                 if mine:
                     return {"cmd": "market_cancel", "id": mine[0]["id"]}
+            if s.get("room_id") == "market" and ms and ms.get("bids"):
+                mine_b = [b for b in ms["bids"] if b.get("buyer") == self.name]
+                if mine_b:
+                    return {"cmd": "market_cancel", "id": mine_b[0]["id"]}
             return None
         if action == "market_list":
             return {"cmd": "market_list"}
@@ -1650,8 +1704,10 @@ class TextMMOEnv:
             # and the next slot is affordable (mirrors the server's doubling
             # price from the 50g base; the server has the final word).
             slots = s.get("market_slots", MARKET_SLOTS_BASE)
-            own_open = sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
-                           if o.get("seller") == self.name)
+            own_open = (sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
+                             if o.get("seller") == self.name)
+                        + sum(1 for b in ((s.get("market_state") or {}).get("bids") or [])
+                              if b.get("buyer") == self.name))
             if own_open < slots:
                 return None
             if s.get("gold", 0) >= market_slot_price(slots):
