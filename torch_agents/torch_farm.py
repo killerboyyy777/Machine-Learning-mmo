@@ -78,13 +78,18 @@ class TorchFarm:
             return
         self.agent.save_weights(self.args.weights)
         self.last_save_step = self.steps
-        try:
-            with open(self._farm_state_path, "w") as f:
-                json.dump(
-                    {"steps": self.steps, "last_save_step": self.last_save_step}, f
-                )
-        except OSError:
-            pass
+        # Sidecar write leaves the event loop: blocking open() in async
+        # context trips ASYNC230 and stalls runners on slow disks.
+        def _write_state():
+            try:
+                with open(self._farm_state_path, "w") as f:
+                    json.dump(
+                        {"steps": self.steps, "last_save_step": self.last_save_step}, f
+                    )
+            except OSError:
+                pass
+
+        await asyncio.to_thread(_write_state)
 
 
 class Runner:
