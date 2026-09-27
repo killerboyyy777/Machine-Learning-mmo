@@ -65,6 +65,18 @@ c = compare([1, 2, 3, 4, 5, 6], [1, 2, 3])
 assert c["verdict"] == "INCONCLUSIVE" and "mismatch" in c["reason"], c
 print("GUARDS_OK")
 
+# --- comparative-only schema: significance fields present but null ---
+c = compare(
+    [27, 25, 29, 26, 28, 30, 24, 27, 26, 29],
+    [22, 21, 23, 20, 22, 24, 19, 21, 20, 23],
+    isolated=False,
+)
+assert c["verdict"] == "COMPARATIVE", c
+assert c["t"] is None and c["p_value"] is None and c["ci95"] is None, c
+assert c["mean_diff"] > 0 and c["cohen_d"] > 0
+json.dumps(c)  # still serializable for --out run records
+print("COMPARATIVE_SCHEMA_OK")
+
 # --- #247: report uses sample std, matching compare() ---
 import statistics as _statistics
 _mean, _std = report("probe", [3, 1, 4, 1, 5, 9, 2, 6, 5, 3])

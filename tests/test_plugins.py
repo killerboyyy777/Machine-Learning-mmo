@@ -214,6 +214,13 @@ def _bughunt_377():
     slot2 = parse_slot("torch:checkpoint=X.pt,weight=2,epsilon=0.1")
     assert slot2["weight"] == 2, slot2
     assert slot2["config"] == {"checkpoint": "X.pt", "epsilon": 0.1}, slot2
+    for _bad in ("gather:weight=0", "gather:weight=-2", "gather:weight=many"):
+        try:
+            parse_slot(_bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"weight accepted: {_bad}")
     print("SLOT_WEIGHT_OK")
 
     real_import = importlib.import_module

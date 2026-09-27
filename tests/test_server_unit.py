@@ -2220,6 +2220,56 @@ async def main():
     del srv.dungeons[_capd.id]
     print("DUNGEON_CAP_OK")
 
+    # caps are checked before minting or moving: a full floor rejects
+    # the entry with no new instance and no one moved
+    _ma = mkplayer("MintA", 62901, hp=200, max_hp=200)
+    _mb = mkplayer("MintB", 62902)
+    await srv.cmd_party_invite(_ma, {"target": "MintB"})
+    await srv.cmd_party_accept(_mb, {})
+    await srv.cmd_move(_ma, {"dir": "south"})
+    _nd0 = len(srv.dungeons)
+    await srv._enter_dungeon(_ma)
+    _md = srv.dungeon_for_room(_ma.room)
+    assert _md is not None and len(srv.dungeons) == _nd0 + 1
+    _mrid = _ma.room
+    _mfill = [mkplayer(f"MintF{_i}", 62910 + _i, room=_mrid) for _i in range(11)]
+    await srv.cmd_move(_mb, {"dir": "south"})
+    inbox.clear()
+    await srv._enter_dungeon(_mb)
+    assert _mb.room == srv.DUNGEON_ENTRANCE_ROOM, _mb.room
+    assert any(m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox)
+    assert len(srv.dungeons) == _nd0 + 1  # no instance minted on failure
+    for _cp in _mfill:
+        unplayer(_cp)
+    for p in list(srv.parties.values()):
+        if _ma.id in p.member_ids or _mb.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(_ma)
+    unplayer(_mb)
+    assert _md.id not in srv.dungeons  # party teardown takes the instance with it
+    print("CAP_BEFORE_MINT_OK")
+
+    # floor-1 exit obeys the entrance cap like every other move
+    _ea = mkplayer("ExitA", 62950, hp=200, max_hp=200)
+    await srv.cmd_move(_ea, {"dir": "south"})
+    await srv._enter_dungeon(_ea)
+    _efill = [
+        mkplayer(f"ExitF{_i}", 62960 + _i, room=srv.DUNGEON_ENTRANCE_ROOM)
+        for _i in range(srv.MAX_PLAYERS_PER_ROOM)
+    ]
+    _eroom = _ea.room
+    inbox.clear()
+    await srv.cmd_move(_ea, {"dir": "up"})
+    assert _ea.room == _eroom, _ea.room
+    assert any(m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox)
+    for _cp in _efill:
+        unplayer(_cp)
+    for p in list(srv.parties.values()):
+        if _ea.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(_ea)
+    print("FLOOR1_EXIT_CAP_OK")
+
     # pre-login commands never mint SCORES[""] via the action log:
     # drive market_list through the full dispatch unauthenticated
     srv.SCORES.pop("", None)

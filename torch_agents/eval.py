@@ -185,7 +185,10 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
     Returns a JSON-serializable dict with mean_diff, paired t statistic,
     two-sided p-value, Cohen's d (paired), 95% CI on the mean diff, and a
     SIGNIFICANT/INCONCLUSIVE verdict. Fewer than min_n seeds (or a
-    length mismatch) yields INCONCLUSIVE without statistics."""
+    length mismatch) yields INCONCLUSIVE without statistics. The
+    comparative-only path (isolated=False) keeps the same schema with
+    t/p_value/ci95 set to null, so consumers never KeyError on a
+    missing significance claim."""
     n = len(champ_scores)
     out = {"n": n, "verdict": "INCONCLUSIVE", "reason": None}
     if n != len(base_scores):
@@ -215,6 +218,9 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
             "shared persistent server without per-seed reset: "
             "descriptive only, no significance claim"
         )
+        # Schema parity with the isolated path: significance fields are
+        # present but null, never absent.
+        out.update(t=None, p_value=None, ci95=None)
         return out
     if sd == 0.0:
         # Identical diffs: difference is exact (or exactly zero).

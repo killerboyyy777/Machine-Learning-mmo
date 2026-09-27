@@ -221,7 +221,14 @@ def parse_slot(spec):
         if not key:
             raise ValueError(f"empty key in slot {spec!r}")
         if key == "weight":
-            weight = int(value)
+            try:
+                weight = int(value)
+            except (TypeError, ValueError):
+                weight = 0
+            if weight < 1:
+                raise ValueError(
+                    f"bad slot weight {value!r} in {spec!r} (want a positive int)"
+                )
         elif key.startswith("env_"):
             env[key[len("env_") :]] = value
         else:

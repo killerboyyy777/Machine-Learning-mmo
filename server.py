@@ -1845,12 +1845,18 @@ async def _enter_dungeon(player):
         await send(player, {"type": "error", "text": f"The archway rejects you for {int(wait)}s more (you abandoned an uncleared descent); descent readiness {adaptive_score(player)}."})
         return
     party = _auto_create_party(player)
-    if party.dungeon_id not in dungeons:
+    if party.dungeon_id in dungeons:
+        d = dungeons[party.dungeon_id]
+        # Caps before moves: a full floor rejects the entry with no one
+        # moved. A fresh instance is always empty, so only existing ones
+        # need the check (minting nothing on failure either way).
+        if len(players_in_room(d.room_id(1))) >= MAX_PLAYERS_PER_ROOM:
+            await send(player, {"type": "error", "text": "That floor is too crowded."})
+            return
+    else:
         d = Dungeon(party_id=party.id)
         dungeons[d.id] = d
         party.dungeon_id = d.id
-    else:
-        d = dungeons[party.dungeon_id]
     # Party members enter together: bring everyone already in the party who
     # is standing at the entrance.
     for mid in list(party.member_ids):
@@ -1891,6 +1897,9 @@ async def _dungeon_move_or_fail(player, d, direction):
     if direction == "up":
         if floor_no == 1 or (f and f.cleared):
             if floor_no == 1:
+                if len(players_in_room(DUNGEON_ENTRANCE_ROOM)) >= MAX_PLAYERS_PER_ROOM:
+                    await send(player, {"type": "error", "text": "The graveyard is too crowded."})
+                    return
                 remove_member(player)
                 player.room = DUNGEON_ENTRANCE_ROOM
                 add_member(player)
