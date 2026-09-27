@@ -4,9 +4,10 @@ on:
   push:
     # agent/**: contributor pushes otherwise trigger nothing (push CI
     # reads workflow files from the pushed branch, and agent branches
-    # predate every CI addition). Scheduled agent-sync remains the
+    # predate every CI addition). fix/** added 09-27: seat fix branches
+    # had zero CI signal. Scheduled agent-sync remains the
     # backstop for branches that never merge master in.
-    branches: [master, "review/**", "agent/**"]
+    branches: [master, "review/**", "agent/**", "fix/**"]
   pull_request:
     branches: [master]
 
