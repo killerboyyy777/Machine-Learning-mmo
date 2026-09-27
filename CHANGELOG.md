@@ -3,6 +3,15 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Adventurers Guild hub + standing bounties (#337). New guild_hall room
+  south of Artisan Row with a Guildmaster NPC; commission post/fill are
+  presence-gated to the guild (list/cancel stay global). Server posts
+  standing bounties from the tax treasury when world-state triggers fire
+  (overpopulation, price spikes, undelved floors), priced NET of death
+  drain with per-family config knobs (default ON); bounties expire with
+  escrow refunded when the condition clears. Guild fills skip collusion
+  tracking and the poster score cut. Bots mask zero-reward posts and
+  post/fill outside the guild.
 - Milestone batch (remaining #374/#375/#376/#377/#378 findings).
   Economy: broker/relist fees now land in the lifetime counter as well
   as the spendable treasury; death floor-piles credit next to the debit
