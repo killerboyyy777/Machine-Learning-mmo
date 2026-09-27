@@ -112,4 +112,18 @@ _gold, _loot, _pnl, _qr0, _qi0, _rnd0 = _tr.transition_targets({"gold_raw": 0}, 
 assert _qr0 == 0.0
 print("TORCH_QUEST_TARGETS_OK")
 
+# --- torch plugin learn stores the done key (ported from #382): without
+# it, TorchDQNAgent.learn() raises KeyError: 'done' once the batch fills ---
+try:
+    from ml.plugins import instantiate
+
+    _tp = instantiate("torch", learn_every=1)
+    _tenv = TextMMOEnv("stub")
+    _fobs = _tenv._build_obs()
+    for _ in range(32):
+        _tp.learn(_fobs, 0, 1.0, _fobs, False)
+    print("TORCH_LEARN_OK")
+except ImportError as _e:
+    print(f"TORCH_LEARN_SKIP (no torch: {_e})")
+
 print("ALL_RUNNERS_OK")

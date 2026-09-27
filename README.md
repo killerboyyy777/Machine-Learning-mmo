@@ -25,8 +25,10 @@ python3 server.py          # world on ws://0.0.0.0:8765
 # open http://localhost:8766/ for the live dashboard
 ```
 
-On Windows you can also just run `start.bat`. Edit `world.json` for your
-own rooms/NPCs/items (loaded once at startup).
+Run `python start.py` (any OS) for the server + banner, or add
+`--roles "gather:8,dungeon:4,market:3,commissioner:2"` to also launch
+bots. Edit `world.json` for your own rooms/NPCs/items (loaded once at
+startup).
 
 ## Docker (full stack, zero install)
 

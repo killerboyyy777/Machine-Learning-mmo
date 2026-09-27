@@ -1566,8 +1566,9 @@ class TextMMOEnv:
             # Real bounty, parameterized from state (#194): target the first
             # hostile in view (server matches substrings case-insensitively),
             # falling back to the server's own "rat" default when blind; 1
-            # kill, escrow up to 10g of carried gold (0g when broke is still
-            # a valid listing). Never masked: affordability is priced in,
+            # kill, escrow up to 10g of carried gold (0g when broke is now
+            # rejected server-side, so the bot retries once funded).
+            # Never masked: affordability is priced in,
             # not gated, and the server defaults an empty target.
             hostiles = [n for n in (s.get("npc_names") or [])
                         if n not in NON_HOSTILE_NAMES]
