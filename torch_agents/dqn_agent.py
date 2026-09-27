@@ -356,8 +356,9 @@ class TorchDQNAgent:
         gold: delta in player gold
         loot: approximated from inventory value changes
         market: P&L from the step's market activity
-        quest: QUEST_REWARD_POINTS if this step turned the guard quest in,
-            else 0.0 (regressing toward this forces quest-stage encoding)
+        quest: turn-in points for any of the four quests (guard_charm,
+            delver, remedy, tonic), else 0.0 (regressing toward this
+            forces quest-stage encoding)
         """
         t = transition
         gold_target = float(t.get("gold_delta", 0.0))
@@ -377,9 +378,15 @@ class TorchDQNAgent:
         """One learning step: sample a minibatch from replay and perform
         a TD update with auxiliary gold/loot/market/quest prediction heads.
 
-        TD target uses shaped reward r = r_score + λi * r_intrinsic, where
-        r_intrinsic is the quest-gated exploration bonus stored per
-        transition. Loss = L_TD + α * (L_gold + L_loot) + β * L_market
+        TD target uses shaped reward r = r_score + λi * r_intrinsic
+        + λr * r_rnd, where r_intrinsic is the quest-gated exploration
+        bonus stored per transition. Turn-in points are NOT a separate TD
+        term: they arrive inside r_score (score-delta), so adding them
+        again double-counts quest chains (#378); quest_reward supervises
+        the aux quest head only. Checkpoints saved before #378 learned Q
+        with score+quest and read biased high -- retrain, or expect
+        downward drift as the new target takes over.
+        Loss = L_TD + α * (L_gold + L_loot) + β * L_market
         + γq * L_quest, with α/β/γq = aux/market/quest lambdas.
         Returns a dict of loss components for logging."""
         # Buffer warm-up keys on a fillable minibatch (#222), not the full
@@ -463,14 +470,15 @@ class TorchDQNAgent:
         q_vals = self.q.get_q(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # ---- TD target on the shaped reward ----
-        # r = score + quest-intrinsic + quest-reward + RND curiosity (the
-        # exploration bonuses and turn-in points ride the TD target; the
-        # predictor itself trains below).
+        # r = score + quest-intrinsic + RND curiosity (the exploration
+        # bonuses ride the TD target; the predictor itself trains below).
+        # Turn-in points already live inside `rewards` (score-delta), so
+        # quest_targets must NOT ride the TD target too (#378); they
+        # supervise the aux quest head only.
         shaped = (
             rewards
             + self.intrinsic_lambda * intrinsic_targets
             + self.rnd_lambda * rnd_targets
-            + quest_targets
         )
         with torch.no_grad():
             target_q = self.target.get_q(next_states).max(1)[0]
