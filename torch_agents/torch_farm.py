@@ -6,12 +6,19 @@ asyncio tasks; each completed environment step is applied to the same replay
 buffer and policy in the event loop, so no model updates are lost to
 last-writer-wins checkpoint races.
 
+Resume state: the weights file carries the model, and a sidecar JSON file
+next to it (`<weights>.farm.json`) carries the farm step counters. --steps
+is a LIFETIME total across restarts, not a per-run budget: resuming with
+the same --steps value after a completed run performs zero further steps;
+pass a larger total to continue training.
+
 Run from the repository root:
     python torch_agents/torch_farm.py --agents 4 --steps 1000000
 """
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -47,7 +54,24 @@ class TorchFarm:
         self.agent = TorchDQNAgent(name=args.name_prefix + "Shared", url=args.url)
         loaded = self.agent.load_weights(args.weights)
         if not loaded and args.best_weights and os.path.exists(args.best_weights):
-            self.agent.load_weights(args.best_weights)
+            loaded = self.agent.load_weights(args.best_weights)
+        if loaded:
+            # Seed from the restored peak: score > -inf is always true on
+            # the first step, which used to clobber the best file with an
+            # early worse score (#378).
+            self.last_best_score = self.agent.best_score
+        self._farm_state_path = args.weights + ".farm.json"
+        try:
+            with open(self._farm_state_path) as f:
+                _st = json.load(f)
+            if not isinstance(_st, dict):
+                raise TypeError("sidecar root must be an object")
+            # Persisted counters survive restarts: --steps is a lifetime
+            # total, so resume continues the count instead of restarting it.
+            self.steps = int(_st.get("steps", 0))
+            self.last_save_step = int(_st.get("last_save_step", -1))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
         self.runners = []
 
     def should_stop(self):
@@ -62,6 +86,19 @@ class TorchFarm:
             return
         self.agent.save_weights(self.args.weights)
         self.last_save_step = self.steps
+        # Sidecar write leaves the event loop: blocking open() in async
+        # context trips ASYNC230 and stalls runners on slow disks.
+
+        def _write_state():
+            try:
+                with open(self._farm_state_path, "w") as f:
+                    json.dump(
+                        {"steps": self.steps, "last_save_step": self.last_save_step}, f
+                    )
+            except OSError:
+                pass
+
+        await asyncio.to_thread(_write_state)
 
 
 class Runner:
@@ -133,11 +170,10 @@ class Runner:
             quest_intrinsic += agent.intrinsic_accept
         if qinfo.get("crafted_charm") or qinfo.get("delver_became_ready"):
             quest_intrinsic += agent.intrinsic_progress
-        for mat_key in ("quest_mat_bark", "quest_mat_hide", "quest_mat_ecto"):
-            if float(next_obs.get(mat_key, 0.0)) > float(
-                (self.obs or {}).get(mat_key, 0.0)
-            ):
-                quest_intrinsic += agent.intrinsic_progress
+        # No per-material loop (unlike an earlier farm revision): the
+        # single-agent bonus is deliberately NOT farmable per pickup
+        # (dqn_agent train(): accept + progress transitions only), and the
+        # farm docstring promises that same objective (#378).
 
         rnd_bonus = agent.rnd_bonus(next_features) if agent.rnd_lambda else 0.0
 

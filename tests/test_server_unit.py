@@ -2007,6 +2007,13 @@ async def main():
     assert os.path.isfile(srv.SCORES_FILE)
     srv.SCORES_FILE = "/nonexistent_dir_xyz_abc/scores.json"
     assert srv.save_scores() is False
+    # serialization failure (corrupt value) reports False too, not raise
+    srv.SCORES_FILE = os.path.join(_tmpd, "scores.json")
+    srv.SCORES["__probe__"] = object()
+    assert srv.save_scores() is False
+    del srv.SCORES["__probe__"]
+    assert srv.save_scores() is True
+    srv.SCORES_FILE = "/nonexistent_dir_xyz_abc/scores.json"
     _was_dirty = srv._scores_dirty
     srv._scores_dirty = True
     if srv._scores_dirty and srv.save_scores():
@@ -2014,7 +2021,12 @@ async def main():
     assert srv._scores_dirty is True  # failure keeps the mutation queued
     srv.SCORES_FILE = _real_scores
     srv._scores_dirty = _was_dirty
-    os.remove(os.path.join(_tmpd, "scores.json"))
+    for _f in ("scores.json", "scores.json.tmp", "scores.json.1", "scores.json.2"):
+        _p = os.path.join(_tmpd, _f)
+        if os.path.isfile(_p):
+            # a failed dump leaves its tmp behind (shutdown log line
+            # follow-up); the test cleans up after itself regardless
+            os.remove(_p)
     os.rmdir(_tmpd)
     print("SAVE_BOOL_OK")
 
@@ -2033,5 +2045,15 @@ async def main():
     del srv.SCORES["prunebanked"]
     srv._last_score_prune = time.time()
     print("PRUNE_BANK_OK")
+
+    # --- clear-reward gate: missing floor pays/logs nothing, fresh pays
+    # once, flagged never re-pays (phantom-log guard, #373 1b) ---
+    assert srv._clear_reward_due(None) is False
+    _gf = srv.DungeonFloor()
+    assert _gf.clear_rewarded is False
+    assert srv._clear_reward_due(_gf) is True
+    _gf.clear_rewarded = True
+    assert srv._clear_reward_due(_gf) is False
+    print("CLEAR_GATE_OK")
 
 asyncio.run(main())
