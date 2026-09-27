@@ -166,10 +166,13 @@ if HAVE_TORCH:
     # --- TD target excludes turn-in points: quest_reward already lives
     # inside the score-delta reward, so adding it again double-counts
     # quest chains ~2x (#378). gamma/lambdas zeroed => target == reward.
+    # Seeded so the replay sample (and fresh nets) are reproducible.
     from unittest.mock import patch as _patch
 
     import torch as _torch
 
+    random.seed(1234)
+    _torch.manual_seed(1234)
     dagent = TorchDQNAgent(replay_size=16, batch_size=8)
     dagent.gamma = 0.0
     dagent.intrinsic_lambda = 0.0
@@ -193,9 +196,12 @@ if HAVE_TORCH:
         return _real_smooth(inp, tgt, *a, **k)
 
     with _patch.object(_torch.nn.functional, "smooth_l1_loss", _spy):
-        dagent.learn()
+        dlosses = dagent.learn()
     assert _seen, "td loss never computed"
     assert _torch.allclose(_seen["tgt"], _torch.ones_like(_seen["tgt"])), _seen["tgt"]
+    # ... while the nonzero quest_reward still supervises the aux quest
+    # head (quest shapes representation only, post-#378).
+    assert dlosses["quest"] > 0.0, dlosses
     print("TD_DEDUP_OK")
 
 print("ALL_TRAINING_LOOPS_OK")

@@ -353,6 +353,12 @@
   </div>
   <div class="panel">
     <h2>Instanced party dungeons<span class="sortctl">sort<select id="dungeonSort"><option value="floor-desc">max floor, high first</option><option value="floor-asc">max floor, low first</option><option value="party-desc">party size, big first</option><option value="party-asc">party size, small first</option></select></span></h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="dc-solo">-</div><div class="l">solo clears</div></div>
+      <div class="stat"><div class="v" id="dc-group">-</div><div class="l">group clears</div></div>
+      <div class="stat"><div class="v" id="dc-solo-max">-</div><div class="l">solo max floor</div></div>
+      <div class="stat"><div class="v" id="dc-group-max">-</div><div class="l">group max floor</div></div>
+    </div>
     <div id="dungeons"></div>
   </div>
 </div>
@@ -665,7 +671,7 @@ function hpbar(hp, max) {
 
 // Unguarded cmd (/oc round) used to yield class="cmd-undefined" on
 // malformed rows; fall back to the bare prefix (unstyled, never throws).
-function cmdClass(cmd) { return "cmd-" + (cmd || ""); }
+function cmdClass(cmd) { return "cmd-" + String(cmd || "").replace(/[^A-Za-z0-9_-]/g, ""); }
 
 function exitEntries(room) {
   const exits = (room && room.exits) || [];
@@ -807,10 +813,10 @@ function renderRoomDrawer(byId) {
       ${(r.gold > 0) ? `<div><span class="tag itemtag">${esc(r.gold)} gold (death drop)</span></div>` : ""}
       <div>${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}</div>
     </div>`);
-  $("roomClose").addEventListener("click", () => {
+  $("roomClose").onclick = () => {
     openRoomId = null;
     renderRoomDrawer(byId);
-  });
+  };
 }
 
 // Last map paint key: rooms JSON + pan/zoom. Identical ticks skip the
@@ -963,17 +969,17 @@ function renderRooms(rooms) {
   setHTML("rooms", rooms.map(r => `
     <div class="room">
       <h3>${esc(r.name)}</h3>
-      ${r.players.length ? r.players.map(p => {
+      ${(r.players || []).length ? (r.players || []).map(p => {
         const name = p.name ?? p;
         const lvl = p.level !== undefined ? p.level : 1;
         return `<span class="tag alive">${esc(name)} <span class="dim">(lv${lvl})</span></span>`;
       }).join("") : ""}
-      ${r.npcs.map(n => `<span class="tag ${n.alive ? "alive" : "dead"}">${esc(n.name)}
-          ${n.alive ? (n.max_hp ? ` (${n.hp}/${n.max_hp})` : "") : " (dead)"}</span>`).join("")}
-      ${r.items.map(i => `<span class="tag itemtag">${esc(i)}</span>`).join("")}
+      ${((r.npcs || []).map(n => `<span class="tag ${n.alive ? "alive" : "dead"}">${esc(n.name)}
+          ${n.alive ? (n.max_hp ? ` (${n.hp}/${n.max_hp})` : "") : " (dead)"}</span>`).join(""))}
+      ${((r.items || []).map(i => `<span class="tag itemtag">${esc(i)}</span>`).join(""))}
       ${(r.gold > 0) ? `<span class="tag itemtag">${esc(r.gold)} gold (death drop)</span>` : ""}
       ${exitEntries(r).map(e => `<span class="tag exittag">${esc(e[0])} → ${esc(e[2])}</span>`).join("")}
-      ${(!r.players.length && !r.npcs.length && !r.items.length) ? `<span class="empty">empty</span>` : ""}
+      ${(!(r.players || []).length && !(r.npcs || []).length && !(r.items || []).length) ? `<span class="empty">empty</span>` : ""}
     </div>`).join(""));
 }
 
@@ -1081,6 +1087,7 @@ function trendChart(id, values, colorKey, times) {
       }]},
     }, data, el);
     u._empty = !live;
+    u._h = 80;
   } else {
     u.setData(data);
   }
@@ -1091,15 +1098,17 @@ function trendChart(id, values, colorKey, times) {
   // Refit on width change only: a chart sized while its tab was hidden
   // (260px fallback) or while the window was wider snaps back to its
   // panel. This is the structural fix for canvases overflowing panels.
+  // Per-chart height (st-chart is 110): reuse the creation height so a
+  // global refit never squashes taller charts.
   if (w && w !== u._sizedW) {
-    try { u.setSize({width: w, height: 80}); u._sizedW = w; }
+    try { u.setSize({width: w, height: u._h || 80}); u._sizedW = w; }
     catch (e) {}
   }
 }
 function resizeCharts() {
   for (const [id, u] of Object.entries(charts)) {
     const el = document.getElementById(id);
-    if (el && el.clientWidth && u) { try { u.setSize({width: el.clientWidth, height: 80}); } catch (e) {} }
+    if (el && el.clientWidth && u) { try { u.setSize({width: el.clientWidth, height: u._h || 80}); } catch (e) {} }
   }
 }
 window.addEventListener("resize", resizeCharts);
@@ -1160,7 +1169,7 @@ function renderActivity(activity) {
   for (const a of rows) {
     if ((a.seq ?? 0) > mx) mx = a.seq;
   }
-  actMaxSeq = mx;
+  actMaxSeq = Math.max(actMaxSeq, mx);
   actData = rows;
   renderActivityView();
 }
@@ -1226,9 +1235,12 @@ function renderMarket(m) {
         <td><b>${h.price}</b></td><td>${h.tax}</td><td>${h.payout}</td></tr>`).join(""));
   $("noTrades").style.display = history.length ? "none" : "";
   // Price-per-sale chart as a uPlot area (new in 2/4: v1 shows the
-  // table only; the series already rides in the snapshot).
-  const prices = history.map(h => h.price);
-  const ptimes = history.map(h => h.time || fmtTs(h.ts));
+  // table only; the series already rides in the snapshot). The table is
+  // newest-first; the chart takes an ascending (reversed) copy so time
+  // runs left-to-right.
+  const asc = history.slice().reverse();
+  const prices = asc.map(h => h.price);
+  const ptimes = asc.map(h => h.time || fmtTs(h.ts));
   trendChart("m-priceHist", prices, "amber", ptimes);
   setTrendVal("m-priceHist", prices.length ? prices[prices.length - 1] : null);
 }
@@ -1330,11 +1342,12 @@ function renderSteam(market) {
       }]},
     }, [xs, meds, vols], el);
     u._dataKey = dataKey;
+    u._h = H;
     u._sizedW = 0;
   }
   u._labels = meds.map((m, i) => `${m}g median · ${vols[i]} fill${vols[i] === 1 ? "" : "s"}`);
   if (w && w !== u._sizedW) {
-    try { u.setSize({width: w, height: H}); u._sizedW = w; }
+    try { u.setSize({width: w, height: u._h || H}); u._sizedW = w; }
     catch (e) {}
   }
   // Readout for this chart is the stats row above (lowest ask / median),
@@ -1430,6 +1443,17 @@ function renderDungeons(dungeons) {
         </div>`).join("")}
       ${(d.floors || []).length ? "" : `<span class="empty">floor 1 not generated yet</span>`}
     </div>`).join(""));
+}
+
+// Lifetime dungeon clear totals (snapshot dungeon_clears had no consumer).
+// Text-only writes to existing nodes: no layout shift during live runs.
+function renderDungeonClears(c) {
+  const d = c || {};
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v ?? 0; };
+  set("dc-solo", d.solo_clears);
+  set("dc-group", d.group_clears);
+  set("dc-solo-max", d.solo_max_floor);
+  set("dc-group-max", d.group_max_floor);
 }
 
 const AGENT_COLS = [...PLAYER_COLS, p => p.last_action || ""];
@@ -1760,6 +1784,7 @@ const TAB_SECTIONS = {
   dungeon: [
     ["buffs", s => renderBuffs(s.buffs || {})],
     ["bosses", s => renderBosses(s.bosses || [])],
+    ["dungeon clears", s => renderDungeonClears(s.dungeon_clears || {})],
     ["dungeons", s => renderDungeons(s.dungeons || [])],
   ],
   agents: [["agents", s => renderAgents(s.players || [])]],
@@ -1790,11 +1815,14 @@ function renderAll(s) {
   }
 }
 
+let tickGen = 0;
 async function tick() {
+  const gen = ++tickGen;
   try {
     const res = await fetch("/api/state");
     if (!res.ok) throw new Error(res.status);
     const s = await res.json();
+    if (gen !== tickGen) return;
     lastState = s;
     $("dot").classList.remove("stale");
     $("status").textContent = "live";
@@ -1809,6 +1837,7 @@ async function tick() {
     renderAll(s);
     if (!actSource) actStream();
   } catch (e) {
+    if (gen !== tickGen) return;
     $("dot").classList.add("stale");
     $("status").textContent = "no server connection";
   }
@@ -1864,7 +1893,7 @@ function gmlog(text, cls) {
 function gmOpen() {
   try {
     if (!lastState) return;
-    const port = lastState.server.gm_port || 8767;
+    const port = (lastState.server || {}).gm_port || 8767;
     // Follow the page origin like v1 (#236): hardcoded loopback breaks
     // any non-localhost host.
     const host = location.hostname || "127.0.0.1";

@@ -2067,4 +2067,255 @@ async def main():
     assert srv._clear_reward_due(_gf) is False
     print("CLEAR_GATE_OK")
 
+    # --- Milestone batch: economy + world regression pins ---
+    # fees land in the lifetime counter too, not just the spendable pile
+    fee_poster = mkplayer("FeePoster", 62001, room="market")
+    fee_poster.gold = 100000
+    _t0, _tl0 = srv.tax_treasury, srv.tax_collected_lifetime
+    _fee = srv._broker_fee(12, srv.BROKER_FEE_PCT)
+    assert _fee >= 1
+    await srv.cmd_market_buy_order(fee_poster, {"item": herb_name, "price": 12})
+    assert srv.tax_treasury - _t0 == srv.tax_collected_lifetime - _tl0 == _fee
+    srv.market_bids[:] = [b for b in srv.market_bids if b["buyer"] != "FeePoster"]
+    unplayer(fee_poster)
+    print("FEES_LIFETIME_OK")
+
+    # death pile credited next to the debit: 40% of carried gold hits the floor
+    dier = mkplayer("Dier", 62002, room="market")
+    dier.gold = 1000
+    _pile0 = srv.room_gold.get("market", 0)
+    await srv.respawn_player(dier)
+    assert srv.room_gold.get("market", 0) - _pile0 == 400, srv.room_gold.get("market", 0)
+    assert dier.gold == 500  # 1000 - 400 dropped - 100 lost
+    unplayer(dier)
+    print("DEATH_PILE_OK")
+
+    # mover swaps membership before the broadcast await: the leaves note
+    # goes to the old room, never to the mover, who already sees dest
+    _wit_old = mkplayer("WitOld", 62003, room="town_square")
+    _wit_new = mkplayer("WitNew", 62004, room="market")
+    _mover = mkplayer("Mover", 62005, room="town_square")
+    _seen = []
+    _real_send = srv.send
+
+    async def _rec(p, payload):
+        _seen.append((getattr(p, "name", None), payload))
+        return await _real_send(p, payload)
+
+    srv.send = _rec
+    await srv.cmd_move(_mover, {"dir": "west"})
+    srv.send = _real_send
+    assert _mover.room == "market"
+    _leaves = [
+        n
+        for n, pl in _seen
+        if isinstance(pl, dict) and pl.get("type") == "message" and "leaves" in pl.get("text", "")
+    ]
+    assert _leaves and "Mover" not in _leaves, _leaves
+    assert any(
+        n == "Mover" and isinstance(pl, dict) and pl.get("type") == "room"
+        for n, pl in _seen
+    )
+    unplayer(_wit_old)
+    unplayer(_wit_new)
+    unplayer(_mover)
+    print("MOVER_SWAP_OK")
+
+    # 0-offer legacy rows list as 0g (fill-path guard mirrored in the list)
+    _lz = next(srv._commission_counter)
+    srv._commissions[_lz] = {
+        "id": _lz, "poster": "ZeroPoster", "target": "rat",
+        "required_kills": 1, "reward_gold": 0, "reward_xp": 0, "escrow": 0,
+        "status": "open", "created_ts": time.time() - 1,
+    }
+    _viewer = mkplayer("ListViewer", 62006, room="town_square")
+    inbox.clear()
+    await srv.cmd_commission_list(_viewer, {})
+    _blob = next(m["text"] for m in inbox if m.get("type") == "message" and "#" in m.get("text", ""))
+    _zline = next(ln for ln in _blob.splitlines() if ln.startswith(f"#{_lz}:"))
+    assert "reward 0g" in _zline, _zline
+    del srv._commissions[_lz]
+    unplayer(_viewer)
+    print("ZERO_LIST_OK")
+
+    # collusion eviction is least-recently-seen: a high-count stale filler
+    # is evicted before a low-count recent one (old code did the reverse)
+    _lru_poster = mkplayer("LruPoster", 62007)
+    _lru_poster.gold = 1000000
+    _stale = mkplayer("LruStale", 62008)
+    await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
+                                                "reward_gold": 10, "reward_xp": 0})
+    _cid0 = max(srv._commissions)
+    srv.record_npc_kill("LruStale", "Giant Rat")
+    await srv.cmd_commission_fill(_stale, {"commission_id": _cid0})
+    assert srv._commissions[_cid0]["status"] == "completed"
+    for _i in range(srv.COMMISSION_COLLAB_CAP - 1):
+        _f = mkplayer(f"LruF{_i}", 62100 + _i)
+        await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
+                                                    "reward_gold": 10, "reward_xp": 0})
+        _c = max(srv._commissions)
+        srv.record_npc_kill(f"LruF{_i}", "Giant Rat")
+        await srv.cmd_commission_fill(_f, {"commission_id": _c})
+        unplayer(_f)
+    _pentry = srv.get_score_entry("LruPoster")
+    _collab = _pentry["collab_fills"]
+    assert len(_collab) == srv.COMMISSION_COLLAB_CAP, len(_collab)
+    for _k in list(_collab):
+        _pentry.setdefault("collab_seen", {})[_k] = 2.0
+    _pentry["collab_seen"]["lrustale"] = 1.0
+    _fresh = mkplayer("LruFresh", 62300)
+    await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
+                                                "reward_gold": 10, "reward_xp": 0})
+    _cf = max(srv._commissions)
+    srv.record_npc_kill("LruFresh", "Giant Rat")
+    await srv.cmd_commission_fill(_fresh, {"commission_id": _cf})
+    assert "lrustale" not in _collab, sorted(_collab)
+    assert len(_collab) == srv.COMMISSION_COLLAB_CAP
+    for _c2 in list(srv._commissions.values()):
+        if _c2["poster"] == "LruPoster" and _c2["status"] == "open":
+            await srv.cmd_commission_cancel(_lru_poster, {"commission_id": _c2["id"]})
+    unplayer(_lru_poster)
+    unplayer(_stale)
+    unplayer(_fresh)
+    print("COLLAB_LRU_OK")
+
+    # pulled party mates serve their own re-enter delay
+    _pa = mkplayer("PullA", 62401)
+    _pb = mkplayer("PullB", 62402)
+    await srv.cmd_party_invite(_pa, {"target": "PullB"})
+    await srv.cmd_party_accept(_pb, {})
+    await srv.cmd_move(_pa, {"dir": "south"})
+    await srv.cmd_move(_pb, {"dir": "south"})
+    _pbentry = srv.get_score_entry("PullB")
+    _pbentry["dungeon_left_ts"] = time.time()
+    inbox.clear()
+    await srv._enter_dungeon(_pa)
+    assert srv.dungeon_for_room(_pa.room) is not None
+    assert srv.dungeon_for_room(_pb.room) is None, _pb.room
+    assert any(
+        m.get("type") == "error" and "archway rejects" in m.get("text", "") for m in inbox
+    ), inbox[-3:]
+    for p in list(srv.parties.values()):
+        if _pa.id in p.member_ids or _pb.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(_pa)
+    unplayer(_pb)
+    print("REENTER_PULL_OK")
+
+    # dungeon moves enforce the room cap like surface moves
+    _capd = srv.Dungeon(party_id=999001)
+    srv.dungeons[_capd.id] = _capd
+    _crid = _capd.room_id(1)
+    _capd.floor(1)
+    _capps = []
+    for _i in range(srv.MAX_PLAYERS_PER_ROOM):
+        _cp = mkplayer(f"Dcap{_i}", 62500 + _i, room=_crid)
+        _capps.append(_cp)
+    _outsider = mkplayer("DcapOut", 62600)
+    assert srv._dungeon_move(_outsider, _capd, 1) is False
+    assert _outsider.room == "town_square"
+    for _cp in _capps:
+        unplayer(_cp)
+    unplayer(_outsider)
+    del srv.dungeons[_capd.id]
+    print("DUNGEON_CAP_OK")
+
+    # pre-login commands never mint SCORES[""] via the action log:
+    # drive market_list through the full dispatch unauthenticated
+    srv.SCORES.pop("", None)
+
+    class _PreWS:
+        remote_address = ("127.0.0.1", 99)
+
+        def __init__(self, raws):
+            self._raws = list(raws)
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for raw in self._raws:
+                yield raw
+
+        async def send(self, payload):
+            pass
+
+        async def close(self):
+            pass
+
+    await srv.handle_connection(_PreWS([json.dumps({"cmd": "market_list"})]))
+    assert "" not in srv.SCORES, sorted(srv.SCORES)
+    print("EMPTY_NAME_OK")
+
+    # gm_slay never auto-unseals: slain guards respawn for a real clear,
+    # so delver progress cannot strand on an uncredited open floor
+    _slayer = mkplayer("SlayerOp", 62801, hp=200, max_hp=200)
+    await srv.cmd_move(_slayer, {"dir": "south"})
+    await srv._enter_dungeon(_slayer)
+    _sd = srv.dungeon_for_room(_slayer.room)
+    assert _sd is not None
+    _sfno = srv.floor_from_room(_slayer.room)
+    _sfl = _sd.floors[_sfno]
+    _gmop = mkplayer("GmOp", 62802)
+    srv.tax_treasury = 1000000.0
+    _log0 = len(srv.dungeon_clear_log)
+    for _g in list(_sfl.guards):
+        await srv.cmd_gm_slay(_gmop, {"target": _g["id"]})
+    assert not any(g["alive"] for g in _sfl.guards)
+    assert _sfl.cleared is False  # no auto-unseal on operator kills
+    _sentry = srv.get_score_entry("SlayerOp")
+    assert _sentry.get("dungeon_floors_cleared", 0) == 0
+    assert len(srv.dungeon_clear_log) == _log0  # no phantom log either
+    for p in list(srv.parties.values()):
+        if _slayer.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(_slayer)
+    unplayer(_gmop)
+    print("SLAY_NO_UNSEAL_OK")
+
+    # XP loss never leaves a negative bar: the epsilon tolerance that
+    # skips de-leveling is clamped to zero
+    _xe = srv.get_score_entry("XpClamp")
+    _xe["level"] = 3
+    _xe["xp"] = 0.0
+    _t3 = srv.total_xp_to_level(3)
+    srv.apply_xp_loss(_xe, 100 * 5e-10 / _t3)
+    assert _xe["level"] == 3, (_xe["level"], _xe["xp"])
+    assert _xe["xp"] == 0.0, _xe["xp"]
+    for _i, _pc in enumerate((0.1, 1.0, 33.3, 99.9, 100.0)):
+        _ex = srv.get_score_entry(f"XpClampSweep{_i}")
+        _ex["level"] = 5
+        _ex["xp"] = 0.0
+        srv.apply_xp_loss(_ex, _pc)
+        assert _ex["xp"] >= 0.0 and _ex["level"] >= 1, (_pc, _ex)
+        srv.SCORES.pop(f"xpclampsweep{_i}", None)
+    srv.SCORES.pop("xpclamp", None)
+    print("XP_CLAMP_OK")
+
+    # GM loopback gate: non-loopback and unparseable peers are refused
+    # before any task exists; the dead "localhost" entry no longer passes
+    class _GMWS:
+        def __init__(self, peer):
+            self.remote_address = peer
+            self.closed = False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            return
+            yield
+
+        async def send(self, payload):
+            pass
+
+        async def close(self):
+            self.closed = True
+
+    for _peer in (("203.0.113.9", 1), ("localhost", 1), None, "garbage"):
+        _w = _GMWS(_peer)
+        await srv.handle_gm_connection(_w)
+        assert _w.closed is True, _peer
+    print("GM_GATE_OK")
+
 asyncio.run(main())

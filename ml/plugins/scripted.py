@@ -107,12 +107,19 @@ class ScriptedPolicy(AgentPlugin):
         inv = tuple(sorted(str(n) for n in (s.get("inv_names") or [])))
         npc = tuple(sorted(str(n) for n in (s.get("npc_names") or [])))
         exits = tuple(sorted(str(e) for e in (s.get("exits") or [])))
-        comms = tuple(sorted(
-            (c.get("id"), str(c.get("poster")), str(c.get("target")),
-             c.get("required_kills"), c.get("reward_gold"))
-            for c in (s.get("open_commissions") or [])
-            if isinstance(c, dict)
-        ))
+        comms = tuple(
+            sorted(
+                (
+                    c.get("id"),
+                    str(c.get("poster")),
+                    str(c.get("target")),
+                    c.get("kills"),
+                    c.get("gold"),
+                )
+                for c in (s.get("open_commissions") or [])
+                if isinstance(c, dict)
+            )
+        )
         # Full order tuples, not just the count: a refresh that swaps orders
         # at a constant count is still a changed world (#358). Bids ride
         # alongside asks (#158) so bidding bots see their own book move.
@@ -279,7 +286,7 @@ class CommissionerPlugin(ScriptedPolicy):
         s = env._state
         yield self._heal_first(env, mask)
         yield self._first_valid(env, ("attack", "take"), mask)
-        if not s.get("open_commissions") and env._step_count % 2 == 0:
+        if not s.get("open_commissions") and getattr(env, "_step_count", 0) % 2 == 0:
             # Empty board: refresh on even steps, (re)stock on odd steps.
             # Without the parity split the unconditional post below would
             # starve list on a quiet board (or vice versa) -- state only
@@ -384,7 +391,7 @@ class PartyLeaderPlugin(ScriptedPolicy):
         yield self._heal_first(env, mask)
         yield self._first_valid(env, ("attack",), mask)
         if s.get("party_size", 1) <= 1:
-            if env._step_count % 2 == 0:
+            if getattr(env, "_step_count", 0) % 2 == 0:
                 yield self._first_valid(env, ("party_invite",), mask)
             else:
                 yield self._first_valid(env, ("party_accept",), mask)
