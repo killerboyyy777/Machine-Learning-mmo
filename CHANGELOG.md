@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Mob spawn cap raised (overnight validation): `MOB_EXTRA_SPAWNS` (1, in
+  server_config.json economy) spawns one extra concurrent instance per
+  HOSTILE template (ids `<nid>__x1`), doubling the hostile population from
+  20 to 40 live mobs for #337 bounty / dungeon-crown headroom. Friendlies
+  never duplicate; combat and respawn paths are id-keyed and unchanged.
 - Bughunt batch 2 (training integrity #378): linear `update()` bootstraps
   the max over mask-valid actions only; torch farm seeds its best tracker
   from the restored checkpoint peak; farm step counters persist in a
