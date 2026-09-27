@@ -108,7 +108,7 @@ except ImportError as e:
 if HAVE_TORCH:
     import asyncio as _asyncio
 
-    from torch_farm import TorchFarm  # noqa: E402
+    from torch_farm import TorchFarm
 
     def _farm_args(_w):
         class _A:

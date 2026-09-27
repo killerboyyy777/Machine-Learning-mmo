@@ -65,7 +65,7 @@ class TorchFarm:
             with open(self._farm_state_path) as f:
                 _st = json.load(f)
             if not isinstance(_st, dict):
-                raise ValueError("sidecar root must be an object")
+                raise TypeError("sidecar root must be an object")
             # Persisted counters survive restarts: --steps is a lifetime
             # total, so resume continues the count instead of restarting it.
             self.steps = int(_st.get("steps", 0))
