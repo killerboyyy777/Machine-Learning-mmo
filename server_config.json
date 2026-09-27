@@ -27,7 +27,8 @@
     "RELIST_FEE_PCT": 5.0,
     "INVENTORY_CAP": 24,
     "AMMO_EXEMPT_COUNT": 5,
-    "STARTING_GOLD": 10
+    "STARTING_GOLD": 10,
+    "MOB_EXTRA_SPAWNS": 1
   },
 
   "commissions": {

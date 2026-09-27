@@ -24,6 +24,12 @@ WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
 SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
 
 NPC_TICK_SECONDS = 3
+# Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
+# template. Old behavior = 0 (one live instance per template, cap near
+# floor); 1 doubles the hostile population. Friendlies (guard, merchant,
+# healer) never duplicate. All combat/respawn paths are id-keyed, so extra
+# instances just work; name-targeting hits the first alive match.
+MOB_EXTRA_SPAWNS = 1
 HOST = "0.0.0.0"
 PORT = 8765
 # GM stream bind: loopback-only by default (no auth -- see SECURITY.md).
@@ -311,6 +317,26 @@ gather_nodes = {
 npcs = {}
 for nid, tmpl in WORLD["npcs"].items():
     npcs[nid] = {**tmpl, "id": nid, "alive": True, "respawn_at": None, "contributors": {}}
+
+
+def _sync_extra_spawns():
+    """Rebuild hostile extra-spawn instances from MOB_EXTRA_SPAWNS.
+
+    Called after every _apply_config() pass (module bottom + --config
+    re-apply): without this, an operator MOB_EXTRA_SPAWNS value would
+    silently miss because npcs builds at import before the config pass.
+    Startup-only: never call mid-game (it drops live extra instances).
+    """
+    for xid in [nid for nid in npcs if "__x" in nid]:
+        del npcs[xid]
+    want = max(0, int(MOB_EXTRA_SPAWNS))
+    if want > 0:
+        for nid, tmpl in WORLD["npcs"].items():
+            if tmpl.get("hostile"):
+                for i in range(1, want + 1):
+                    xid = f"{nid}__x{i}"
+                    npcs[xid] = {**tmpl, "id": xid, "alive": True,
+                                 "respawn_at": None, "contributors": {}}
 
 RECIPES = WORLD.get("recipes", {})
 
@@ -2876,6 +2902,7 @@ def _refresh_quests():
 # (including the QUEST_* block above) exists by now, so no config section
 # misses (#251). Then sync the catalog copies from the tuned values.
 _apply_config()
+_sync_extra_spawns()
 _refresh_quests()
 
 
@@ -4586,6 +4613,7 @@ if __name__ == "__main__":
         # holds value copies (#251).
         CONFIG_FILE = _args.config
         _apply_config()
+        _sync_extra_spawns()
         _refresh_quests()
     try:
         asyncio.run(main())

@@ -3,8 +3,9 @@ name: Security
 on:
   push:
     # Mirror tests.yml: agent/review pushes otherwise get no CI signal
-    # (push CI reads workflow files from the pushed branch).
-    branches: [master, "review/**", "agent/**"]
+    # (push CI reads workflow files from the pushed branch). fix/**
+    # added 09-27 for seat fix branches.
+    branches: [master, "review/**", "agent/**", "fix/**"]
   pull_request:
     branches: [master]
   schedule:
