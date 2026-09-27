@@ -3,6 +3,17 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Bughunt batch 2 (training integrity #378): linear `update()` bootstraps
+  the max over mask-valid actions only; torch farm seeds its best tracker
+  from the restored checkpoint peak; farm step counters persist in a
+  `<weights>.farm.json` sidecar so `--steps` (a lifetime total across
+  restarts) resumes instead of restarting; the farm-only per-material
+  intrinsic loop is deleted to match the single-agent objective. Missing
+  dungeon floors pay and log nothing (#373 1b); `save_scores` also
+  reports serialization failures instead of raising (#373 1d).
+  Note: checkpoints saved before the TD-dedup change learned Q-values
+  with score+quest and read biased high -- retrain, or expect downward
+  drift as the corrected target takes over.
 - Bughunt batch 1: tonic quest brief now lists all three recipe inputs
   (#379); dungeon floor-clear rewards fire once per floor instance --
   guard respawns re-arm the exits but never re-mint (#373); bounty
