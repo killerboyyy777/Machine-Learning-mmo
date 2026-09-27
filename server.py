@@ -1522,6 +1522,14 @@ def check_dungeon_clear(room_id):
     return True
 
 
+def _clear_reward_due(floor):
+    """First-clear gate: rewards and the clear log fire once per floor
+    instance. A missing floor object pays and logs nothing (no phantom
+    clear entries); guard respawns re-arm `cleared` for the exits, but a
+    floor whose flag is set never re-mints (#373)."""
+    return floor is not None and not floor.clear_rewarded
+
+
 def stats_view(player):
     entry = get_score_entry(player.name) if player.name else None
     party = None
@@ -2125,7 +2133,7 @@ async def cmd_attack(player, msg):
             # First clear only: respawn re-arms `cleared` for the exits, but
             # rewards must not re-mint (#373). A missing floor object pays
             # nothing and logs nothing (no phantom clear entries).
-            first_clear = _ff is not None and not _ff.clear_rewarded
+            first_clear = _clear_reward_due(_ff)
             if _ff is not None:
                 _ff.clear_rewarded = True
             for p in players_in_room(player.room):

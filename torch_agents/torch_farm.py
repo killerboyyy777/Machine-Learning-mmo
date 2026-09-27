@@ -6,6 +6,12 @@ asyncio tasks; each completed environment step is applied to the same replay
 buffer and policy in the event loop, so no model updates are lost to
 last-writer-wins checkpoint races.
 
+Resume state: the weights file carries the model, and a sidecar JSON file
+next to it (`<weights>.farm.json`) carries the farm step counters. --steps
+is a LIFETIME total across restarts, not a per-run budget: resuming with
+the same --steps value after a completed run performs zero further steps;
+pass a larger total to continue training.
+
 Run from the repository root:
     python torch_agents/torch_farm.py --agents 4 --steps 1000000
 """
@@ -58,11 +64,13 @@ class TorchFarm:
         try:
             with open(self._farm_state_path) as f:
                 _st = json.load(f)
-            # Persisted counters survive restarts so --steps resumes the
-            # remaining budget instead of re-running the full window (#378).
+            if not isinstance(_st, dict):
+                raise ValueError("sidecar root must be an object")
+            # Persisted counters survive restarts: --steps is a lifetime
+            # total, so resume continues the count instead of restarting it.
             self.steps = int(_st.get("steps", 0))
             self.last_save_step = int(_st.get("last_save_step", -1))
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError, AttributeError):
             pass
         self.runners = []
 
