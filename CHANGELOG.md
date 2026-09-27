@@ -3,6 +3,16 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Cross-platform `start.py` launcher: one stdlib-only script replaces all
+  7 Windows-only `.bat` files (retired in the same PR, file count -6)
+  with subcommands (`serve` with start.bat parity, `client`, `botfarm`,
+  `torch-bot`, `torch-farm`, `torch-batch-loop`, `torch-batch-worker`).
+  Serve preflights ports with actionable errors and gates the farm on
+  `/health`; extra args after `--` pass through to the underlying
+  scripts. Closes #167 as superseded.
+- Fix TorchPlugin.learn missing `done` key (ported from unmerged #382):
+  stored transitions omitted `done`, raising KeyError once the replay
+  batch filled and learn() ran.
 - Bughunt batch 2 (training integrity #378): linear `update()` bootstraps
   the max over mask-valid actions only; torch farm seeds its best tracker
   from the restored checkpoint peak; farm step counters persist in a

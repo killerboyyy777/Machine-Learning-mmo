@@ -903,4 +903,4 @@ if __name__ == "__main__":
         main()
     except (OSError, ConnectionError) as e:
         print(f"Could not reach the server: {e}")
-        print("Start the engine first: python server.py (or start.bat)")
+        print("Start the engine first: python start.py (or python server.py)")
