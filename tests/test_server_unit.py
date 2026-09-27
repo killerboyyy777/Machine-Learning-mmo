@@ -2249,6 +2249,40 @@ async def main():
     assert _md.id not in srv.dungeons  # party teardown takes the instance with it
     print("CAP_BEFORE_MINT_OK")
 
+    # atomic party entry: one free slot but two entrants means NOBODY
+    # moves (no partial split across rooms) -- all three share one party
+    _aa = mkplayer("AtomA", 63001, hp=200, max_hp=200)
+    _ax = mkplayer("AtomX", 63002)
+    _ay = mkplayer("AtomY", 63003)
+    await srv.cmd_party_invite(_aa, {"target": "AtomX"})
+    await srv.cmd_party_accept(_ax, {})
+    await srv.cmd_party_invite(_aa, {"target": "AtomY"})
+    await srv.cmd_party_accept(_ay, {})
+    await srv.cmd_move(_aa, {"dir": "south"})
+    await srv._enter_dungeon(_aa)
+    _ad = srv.dungeon_for_room(_aa.room)
+    assert _ad is not None
+    _arid = _aa.room
+    _afill = [mkplayer(f"AtomF{_i}", 63010 + _i, room=_arid) for _i in range(10)]
+    await srv.cmd_move(_ax, {"dir": "south"})
+    await srv.cmd_move(_ay, {"dir": "south"})
+    _nd1 = len(srv.dungeons)
+    inbox.clear()
+    await srv._enter_dungeon(_ax)
+    assert _ax.room == srv.DUNGEON_ENTRANCE_ROOM, _ax.room
+    assert _ay.room == srv.DUNGEON_ENTRANCE_ROOM, _ay.room
+    assert any(m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox)
+    assert len(srv.dungeons) == _nd1
+    for _cp in _afill:
+        unplayer(_cp)
+    for p in list(srv.parties.values()):
+        if _aa.id in p.member_ids or _ax.id in p.member_ids or _ay.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(_aa)
+    unplayer(_ax)
+    unplayer(_ay)
+    print("ATOMIC_ENTRY_OK")
+
     # floor-1 exit obeys the entrance cap like every other move
     _ea = mkplayer("ExitA", 62950, hp=200, max_hp=200)
     await srv.cmd_move(_ea, {"dir": "south"})

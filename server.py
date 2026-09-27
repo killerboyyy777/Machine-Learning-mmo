@@ -1845,20 +1845,12 @@ async def _enter_dungeon(player):
         await send(player, {"type": "error", "text": f"The archway rejects you for {int(wait)}s more (you abandoned an uncleared descent); descent readiness {adaptive_score(player)}."})
         return
     party = _auto_create_party(player)
-    if party.dungeon_id in dungeons:
-        d = dungeons[party.dungeon_id]
-        # Caps before moves: a full floor rejects the entry with no one
-        # moved. A fresh instance is always empty, so only existing ones
-        # need the check (minting nothing on failure either way).
-        if len(players_in_room(d.room_id(1))) >= MAX_PLAYERS_PER_ROOM:
-            await send(player, {"type": "error", "text": "That floor is too crowded."})
-            return
-    else:
-        d = Dungeon(party_id=party.id)
-        dungeons[d.id] = d
-        party.dungeon_id = d.id
-    # Party members enter together: bring everyone already in the party who
-    # is standing at the entrance.
+    # Atomic entry: gather delay-clear mates first (delay errors go out,
+    # nobody moves yet), then check the whole headcount against free
+    # floor slots BEFORE minting or moving. An overfull party is rejected
+    # whole: no partial split across rooms, no empty instance minted.
+    # (Per-member _dungeon_move checks below stay as a race backstop.)
+    mates = []
     for mid in list(party.member_ids):
         m = players.get(mid)
         if m and m.room == DUNGEON_ENTRANCE_ROOM and m is not player:
@@ -1879,11 +1871,34 @@ async def _enter_dungeon(player):
                     },
                 )
                 continue
-            if not _dungeon_move(m, d, 1):
-                await send(m, {"type": "error", "text": "That floor is too crowded."})
-                continue
-            await send(m, room_view(m.room))
-            await send(m, stats_view(m))
+            mates.append(m)
+    if party.dungeon_id in dungeons:
+        d = dungeons[party.dungeon_id]
+        free = MAX_PLAYERS_PER_ROOM - len(players_in_room(d.room_id(1)))
+    else:
+        d = None
+        free = MAX_PLAYERS_PER_ROOM
+    if 1 + len(mates) > free:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"That floor is too crowded for your party of {1 + len(mates)} ({free} free).",
+            },
+        )
+        return
+    if d is None:
+        d = Dungeon(party_id=party.id)
+        dungeons[d.id] = d
+        party.dungeon_id = d.id
+    # Party members enter together: bring everyone already in the party who
+    # is standing at the entrance.
+    for m in mates:
+        if not _dungeon_move(m, d, 1):
+            await send(m, {"type": "error", "text": "That floor is too crowded."})
+            continue
+        await send(m, room_view(m.room))
+        await send(m, stats_view(m))
     if not _dungeon_move(player, d, 1):
         await send(player, {"type": "error", "text": "That floor is too crowded."})
         return
