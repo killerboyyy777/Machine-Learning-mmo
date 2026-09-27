@@ -1006,7 +1006,6 @@ async def _apply_level_up(entry, levels):
     # applied mid-combat (XP lands before retaliation resolves) negates
     # incoming damage for free, once per level. Out of combat the
     # difference is one rest tick. Login sync still fully heals.
-    total = sum(levels)
     for p in players_by_name.get(entry["display_name"].lower(), ()):
         if not p.logged_in:
             continue
