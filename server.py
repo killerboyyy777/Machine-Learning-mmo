@@ -2503,6 +2503,16 @@ async def cmd_commission_post(player, msg):
     if reward_gold < 0 or reward_xp < 0:
         await send(player, {"type": "error", "text": "Rewards cannot be negative."})
         return
+    if reward_gold <= 0 and reward_xp <= 0:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Bounty must offer gold or XP: valueless listings "
+                "can never fill and lock escrow bookkeeping forever.",
+            },
+        )
+        return
     # XP is minted, not escrowed: cap per-bounty XP so posters can't print
     # arbitrary amounts for fillers (and their own 10% cut) to harvest.
     if reward_xp > COMMISSION_MAX_XP:

@@ -1217,9 +1217,9 @@ async def main():
     assert inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower(), inbox[-1]
     assert len(srv._commissions) == n_comms
     assert cap_poster.gold == 1000000
-    # at-cap bounty posts fine (0g so the later cancel is treasury-neutral)
+    # at-cap bounty posts fine (1g keeps the later cancel cheap)
     await srv.cmd_commission_post(cap_poster, {"target": "rat", "required_kills": srv.COMMISSION_MAX_KILLS,
-                                               "reward_gold": 0, "reward_xp": 0})
+                                               "reward_gold": 1, "reward_xp": 0})
     cid_cap = max(srv._commissions)
     await srv.cmd_commission_cancel(cap_poster, {"commission_id": cid_cap})
     assert srv._commissions[cid_cap]["status"] == "cancelled"
@@ -1254,9 +1254,9 @@ async def main():
     unplayer(calice_lower)
     print("CASE_VARIANT_OK")
 
-    # zero bounty pays zero (floors must not mint from an empty bounty);
-    # collusion remainder + cancel forfeit land in the treasury instead of
-    # sitting on dead records forever
+    # zero-value bounties are rejected at post: a bounty must offer gold
+    # or XP, since valueless listings can never fill and lock escrow
+    # bookkeeping forever
     t_saved = (srv.tax_treasury, srv.tax_collected_lifetime)
     srv.tax_treasury = 0.0
     srv.tax_collected_lifetime = 0.0
@@ -1264,9 +1264,20 @@ async def main():
     zposter.gold = 1000
     zentry = srv.get_score_entry("ZeroPoster")
     zscore0, zxp0 = zentry["score"], zentry["xp"]
+    _z_before = len(srv._commissions)
     await srv.cmd_commission_post(zposter, {"target": "rat", "required_kills": 1,
                                             "reward_gold": 0, "reward_xp": 0})
-    cid_z = max(srv._commissions)
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    assert "gold or xp" in inbox[-1]["text"].lower(), inbox[-1]
+    assert len(srv._commissions) == _z_before and zposter.gold == 1000
+    # legacy rows (posted before the guard) still fill for exactly zero:
+    # floors must not mint from an empty bounty
+    cid_z = next(srv._commission_counter)
+    srv._commissions[cid_z] = {
+        "id": cid_z, "poster": "ZeroPoster", "target": "rat",
+        "required_kills": 1, "reward_gold": 0, "reward_xp": 0, "escrow": 0,
+        "status": "open", "created_ts": time.time() - 1,
+    }
     zfill = mkplayer("ZeroFiller", 50010)
     zfill_gold0 = zfill.gold
     zfentry = srv.get_score_entry("ZeroFiller")
