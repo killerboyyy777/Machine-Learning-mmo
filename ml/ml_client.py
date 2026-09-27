@@ -85,14 +85,8 @@ class LinearQAgent:
         qs = self.q_values(features)
         return max(valid, key=lambda a: qs[a])
 
-    def update(self, features, action, reward, next_features, done, mask=None):
-        # Bootstrap from valid actions only, like act(): maxing over
-        # mask-invalid actions inflates targets with unreachable Q (#378).
-        valid = [a for a in range(self.n_actions) if mask is None or mask[a]]
-        if not valid:
-            valid = list(range(self.n_actions))
-        nq = self.q_values(next_features)
-        next_q = 0.0 if done else max(nq[a] for a in valid)
+    def update(self, features, action, reward, next_features, done):
+        next_q = 0.0 if done else max(self.q_values(next_features))
         target = reward + self.gamma * next_q
         current = self.q_values(features)[action]
         td_error = target - current
@@ -160,9 +154,7 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
         next_obs, reward, done, info = await env.step(action)
         next_features = flatten_obs(next_obs)
 
-        agent.update(
-            features, action, reward, next_features, done, env.valid_action_mask()
-        )
+        agent.update(features, action, reward, next_features, done)
 
         total_reward += reward
         recent_rewards.append(reward)

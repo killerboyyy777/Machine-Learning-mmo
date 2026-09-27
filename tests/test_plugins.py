@@ -188,17 +188,4 @@ assert seen["aid"] == "q4" and isinstance(seen["mask"], list)
 assert isinstance(seen["env"], _Env) and at.steps == 1
 print("ENV_ARITY_OK")
 
-# --- torch plugin learn includes done key ---
-try:
-    from ml.ml_env import TextMMOEnv
-
-    tp = instantiate("torch", learn_every=1)
-    env_stub = TextMMOEnv("stub")
-    fake_obs = env_stub._build_obs()
-    for _ in range(32):
-        tp.learn(fake_obs, 0, 1.0, fake_obs, False)
-    print("TORCH_LEARN_OK")
-except ImportError:
-    print("TORCH_LEARN_SKIPPED")
-
 print("ALL_PLUGINS_OK")

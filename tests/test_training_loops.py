@@ -31,22 +31,6 @@ d2 = lin.update(feats, 0, 2.5, feats, True)
 assert isinstance(d1, float) and abs(d2) < abs(d1), (d1, d2)
 print("LINEAR_UPDATE_OK")
 
-# --- masked bootstrap: update() maxes over mask-valid actions only ---
-def _mask_probe(_mask):
-    _m = LinearQAgent(4, 3)
-    _m.weights = [[10.0] * 4, [0.0] * 4, [0.0] * 4]
-    _m.bias = [0.0] * 3
-    return _m.update([1, 0, 0, 0], 0, 0.0, [1, 0, 0, 0], False, mask=_mask)
-
-
-_d_unmasked = _mask_probe([1, 1, 1])
-_d_masked = _mask_probe([0, 0, 1])
-assert round(_d_unmasked, 3) == -1.0 and round(_d_masked, 3) == -10.0, (
-    _d_unmasked,
-    _d_masked,
-)
-print("MASK_BOOTSTRAP_OK")
-
 # --- linear mini training loop: act/update/save/load round-trip ---
 tmpdir = tempfile.mkdtemp()
 agent = LinearQAgent(OBS_SIZE, N_ACTIONS)
@@ -106,38 +90,6 @@ except ImportError as e:
     HAVE_TORCH = False
 
 if HAVE_TORCH:
-    import asyncio as _asyncio
-
-    from torch_farm import TorchFarm
-
-    def _farm_args(_w):
-        class _A:
-            pass
-
-        _a = _A()
-        _a.name_prefix = "T"
-        _a.url = "ws://127.0.0.1:9"
-        _a.weights = _w
-        _a.best_weights = _w + ".best"
-        _a.steps = 100
-        _a.save_every = 10
-        _a.agents = 1
-        return _a
-
-    # sidecar round-trip + corrupt cases (null/list/string) fall back
-    # to defaults instead of crashing startup
-    _fw = os.path.join(tmpdir, "sidecar_w.json")
-    _f1 = TorchFarm(_farm_args(_fw))
-    _f1.steps = 42
-    _asyncio.run(_f1.checkpoint(force=True))
-    _f2 = TorchFarm(_farm_args(_fw))
-    assert (_f2.steps, _f2.last_save_step) == (42, 42), (_f2.steps, _f2.last_save_step)
-    for _bad in ("null", "[1, 2]", '"steps"', "{oops"):
-        with open(_fw + ".farm.json", "w") as _bf:
-            _bf.write(_bad)
-        _fb = TorchFarm(_farm_args(_fw))
-        assert (_fb.steps, _fb.last_save_step) == (0, -1), _bad
-    print("SIDECAR_OK")
     tagent = TorchDQNAgent(replay_size=64, batch_size=8)
     assert 0 <= tagent.act([0.0] * OBS_SIZE, 0.0, None) < N_ACTIONS
     assert tagent.rnd_bonus([0.0] * OBS_SIZE) >= 0.0

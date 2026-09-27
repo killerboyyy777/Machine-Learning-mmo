@@ -284,10 +284,7 @@ class BotRunner:
                 await self._reset_with_retry()
                 continue
             next_features = flatten_obs(next_obs)
-            self.farm.agent.update(
-                self.features, action, reward, next_features, done,
-                self.env.valid_action_mask(),
-            )
+            self.farm.agent.update(self.features, action, reward, next_features, done)
             self.farm.agent.training_steps += 1
 
             self.features = next_features

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ml.conductor.runners import make_env_factory, make_linear_policy, make_torch_policy
 from ml.conductor.supervisor import AgentTask
 from ml.ml_env import N_ACTIONS, QUESTS, TextMMOEnv
+from ml.plugins import instantiate
 
 # --- env_factory: configured env per agent id, no connection yet ---
 factory = make_env_factory(url="ws://x:1", reward_mode="econ", max_steps=7)
@@ -89,27 +90,53 @@ assert at2.steps == 1
 print("LEGACY_ARITY_OK")
 
 # --- #183: torch quest-reward targets fire on all four chains' turn-ins ---
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "torch_agents"))
-from torch_farm import Runner as TorchRunner
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"
+    ),
+)
+from torch_farm import Runner as TorchRunner  # noqa: E402
 
-_farm = types.SimpleNamespace(args=types.SimpleNamespace(name_prefix="T", url="ws://x"),
-                               agent=types.SimpleNamespace(intrinsic_accept=1.0,
-                                                           intrinsic_progress=2.0,
-                                                           rnd_lambda=0))
+_farm = types.SimpleNamespace(
+    args=types.SimpleNamespace(name_prefix="T", url="ws://x"),
+    agent=types.SimpleNamespace(
+        intrinsic_accept=1.0, intrinsic_progress=2.0, rnd_lambda=0
+    ),
+)
 _tr = TorchRunner(0, _farm)
-_info_all = {"quest": {"by_quest": {
-    "guard_charm": {"turned_in": True},
-    "delver": {"turned_in": True},
-    "remedy": {"turned_in": True},
-    "tonic": {"turned_in": True},
-}}}
-_gold, _loot, _pnl, _qr, _qi, _rnd = _tr.transition_targets({"gold_raw": 0}, [], _info_all, "quest_turn_in")
-assert _qr == float(QUESTS["guard_charm"]["reward_points"] + QUESTS["delver"]["reward_points"]
-                    + QUESTS["remedy"]["reward_points"] + QUESTS["tonic"]["reward_points"]), _qr
+_info_all = {
+    "quest": {
+        "by_quest": {
+            "guard_charm": {"turned_in": True},
+            "delver": {"turned_in": True},
+            "remedy": {"turned_in": True},
+            "tonic": {"turned_in": True},
+        }
+    }
+}
+_gold, _loot, _pnl, _qr, _qi, _rnd = _tr.transition_targets(
+    {"gold_raw": 0}, [], _info_all, "quest_turn_in"
+)
+assert _qr == float(
+    QUESTS["guard_charm"]["reward_points"]
+    + QUESTS["delver"]["reward_points"]
+    + QUESTS["remedy"]["reward_points"]
+    + QUESTS["tonic"]["reward_points"]
+), _qr
 assert _qi == 0.0 and _rnd == 0.0
-_gold, _loot, _pnl, _qr0, _qi0, _rnd0 = _tr.transition_targets({"gold_raw": 0}, [], {}, "attack")
+_gold, _loot, _pnl, _qr0, _qi0, _rnd0 = _tr.transition_targets(
+    {"gold_raw": 0}, [], {}, "attack"
+)
 assert _qr0 == 0.0
 print("TORCH_QUEST_TARGETS_OK")
+
+# --- torch plugin learn includes done key ---
+tp = instantiate("torch", learn_every=1)
+env_stub = TextMMOEnv("stub")
+fake_obs = env_stub._build_obs()
+for _ in range(32):
+    tp.learn(fake_obs, 0, 1.0, fake_obs, False)
+print("TORCH_LEARN_OK")
 
 print("ALL_RUNNERS_OK")

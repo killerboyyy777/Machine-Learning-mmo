@@ -723,8 +723,6 @@ def save_scores():
     # The previous good copy rotates aside first, so there is always a
     # fallback generation even if this write itself goes bad.
     # Returns success: callers must not clear-dirty on failure (#373).
-    # Serialization failures (a corrupt SCORES value) report False like
-    # I/O errors instead of propagating out of the save path.
     tmp = SCORES_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
@@ -737,7 +735,7 @@ def save_scores():
                 except OSError:
                     pass
         os.replace(tmp, SCORES_FILE)
-    except (OSError, TypeError, ValueError):
+    except OSError:
         return False
     return True
 
@@ -749,7 +747,7 @@ _scores_dirty = False
 # Long-term bounds: fresh-name bot farming must not grow SCORES (and
 # scores.json) without limit. Entries untouched for TTL_SECONDS are evicted;
 # if the table still exceeds ENTRY_MAX, the stalest go first. Online players
-# and entries owed banked gold or banked items are never evicted.
+# and entries owed banked gold are never evicted.
 SCORE_ENTRY_MAX = 2000
 SCORE_ENTRY_TTL_SECONDS = 7 * 24 * 3600
 _last_score_prune = 0.0
@@ -1006,6 +1004,7 @@ async def _apply_level_up(entry, levels):
     # applied mid-combat (XP lands before retaliation resolves) negates
     # incoming damage for free, once per level. Out of combat the
     # difference is one rest tick. Login sync still fully heals.
+    total = sum(levels)
     for p in players_by_name.get(entry["display_name"].lower(), ()):
         if not p.logged_in:
             continue
@@ -1519,14 +1518,6 @@ def check_dungeon_clear(room_id):
         return False
     f.cleared = True
     return True
-
-
-def _clear_reward_due(floor):
-    """First-clear gate: rewards and the clear log fire once per floor
-    instance. A missing floor object pays and logs nothing (no phantom
-    clear entries); guard respawns re-arm `cleared` for the exits, but a
-    floor whose flag is set never re-mints (#373)."""
-    return floor is not None and not floor.clear_rewarded
 
 
 def stats_view(player):
@@ -2130,9 +2121,8 @@ async def cmd_attack(player, msg):
             # (floors counter, score, XP). Idle walk-ins get the room view
             # and nothing else; their delver baselines never advance (#195.3).
             # First clear only: respawn re-arms `cleared` for the exits, but
-            # rewards must not re-mint (#373). A missing floor object pays
-            # nothing and logs nothing (no phantom clear entries).
-            first_clear = _clear_reward_due(_ff)
+            # rewards must not re-mint (#373).
+            first_clear = _ff is None or not _ff.clear_rewarded
             if _ff is not None:
                 _ff.clear_rewarded = True
             for p in players_in_room(player.room):
