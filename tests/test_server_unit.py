@@ -2402,4 +2402,38 @@ async def main():
         assert _w.closed is True, _peer
     print("GM_GATE_OK")
 
+    # history rings record crafts + commission fills/cancels with seq (#333)
+    _crafter = mkplayer("HistCrafter", 64001)
+    _crafter.inventory = ["iron_ore"]
+    _cs0 = srv.craft_feed[-1]["seq"] if srv.craft_feed else 0
+    await srv.cmd_craft(_crafter, {"recipe": "arrows"})
+    _ce = srv.craft_feed[-1]
+    assert _ce["name"] == "HistCrafter" and _ce["result"] == "arrow", _ce
+    assert _ce["seq"] == _cs0 + 1, _ce
+    unplayer(_crafter)
+    _hp = mkplayer("HistPoster", 64002)
+    _hp.gold = 1000
+    _hf = mkplayer("HistFiller", 64003)
+    # seq continuity, not absolute length: the ring trims at COMM_FEED_SIZE
+    _cs0 = srv.comm_feed[-1]["seq"] if srv.comm_feed else 0
+    await srv.cmd_commission_post(_hp, {"target": "rat", "required_kills": 1,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _hcid = max(srv._commissions)
+    srv.record_npc_kill("HistFiller", "Giant Rat")
+    await srv.cmd_commission_fill(_hf, {"commission_id": _hcid})
+    _me = srv.comm_feed[-1]
+    assert _me["status"] == "completed" and _me["id"] == _hcid, _me
+    assert _me["filler"] == "HistFiller" and _me["gold"] == 10, _me
+    assert _me["seq"] == _cs0 + 1, _me
+    await srv.cmd_commission_post(_hp, {"target": "rat", "required_kills": 1,
+                                        "reward_gold": 5, "reward_xp": 0})
+    _hcid2 = max(srv._commissions)
+    await srv.cmd_commission_cancel(_hp, {"commission_id": _hcid2})
+    _xe2 = srv.comm_feed[-1]
+    assert _xe2["status"] == "cancelled" and _xe2["id"] == _hcid2, _xe2
+    assert _xe2["seq"] == _cs0 + 2, _xe2
+    unplayer(_hp)
+    unplayer(_hf)
+    print("HISTORY_RINGS_OK")
+
 asyncio.run(main())

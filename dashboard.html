@@ -408,6 +408,14 @@
     </table></div>
     <p class="empty" id="noCommissions" style="display:none">No commissions posted yet.</p>
   </div>
+  <div class="panel">
+    <h2>Commission activity <span class="legend">fills + cancels, newest first</span> <b id="commHistoryCount">0</b></h2>
+    <div class="tscroll"><table data-sort="commHistory">
+      <thead><tr><th>seq</th><th>time</th><th>bounty</th><th>poster</th><th>filler</th><th>payout</th><th>status</th></tr></thead>
+      <tbody id="commHistory"></tbody>
+    </table></div>
+    <p class="empty" id="noCommHistory" style="display:none">No commission activity yet.</p>
+  </div>
 </div>
 
 <!-- Round 3 order: live flow first, reference material after, recipe
@@ -422,6 +430,14 @@
       <div class="stat"><div class="v" id="flow-buy">-</div><div class="l">buy</div></div>
       <div class="stat"><div class="v" id="flow-sell">-</div><div class="l">sell</div></div>
     </div>
+  </div>
+  <div class="panel">
+    <h2>Recent crafts <span class="legend">who crafted what, when</span> <b id="craftHistoryCount">0</b></h2>
+    <div class="tscroll"><table data-sort="craftHistory">
+      <thead><tr><th>seq</th><th>time</th><th>crafter</th><th>recipe</th><th>result</th></tr></thead>
+      <tbody id="craftHistory"></tbody>
+    </table></div>
+    <p class="empty" id="noCraftHistory" style="display:none">Nothing crafted yet.</p>
   </div>
   <div class="panel">
     <h2>Material on the ground</h2>
@@ -1505,6 +1521,34 @@ function fmtAge(ts) {
   if (s < 86400) return Math.floor(s / 3600) + "h";
   return Math.floor(s / 86400) + "d";
 }
+function renderCommHistory(hist) {
+  // Commission activity ring (#333): fills + cancels, mirrors the
+  // quest turn-in feed shape (seq, newest last in snapshot).
+  const rows = sortRows("commHistory", hist || [],
+    [h => h.seq ?? 0, h => h.t || "", h => h.id ?? 0, h => h.poster || "",
+     h => h.filler || "", h => (h.gold ?? 0) + (h.xp ?? 0), h => h.status || ""], 0, -1);
+  setHTML("commHistory", rows.map(h => `
+    <tr><td>${h.seq ?? 0}</td><td>${esc(h.t || "")}</td><td><b>#${h.id ?? 0}</b> ${esc(h.target || "")}</td>
+        <td>${esc(h.poster || "")}</td><td>${esc(h.filler || "-")}</td>
+        <td><b>${h.gold ?? 0}g + ${h.xp ?? 0}xp</b></td>
+        <td>${h.status === "completed" ? `<span class="tag alive">completed</span>` : `<span class="dim">${esc(h.status || "")}</span>`}</td></tr>`).join(""));
+  $("noCommHistory").style.display = rows.length ? "none" : "";
+  $("commHistoryCount").textContent = rows.length;
+}
+
+function renderCraftHistory(hist) {
+  // Craft history ring (#333): who crafted what, when. Same shape laws
+  // as every feed table: sortable, text-only writes, visible count.
+  const rows = sortRows("craftHistory", hist || [],
+    [h => h.seq ?? 0, h => h.t || "", h => h.name || "",
+     h => h.recipe || "", h => h.result || ""], 0, -1);
+  setHTML("craftHistory", rows.map(h => `
+    <tr><td>${h.seq ?? 0}</td><td>${esc(h.t || "")}</td><td>${esc(h.name || "")}</td>
+        <td>${esc(h.recipe || "")}</td><td><b>${esc(h.result || "")}</b></td></tr>`).join(""));
+  $("noCraftHistory").style.display = rows.length ? "none" : "";
+  $("craftHistoryCount").textContent = rows.length;
+}
+
 function renderCommissions(commissions) {
   // Kill-commission board (owner commissions spec): additive snapshot key,
   // Quests-adjacent panel, sortable per the sort rule. Newest first.
@@ -1602,8 +1646,9 @@ function renderRecipes(recipes) {
   $("noRecipes").style.display = rows.length ? "none" : "";
 }
 
-function renderCrafting(rooms, market, activity, recipes) {
+function renderCrafting(rooms, market, activity, recipes, craftHistory) {
   renderRecipes(recipes);
+  renderCraftHistory(craftHistory);
   // Supply: ground loot aggregated by item across rooms; listed supply
   // aggregated from open orders. Demand: recent command counts. All
   // series already ride in the snapshot; nothing new is fetched.
@@ -1791,8 +1836,9 @@ const TAB_SECTIONS = {
   quests: [
     ["quests", s => renderQuests(s.quests || {})],
     ["commissions", s => renderCommissions(s.commissions || [])],
+    ["commission history", s => renderCommHistory(s.commission_history || [])],
   ],
-  crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [])]],
+  crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [], s.craft_history || [])]],
   config: [["config", s => renderConfig(s)]],
   gm: [
     ["gm catalog", s => populateDatalists(s.catalog || {})],
