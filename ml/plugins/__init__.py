@@ -140,7 +140,9 @@ def _import_builtins():
         try:
             importlib.import_module(f"{__name__}.{mod}")
         except ImportError:
-            pass  # optional dependency (e.g. torch) missing
+            if mod != "torch_plugin":
+                raise
+            # optional dependency (e.g. torch) missing
 
 
 def discover(plugin_dir=None):
@@ -205,6 +207,7 @@ def parse_slot(spec):
     if not name:
         raise ValueError(f"empty plugin name in slot {spec!r}")
     config, env = {}, {}
+    weight = 1
     for chunk in rest.split(","):
         chunk = chunk.strip()
         if not chunk:
@@ -217,8 +220,17 @@ def parse_slot(spec):
         key, value = key.strip(), _coerce_value(value)
         if not key:
             raise ValueError(f"empty key in slot {spec!r}")
-        if key.startswith("env_"):
+        if key == "weight":
+            try:
+                weight = int(value)
+            except (TypeError, ValueError):
+                weight = 0
+            if weight < 1:
+                raise ValueError(
+                    f"bad slot weight {value!r} in {spec!r} (want a positive int)"
+                )
+        elif key.startswith("env_"):
             env[key[len("env_") :]] = value
         else:
             config[key] = value
-    return {"plugin": name, "config": config, "env": env, "weight": 1}
+    return {"plugin": name, "config": config, "env": env, "weight": weight}

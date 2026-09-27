@@ -150,10 +150,10 @@ _book6 = {"orders": [{"seller": "Other", "item": "Rat Tail", "price": 6}]}
 assert _sig() != _sig(market_state=_book5)
 assert _sig(market_state=_book5) != _sig(market_state=_book6)
 assert _sig() != _sig(gatherables=["Iron Vein"])
-_c1 = [{"id": 1, "poster": "Other", "target": "rat", "required_kills": 3,
-        "reward_gold": 10}]
-_c2 = [{"id": 1, "poster": "Other", "target": "rat", "required_kills": 2,
-        "reward_gold": 10}]
+_c1 = [{"id": 1, "poster": "Other", "target": "rat", "kills": 3,
+        "gold": 10}]
+_c2 = [{"id": 1, "poster": "Other", "target": "rat", "kills": 2,
+        "gold": 10}]
 assert _sig() != _sig(open_commissions=_c1)
 assert _sig(open_commissions=_c1) != _sig(open_commissions=_c2)
 print("SIG_COVERAGE_OK")

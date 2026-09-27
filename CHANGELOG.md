@@ -3,6 +3,31 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Milestone batch (remaining #374/#375/#376/#377/#378 findings).
+  Economy: broker/relist fees now land in the lifetime counter as well
+  as the spendable treasury; death floor-piles credit next to the debit
+  (crash-window loot loss closed); movers swap room membership before
+  the broadcast await (no more invisible-to-payout transit); commission
+  lists show 0g offers as 0g like the fill path; collusion eviction is
+  least-recently-seen (high-count stale fillers evict first).
+  World: pulled party mates serve their own re-enter delay; dungeon
+  moves enforce the room cap; pre-login commands never mint SCORES[""];
+  gm_slay never auto-unseals (earned clears only); XP loss clamps at
+  zero; the GM loopback gate parses peer IPs robustly (loopback only).
+  Dashboard: SSE cursor never rewinds, partial rooms default, class
+  tokens sanitized, GM port falls back, drawer listener binds once,
+  price charts run ascending, per-chart heights survive resize, tick
+  generation drops stale snapshots, dungeon group/solo clears surface
+  in the tab.
+  Training/ML: env slot keys pass through, slot weight= intercepted,
+  builtin imports re-raise, buy_arrows resolves display names,
+  stuck-signatures use real commission keys, lineage reset forgets
+  ancestry, step counters use getattr; dead aux code removed, eval
+  t-test demoted to comparative-only, TorchFarm resume covered,
+  shaping/novelty asserts strengthened.
+  Note: checkpoints saved before the TD-dedup change learned Q-values
+  with score+quest and read biased high -- retrain, or expect downward
+  drift as the corrected target takes over.
 - Cross-platform `start.py` launcher: one stdlib-only script replaces all
   7 Windows-only `.bat` files (retired in the same PR, file count -6)
   with subcommands (`serve` with start.bat parity, `client`, `botfarm`,

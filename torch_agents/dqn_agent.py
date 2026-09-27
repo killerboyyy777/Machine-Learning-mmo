@@ -254,7 +254,6 @@ class TorchDQNAgent:
             self.device
         )
         self.rnd_opt = optim.Adam(self.rnd_pred.parameters(), lr=rnd_lr)
-        self._rnd_lr = rnd_lr
         self._rnd_mean = 0.0
         self._rnd_var = 1.0
 
@@ -268,15 +267,10 @@ class TorchDQNAgent:
 
         # Tracking per-episode for auxiliary supervision
         self._prev_gold: float = 0.0
-        self._prev_loot_value: float = 0.0
         self._prev_inventory_ids: set[str] | None = None
 
         # Market tracking state
-        self._posted_orders: int = 0
         self._bought_items: int = 0
-        self._cancelled_orders: int = 0
-        self._prev_money_spent: float = 0.0
-        self._prev_gold_earned: float = 0.0
         # Own standing sell orders from the last step (env info), used to
         # spot fills: a vanished order means someone bought it, netting us
         # market_net(price) after the server's tax cut.
@@ -345,32 +339,6 @@ class TorchDQNAgent:
     def store(self, transition: dict) -> None:
         self.replay[self.replay_idx] = transition
         self.replay_idx = (self.replay_idx + 1) % self.replay_size
-
-    # ---- auxiliary supervision from environment ---------------------------
-
-    def _compute_auxiliary(
-        self, transition: dict
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return (gold, loot, market, quest) targets for this transition.
-
-        gold: delta in player gold
-        loot: approximated from inventory value changes
-        market: P&L from the step's market activity
-        quest: turn-in points for any of the four quests (guard_charm,
-            delver, remedy, tonic), else 0.0 (regressing toward this
-            forces quest-stage encoding)
-        """
-        t = transition
-        gold_target = float(t.get("gold_delta", 0.0))
-        loot_target = float(t.get("loot_delta", 0.0))
-
-        # Market target: compute P&L from the step's market activity.
-        # We approximate using the change in player gold that can be attributed
-        # to market operations (buying vs selling).  If the env doesn't expose
-        # a breakdown we fall back to 0.0 so learning still occurs.
-        market_target = float(t.get("market_pnl", 0.0))
-        quest_target = float(t.get("quest_reward", 0.0))
-        return gold_target, loot_target, market_target, quest_target
 
     # ---- learning -----------------------------------------------------------
 
@@ -621,15 +589,12 @@ class TorchDQNAgent:
         # Initialise auxiliary tracking from the first snapshot
         # (obs is the structured dict; flatten only for the network).
         self._prev_gold = float(obs.get("gold_raw", 0.0))
-        self._prev_loot_value = 0.0
         self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
 
         # Market tracking init. The env's step info carries live tax terms,
         # detected buy fills, and our standing orders with nets, so P&L
         # targets below can use exact after-tax accounting.
-        self._posted_orders = 0
         self._bought_items = 0
-        self._cancelled_orders = 0
         self._prev_own_orders = []
 
         total_reward = 0.0
@@ -795,12 +760,9 @@ class TorchDQNAgent:
                 epsilon = self._epsilon()
                 # reset auxiliary tracking
                 self._prev_gold = float(obs.get("gold_raw", 0.0))
-                self._prev_loot_value = 0.0
                 self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
                 # reset market tracking
-                self._posted_orders = 0
                 self._bought_items = 0
-                self._cancelled_orders = 0
                 self._prev_own_orders = []
 
         self.save_weights()

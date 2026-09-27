@@ -99,7 +99,7 @@ for tok in ("EventSource", "/api/activity/stream", "activityRow",
 # /OC robustness: guarded scores/servers/cmdClass, seq sort, empty states.
 assert ".score.toFixed" not in html, "unguarded toFixed survives"
 assert "s.server.players_online" not in html, "unguarded s.server survives"
-assert "cmd-\" + (cmd" in html or 'cmd-" + (cmd' in html
+assert '"cmd-"' in html and "function cmdClass" in html
 assert "a.seq ?? -1" in html and "localeCompare" in html
 assert "No scores recorded yet." in html
 # Server lane: seq field, fan-out registry, SSE route, start timestamp.
@@ -194,5 +194,70 @@ gmsec = re.search(r"gm: \[(.*?)\n  \],", html, re.DOTALL)
 assert gmsec and "renderTreasury" in gmsec.group(1), "gm tab has no treasury section"
 assert re.search(r"gmws\.onmessage[\s\S]{0,400}?tick\(\)", html), "GM ack does not pull a fresh tick"
 print("TREASURY_LIVE_OK")
+
+# --- bughunt milestone: issue #376 (8 fixes + dungeon_clears) ---
+# 1. renderActivity resync must not move the SSE cursor backward.
+ra = re.search(r"function renderActivity\(activity\) \{(.*?)\n\}", html, re.DOTALL)
+assert ra, "renderActivity not found"
+assert "Math.max(actMaxSeq, mx)" in ra.group(1), "SSE cursor can move backward"
+print("ACT_CURSOR_OK")
+
+# 2. renderRooms guards partial room rows like renderRoomDrawer does.
+rr = re.search(r"function renderRooms\(rooms\) \{(.*?)\n\}", html, re.DOTALL)
+assert rr, "renderRooms not found"
+rrb = rr.group(1)
+assert "(r.players || [])" in rrb, "renderRooms players unguarded"
+assert "(r.npcs || [])" in rrb, "renderRooms npcs unguarded"
+assert "(r.items || [])" in rrb, "renderRooms items unguarded"
+print("ROOMS_GUARD_OK")
+
+# 3. cmdClass sanitizes the server token before class concatenation.
+cc = re.search(r"function cmdClass\(cmd\) \{(.*?)\}", html, re.DOTALL)
+assert cc, "cmdClass not found"
+assert "A-Za-z0-9" in cc.group(1), "cmdClass does not sanitize"
+print("CMDCLASS_OK")
+
+# 4. gmOpen tolerates snapshots without a server block.
+assert "(lastState.server || {}).gm_port" in gm.group(1), "gmOpen crashes without server"
+print("GM_PORT_OK")
+
+# 5. renderRoomDrawer must not stack duplicate roomClose listeners.
+rd = re.search(r"function renderRoomDrawer\(byId\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert rd, "renderRoomDrawer not found"
+assert 'addEventListener("click"' not in rd.group(1), "roomClose listener stacks"
+assert ".onclick" in rd.group(1) or "onclick=" in html, "roomClose has no single bind"
+print("DRAWER_LISTENER_OK")
+
+# 6. m-priceHist charts an ascending copy; the table stays newest-first.
+assert "history.slice().reverse()" in html, "price chart not ascending"
+print("PRICE_ASC_OK")
+
+# 7. resizeCharts reuses per-chart creation height (st-chart is 110).
+assert "u._h" in html, "per-chart height missing"
+rs = re.search(r"function resizeCharts\(\) \{(.*?)\n\}", html, re.DOTALL)
+assert rs, "resizeCharts not found"
+assert "height: 80" not in rs.group(1), "resizeCharts still forces 80"
+assert "u._h || 80" in rs.group(1), "resizeCharts ignores creation height"
+assert "u._h = H" in html, "st-chart height not stored"
+print("CHART_HEIGHT_OK")
+
+# 8. tick() generations stop overlapping fetches resolving out of order.
+tk = re.search(r"async function tick\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert tk, "tick not found"
+tkb = tk.group(1)
+assert "tickGen" in tkb, "tick generation counter missing"
+assert "gen !== tickGen" in tkb, "stale tick not dropped"
+print("TICK_GEN_OK")
+
+# Dungeon clears addendum: the four snapshot numbers are surfaced text-only.
+for wid in ("dc-solo", "dc-group", "dc-solo-max", "dc-group-max"):
+    assert f'id="{wid}"' in html, f"missing clears widget {wid}"
+assert "function renderDungeonClears" in html, "renderDungeonClears missing"
+assert "dungeon_clears" in html, "dungeon_clears not consumed"
+dc = re.search(r"function renderDungeonClears\(c\) \{(.*?)\n\}", html, re.DOTALL)
+assert dc, "renderDungeonClears not found"
+assert ".textContent" in dc.group(1), "clears not text-only"
+assert "innerHTML" not in dc.group(1), "clears risk layout shift"
+print("CLEARS_OK")
 
 print("ALL_DASHBOARD_OK")

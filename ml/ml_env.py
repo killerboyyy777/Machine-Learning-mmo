@@ -1386,7 +1386,9 @@ class TextMMOEnv:
                 return None
             if pack_full(s):
                 return None
-            return {"cmd": "buy", "item": "arrow"}
+            arrow_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), "arrow")
+            arrow_name = srv.ITEM_DEFS.get(arrow_iid, {}).get("name", "arrow")
+            return {"cmd": "buy", "item": arrow_name}
         if action == "sell":
             # Quicksell the lowest-margin holding: when nothing carries a
             # market premium, merchant gold now beats waiting on a listing.

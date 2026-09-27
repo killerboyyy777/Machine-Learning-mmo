@@ -69,7 +69,7 @@ def test_pack_masks_from_server_count():
     assert not pack_full(e._state)
     assert e._action_to_cmd("take") == {"cmd": "take", "item": "Rusty Nail"}
     assert e._action_to_cmd("gather") == {"cmd": "gather"}
-    assert e._action_to_cmd("buy_arrows") == {"cmd": "buy", "item": "arrow"}
+    assert e._action_to_cmd("buy_arrows") == {"cmd": "buy", "item": "Arrow"}
     # legacy fallback (no stats yet): counts names
     e._state["pack_units"] = None
     assert pack_units(e._state) == 20

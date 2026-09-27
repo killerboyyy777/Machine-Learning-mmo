@@ -11,7 +11,10 @@ Live (needs the server)::
 Seeds control agent-side RNG only (action sampling is off at epsilon=0,
 but torch/linear tie-breaks and env timing still vary); the world itself
 is the shared persistent server, so treat scores as comparative, not
-absolute. Each seed runs a fresh character for --steps env steps.
+absolute. Each seed runs a fresh character for --steps env steps. The
+live CLI therefore reports comparative-only results (no SIGNIFICANT
+verdict); the paired t-test in compare() is reserved for isolated
+per-seed server resets (see compare() docstring, #378).
 """
 
 import argparse
@@ -168,13 +171,24 @@ def _t_crit(alpha_two_sided, df):
     return (lo + hi) / 2.0
 
 
-def compare(champ_scores, base_scores, alpha=0.05, min_n=5):
+def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
     """Paired challenger-vs-baseline comparison on identical seeds.
+
+    The paired t-test (t, p_value, 95% CI) assumes independent paired
+    differences, which requires an ISOLATED world per seed: a fresh
+    server reset so rival characters, market listings, and spawn state
+    cannot leak across seeds. Seeds do NOT isolate the shared
+    persistent live server, so the t-test is invalid there (#378):
+    pass isolated=False for live eval to get a comparative-only report
+    (mean_diff plus a COMPARATIVE verdict, no significance claim).
 
     Returns a JSON-serializable dict with mean_diff, paired t statistic,
     two-sided p-value, Cohen's d (paired), 95% CI on the mean diff, and a
     SIGNIFICANT/INCONCLUSIVE verdict. Fewer than min_n seeds (or a
-    length mismatch) yields INCONCLUSIVE without statistics."""
+    length mismatch) yields INCONCLUSIVE without statistics. The
+    comparative-only path (isolated=False) keeps the same schema with
+    t/p_value/ci95 set to null, so consumers never KeyError on a
+    missing significance claim."""
     n = len(champ_scores)
     out = {"n": n, "verdict": "INCONCLUSIVE", "reason": None}
     if n != len(base_scores):
@@ -187,6 +201,27 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5):
     mean_d = statistics.fmean(diffs)
     sd = statistics.stdev(diffs) if n > 1 else 0.0
     out["mean_diff"] = mean_d
+    if not isolated:
+        # Shared persistent server: seeds don't isolate the world, so
+        # the paired t-test is invalid. Descriptive stats only, no
+        # p-value/CI and no SIGNIFICANT verdict.
+        if sd == 0.0:
+            out["cohen_d"] = (
+                0.0
+                if mean_d == 0.0
+                else (float("inf") if mean_d > 0 else float("-inf"))
+            )
+        else:
+            out["cohen_d"] = mean_d / sd
+        out["verdict"] = "COMPARATIVE"
+        out["reason"] = (
+            "shared persistent server without per-seed reset: "
+            "descriptive only, no significance claim"
+        )
+        # Schema parity with the isolated path: significance fields are
+        # present but null, never absent.
+        out.update(t=None, p_value=None, ci95=None)
+        return out
     if sd == 0.0:
         # Identical diffs: difference is exact (or exactly zero).
         out.update(t=float("inf") if mean_d != 0.0 else 0.0,
@@ -215,8 +250,13 @@ def main():
     p.add_argument("--seeds", type=int, default=10)
     p.add_argument("--steps", type=int, default=500, help="env steps per seed")
     p.add_argument("--reward-mode", default="score", choices=("score", "xp", "econ"))
-    p.add_argument("--test", default="ttest", choices=("none", "ttest"),
-                   help="paired significance test on identical seeds")
+    p.add_argument(
+        "--test",
+        default="ttest",
+        choices=("none", "ttest"),
+        help="paired significance test (isolated worlds only; "
+        "live eval reports comparative-only)",
+    )
     p.add_argument("--out", default=None,
                    help="write run record JSON (scores + comparison for #65)")
     args = p.parse_args()
@@ -253,9 +293,19 @@ def main():
         print(f"delta (challenger - baseline): {m - mb:+.2f}")
         record["baseline_scores"] = base
         if args.test == "ttest":
-            comp = compare(champ, base)
+            # Live eval runs on the shared persistent server, where seeds
+            # don't isolate the world: comparative-only, no SIGNIFICANT
+            # verdict (#378). Pass isolated=True only with a per-seed
+            # server reset.
+            comp = compare(champ, base, isolated=False)
             record["comparison"] = comp
-            if comp.get("reason"):
+            if comp["verdict"] == "COMPARATIVE":
+                print(
+                    f"comparative (shared server, no significance claim): "
+                    f"mean_diff={comp['mean_diff']:+.2f} "
+                    f"d={comp['cohen_d']:.3f}"
+                )
+            elif comp.get("reason"):
                 print(f"test: INCONCLUSIVE ({comp['reason']})")
             else:
                 lo, hi = comp["ci95"]

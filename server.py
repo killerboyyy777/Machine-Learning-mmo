@@ -276,7 +276,7 @@ def apply_xp_loss(entry, pct):
     while entry["level"] > 1 and new_total < total_xp_to_level(entry["level"]) - 1e-9:
         entry["level"] -= 1
         levels_lost.append(entry["level"])
-    entry["xp"] = new_total - total_xp_to_level(entry["level"])
+    entry["xp"] = max(0.0, new_total - total_xp_to_level(entry["level"]))
     entry["xp_to_next"] = xp_to_next(entry["level"])
     mark_scores_dirty()
     return levels_lost
@@ -1672,6 +1672,11 @@ async def respawn_player(player):
     dropped = (player.gold * DEATH_GOLD_DROP_PCT) // 100
     lost = (player.gold * DEATH_GOLD_LOST_PCT) // 100
     player.gold -= (dropped + lost)
+    # Credit the floor pile next to the debit, before any await: a crash
+    # between here and the old credit site vaporized `dropped` (neither on
+    # the player nor on the floor).
+    if dropped > 0:
+        room_gold[death_room] = room_gold.get(death_room, 0) + dropped
 
     # Item drops are zone-gated (#334): safe lands keep the gold-only rule;
     # #157 risk zones additionally scatter the unequipped pack as floor
@@ -1699,8 +1704,6 @@ async def respawn_player(player):
 
     if dungeon_for_room(death_room):
         _stamp_dungeon_death(player)
-    if dropped > 0:
-        room_gold[death_room] = room_gold.get(death_room, 0) + dropped
     sync_player_level(player)
     remove_member(player)
     player.room = START_ROOM
@@ -1791,10 +1794,16 @@ def _relocate_from_dungeon(player):
 
 
 def _dungeon_move(player, dungeon, floor_no):
+    """Move within an instance, enforcing the room cap like surface
+    moves. Returns False (no move) when the destination floor is full."""
+    dest = dungeon.room_id(floor_no)
+    if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
+        return False
     remove_member(player)
-    player.room = dungeon.room_id(floor_no)
+    player.room = dest
     dungeon.floor(floor_no)
     add_member(player)
+    return True
 
 
 def _dungeon_has_live_guards(party):
@@ -1836,24 +1845,63 @@ async def _enter_dungeon(player):
         await send(player, {"type": "error", "text": f"The archway rejects you for {int(wait)}s more (you abandoned an uncleared descent); descent readiness {adaptive_score(player)}."})
         return
     party = _auto_create_party(player)
-    if party.dungeon_id not in dungeons:
-        d = Dungeon(party_id=party.id)
-        dungeons[d.id] = d
-        party.dungeon_id = d.id
-    else:
-        d = dungeons[party.dungeon_id]
-    # Party members enter together: bring everyone already in the party who
-    # is standing at the entrance.
+    # Atomic entry: gather delay-clear mates first (delay errors go out,
+    # nobody moves yet), then check the whole headcount against free
+    # floor slots BEFORE minting or moving. An overfull party is rejected
+    # whole: no partial split across rooms, no empty instance minted.
+    # (Per-member _dungeon_move checks below stay as a race backstop.)
+    mates = []
     for mid in list(party.member_ids):
         m = players.get(mid)
         if m and m.room == DUNGEON_ENTRANCE_ROOM and m is not player:
-            remove_member(m)
-            m.room = d.room_id(1)
-            d.floor(1)
-            add_member(m)
-            await send(m, room_view(m.room))
-            await send(m, stats_view(m))
-    _dungeon_move(player, d, 1)
+            # Pulled mates serve their own re-enter delay: a delayed
+            # leaver/deather cannot ride back in instantly on another's
+            # entry.
+            _mentry = get_score_entry(m.name)
+            _mdelay = _mentry.get(
+                "dungeon_reenter_delay", DUNGEON_REENTER_DELAY_SECONDS
+            )
+            _mwait = _mdelay - (time.time() - _mentry.get("dungeon_left_ts", 0))
+            if _mwait > 0:
+                await send(
+                    m,
+                    {
+                        "type": "error",
+                        "text": f"The archway rejects you for {int(_mwait)}s more (you abandoned an uncleared descent).",
+                    },
+                )
+                continue
+            mates.append(m)
+    if party.dungeon_id in dungeons:
+        d = dungeons[party.dungeon_id]
+        free = MAX_PLAYERS_PER_ROOM - len(players_in_room(d.room_id(1)))
+    else:
+        d = None
+        free = MAX_PLAYERS_PER_ROOM
+    if 1 + len(mates) > free:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"That floor is too crowded for your party of {1 + len(mates)} ({free} free).",
+            },
+        )
+        return
+    if d is None:
+        d = Dungeon(party_id=party.id)
+        dungeons[d.id] = d
+        party.dungeon_id = d.id
+    # Party members enter together: bring everyone already in the party who
+    # is standing at the entrance.
+    for m in mates:
+        if not _dungeon_move(m, d, 1):
+            await send(m, {"type": "error", "text": "That floor is too crowded."})
+            continue
+        await send(m, room_view(m.room))
+        await send(m, stats_view(m))
+    if not _dungeon_move(player, d, 1):
+        await send(player, {"type": "error", "text": "That floor is too crowded."})
+        return
     await send(player, room_view(player.room))
     await send(player, stats_view(player))
 
@@ -1864,11 +1912,17 @@ async def _dungeon_move_or_fail(player, d, direction):
     if direction == "up":
         if floor_no == 1 or (f and f.cleared):
             if floor_no == 1:
+                if len(players_in_room(DUNGEON_ENTRANCE_ROOM)) >= MAX_PLAYERS_PER_ROOM:
+                    await send(player, {"type": "error", "text": "The graveyard is too crowded."})
+                    return
                 remove_member(player)
                 player.room = DUNGEON_ENTRANCE_ROOM
                 add_member(player)
-            else:
-                _dungeon_move(player, d, floor_no - 1)
+            elif not _dungeon_move(player, d, floor_no - 1):
+                await send(
+                    player, {"type": "error", "text": "That floor is too crowded."}
+                )
+                return
             await send(player, room_view(player.room))
             await send(player, stats_view(player))
         else:
@@ -1879,7 +1933,11 @@ async def _dungeon_move_or_fail(player, d, direction):
             if floor_no + 1 > DUNGEON_MAX_FLOOR:
                 await send(player, {"type": "error", "text": "The stairs below have crumbled into darkness. This is as deep as anyone can go."})
             else:
-                _dungeon_move(player, d, floor_no + 1)
+                if not _dungeon_move(player, d, floor_no + 1):
+                    await send(
+                        player, {"type": "error", "text": "That floor is too crowded."}
+                    )
+                    return
                 await send(player, room_view(player.room))
                 await send(player, stats_view(player))
         else:
@@ -2013,10 +2071,16 @@ async def cmd_move(player, msg):
     if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
         await send(player, {"type": "error", "text": f"{ROOMS[dest]['name']} is too crowded."})
         return
+    # Membership swaps synchronously before any await: between remove
+    # and re-add the mover is invisible to credit_gold/_online_player,
+    # so live payouts bank as if offline. Broadcast to the old room after.
+    old_room = player.room
     remove_member(player)
-    await broadcast_room(player.room, {"type": "message", "text": f"{player.name} leaves."}, exclude=player)
     player.room = dest
     add_member(player)
+    await broadcast_room(
+        old_room, {"type": "message", "text": f"{player.name} leaves."}, exclude=player
+    )
     entry = get_score_entry(player.name)
     if player.room not in entry["rooms_visited"]:
         entry["rooms_visited"].append(player.room)
@@ -2582,7 +2646,8 @@ async def cmd_commission_list(player, msg):
     lines = []
     for c in open_cmds:
         mult = collusion_multiplier(c["poster"], player.name)
-        eg = max(1, int(c["reward_gold"] * mult))
+        # Same 0-guard as the fill path: a 0g offer lists as 0g, never 1g.
+        eg = max(1, int(c["reward_gold"] * mult)) if c["reward_gold"] > 0 else 0
         ex = max(0, int(c["reward_xp"] * mult))
         tag = "" if mult >= 1.0 else f" (your rate: x{mult:.1f})"
         lines.append(f"#{c['id']}: slay {c['required_kills']}x {c['target']} — reward {eg}g + {ex}xp{tag} (posted by {c['poster']})")
@@ -2645,9 +2710,16 @@ async def cmd_commission_fill(player, msg):
     collab = poster_entry.setdefault("collab_fills", {})
     filler_key = player.name.lower()
     collab[filler_key] = collab.get(filler_key, 0) + 1
+    seen = poster_entry.setdefault("collab_seen", {})
+    seen[filler_key] = time.time()
     while len(collab) > COMMISSION_COLLAB_CAP:
-        victim = min(collab, key=lambda k: collab[k])
+        # Evict least-recently-seen, not least-frequent: least-frequent
+        # deleted exactly the record sustaining the penalty, letting
+        # cycled filler identities reset to full rate. Untimestamped
+        # legacy records age out first.
+        victim = min(collab, key=lambda k: seen.get(k, 0))
         del collab[victim]
+        seen.pop(victim, None)
     mark_scores_dirty()
     collab_note = "" if mult >= 1.0 else f" (collab penalty x{mult:.1f})"
     await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{eff_gold}g, +{eff_xp}xp.{collab_note}"})
@@ -3417,7 +3489,7 @@ async def cmd_market_buy(player, msg):
 
 
 async def cmd_market_buy_order(player, msg):
-    global tax_treasury
+    global tax_treasury, tax_collected_lifetime
     if player.room != "market":
         await send(player, {"type": "error", "text": "Bids are managed from the market room."})
         return
@@ -3444,6 +3516,7 @@ async def cmd_market_buy_order(player, msg):
         return
     player.gold -= price + fee
     tax_treasury = round(tax_treasury + fee, 2)
+    tax_collected_lifetime = round(tax_collected_lifetime + fee, 2)
     oid = next(_id_counter)
     bid = {"id": oid, "buyer": player.name, "item": iid, "price": price, "ts": time.time()}
     market_bids.append(bid)
@@ -3473,7 +3546,7 @@ async def cmd_market_buy_order(player, msg):
 
 
 async def cmd_market_buy_modify(player, msg):
-    global tax_treasury
+    global tax_treasury, tax_collected_lifetime
     if player.room != "market":
         await send(player, {"type": "error", "text": "Bids are managed from the market room."})
         return
@@ -3504,6 +3577,7 @@ async def cmd_market_buy_modify(player, msg):
         return
     player.gold -= new_price + fee
     tax_treasury = round(tax_treasury + fee, 2)
+    tax_collected_lifetime = round(tax_collected_lifetime + fee, 2)
     bid["price"] = new_price
     mark_scores_dirty()
     # Modify keeps id and queue position; sweep once like a new bid.
@@ -3736,11 +3810,12 @@ async def cmd_gm_slay(player, msg):
         _add_ground(npc["room"], loot_id)
     await broadcast_room(npc["room"], {"type": "combat", "text": f"Divine lightning strikes {npc['name']} dead."})
     await sync_room(npc["room"])
-    unsealed = check_dungeon_clear(npc["room"])
+    # GM kills never auto-unseal: floor clears (unseal, credit, delver
+    # progress) require earned contribution through the kill path. Slain
+    # guards respawn on their normal timer for a legitimate clear.
     await send(player, {
         "type": "message",
         "text": f"GM: {npc['name']} slain ({cost} tax spent)."
-                + (" Floor unsealed." if unsealed else "")
                 + f" Treasury now {round(tax_treasury, 2)}."
     })
 
@@ -3816,12 +3891,20 @@ GM_HANDLERS = {
 
 
 async def handle_gm_connection(ws):
-    # Loopback-only gate.
+    # Loopback-only gate. remote_address is a (host, port) tuple on the
+    # websockets versions we run; parse defensively and fail closed.
+    # "localhost" never appears here (it is an IP tuple, not a hostname),
+    # so the allowlist is loopback IPs only.
+    host = "?"
     try:
-        host = getattr(getattr(ws, "remote_address", None), "__getitem__", lambda i: "?")(0) if getattr(ws, "remote_address", None) else "?"
+        peer = ws.remote_address if hasattr(ws, "remote_address") else None
+        if isinstance(peer, (tuple, list)) and peer:
+            host = str(peer[0])
+        elif peer is not None:
+            host = str(peer)
     except Exception:
         host = "?"
-    if host not in ("127.0.0.1", "::1", "localhost"):
+    if host not in ("127.0.0.1", "::1"):
         try:
             await ws.close()
         except Exception:
@@ -4432,7 +4515,9 @@ async def handle_connection(ws):
                 continue
             try:
                 log_command(player.name, cmd, msg)
-                if cmd in SCORE_ARG_EXTRACTORS:
+                if player.logged_in and cmd in SCORE_ARG_EXTRACTORS:
+                    # Pre-login commands carry an empty name: recording them
+                    # mints a SCORES[""] junk entry.
                     record_action(player.name, (cmd, SCORE_ARG_EXTRACTORS[cmd](msg)))
                 if player.logged_in and _command_ticks_buffs(cmd, msg):
                     _tick_player_buffs(player)

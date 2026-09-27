@@ -283,6 +283,21 @@ class Registry:
             if lin.is_dir():
                 shutil.rmtree(lin, ignore_errors=True)
                 removed.append(str(lin))
+            for entry in self._agents.values():
+                entry.parent_id = None
+            reg_path = self.base_dir / "registry.json"
+            if reg_path.is_file():
+                try:
+                    with open(reg_path) as f:
+                        data = json.load(f)
+                    for a in data.get("agents", []):
+                        a["parent_id"] = None
+                    tmp = f"{reg_path}.tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(data, f, indent=2)
+                    os.replace(tmp, reg_path)
+                except (OSError, ValueError):
+                    pass
             if mode == "cell":
                 for entry in self._agents.values():
                     cp = entry.checkpoint_path

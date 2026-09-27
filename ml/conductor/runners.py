@@ -23,12 +23,19 @@ except ImportError:
 
 
 def make_env_factory(
-    url="ws://localhost:8765", reward_mode="score", max_steps=None, step_delay=0.15
+    url="ws://localhost:8765",
+    reward_mode="score",
+    max_steps=None,
+    step_delay=0.15,
+    **env_kwargs,
 ):
     """Return env_factory(agent_id) creating a live TextMMOEnv per agent.
 
     Construction is sync (the WebSocket connects on reset(), inside the
-    supervised task), matching the supervisor's sync factory seam."""
+    supervised task), matching the supervisor's sync factory seam.
+
+    Extra ``env_*`` slot keys (e.g. ``curriculum_stage``,
+    ``curriculum_auto``) pass through to TextMMOEnv."""
 
     def factory(agent_id):
         return TextMMOEnv(
@@ -37,6 +44,7 @@ def make_env_factory(
             step_delay=step_delay,
             max_steps=max_steps,
             reward_mode=reward_mode,
+            **env_kwargs,
         )
 
     return factory

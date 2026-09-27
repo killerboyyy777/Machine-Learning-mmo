@@ -17,6 +17,9 @@ import torch
 from dqn_agent import TorchDQNAgent
 from ml_env import OBS_SIZE
 
+# Seeded init so the novelty ordering below is reproducible (#378).
+torch.manual_seed(0)
+
 agent = TorchDQNAgent(rnd_lambda=0.1)
 obs = [0.1 * ((i % 7) + 1) for i in range(OBS_SIZE)]
 
@@ -36,12 +39,12 @@ err1 = float((((agent.rnd_pred(x) - tgt) ** 2).mean()).item())
 assert err1 < err0, (err0, err1)
 print(f"RND_LEARNS_OK ({err0:.4f} -> {err1:.4f})")
 
-# --- novel states pay more than the trained one (#245) ---
+# --- novel states pay more than the trained one (#245, #378): bonus-level
+# ordering, not just non-negativity ---
 b_seen = agent.rnd_bonus(obs)
 novels = [[(0.9 - v + 0.05 * k) % 1.0 for v in obs] for k in range(3)]
 b_novels = [agent.rnd_bonus(n) for n in novels]
-for b_novel in b_novels:
-    assert b_novel >= 0.0 and b_novel == b_novel  # noqa: PLR0124 (NaN-proof)
+assert min(b_novels) > b_seen, (b_seen, b_novels)
 # Ordering on raw predictor error: training provably shrank the seen
 # error above (RND_LEARNS_OK), so untouched regions must score higher.
 with torch.no_grad():

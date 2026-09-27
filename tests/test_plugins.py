@@ -187,4 +187,135 @@ assert seen["aid"] == "q4" and isinstance(seen["mask"], list)
 assert isinstance(seen["env"], _Env) and at.steps == 1
 print("ENV_ARITY_OK")
 
+
+def _bughunt_377():
+    import importlib
+    import json
+
+    import server as srv
+    from ml.conductor.runners import make_env_factory
+    from ml.ml_env import MERCHANT_NAMES, TextMMOEnv
+    from ml.plugins import _import_builtins
+    from ml.plugins.scripted import (
+        CommissionerPlugin,
+        PartyLeaderPlugin,
+        ScriptedPolicy,
+    )
+
+    factory = make_env_factory(url="ws://x:1", reward_mode="score", curriculum_stage=1)
+    env = factory("BugA")
+    assert env.curriculum_stage == 1
+    assert env.url == "ws://x:1"
+    assert make_env_factory(curriculum_auto=True)("BugB").curriculum_auto is True
+    print("ENV_KWARGS_OK")
+
+    slot = parse_slot("gather:weight=3")
+    assert slot["weight"] == 3 and slot["config"] == {}, slot
+    slot2 = parse_slot("torch:checkpoint=X.pt,weight=2,epsilon=0.1")
+    assert slot2["weight"] == 2, slot2
+    assert slot2["config"] == {"checkpoint": "X.pt", "epsilon": 0.1}, slot2
+    for _bad in ("gather:weight=0", "gather:weight=-2", "gather:weight=many"):
+        try:
+            parse_slot(_bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"weight accepted: {_bad}")
+    print("SLOT_WEIGHT_OK")
+
+    real_import = importlib.import_module
+
+    def _boom(name):
+        if name.endswith("torch_plugin"):
+            raise ImportError("no torch")
+        if name.endswith("scripted"):
+            raise ImportError("boom-scripted")
+        return real_import(name)
+
+    importlib.import_module = _boom
+    try:
+        _import_builtins()
+        raise SystemExit("FAIL: scripted ImportError swallowed")
+    except ImportError as exc:
+        assert "boom-scripted" in str(exc)
+    finally:
+        importlib.import_module = real_import
+
+    def _torch_only(name):
+        if name.endswith("torch_plugin"):
+            raise ImportError("no torch")
+        return real_import(name)
+
+    importlib.import_module = _torch_only
+    try:
+        _import_builtins()
+    finally:
+        importlib.import_module = real_import
+    print("BUILTIN_IMPORT_OK")
+
+    arrow_env = TextMMOEnv("BugArrow")
+    arrow_env._state["npc_names"] = list(MERCHANT_NAMES[:1])
+    arrow_env._state["pack_units"] = 0
+    arrow_env._state["pack_max"] = 24
+    cmd = arrow_env._action_to_cmd("buy_arrows")
+    want = srv.ITEM_DEFS["arrow"]["name"]
+    assert cmd == {"cmd": "buy", "item": want}, cmd
+    print("BUY_ARROWS_OK")
+
+    pol = ScriptedPolicy()
+    sig_env = TextMMOEnv("BugSig")
+    sig_env._state["open_commissions"] = []
+    sig0 = pol._stuck_state_sig(sig_env)
+    sig_env._state["open_commissions"] = [
+        {"id": 1, "poster": "O", "target": "rat", "kills": 3, "gold": 10}
+    ]
+    sig1 = pol._stuck_state_sig(sig_env)
+    sig_env._state["open_commissions"] = [
+        {"id": 1, "poster": "O", "target": "rat", "kills": 2, "gold": 10}
+    ]
+    sig2 = pol._stuck_state_sig(sig_env)
+    assert sig0 != sig1
+    assert sig1 != sig2
+    print("STUCK_SIG_OK")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        reg = Registry(tmp, max_agents=5)
+        reg.register("b1", "linear", parent_id="p0")
+        reg.save()
+        with open(os.path.join(tmp, "registry.json")) as f:
+            assert json.load(f)["agents"][0]["parent_id"] == "p0"
+        reg.reset_state("lineage")
+        assert reg.get("b1").parent_id is None
+        with open(os.path.join(tmp, "registry.json")) as f:
+            assert json.load(f)["agents"][0]["parent_id"] is None
+    print("RESET_LINEAGE_OK")
+
+    class _Duck:
+        def __init__(self):
+            self._state = {
+                "hp": 20,
+                "max_hp": 20,
+                "open_commissions": [],
+                "party_size": 1,
+                "npc_names": [],
+            }
+            self.name = "duck"
+
+        def valid_action_mask(self):
+            from ml.ml_env import N_ACTIONS
+
+            return [1] * N_ACTIONS
+
+    duck = _Duck()
+    mask = duck.valid_action_mask()
+    list(CommissionerPlugin().plan(duck, mask))
+    list(PartyLeaderPlugin().plan(duck, mask))
+    assert isinstance(CommissionerPlugin().select(duck), int)
+    assert isinstance(PartyLeaderPlugin().select(duck), int)
+    print("DUCK_STEP_OK")
+
+
+_bughunt_377()
+print("BUGHUNT_377_OK")
+
 print("ALL_PLUGINS_OK")
