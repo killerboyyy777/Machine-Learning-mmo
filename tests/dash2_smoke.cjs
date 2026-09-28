@@ -154,8 +154,11 @@ vm.runInContext('sortState["orders"] = {col: 3, dir: -1}', sandbox);
 vm.runInContext("renderMarket", sandbox)(live.market);
 const oDesc = els["orders"]._html;
 if (oDesc.indexOf(">9<") < oDesc.indexOf(">12<")) { failed++; console.error("FAIL orders flip not price-desc"); }
-// Recipe spec: ingredients column last + result-asc default.
-const thOrder = [...html.matchAll(/<th>(result|tier|category|ingredients)<\/th>/g)].map(m => m[1]);
+// Recipe spec: ingredients column last + result-asc default. Scoped to
+// the recipe table: other tables (e.g. craft history) may reuse the
+// "result" header word without affecting the recipe spec.
+const recipeTable = (html.match(/<table data-sort="recipeRows">[\s\S]*?<\/table>/) || [""])[0];
+const thOrder = [...recipeTable.matchAll(/<th>(result|tier|category|ingredients)<\/th>/g)].map(m => m[1]);
 if (thOrder.join(",") !== "result,tier,category,ingredients") {
   failed++; console.error("FAIL recipe column order: " + thOrder.join(","));
 }

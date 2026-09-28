@@ -2504,6 +2504,7 @@ async def cmd_sell(player, msg):
 
 
 async def cmd_craft(player, msg):
+    global craft_feed_seq
     rid, recipe = find_recipe(msg.get("recipe", ""))
     if not recipe:
         await send(player, {"type": "error", "text": "No such recipe."})
@@ -2544,6 +2545,18 @@ async def cmd_craft(player, msg):
     mark_scores_dirty()
     await award_points(player, 8, f"crafted {ITEM_DEFS[result]['name']}")
     await award_xp(player.name, 8, f"crafted {ITEM_DEFS[result]['name']}")
+    craft_feed_seq += 1
+    craft_feed.append(
+        {
+            "seq": craft_feed_seq,
+            "t": time.strftime("%H:%M:%S"),
+            "name": player.name,
+            "recipe": rid,
+            "result": result,
+        }
+    )
+    while len(craft_feed) > CRAFT_FEED_SIZE:
+        del craft_feed[0]
     if entry["quest_guard_active"] and result == "ancient_guardian_charm":
         entry["guard_charm_crafted"] = True
         mark_scores_dirty()
@@ -2656,7 +2669,7 @@ async def cmd_commission_list(player, msg):
 
 
 async def cmd_commission_fill(player, msg):
-    global tax_treasury, tax_collected_lifetime
+    global tax_treasury, tax_collected_lifetime, comm_feed_seq
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -2703,7 +2716,9 @@ async def cmd_commission_fill(player, msg):
     offered_xp = commission["reward_xp"]
     eff_gold = max(1, int(offered_gold * mult)) if offered_gold > 0 else 0
     eff_xp = max(0, int(offered_xp * mult))
-    commission["status"] = "filled"
+    # Single terminal vocabulary: open -> completed/cancelled. (An
+    # intermediate "filled" write used to live here, overwritten to
+    # "completed" below before any snapshot or send could observe it.)
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
     poster_entry = get_score_entry(commission["poster"])
@@ -2735,6 +2750,22 @@ async def cmd_commission_fill(player, msg):
         tax_treasury += remainder
         tax_collected_lifetime += remainder
     commission["status"] = "completed"
+    comm_feed_seq += 1
+    comm_feed.append(
+        {
+            "seq": comm_feed_seq,
+            "t": time.strftime("%H:%M:%S"),
+            "id": cid,
+            "poster": commission["poster"],
+            "filler": player.name,
+            "target": commission["target"],
+            "gold": eff_gold,
+            "xp": eff_xp,
+            "status": "completed",
+        }
+    )
+    while len(comm_feed) > COMM_FEED_SIZE:
+        del comm_feed[0]
     # Poster reward: 10% of the bounty as score + XP for coordinating.
     # Gated like the filler floors: no mint from a zero bounty.
     poster_score = max(1, int(offered_gold * 0.1)) if offered_gold > 0 else 0
@@ -2751,7 +2782,7 @@ async def cmd_commission_fill(player, msg):
 
 
 async def cmd_commission_cancel(player, msg):
-    global tax_treasury, tax_collected_lifetime
+    global tax_treasury, tax_collected_lifetime, comm_feed_seq
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -2779,6 +2810,24 @@ async def cmd_commission_cancel(player, msg):
     escrow = commission.get("escrow", commission["reward_gold"])
     refund = escrow // 2
     forfeit = escrow - refund
+    comm_feed_seq += 1
+    comm_feed.append(
+        {
+            "seq": comm_feed_seq,
+            "t": time.strftime("%H:%M:%S"),
+            "id": cid,
+            "poster": commission["poster"],
+            "filler": None,
+            "target": commission["target"],
+            "status": "cancelled",
+            "offered_gold": commission["reward_gold"],
+            "offered_xp": commission["reward_xp"],
+            "refund": refund,
+            "forfeit": forfeit,
+        }
+    )
+    while len(comm_feed) > COMM_FEED_SIZE:
+        del comm_feed[0]
     commission["escrow"] = 0
     if forfeit:
         tax_treasury += forfeit
@@ -2855,6 +2904,15 @@ quest_turnin_times = []
 TURNIN_FEED_SIZE = 50
 quest_turnin_feed = []
 quest_feed_seq = 0
+
+# Craft + commission event feeds for the dashboard (#333): same bounded
+# ring discipline as quest turn-ins (seq, newest last, trimmed on append).
+CRAFT_FEED_SIZE = 50
+craft_feed = []
+craft_feed_seq = 0
+COMM_FEED_SIZE = 100
+comm_feed = []
+comm_feed_seq = 0
 
 # Quest giver category system - makes it easy to add/change quest NPCs.
 # Add new entries here to create new quest givers; kill penalties,
@@ -4109,7 +4167,7 @@ def _quest_snapshot():
 
 def _commission_snapshot():
     """Dashboard commissions board: open + closed bounties, newest first,
-    capped (filled/cancelled records persist server-side, unbounded)."""
+    capped (completed/cancelled records persist server-side, unbounded)."""
     cmds = sorted(_commissions.values(), key=lambda c: c.get("id", 0), reverse=True)[:100]
     return [
         {"id": c.get("id"), "poster": c.get("poster", ""),
@@ -4211,6 +4269,8 @@ def world_snapshot():
         "dungeons": dungeon_views,
         "quests": _quest_snapshot(),
         "commissions": _commission_snapshot(),
+        "craft_history": list(craft_feed)[-20:],
+        "commission_history": list(comm_feed)[-20:],
         "dungeon_clears": _dungeon_clears_snapshot(),
         "recipes": RECIPE_VIEWS,
         "catalog": {"players": sorted([p.name for p in players.values() if p.logged_in]),

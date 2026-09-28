@@ -260,4 +260,24 @@ assert ".textContent" in dc.group(1), "clears not text-only"
 assert "innerHTML" not in dc.group(1), "clears risk layout shift"
 print("CLEARS_OK")
 
+# --- History rings (#333): craft + commission activity tables ---
+for wid in ("craftHistory", "noCraftHistory", "craftHistoryCount",
+            "commHistory", "noCommHistory", "commHistoryCount"):
+    assert f'id="{wid}"' in html, f"missing history widget {wid}"
+assert 'data-sort="craftHistory"' in html
+assert 'data-sort="commHistory"' in html
+for fn in ("renderCraftHistory", "renderCommHistory"):
+    assert f"function {fn}" in html, f"{fn} missing"
+    body = re.search(rf"function {fn}\(.*?\) \{{(.*?)\n\}}", html, re.DOTALL)
+    assert body, f"{fn} not found"
+    assert ".textContent" in body.group(1), f"{fn} shows no numbers"
+ch = re.search(r"craft_history", html)
+assert ch, "craft_history not consumed"
+assert "commission_history" in html, "commission_history not consumed"
+assert "refund" in html and "forfeit" in html, "cancel economics not rendered"
+for tok in ('"craft_history": list(craft_feed)', '"commission_history": list(comm_feed)',
+            "craft_feed_seq", "comm_feed_seq"):
+    assert tok in _srv, f"server: history token {tok} missing"
+print("HISTORY_TABLES_OK")
+
 print("ALL_DASHBOARD_OK")

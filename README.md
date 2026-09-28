@@ -28,7 +28,9 @@ python3 server.py          # world on ws://0.0.0.0:8765
 Run `python start.py` (any OS) for the server + banner, or add
 `--roles "gather:8,dungeon:4,market:3,commissioner:2"` to also launch
 bots. Edit `world.json` for your own rooms/NPCs/items (loaded once at
-startup).
+startup). `/api/state` also exposes `craft_history` and
+`commission_history` rings (seq-ordered, newest last); ML
+observations are unchanged by them.
 
 ## Docker (full stack, zero install)
 

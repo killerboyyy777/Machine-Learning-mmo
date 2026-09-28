@@ -2402,4 +2402,91 @@ async def main():
         assert _w.closed is True, _peer
     print("GM_GATE_OK")
 
+    # history rings record crafts + commission fills/cancels with seq (#333)
+    _crafter = mkplayer("HistCrafter", 64001)
+    _crafter.inventory = ["iron_ore"]
+    _cs0 = srv.craft_feed[-1]["seq"] if srv.craft_feed else 0
+    await srv.cmd_craft(_crafter, {"recipe": "arrows"})
+    _ce = srv.craft_feed[-1]
+    assert _ce["name"] == "HistCrafter" and _ce["result"] == "arrow", _ce
+    assert _ce["seq"] == _cs0 + 1, _ce
+    unplayer(_crafter)
+    _hp = mkplayer("HistPoster", 64002)
+    _hp.gold = 1000
+    _hf = mkplayer("HistFiller", 64003)
+    # seq continuity, not absolute length: the ring trims at COMM_FEED_SIZE
+    _cs0 = srv.comm_feed[-1]["seq"] if srv.comm_feed else 0
+    await srv.cmd_commission_post(_hp, {"target": "rat", "required_kills": 1,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _hcid = max(srv._commissions)
+    srv.record_npc_kill("HistFiller", "Giant Rat")
+    await srv.cmd_commission_fill(_hf, {"commission_id": _hcid})
+    _me = srv.comm_feed[-1]
+    assert _me["status"] == "completed" and _me["id"] == _hcid, _me
+    assert _me["filler"] == "HistFiller" and _me["gold"] == 10, _me
+    assert _me["seq"] == _cs0 + 1, _me
+    await srv.cmd_commission_post(_hp, {"target": "rat", "required_kills": 1,
+                                        "reward_gold": 5, "reward_xp": 0})
+    _hcid2 = max(srv._commissions)
+    await srv.cmd_commission_cancel(_hp, {"commission_id": _hcid2})
+    _xe2 = srv.comm_feed[-1]
+    assert _xe2["status"] == "cancelled" and _xe2["id"] == _hcid2, _xe2
+    assert _xe2["seq"] == _cs0 + 2, _xe2
+    unplayer(_hp)
+    unplayer(_hf)
+    print("HISTORY_RINGS_OK")
+
+    # rings trim at cap and expose last-20 in the snapshot
+    _trimmer = mkplayer("Trimmer", 64004)
+    for _i in range(55):
+        _trimmer.inventory = ["iron_ore"]
+        await srv.cmd_craft(_trimmer, {"recipe": "arrows"})
+    assert len(srv.craft_feed) == srv.CRAFT_FEED_SIZE, len(srv.craft_feed)
+    assert srv.craft_feed[-1]["seq"] - srv.craft_feed[0]["seq"] + 1 == len(srv.craft_feed)
+    unplayer(_trimmer)
+    _tcp = mkplayer("TrimPoster", 64005)
+    _tcp.gold = 100000
+    for _i in range(105):
+        await srv.cmd_commission_post(_tcp, {"target": "rat", "required_kills": 1,
+                                             "reward_gold": 10, "reward_xp": 0})
+        _tc = max(srv._commissions)
+        await srv.cmd_commission_cancel(_tcp, {"commission_id": _tc})
+    assert len(srv.comm_feed) == srv.COMM_FEED_SIZE, len(srv.comm_feed)
+    for _c2 in list(srv._commissions.values()):
+        if _c2["poster"] == "TrimPoster" and _c2["status"] == "open":
+            await srv.cmd_commission_cancel(_tcp, {"commission_id": _c2["id"]})
+    unplayer(_tcp)
+    _snap = srv.world_snapshot()
+    assert len(_snap["craft_history"]) == 20, len(_snap["craft_history"])
+    assert len(_snap["commission_history"]) == 20, len(_snap["commission_history"])
+    assert _snap["craft_history"][-1]["seq"] == srv.craft_feed[-1]["seq"]
+    assert _snap["commission_history"][-1]["seq"] == srv.comm_feed[-1]["seq"]
+    print("RING_TRIM_OK")
+
+    # failure paths append nothing and bump no seq
+    _fp = mkplayer("FailPoster", 64006)
+    _fp.gold = 1000
+    _ff = mkplayer("FailFiller", 64007)
+    _s0 = srv.comm_feed[-1]["seq"]
+    await srv.cmd_craft(_fp, {"recipe": "no_such_recipe"})
+    _fp.inventory = []
+    await srv.cmd_craft(_fp, {"recipe": "arrows"})
+    await srv.cmd_commission_post(_fp, {"target": "rat", "required_kills": 1,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _fc = max(srv._commissions)
+    await srv.cmd_commission_fill(_fp, {"commission_id": _fc})  # self-fill
+    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # no kills
+    srv.record_npc_kill("FailFiller", "Giant Rat")
+    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # real fill
+    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # double fill
+    await srv.cmd_commission_cancel(_fp, {"commission_id": _fc})  # cancel filled
+    await srv.cmd_commission_cancel(_ff, {"commission_id": _fc})  # non-poster
+    assert srv.comm_feed[-1]["seq"] == _s0 + 1, srv.comm_feed[-1]
+    assert len([e for e in srv.comm_feed if e["seq"] > _s0]) == 1
+    await srv.cmd_commission_cancel(_fp, {"commission_id": _fc + 99999})  # missing
+    assert srv.comm_feed[-1]["seq"] == _s0 + 1
+    unplayer(_fp)
+    unplayer(_ff)
+    print("FAILURE_NOAPPEND_OK")
+
 asyncio.run(main())
