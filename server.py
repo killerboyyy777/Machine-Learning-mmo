@@ -1484,7 +1484,7 @@ def dungeon_room_view(room_id, dungeon):
     floor_no = floor_from_room(room_id)
     f = dungeon.floors.get(floor_no) if floor_no else None
     guards = [g["name"] for g in (f.guards if f else []) if g["alive"]]
-    items = [ITEM_DEFS[i]["name"] for i in (f.items if f else [])]
+    items = [ITEM_DEFS.get(i, {}).get("name", i) for i in (f.items if f else [])]
     exits = {}
     if f and f.cleared:
         exits["up"] = "up"
@@ -1519,15 +1519,19 @@ def room_view(room_id):
         "description": room.get("description", ""),
         "exits": dict(room.get("exits", {})),
         "npcs": [n["name"] for n in npcs_in_room(room_id)],
-        "items": [ITEM_DEFS[i]["name"] for i in room_items[room_id]],
+        "items": [ITEM_DEFS.get(i, {}).get("name", i) for i in room_items[room_id]],
         "gold": room_gold.get(room_id, 0),
         "players": [p.name for p in players_in_room(room_id)],
         "is_dungeon": False,
         "dungeon_floor": 0,
         "party_size": _party_size_in_room(room_id),
         "gatherables": [
-            {"id": n["id"], "item": ITEM_DEFS[n["item"]]["name"],
-             "min_yield": n.get("min_yield", 1), "max_yield": n.get("max_yield", 1)}
+            {
+                "id": n["id"],
+                "item": ITEM_DEFS.get(n["item"], {}).get("name", n["item"]),
+                "min_yield": n.get("min_yield", 1),
+                "max_yield": n.get("max_yield", 1),
+            }
             for n in gather_nodes_in_room(room_id)
         ],
     }
@@ -4205,7 +4209,7 @@ def world_snapshot():
             "exits": [{"dir": d, "to": t, "to_name": ROOMS.get(t, {}).get("name", t)} for d, t in r.get("exits", {}).items()],
             "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
             "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
-            "items": [ITEM_DEFS[i]["name"] for i in room_items.get(rid, [])],
+            "items": [ITEM_DEFS.get(i, {}).get("name", i) for i in room_items.get(rid, [])],
             "gold": room_gold.get(rid, 0),
         })
     online_players = []

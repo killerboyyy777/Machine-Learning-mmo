@@ -2489,4 +2489,15 @@ async def main():
     unplayer(_ff)
     print("FAILURE_NOAPPEND_OK")
 
+    # unregistered ground items render as raw ids, never KeyError
+    # (dynamic ids like dungeon_shard_N can precede ITEM_DEFS registration)
+    srv.room_items["market"].append("ghost_zzz_unregistered")
+    _rv = srv.room_view("market")
+    assert "ghost_zzz_unregistered" in _rv["items"], _rv["items"]
+    _snap = srv.world_snapshot()
+    _mroom = next(r for r in _snap["rooms"] if r["id"] == "market")
+    assert "ghost_zzz_unregistered" in _mroom["items"], _mroom["items"]
+    srv.room_items["market"].remove("ghost_zzz_unregistered")
+    print("UNREGISTERED_ITEM_OK")
+
 asyncio.run(main())
