@@ -2565,4 +2565,24 @@ async def main():
     unplayer(_ip)
     print("INTERACTION_NAMES_OK")
 
+    # equip/use resolve ghost ids gracefully; stats slots stay consistent
+    _ep = mkplayer("EquipProber", 64011, room="market")
+    _ep.inventory = ["ghost_zzz_unregistered"]
+    inbox.clear()
+    await srv.cmd_equip(_ep, {"item": "ghost_zzz_unregistered"})
+    assert _ep.equipped is None
+    assert any("ghost_zzz_unregistered" in m.get("text", "") for m in inbox), inbox[-3:]
+    inbox.clear()
+    await srv.cmd_use(_ep, {"item": "ghost_zzz_unregistered"})
+    assert any(
+        m.get("type") == "error" and "can't use" in m.get("text", "") for m in inbox
+    ), inbox[-3:]
+    _ep.equipped = "ghost_zzz_unregistered"
+    _sv = srv.stats_view(_ep)
+    assert _sv["equipped"] == "ghost_zzz_unregistered", _sv["equipped"]
+    _ep.equipped = None
+    _ep.inventory = []
+    unplayer(_ep)
+    print("EQUIP_USE_GHOST_OK")
+
 asyncio.run(main())

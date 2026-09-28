@@ -1578,9 +1578,9 @@ def stats_view(player):
         "gold": player.gold,
         "pack": _inventory_units(player),
         "pack_max": INVENTORY_CAP,
-        "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
-        "armor": ITEM_DEFS[player.armor]["name"] if player.armor else None,
-        "offhand": ITEM_DEFS[player.offhand]["name"] if player.offhand else None,
+        "equipped": _iname(player.equipped) if player.equipped else None,
+        "armor": _iname(player.armor) if player.armor else None,
+        "offhand": _iname(player.offhand) if player.offhand else None,
         "defense": _player_defense(player),
         "score": round(entry["score"], 2) if entry else 0,
         "variety": round(compute_variety(entry), 2) if entry else 1.0,
@@ -2384,7 +2384,7 @@ async def cmd_equip(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": "You don't have that."})
         return
-    itype = ITEM_DEFS[iid].get("type")
+    itype = ITEM_DEFS.get(iid, {}).get("type")
     if itype == "weapon":
         player.equipped = iid
     elif itype == "armor":
@@ -2392,9 +2392,9 @@ async def cmd_equip(player, msg):
     elif itype == "offhand":
         player.offhand = iid
     else:
-        await send(player, {"type": "error", "text": f"You can't equip '{ITEM_DEFS[iid]['name']}'."})
+        await send(player, {"type": "error", "text": f"You can't equip '{_iname(iid)}'."})
         return
-    await send(player, {"type": "message", "text": f"You equip {ITEM_DEFS[iid]['name']}."})
+    await send(player, {"type": "message", "text": f"You equip {_iname(iid)}."})
     await send(player, stats_view(player))
 
 
@@ -2403,11 +2403,11 @@ async def cmd_use(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": "You don't have that."})
         return
-    if not iid or ITEM_DEFS[iid].get("type") != "consumable":
+    if not iid or ITEM_DEFS.get(iid, {}).get("type") != "consumable":
         await send(player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."})
         return
     player.inventory.remove(iid)
-    definition = ITEM_DEFS[iid]
+    definition = ITEM_DEFS.get(iid, {})
     effect = definition.get("buff")
     if effect:
         category = effect["category"]
@@ -2417,7 +2417,7 @@ async def cmd_use(player, msg):
         }
         await send(player, {
             "type": "message",
-            "text": f"You use {definition['name']}: {effect.get('description', 'a temporary effect')} "
+            "text": f"You use {_iname(iid)}: {effect.get('description', 'a temporary effect')} "
                     f"({player.active_buffs[category]['remaining']} actions).",
         })
         await send(player, stats_view(player))
@@ -2425,7 +2425,7 @@ async def cmd_use(player, msg):
     heal = definition.get("heal_amount", 0)
     before = player.hp
     player.hp = min(player.max_hp, player.hp + heal)
-    await send(player, {"type": "message", "text": f"You use {definition['name']} and recover {player.hp - before} HP."})
+    await send(player, {"type": "message", "text": f"You use {_iname(iid)} and recover {player.hp - before} HP."})
     await send(player, stats_view(player))
 
 
