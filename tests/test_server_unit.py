@@ -5,6 +5,7 @@ Covers: XP curve, level-ups (single + multi), XP buffs, instanced dungeon
 generation + seal/respawn rules, market tax math, GM treasury spending
 (buff/boss/reward plus announce/heal/teleport/slay/kick).
 """
+
 import asyncio
 import json
 import os
@@ -13,6 +14,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server as srv
+
 
 async def main():
     # --- Leveling curve ---
@@ -24,18 +26,23 @@ async def main():
     print("LEVEL_CURVE_OK")
 
     inbox = []
+
     async def fake_send(p, payload):
         inbox.append(payload if isinstance(payload, dict) else json.loads(payload))
+
     orig_send = srv.send
 
     class FakeWS:
         remote_address = ("127.0.0.1", 1234)
+
     srv.send = fake_send
 
     p = srv.Player(ws=FakeWS(), id=9999, name="Tester", logged_in=True)
     srv.add_member(p)
     entry = srv.get_score_entry("Tester")
-    entry["level"] = 1; entry["xp"] = 0.0; entry["xp_to_next"] = srv.xp_to_next(1)
+    entry["level"] = 1
+    entry["xp"] = 0.0
+    entry["xp_to_next"] = srv.xp_to_next(1)
 
     leveled = await srv.award_xp("Tester", 100, "unit")
     assert leveled == [2], leveled
@@ -46,7 +53,8 @@ async def main():
     assert lv_evts and lv_evts[-1]["level"] == 2 and lv_evts[-1]["max_hp"] == 25
     print("LEVEL_UP_OK")
 
-    entry["xp"] = 0.0; entry["xp_to_next"] = srv.xp_to_next(entry["level"])
+    entry["xp"] = 0.0
+    entry["xp_to_next"] = srv.xp_to_next(entry["level"])
     leveled = await srv.award_xp("Tester", 400, "unit")
     assert leveled == [3, 4], leveled
     assert entry["level"] == 4 and entry["xp"] == 25.0
@@ -69,7 +77,9 @@ async def main():
     srv.add_member(crafter)
     await srv.cmd_craft(crafter, {"recipe": "arrows"})
     assert crafter.inventory.count("arrow") == 5
-    assert any(m.get("type") == "message" and "5x Arrow" in m.get("text", "") for m in inbox)
+    assert any(
+        m.get("type") == "message" and "5x Arrow" in m.get("text", "") for m in inbox
+    )
     print("RECIPE_OUTPUT_QTY_OK")
 
     # Crafted buff items consume normally and apply category-scoped effects.
@@ -107,10 +117,20 @@ async def main():
     await srv.cmd_equip(archer, {"item": "oak longbow"})
     assert archer.equipped == "oak_longbow"
     srv.npcs["ammo_dummy"] = {
-        "id": "ammo_dummy", "name": "Ammo Test Dummy", "room": archer.room,
-        "hp": 1000, "max_hp": 1000, "attack": 0, "hostile": True, "behavior": "idle",
-        "loot": [], "gold": 0, "respawn_seconds": 60,
-        "alive": True, "respawn_at": None, "contributors": {},
+        "id": "ammo_dummy",
+        "name": "Ammo Test Dummy",
+        "room": archer.room,
+        "hp": 1000,
+        "max_hp": 1000,
+        "attack": 0,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": [],
+        "gold": 0,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
     }
     await srv.cmd_attack(archer, {"target": "ammo test"})
     assert "steel_arrow" not in archer.inventory  # best-first consumption
@@ -129,8 +149,15 @@ async def main():
     packer = srv.Player(ws=FakeWS(), id=10007, name="PackTester", logged_in=True)
     packer.room = "market"
     srv.add_member(packer)
-    packer.inventory = ["rat_tail"] * 18 + ["oak_longbow", "arrow", "arrow",
-                                            "arrow", "arrow", "arrow", "arrow"]
+    packer.inventory = ["rat_tail"] * 18 + [
+        "oak_longbow",
+        "arrow",
+        "arrow",
+        "arrow",
+        "arrow",
+        "arrow",
+        "arrow",
+    ]
     await srv.cmd_equip(packer, {"item": "oak longbow"})
     # 18 tails + bow + 6 arrows - 1 worn bow - 5 exempt arrows = 19 units
     assert srv._inventory_units(packer) == 19
@@ -181,6 +208,7 @@ async def main():
 
     # multi-yield truncates to remaining pack space, never overflows (#232)
     from unittest import mock as _mock
+
     capper = srv.Player(ws=FakeWS(), id=10006, name="CapGatherer", logged_in=True)
     capper.room = "lumber_camp"
     srv.add_member(capper)
@@ -189,7 +217,9 @@ async def main():
     node["respawn_at"] = None
     with _mock.patch.object(srv.random, "randint", return_value=3):
         await srv.cmd_gather(capper, {"node": "pine timber"})
-    assert srv._inventory_units(capper) == srv.INVENTORY_CAP, srv._inventory_units(capper)
+    assert srv._inventory_units(capper) == srv.INVENTORY_CAP, srv._inventory_units(
+        capper
+    )
     assert capper.inventory.count("pine_timber") == 1  # truncated 3 -> 1
     srv.remove_member(capper)
     print("GATHER_CAP_OK")
@@ -212,12 +242,31 @@ async def main():
     print("BUFF_STACK_OK")
 
     # read-only commands never consume action buffs (#237)
-    for cmd in ("look", "stats", "inventory", "who", "leaderboard", "help",
-                "commission_list", "party_info", "market_list", "login"):
+    for cmd in (
+        "look",
+        "stats",
+        "inventory",
+        "who",
+        "leaderboard",
+        "help",
+        "commission_list",
+        "party_info",
+        "market_list",
+        "login",
+    ):
         assert srv._command_ticks_buffs(cmd, {}) is False, cmd
     assert srv._command_ticks_buffs("quest", {"action": "list"}) is False
-    for cmd in ("move", "attack", "take", "quest", "craft", "rest",
-                "market_buy", "party_leave", "commission_fill"):
+    for cmd in (
+        "move",
+        "attack",
+        "take",
+        "quest",
+        "craft",
+        "rest",
+        "market_buy",
+        "party_leave",
+        "commission_fill",
+    ):
         assert srv._command_ticks_buffs(cmd, {"action": "accept"}) is True, cmd
     print("BUFF_TICK_GATE_OK")
 
@@ -293,15 +342,21 @@ async def main():
     print("WARDEN_KILL_OK")
 
     # --- Market tax ---
-    srv.tax_treasury = 0.0; srv.tax_collected_lifetime = 0.0
+    srv.tax_treasury = 0.0
+    srv.tax_collected_lifetime = 0.0
     srv.market_orders.clear()
     buyer = srv.Player(ws=FakeWS(), id=20002, name="Buyer", logged_in=True)
     buyer.gold = 1000
     oid = next(srv._id_counter)
-    srv.market_orders.append({"id": oid, "seller": "Seller", "item": "rusty_sword", "price": 100, "ts": 0})
+    srv.market_orders.append(
+        {"id": oid, "seller": "Seller", "item": "rusty_sword", "price": 100, "ts": 0}
+    )
     await srv.cmd_market_buy(buyer, {"id": oid})
     tax = round(100 * srv.TAX_RATE)
-    assert srv.tax_treasury == tax and srv.tax_collected_lifetime == tax, (srv.tax_treasury, tax)
+    assert srv.tax_treasury == tax and srv.tax_collected_lifetime == tax, (
+        srv.tax_treasury,
+        tax,
+    )
     assert buyer.gold == 900
     assert "rusty_sword" in buyer.inventory
     assert srv.SCORES["seller"]["tax_paid"] == tax
@@ -311,13 +366,19 @@ async def main():
     print("MARKET_TAX_OK")
 
     # --- Market expand accounts lifetime (#240) ---
-    srv.tax_treasury = 0.0; srv.tax_collected_lifetime = 0.0
+    srv.tax_treasury = 0.0
+    srv.tax_collected_lifetime = 0.0
     expander = srv.Player(ws=FakeWS(), id=20003, name="Expander", logged_in=True)
     expander.gold = 1000
-    slots0 = srv.get_score_entry("Expander").get("market_slots", srv.MARKET_ORDER_SLOTS_BASE)
+    slots0 = srv.get_score_entry("Expander").get(
+        "market_slots", srv.MARKET_ORDER_SLOTS_BASE
+    )
     price0 = srv.market_slot_price(slots0)
     await srv.cmd_market_expand(expander, {})
-    assert srv.tax_treasury == price0 and srv.tax_collected_lifetime == price0, (srv.tax_treasury, srv.tax_collected_lifetime)
+    assert srv.tax_treasury == price0 and srv.tax_collected_lifetime == price0, (
+        srv.tax_treasury,
+        srv.tax_collected_lifetime,
+    )
     assert srv.get_score_entry("Expander")["market_slots"] == slots0 + 1
     print("MARKET_EXPAND_LIFETIME_OK")
 
@@ -341,6 +402,7 @@ async def main():
     class KickWS(FakeWS):
         def __init__(self):
             self.closed = False
+
         async def close(self):
             self.closed = True
 
@@ -360,7 +422,9 @@ async def main():
     guard_hp0 = srv.npcs["guard"]["hp"]
     for _ in range(3):  # repeated attempts hold the rule
         await srv.cmd_attack(griefer, {"target": "guard"})
-        assert inbox[-1]["type"] == "error" and "protection" in inbox[-1]["text"], inbox[-1]
+        assert (
+            inbox[-1]["type"] == "error" and "protection" in inbox[-1]["text"]
+        ), inbox[-1]
     assert srv.npcs["guard"]["alive"] and srv.npcs["guard"]["hp"] == guard_hp0
     assert srv.npcs["guard"]["contributors"] == {}
     assert srv.get_score_entry("Griefer")["score"] == 0  # not even the -0.5 fired
@@ -389,10 +453,20 @@ async def main():
     racer_a.gold = 0
     racer_b.gold = 0
     srv.npcs["race_dummy"] = {
-        "id": "race_dummy", "name": "Race Dummy", "room": "town_square",
-        "hp": 1, "max_hp": 20, "attack": 0, "hostile": True, "behavior": "idle",
-        "loot": ["rat_tail"], "gold": 10, "respawn_seconds": 60,
-        "alive": True, "respawn_at": None, "contributors": {},
+        "id": "race_dummy",
+        "name": "Race Dummy",
+        "room": "town_square",
+        "hp": 1,
+        "max_hp": 20,
+        "attack": 0,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": ["rat_tail"],
+        "gold": 10,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
     }
     tails_before = srv.room_items["town_square"].count("rat_tail")
     saved_send = srv.send
@@ -400,8 +474,11 @@ async def main():
 
     async def send_then_b(p, payload):
         await saved_send(p, payload)
-        if (payload.get("type") == "combat" and "You hit" in payload.get("text", "")
-                and "b_ran" not in interleaved):
+        if (
+            payload.get("type") == "combat"
+            and "You hit" in payload.get("text", "")
+            and "b_ran" not in interleaved
+        ):
             interleaved["b_ran"] = True
             await srv.cmd_attack(racer_b, {"target": "race dummy"})
 
@@ -424,18 +501,31 @@ async def main():
     loser_a = mkplayer("LoserA", 60025, room="town_square", hp=20, max_hp=20)
     loser_b = mkplayer("LoserB", 60026, room="town_square", hp=20, max_hp=20)
     srv.npcs["corpse_dummy"] = {
-        "id": "corpse_dummy", "name": "Corpse Dummy", "room": "town_square",
-        "hp": 1, "max_hp": 20, "attack": 50, "hostile": True, "behavior": "idle",
-        "loot": [], "gold": 0, "respawn_seconds": 60,
-        "alive": True, "respawn_at": None, "contributors": {},
+        "id": "corpse_dummy",
+        "name": "Corpse Dummy",
+        "room": "town_square",
+        "hp": 1,
+        "max_hp": 20,
+        "attack": 50,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": [],
+        "gold": 0,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
     }
     saved_send2 = srv.send
     interleaved2 = {}
 
     async def send_then_b2(p, payload):
         await saved_send2(p, payload)
-        if (payload.get("type") == "combat" and "You hit" in payload.get("text", "")
-                and "b_ran" not in interleaved2):
+        if (
+            payload.get("type") == "combat"
+            and "You hit" in payload.get("text", "")
+            and "b_ran" not in interleaved2
+        ):
             interleaved2["b_ran"] = True
             await srv.cmd_attack(loser_b, {"target": "corpse dummy"})
 
@@ -465,9 +555,11 @@ async def main():
     assert fentry.get("dungeon_left_ts", 0) > 0  # live guards: stamped
     room_before = farmer.room
     await srv._enter_dungeon(farmer)
-    assert inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"], inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"]
+    ), inbox[-1]
     assert farmer.room == room_before  # not moved
-    fentry["dungeon_left_ts"] -= (srv.DUNGEON_REENTER_DELAY_SECONDS + 1)
+    fentry["dungeon_left_ts"] -= srv.DUNGEON_REENTER_DELAY_SECONDS + 1
     await srv._enter_dungeon(farmer)
     assert srv.dungeon_for_room(farmer.room) is not None
     # Leaving a party with no dungeon stamps nothing.
@@ -479,7 +571,11 @@ async def main():
     assert "dungeon_left_ts" not in srv.get_score_entry("HostA")
     # Tidy every party touched above.
     for p in list(srv.parties.values()):
-        if farmer.id in p.member_ids or host.id in p.member_ids or guest.id in p.member_ids:
+        if (
+            farmer.id in p.member_ids
+            or host.id in p.member_ids
+            or guest.id in p.member_ids
+        ):
             srv._delete_party(p)
     unplayer(farmer)
     unplayer(host)
@@ -498,7 +594,9 @@ async def main():
     quitter.party_id = None
     quitter.room = "graveyard"
     await srv._enter_dungeon(quitter)
-    assert inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"], inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"]
+    ), inbox[-1]
     for p in list(srv.parties.values()):
         if quitter.id in p.member_ids:
             srv._delete_party(p)
@@ -527,7 +625,9 @@ async def main():
     assert not any(g["alive"] for g in srv.npcs_in_room(killer.room))
     kentry = srv.get_score_entry("Killer")
     lentry = srv.get_score_entry("Leecher")
-    assert kentry.get("dungeon_floors_cleared", 0) == 1, kentry.get("dungeon_floors_cleared")
+    assert kentry.get("dungeon_floors_cleared", 0) == 1, kentry.get(
+        "dungeon_floors_cleared"
+    )
     assert lentry.get("dungeon_floors_cleared", 0) == 0
     assert srv.quest_delver_ready(kentry) and not srv.quest_delver_ready(lentry)
     for p in list(srv.parties.values()):
@@ -554,16 +654,20 @@ async def main():
     # --- Sheltered wealth counts toward the death penalty (#195.5) ---
     shelter = mkplayer("Shelter", 60012)
     shelter.gold = 1000
-    await srv.cmd_commission_post(shelter, {"target": "rat", "required_kills": 1,
-                                            "reward_gold": 100, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        shelter,
+        {"target": "rat", "required_kills": 1, "reward_gold": 100, "reward_xp": 0},
+    )
     shelter.gold = 0  # everything sheltered or spent: carried is empty
     sentry = srv.get_score_entry("Shelter")
     sentry["score"] = 1000.0
     await srv.respawn_player(shelter)
     expect = srv.DEATH_PENALTY + srv.DEATH_SCORE_PER_GOLD_LOST * 100
     assert sentry["score"] == 1000.0 - expect, (sentry["score"], expect)
-    assert any(c["status"] == "open" and c.get("escrow", 0) == 100
-               for c in srv._commissions.values())  # escrow itself untouched
+    assert any(
+        c["status"] == "open" and c.get("escrow", 0) == 100
+        for c in srv._commissions.values()
+    )  # escrow itself untouched
     broke = mkplayer("Broke", 60013)
     broke.gold = 0
     bentry = srv.get_score_entry("Broke")
@@ -602,10 +706,15 @@ async def main():
     await srv.cmd_party_invite(inv_a, {"target": "InvC"})
     inbox.clear()
     await srv.cmd_party_invite(inv_b, {"target": "InvC"})
-    assert any(m.get("type") == "message" and "replaced" in m.get("text", "")
-               for m in inbox), inbox[-3:]
+    assert any(
+        m.get("type") == "message" and "replaced" in m.get("text", "") for m in inbox
+    ), inbox[-3:]
     for p in list(srv.parties.values()):
-        if inv_a.id in p.member_ids or inv_b.id in p.member_ids or inv_c.id in p.member_ids:
+        if (
+            inv_a.id in p.member_ids
+            or inv_b.id in p.member_ids
+            or inv_c.id in p.member_ids
+        ):
             srv._delete_party(p)
     unplayer(inv_a)
     unplayer(inv_b)
@@ -617,6 +726,7 @@ async def main():
     await srv._enter_dungeon(diver)
     assert srv.dungeon_for_room(diver.room) is not None
     import time as _time
+
     shore = mkplayer("Shore", 60019)
     shore_party = srv._auto_create_party(shore)
     srv._pending_party_invites[diver.id] = {"party": shore_party, "ts": _time.time()}
@@ -636,10 +746,20 @@ async def main():
     striker.gold = 0
     drifter.gold = 0
     srv.npcs["share_dummy"] = {
-        "id": "share_dummy", "name": "Share Dummy", "room": "town_square",
-        "hp": 20, "max_hp": 20, "attack": 0, "hostile": True, "behavior": "idle",
-        "loot": [], "gold": 10, "respawn_seconds": 60,
-        "alive": True, "respawn_at": None, "contributors": {},
+        "id": "share_dummy",
+        "name": "Share Dummy",
+        "room": "town_square",
+        "hp": 20,
+        "max_hp": 20,
+        "attack": 0,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": [],
+        "gold": 10,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
     }
     await srv.cmd_attack(drifter, {"target": "share dummy"})  # contributor...
     await srv.cmd_move(drifter, {"dir": "east"})  # ...then leaves before the kill
@@ -656,8 +776,12 @@ async def main():
     print("GOLD_SHARE_OK")
 
     # --- Commercial tax rounding + 1g payouts (#195.8) ---
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
+    sys.path.insert(
+        0,
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"),
+    )
     from ml_env import market_tax as _env_tax
+
     assert _env_tax(1) == 0
     assert _env_tax(2) == 1
     assert _env_tax(10) == 1
@@ -692,8 +816,13 @@ async def main():
     await srv.cmd_gm_announce(p_gm, {"text": "hello world"})
     assert srv.tax_treasury == 100.0 - srv.GM_ANNOUNCE_COST
     new = inbox[n0:]
-    assert any(m.get("type") == "message" and "hello world" in m.get("text", "") for m in new), new
-    assert any(m.get("type") == "message" and "announcement sent" in m.get("text", "") for m in new), new
+    assert any(
+        m.get("type") == "message" and "hello world" in m.get("text", "") for m in new
+    ), new
+    assert any(
+        m.get("type") == "message" and "announcement sent" in m.get("text", "")
+        for m in new
+    ), new
     unplayer(listener)
     print("GM_ANNOUNCE_OK")
 
@@ -730,10 +859,20 @@ async def main():
     srv.tax_treasury = 1000.0
     dummy_id = "unit_dummy"
     srv.npcs[dummy_id] = {
-        "id": dummy_id, "name": "Unit Test Dummy", "room": "town_square",
-        "hp": 10, "max_hp": 10, "attack": 1, "hostile": True, "behavior": "idle",
-        "loot": ["healing_herb"], "gold": 0, "respawn_seconds": 60,
-        "alive": True, "respawn_at": None, "contributors": {},
+        "id": dummy_id,
+        "name": "Unit Test Dummy",
+        "room": "town_square",
+        "hp": 10,
+        "max_hp": 10,
+        "attack": 1,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": ["healing_herb"],
+        "gold": 0,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
     }
     await srv.cmd_gm_slay(p_gm, {"target": "zzz_no_such_npc"})
     assert inbox[-1]["type"] == "error"
@@ -741,7 +880,9 @@ async def main():
     assert not srv.npcs[dummy_id]["alive"]
     assert srv.npcs[dummy_id]["respawn_at"] is not None
     assert "healing_herb" in srv.room_items["town_square"]
-    assert srv.tax_treasury == 1000.0 - max(srv.GM_SLAY_MIN_COST, 10 * srv.GM_SLAY_COST_PER_HP)
+    assert srv.tax_treasury == 1000.0 - max(
+        srv.GM_SLAY_MIN_COST, 10 * srv.GM_SLAY_COST_PER_HP
+    )
     srv.room_items["town_square"].remove("healing_herb")
     await srv.cmd_gm_slay(p_gm, {"target": "unit test"})
     assert inbox[-1]["type"] == "error"  # already dead
@@ -757,7 +898,9 @@ async def main():
     await srv.cmd_gm_kick(p_gm, {"player": "KickMe", "reason": "unit test"})
     assert kickws.closed
     assert srv.tax_treasury == 100.0
-    assert any("kicked" in m.get("text", "") for m in inbox if m.get("type") == "message")
+    assert any(
+        "kicked" in m.get("text", "") for m in inbox if m.get("type") == "message"
+    )
     unplayer(kickme)
     print("GM_KICK_OK")
 
@@ -765,7 +908,10 @@ async def main():
     poster = mkplayer("Poster", 40005)
     poster.gold = 100
     before_cids = set(srv._commissions)
-    await srv.cmd_commission_post(poster, {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 5})
+    await srv.cmd_commission_post(
+        poster,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 5},
+    )
     cid = max(set(srv._commissions) - before_cids)
     assert poster.gold == 90  # escrow locked
     filler = mkplayer("Filler", 40006, room="old_shop")
@@ -794,7 +940,10 @@ async def main():
     canposter = mkplayer("CanPoster", 40020)
     canposter.gold = 200
     before_cids = set(srv._commissions)
-    await srv.cmd_commission_post(canposter, {"target": "wolf", "required_kills": 1, "reward_gold": 100, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        canposter,
+        {"target": "wolf", "required_kills": 1, "reward_gold": 100, "reward_xp": 0},
+    )
     ccid = max(set(srv._commissions) - before_cids)
     assert canposter.gold == 100  # escrowed 100
     await srv.cmd_commission_cancel(canposter, {"commission_id": ccid})
@@ -816,7 +965,10 @@ async def main():
     await srv.cmd_craft(gearhead, {"recipe": "reinforced_leather"})
     assert "reinforced_leather" in gearhead.inventory
     await srv.cmd_equip(gearhead, {"item": "reinforced leather"})
-    assert srv._player_defense(gearhead) == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
+    assert (
+        srv._player_defense(gearhead)
+        == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
+    )
     assert gearhead.armor == "reinforced_leather"
     unplayer(gearhead)
     print("CRAFTED_GEAR_OK")
@@ -881,7 +1033,10 @@ async def main():
     assert ground.count("treant_bark") == 1 and ground.count("iron_ore") == 1
     # floor-value penalty: treant_bark 10 + iron_ore 8 + rat_tail 1 = 19
     expect_pen = srv.DEATH_PENALTY + srv.DEATH_SCORE_PER_GOLD_LOST * 19
-    assert abs(rentry["score"] - (100.0 - expect_pen)) < 1e-9, (rentry["score"], expect_pen)
+    assert abs(rentry["score"] - (100.0 - expect_pen)) < 1e-9, (
+        rentry["score"],
+        expect_pen,
+    )
     del srv.ROOMS["market"]["risk"]
     for iid in ["treant_bark", "iron_ore", "rat_tail"]:
         if iid in srv.room_items["market"]:
@@ -966,8 +1121,10 @@ async def main():
     ghost.gold = 0
     ghost.inventory = ["bogus_item_id", "rat_tail"]
     gview = srv.stats_view(ghost)
-    assert gview["death_preview"]["items_at_risk"] == ["bogus_item_id", "Rat Tail"], \
-        gview["death_preview"]["items_at_risk"]
+    assert gview["death_preview"]["items_at_risk"] == [
+        "bogus_item_id",
+        "Rat Tail",
+    ], gview["death_preview"]["items_at_risk"]
     del srv.ROOMS["market"]["risk"]
     unplayer(ghost)
     print("DEATH_PREVIEW_DEFENSIVE_OK")
@@ -981,12 +1138,17 @@ async def main():
         cat = recipe.get("category", "")
         if cat in ("quest", "ammo") or tier >= 4:
             continue
-        input_value = sum(srv.ITEM_DEFS.get(iid, {}).get("value", 0) * qty
-                         for iid, qty in recipe["inputs"].items())
+        input_value = sum(
+            srv.ITEM_DEFS.get(iid, {}).get("value", 0) * qty
+            for iid, qty in recipe["inputs"].items()
+        )
         output_qty = max(1, int(recipe.get("output_qty", 1)))
-        output_value = srv.ITEM_DEFS.get(recipe["result"], {}).get("value", 0) * output_qty
-        assert output_value >= input_value, (
-            f"Recipe {rid} (T{tier}) destroys value: inputs={input_value}, output={output_value}")
+        output_value = (
+            srv.ITEM_DEFS.get(recipe["result"], {}).get("value", 0) * output_qty
+        )
+        assert (
+            output_value >= input_value
+        ), f"Recipe {rid} (T{tier}) destroys value: inputs={input_value}, output={output_value}"
     print("CRAFT_PROFITABILITY_OK")
 
     # --- Quest system: list, accept, turn_in, giver check, repeat ---
@@ -999,7 +1161,11 @@ async def main():
 
     # List shows all quests
     await srv.cmd_quest(qtester, {"action": "list"})
-    quest_list_msg = [m for m in inbox if "guard_charm" in m.get("text", "") and "delver" in m.get("text", "")]
+    quest_list_msg = [
+        m
+        for m in inbox
+        if "guard_charm" in m.get("text", "") and "delver" in m.get("text", "")
+    ]
     assert quest_list_msg, "quest list should show guard_charm and delver"
 
     # Accept requires giver present
@@ -1013,17 +1179,27 @@ async def main():
     qtester.room = "town_square"
     await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
     assert qentry.get("quest_guard_active")
-    ok_msgs = [m for m in inbox if m.get("type") == "message" and "Ah" in m.get("text", "")]
+    ok_msgs = [
+        m for m in inbox if m.get("type") == "message" and "Ah" in m.get("text", "")
+    ]
     assert ok_msgs
 
     # Cannot accept same quest twice
     await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
-    dup_msgs = [m for m in inbox if m.get("type") == "message" and "already have" in m.get("text", "")]
+    dup_msgs = [
+        m
+        for m in inbox
+        if m.get("type") == "message" and "already have" in m.get("text", "")
+    ]
     assert dup_msgs
 
     # Turn_in without conditions fails
     await srv.cmd_quest(qtester, {"action": "turn_in", "quest": "guard_charm"})
-    fail_msgs = [m for m in inbox if m.get("type") == "message" and "haven't crafted" in m.get("text", "")]
+    fail_msgs = [
+        m
+        for m in inbox
+        if m.get("type") == "message" and "haven't crafted" in m.get("text", "")
+    ]
     assert fail_msgs
 
     # Simulate charm crafted, turn_in succeeds
@@ -1056,7 +1232,9 @@ async def main():
     await srv.cmd_market_post(wash, {"item": herb_name, "price": 10})
     oid = max(o["id"] for o in srv.market_orders if o["seller"] == "Wash")
     await srv.cmd_market_buy(wash, {"id": oid})
-    assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[-1]
+    assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[
+        -1
+    ]
     assert any(o["id"] == oid for o in srv.market_orders)  # not consumed
     assert srv.get_score_entry("Wash")["xp"] == wash_xp0  # nothing minted
     patsy = mkplayer("Patsy", 50002, room="market")
@@ -1118,10 +1296,12 @@ async def main():
     assert any(o["seller"] == "Wash2" for o in srv.market_orders)
     assert any(b["buyer"] == "Wash2" for b in srv.market_bids)
     assert ww.gold == 200 - 13  # escrow + fee held, no fill
-    await srv.cmd_market_cancel(ww, {"id": next(
-        o["id"] for o in srv.market_orders if o["seller"] == "Wash2")})
-    await srv.cmd_market_cancel(ww, {"id": next(
-        b["id"] for b in srv.market_bids if b["buyer"] == "Wash2")})
+    await srv.cmd_market_cancel(
+        ww, {"id": next(o["id"] for o in srv.market_orders if o["seller"] == "Wash2")}
+    )
+    await srv.cmd_market_cancel(
+        ww, {"id": next(b["id"] for b in srv.market_bids if b["buyer"] == "Wash2")}
+    )
     unplayer(ww)
     print("BID_WASH_OK")
 
@@ -1153,12 +1333,14 @@ async def main():
     await srv.cmd_market_buy_order(bcan, {"item": rat_name, "price": 8})
     assert bcan.gold == 191
     bcan.room = "town_square"
-    await srv.cmd_market_cancel(bcan, {"id": next(
-        b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")})
+    await srv.cmd_market_cancel(
+        bcan, {"id": next(b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")}
+    )
     assert any(b["buyer"] == "BidCan" for b in srv.market_bids)  # refused
     bcan.room = "market"
-    await srv.cmd_market_cancel(bcan, {"id": next(
-        b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")})
+    await srv.cmd_market_cancel(
+        bcan, {"id": next(b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")}
+    )
     assert not any(b["buyer"] == "BidCan" for b in srv.market_bids)
     assert bcan.gold == 199  # refund 8, fee 1 sunk
     unplayer(bcan)
@@ -1179,18 +1361,25 @@ async def main():
     # commission XP cap + kill consumption (#189)
     rich = mkplayer("RichPoster", 50003)
     rich.gold = 1000000
-    await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
-                                         "reward_gold": 10, "reward_xp": 999999})
-    assert inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower(), inbox[-1]
+    await srv.cmd_commission_post(
+        rich,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 999999},
+    )
+    assert (
+        inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     assert rich.gold == 1000000  # no escrow taken on rejection
     before = set(srv._commissions)
-    await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
-                                         "reward_gold": 10, "reward_xp": 500})
+    await srv.cmd_commission_post(
+        rich,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 500},
+    )
     cid_a = max(set(srv._commissions) - before)
     assert srv._commissions[cid_a]["reward_xp"] == 500
     before = set(srv._commissions)
-    await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
-                                         "reward_gold": 10, "reward_xp": 5})
+    await srv.cmd_commission_post(
+        rich, {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 5}
+    )
     cid_b = max(set(srv._commissions) - before)
     killer = mkplayer("Killer", 50004, room="old_shop")
     # kill recorded AFTER both postings, so both bounties can see it --
@@ -1212,14 +1401,30 @@ async def main():
     cap_poster = mkplayer("CapPoster", 50006)
     cap_poster.gold = 1000000
     n_comms = len(srv._commissions)
-    await srv.cmd_commission_post(cap_poster, {"target": "rat", "required_kills": srv.COMMISSION_MAX_KILLS + 1,
-                                               "reward_gold": 10, "reward_xp": 1})
-    assert inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower(), inbox[-1]
+    await srv.cmd_commission_post(
+        cap_poster,
+        {
+            "target": "rat",
+            "required_kills": srv.COMMISSION_MAX_KILLS + 1,
+            "reward_gold": 10,
+            "reward_xp": 1,
+        },
+    )
+    assert (
+        inbox[-1]["type"] == "error" and "capped" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     assert len(srv._commissions) == n_comms
     assert cap_poster.gold == 1000000
     # at-cap bounty posts fine (1g keeps the later cancel cheap)
-    await srv.cmd_commission_post(cap_poster, {"target": "rat", "required_kills": srv.COMMISSION_MAX_KILLS,
-                                               "reward_gold": 1, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        cap_poster,
+        {
+            "target": "rat",
+            "required_kills": srv.COMMISSION_MAX_KILLS,
+            "reward_gold": 1,
+            "reward_xp": 0,
+        },
+    )
     cid_cap = max(srv._commissions)
     await srv.cmd_commission_cancel(cap_poster, {"commission_id": cid_cap})
     assert srv._commissions[cid_cap]["status"] == "cancelled"
@@ -1230,13 +1435,17 @@ async def main():
     # so "CaseAlice"/"casealice" are one economic actor everywhere
     calice = mkplayer("CaseAlice", 50007)
     calice.gold = 1000
-    await srv.cmd_commission_post(calice, {"target": "rat", "required_kills": 1,
-                                           "reward_gold": 100, "reward_xp": 10})
+    await srv.cmd_commission_post(
+        calice,
+        {"target": "rat", "required_kills": 1, "reward_gold": 100, "reward_xp": 10},
+    )
     cid_case = max(srv._commissions)
     calice_lower = mkplayer("casealice", 50008)
     srv.record_npc_kill("casealice", "Giant Rat")
     await srv.cmd_commission_fill(calice_lower, {"commission_id": cid_case})
-    assert inbox[-1]["type"] == "error" and "own commission" in inbox[-1]["text"], inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "own commission" in inbox[-1]["text"]
+    ), inbox[-1]
     assert srv._commissions[cid_case]["status"] == "open"
     # ...but the same variant MAY cancel (it is the poster)
     inbox.clear()
@@ -1247,7 +1456,9 @@ async def main():
     await srv.cmd_market_post(calice, {"item": herb_name, "price": 10})
     coid = max(o["id"] for o in srv.market_orders if o["seller"] == "CaseAlice")
     await srv.cmd_market_buy(calice_lower, {"id": coid})
-    assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[-1]
+    assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[
+        -1
+    ]
     assert any(o["id"] == coid for o in srv.market_orders)
     srv.market_orders[:] = [o for o in srv.market_orders if o["id"] != coid]
     unplayer(calice)
@@ -1265,8 +1476,10 @@ async def main():
     zentry = srv.get_score_entry("ZeroPoster")
     zscore0, zxp0 = zentry["score"], zentry["xp"]
     _z_before = len(srv._commissions)
-    await srv.cmd_commission_post(zposter, {"target": "rat", "required_kills": 1,
-                                            "reward_gold": 0, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        zposter,
+        {"target": "rat", "required_kills": 1, "reward_gold": 0, "reward_xp": 0},
+    )
     assert inbox[-1]["type"] == "error", inbox[-1]
     assert "gold or xp" in inbox[-1]["text"].lower(), inbox[-1]
     assert len(srv._commissions) == _z_before and zposter.gold == 1000
@@ -1274,9 +1487,15 @@ async def main():
     # floors must not mint from an empty bounty
     cid_z = next(srv._commission_counter)
     srv._commissions[cid_z] = {
-        "id": cid_z, "poster": "ZeroPoster", "target": "rat",
-        "required_kills": 1, "reward_gold": 0, "reward_xp": 0, "escrow": 0,
-        "status": "open", "created_ts": time.time() - 1,
+        "id": cid_z,
+        "poster": "ZeroPoster",
+        "target": "rat",
+        "required_kills": 1,
+        "reward_gold": 0,
+        "reward_xp": 0,
+        "escrow": 0,
+        "status": "open",
+        "created_ts": time.time() - 1,
     }
     zfill = mkplayer("ZeroFiller", 50010)
     zfill_gold0 = zfill.gold
@@ -1300,8 +1519,10 @@ async def main():
     tfill = mkplayer("TreasFiller", 50012)
     tfill_gold0 = tfill.gold
     for round_ in (1, 2):
-        await srv.cmd_commission_post(tposter, {"target": "rat", "required_kills": 1,
-                                                "reward_gold": 100, "reward_xp": 0})
+        await srv.cmd_commission_post(
+            tposter,
+            {"target": "rat", "required_kills": 1, "reward_gold": 100, "reward_xp": 0},
+        )
         cid_t = max(srv._commissions)
         srv.record_npc_kill("TreasFiller", "Giant Rat")
         await srv.cmd_commission_fill(tfill, {"commission_id": cid_t})
@@ -1310,8 +1531,10 @@ async def main():
     assert tfill.gold == tfill_gold0 + 150  # 100 + 50 (collab penalty)
     assert srv.tax_treasury == 50.0 and srv.tax_collected_lifetime == 50.0
     # cancel: half refunded live, half forfeited to the treasury
-    await srv.cmd_commission_post(tposter, {"target": "rat", "required_kills": 1,
-                                            "reward_gold": 100, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        tposter,
+        {"target": "rat", "required_kills": 1, "reward_gold": 100, "reward_xp": 0},
+    )
     cid_c = max(srv._commissions)
     gold_before_cancel = tposter.gold
     inbox.clear()
@@ -1329,14 +1552,19 @@ async def main():
 
     # world validator: live data clean, bad refs reported, dynamic shards ok
     assert srv.validate_world(srv.WORLD) == []
-    bad_world = {"rooms": {"a": {"exits": {"north": "nowhere"}}}, "items": {},
-                 "start_room": "a",
-                 "room_items": {"a": ["ghost_item"]},
-                 "gather_nodes": {"n": {"room": "a", "item": "ghost_item"}},
-                 "npcs": {"b": {"room": "nowhere"}},
-                 "recipes": {"r": {"result": "ghost", "inputs": {"dungeon_shard_10": 1}}}}
+    bad_world = {
+        "rooms": {"a": {"exits": {"north": "nowhere"}}},
+        "items": {},
+        "start_room": "a",
+        "room_items": {"a": ["ghost_item"]},
+        "gather_nodes": {"n": {"room": "a", "item": "ghost_item"}},
+        "npcs": {"b": {"room": "nowhere"}},
+        "recipes": {"r": {"result": "ghost", "inputs": {"dungeon_shard_10": 1}}},
+    }
     errs = srv.validate_world(bad_world)
-    assert len(errs) == 5, errs  # exit, room_item, node yield, npc room, recipe result (shard input passes)
+    assert (
+        len(errs) == 5
+    ), errs  # exit, room_item, node yield, npc room, recipe result (shard input passes)
     assert srv.validate_world({"rooms": {}, "items": {}}) == ["no rooms defined"]
     print("VALIDATE_WORLD_OK")
 
@@ -1362,21 +1590,32 @@ async def main():
     capper.gold = 100000
     inbox.clear()
     for _ in range(srv.COMMISSION_MAX_OPEN_PER_POSTER):
-        await srv.cmd_commission_post(capper, {"target": "rat", "required_kills": 1,
-                                               "reward_gold": 1, "reward_xp": 0})
+        await srv.cmd_commission_post(
+            capper,
+            {"target": "rat", "required_kills": 1, "reward_gold": 1, "reward_xp": 0},
+        )
     assert not any(m.get("type") == "error" for m in inbox), inbox[-1]
     n_open_total = len(srv._commissions)
-    await srv.cmd_commission_post(capper, {"target": "rat", "required_kills": 1,
-                                           "reward_gold": 1, "reward_xp": 0})
-    assert inbox[-1]["type"] == "error" and "max" in inbox[-1]["text"].lower(), inbox[-1]
+    await srv.cmd_commission_post(
+        capper, {"target": "rat", "required_kills": 1, "reward_gold": 1, "reward_xp": 0}
+    )
+    assert inbox[-1]["type"] == "error" and "max" in inbox[-1]["text"].lower(), inbox[
+        -1
+    ]
     assert len(srv._commissions) == n_open_total
-    my_open = [c for c in srv._commissions.values()
-               if c["status"] == "open" and c["poster"] == "OpenCapper"]
+    my_open = [
+        c
+        for c in srv._commissions.values()
+        if c["status"] == "open" and c["poster"] == "OpenCapper"
+    ]
     await srv.cmd_commission_cancel(capper, {"commission_id": my_open[0]["id"]})
     inbox.clear()
-    await srv.cmd_commission_post(capper, {"target": "rat", "required_kills": 1,
-                                           "reward_gold": 1, "reward_xp": 0})
-    assert any(m.get("type") == "message" and "posted" in m.get("text", "") for m in inbox), inbox[-1]
+    await srv.cmd_commission_post(
+        capper, {"target": "rat", "required_kills": 1, "reward_gold": 1, "reward_xp": 0}
+    )
+    assert any(
+        m.get("type") == "message" and "posted" in m.get("text", "") for m in inbox
+    ), inbox[-1]
     for c in list(srv._commissions.values()):
         if c["poster"] == "OpenCapper" and c["status"] == "open":
             await srv.cmd_commission_cancel(capper, {"commission_id": c["id"]})
@@ -1391,7 +1630,7 @@ async def main():
     assert "healing_herb" not in ager.inventory
     for o in srv.market_orders:
         if o["id"] == aoid:
-            o["ts"] -= (srv.MARKET_ORDER_TTL_SECONDS + 1)
+            o["ts"] -= srv.MARKET_ORDER_TTL_SECONDS + 1
     srv._last_market_prune = 0.0
     assert await srv.prune_market_orders() == 1
     assert not any(o["id"] == aoid for o in srv.market_orders)
@@ -1401,7 +1640,7 @@ async def main():
     boid = max(o["id"] for o in srv.market_orders if o["seller"] == "AgedSeller")
     for o in srv.market_orders:
         if o["id"] == boid:
-            o["ts"] -= (srv.MARKET_ORDER_TTL_SECONDS + 1)
+            o["ts"] -= srv.MARKET_ORDER_TTL_SECONDS + 1
     unplayer(ager)  # goes offline holding a live listing
     srv._last_market_prune = 0.0
     assert await srv.prune_market_orders() == 0
@@ -1414,12 +1653,14 @@ async def main():
     invitee = mkplayer("Invitee", 50025)
     await srv.cmd_party_invite(inviter, {"target": "Invitee"})
     assert invitee.id in srv._pending_party_invites
-    srv._pending_party_invites[invitee.id]["ts"] -= (srv.PARTY_INVITE_TTL_SECONDS + 1)
+    srv._pending_party_invites[invitee.id]["ts"] -= srv.PARTY_INVITE_TTL_SECONDS + 1
     inbox.clear()
     await srv.cmd_party_accept(invitee, {})
-    assert inbox[-1]["type"] == "error" and "expired" in inbox[-1]["text"].lower(), inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "expired" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     await srv.cmd_party_invite(inviter, {"target": "Invitee"})
-    srv._pending_party_invites[invitee.id]["ts"] -= (srv.PARTY_INVITE_TTL_SECONDS + 1)
+    srv._pending_party_invites[invitee.id]["ts"] -= srv.PARTY_INVITE_TTL_SECONDS + 1
     srv._last_invite_prune = 0.0
     assert srv.prune_invites() == 1
     assert invitee.id not in srv._pending_party_invites
@@ -1440,7 +1681,9 @@ async def main():
     assert joiner.id not in srv._pending_party_invites
     inbox.clear()
     await srv.cmd_party_accept(joiner, {})
-    assert inbox[-1]["type"] == "error" and "no pending" in inbox[-1]["text"].lower(), inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "no pending" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     for p in list(srv.parties.values()):
         if leaver.id in p.member_ids:
             srv._delete_party(p)
@@ -1450,6 +1693,7 @@ async def main():
 
     # party switch relocates out of the old dungeon instance (#226)
     import time as _time
+
     leadA = mkplayer("LeadA", 50030)
     leadB = mkplayer("LeadB", 50031)
     switcher = mkplayer("Switcher", 50032)
@@ -1463,8 +1707,11 @@ async def main():
     switcher.room = dA.room_id(2)
     srv.add_member(switcher)
     partyB = srv._auto_create_party(leadB)
-    srv._pending_party_invites[switcher.id] = {"party": partyB, "ts": _time.time(),
-                                               "inviter": leadB.id}
+    srv._pending_party_invites[switcher.id] = {
+        "party": partyB,
+        "ts": _time.time(),
+        "inviter": leadB.id,
+    }
     await srv.cmd_party_accept(switcher, {})
     assert switcher.party_id == partyB.id
     assert switcher.room == srv.DUNGEON_ENTRANCE_ROOM, switcher.room
@@ -1511,9 +1758,13 @@ async def main():
     clposter = mkplayer("CollabPoster", 50026)
     clposter.gold = 100000
     clentry = srv.get_score_entry("CollabPoster")
-    clentry["collab_fills"] = {f"filler{i}": 1 for i in range(srv.COMMISSION_COLLAB_CAP)}
-    await srv.cmd_commission_post(clposter, {"target": "rat", "required_kills": 1,
-                                             "reward_gold": 10, "reward_xp": 0})
+    clentry["collab_fills"] = {
+        f"filler{i}": 1 for i in range(srv.COMMISSION_COLLAB_CAP)
+    }
+    await srv.cmd_commission_post(
+        clposter,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
+    )
     cid_cl = max(srv._commissions)
     clfiller = mkplayer("CollabNew", 50027)
     srv.record_npc_kill("CollabNew", "Giant Rat")
@@ -1536,7 +1787,9 @@ async def main():
     assert srv.QUEST_CHARM_RESULT not in charmer.inventory
     inbox.clear()
     await srv.cmd_quest(charmer, {"action": "turn_in", "quest": "guard_charm"})
-    assert inbox[-1]["type"] == "message" and "no longer in your pack" in inbox[-1]["text"], inbox[-1]
+    assert (
+        inbox[-1]["type"] == "message" and "no longer in your pack" in inbox[-1]["text"]
+    ), inbox[-1]
     assert chentry.get("quest_guard_active")  # still active, nothing consumed
     charmer.inventory.append(srv.QUEST_CHARM_RESULT)
     await srv.cmd_quest(charmer, {"action": "turn_in", "quest": "guard_charm"})
@@ -1562,7 +1815,10 @@ async def main():
     # bool coercion: string "false" must not enable boolean gates (#192.3)
     import json as _json
     import os as _os
-    cfg_path = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_bool_cfg_tmp.json")
+
+    cfg_path = _os.path.join(
+        _os.path.dirname(srv.CONFIG_FILE), "test_bool_cfg_tmp.json"
+    )
     real_cfg, real_val = srv.CONFIG_FILE, srv.AUTH_TOKEN_REQUIRED
     try:
         with open(cfg_path, "w") as f:
@@ -1588,7 +1844,10 @@ async def main():
     # unknown keys warn instead of vanishing (#241)
     import io as _io
     import contextlib as _ctx
-    cfg_path2 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_unknown_cfg_tmp.json")
+
+    cfg_path2 = _os.path.join(
+        _os.path.dirname(srv.CONFIG_FILE), "test_unknown_cfg_tmp.json"
+    )
     real_cfg3 = srv.CONFIG_FILE
     try:
         with open(cfg_path2, "w") as f:
@@ -1605,14 +1864,18 @@ async def main():
     print("UNKNOWN_CONFIG_OK")
 
     # quest config section applies to globals AND catalog (#251)
-    cfg_path3 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_quest_cfg_tmp.json")
+    cfg_path3 = _os.path.join(
+        _os.path.dirname(srv.CONFIG_FILE), "test_quest_cfg_tmp.json"
+    )
     real_cfg4 = srv.CONFIG_FILE
-    saved_q = (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP,
-               srv.QUESTS["delver"]["floors_required"])
+    saved_q = (
+        srv.QUEST_DELVER_FLOORS,
+        srv.QUEST_DELVER_XP,
+        srv.QUESTS["delver"]["floors_required"],
+    )
     try:
         with open(cfg_path3, "w") as f:
-            _json.dump({"quests": {"QUEST_DELVER_FLOORS": 5,
-                                   "QUEST_DELVER_XP": 99}}, f)
+            _json.dump({"quests": {"QUEST_DELVER_FLOORS": 5, "QUEST_DELVER_XP": 99}}, f)
         srv.CONFIG_FILE = cfg_path3
         srv._apply_config()
         srv._refresh_quests()
@@ -1621,7 +1884,7 @@ async def main():
         assert srv.QUESTS["delver"]["reward_xp"] == 99
     finally:
         srv.CONFIG_FILE = real_cfg4
-        (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP) = saved_q[:2]
+        srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP = saved_q[:2]
         srv._refresh_quests()
         assert srv.QUESTS["delver"]["floors_required"] == saved_q[2]
         if _os.path.exists(cfg_path3):
@@ -1630,11 +1893,19 @@ async def main():
 
     # --config overlay: short TTLs apply, untouched keys keep prod defaults
     import os as _os2
-    overlay = _os2.path.join(_os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))),
-                             "ml", "conductor", "soak_server_config.json")
+
+    overlay = _os2.path.join(
+        _os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))),
+        "ml",
+        "conductor",
+        "soak_server_config.json",
+    )
     real_cfg2 = srv.CONFIG_FILE
-    saved_ttls = (srv.MARKET_ORDER_TTL_SECONDS, srv.PARTY_INVITE_TTL_SECONDS,
-                  srv.COMMISSION_TTL_SECONDS)
+    saved_ttls = (
+        srv.MARKET_ORDER_TTL_SECONDS,
+        srv.PARTY_INVITE_TTL_SECONDS,
+        srv.COMMISSION_TTL_SECONDS,
+    )
     try:
         args = srv.parse_args(["--config", overlay])
         srv.CONFIG_FILE = args.config
@@ -1645,8 +1916,11 @@ async def main():
         assert srv.COMMISSION_MAX_XP == 500  # not in overlay: prod default kept
     finally:
         srv.CONFIG_FILE = real_cfg2
-        (srv.MARKET_ORDER_TTL_SECONDS, srv.PARTY_INVITE_TTL_SECONDS,
-         srv.COMMISSION_TTL_SECONDS) = saved_ttls
+        (
+            srv.MARKET_ORDER_TTL_SECONDS,
+            srv.PARTY_INVITE_TTL_SECONDS,
+            srv.COMMISSION_TTL_SECONDS,
+        ) = saved_ttls
     print("CONFIG_FLAG_OK")
 
     # market stall + cancel share one case-insensitive identity (#192 market)
@@ -1657,12 +1931,18 @@ async def main():
     caseseller_low = mkplayer("caseseller", 50030, room="market")
     caseseller_low.inventory.append("healing_herb")
     await srv.cmd_market_post(caseseller_low, {"item": herb_name, "price": 10})
-    assert inbox[-1]["type"] == "error" and "stall full" in inbox[-1]["text"].lower(), inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "stall full" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     void = max(o["id"] for o in srv.market_orders if o["seller"] == "CaseSeller")
     await srv.cmd_market_cancel(caseseller_low, {"id": void})
     assert not any(o["id"] == void for o in srv.market_orders)
-    assert "healing_herb" in caseseller_low.inventory  # item returns to the cancelling variant
-    srv.market_orders[:] = [o for o in srv.market_orders if o["seller"].lower() != "caseseller"]
+    assert (
+        "healing_herb" in caseseller_low.inventory
+    )  # item returns to the cancelling variant
+    srv.market_orders[:] = [
+        o for o in srv.market_orders if o["seller"].lower() != "caseseller"
+    ]
     unplayer(caseseller)
     unplayer(caseseller_low)
     print("MARKET_CASE_OK")
@@ -1670,7 +1950,9 @@ async def main():
     # relic craft with ungenerated dynamic mats errors cleanly (#190)
     crafter = mkplayer("Crafter", 50005, room="town_square")
     await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
-    assert inbox[-1]["type"] == "error" and "dungeon_shard_10" in inbox[-1]["text"], inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "dungeon_shard_10" in inbox[-1]["text"]
+    ), inbox[-1]
 
     # Ghost-equip regression (#361 salvage): consuming an equipped item
     # clears the slot only when no copy remains in inventory.
@@ -1684,7 +1966,13 @@ async def main():
     assert srv._player_defense(crafter) == 0
 
     # Offhand slot: consumed troll_hide clears the slot when fully gone.
-    crafter.inventory = ["warden_trophy", "troll_hide", "troll_hide", "pine_timber", "pine_timber"]
+    crafter.inventory = [
+        "warden_trophy",
+        "troll_hide",
+        "troll_hide",
+        "pine_timber",
+        "pine_timber",
+    ]
     crafter.offhand = "troll_hide"
     await srv.cmd_craft(crafter, {"recipe": "deep_bulwark"})
     assert "troll_hide" not in crafter.inventory
@@ -1699,7 +1987,13 @@ async def main():
 
     # Multi-copy retention: 2x iron_plate, 1 equipped; crafting relic_aegis
     # consumes one copy and must retain the armor slot.
-    crafter.inventory = ["iron_plate", "iron_plate", "dungeon_shard_10", "ectoplasm", "ectoplasm"]
+    crafter.inventory = [
+        "iron_plate",
+        "iron_plate",
+        "dungeon_shard_10",
+        "ectoplasm",
+        "ectoplasm",
+    ]
     await srv.cmd_equip(crafter, {"item": "Iron Plate Armor"})
     assert crafter.armor == "iron_plate"
     await srv.cmd_craft(crafter, {"recipe": "relic_aegis"})
@@ -1711,7 +2005,13 @@ async def main():
     assert st["offhand"] is None
 
     # Quest turn_in slot clearing: consumed herbs clear the weapon slot.
-    sister = srv.Player(ws=FakeWS(), id=50006, name="SisterPlayer", logged_in=True, room="healing_spring")
+    sister = srv.Player(
+        ws=FakeWS(),
+        id=50006,
+        name="SisterPlayer",
+        logged_in=True,
+        room="healing_spring",
+    )
     srv.add_member(sister)
     srv.get_score_entry("SisterPlayer")
     await srv.cmd_quest(sister, {"action": "accept", "quest": "remedy"})
@@ -1754,12 +2054,20 @@ async def main():
                 await asyncio.sleep(0.1)
 
         async def send(self, payload):
-            self.sent.append(payload if isinstance(payload, dict) else json.loads(payload))
+            self.sent.append(
+                payload if isinstance(payload, dict) else json.loads(payload)
+            )
 
     n_players_before = len(srv.players)
-    sws = ScriptWS([json.dumps([]), json.dumps(42), json.dumps("hi"),
-                    json.dumps({"cmd": ["x"]}),
-                    json.dumps({"cmd": "login", "name": 123})])
+    sws = ScriptWS(
+        [
+            json.dumps([]),
+            json.dumps(42),
+            json.dumps("hi"),
+            json.dumps({"cmd": ["x"]}),
+            json.dumps({"cmd": "login", "name": 123}),
+        ]
+    )
     await srv.handle_connection(sws)
     errs = [m for m in sws.sent if m.get("type") == "error"]
     assert len(errs) == 5, sws.sent
@@ -1768,13 +2076,17 @@ async def main():
     print("MALFORMED_OK")
 
     # login obeys room capacity like moves do (#227)
-    fillers = [mkplayer(f"CapFill{i}", 51000 + i, room=srv.START_ROOM)
-               for i in range(srv.MAX_PLAYERS_PER_ROOM)]
+    fillers = [
+        mkplayer(f"CapFill{i}", 51000 + i, room=srv.START_ROOM)
+        for i in range(srv.MAX_PLAYERS_PER_ROOM)
+    ]
     assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
     newcomer = srv.Player(ws=FakeWS(), id=51999, name="", logged_in=False)
     srv.players[51999] = newcomer
     await srv.cmd_login(newcomer, {"name": "CrowdedOut"})
-    assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     assert not newcomer.logged_in
     assert len(srv.players_in_room(srv.START_ROOM)) == srv.MAX_PLAYERS_PER_ROOM
     # rejected logins leave no entry/token state (#227 follow-up): a
@@ -1782,7 +2094,9 @@ async def main():
     squatter = srv.Player(ws=FakeWS(), id=51998, name="", logged_in=False)
     srv.players[51998] = squatter
     await srv.cmd_login(squatter, {"name": "Squatted", "token": "evil"})
-    assert inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower(), inbox[-1]
+    assert (
+        inbox[-1]["type"] == "error" and "crowded" in inbox[-1]["text"].lower()
+    ), inbox[-1]
     assert "squatted" not in srv.SCORES
     srv.players.pop(51998, None)
     for f in fillers:
@@ -1814,6 +2128,7 @@ async def main():
 
     # failed GM bind closes the game listener, propagates (#242)
     import socket as _socket
+
     squat = _socket.socket()
     squat.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
     squat.bind(("127.0.0.1", 0))
@@ -1875,8 +2190,12 @@ async def main():
             await main_task
         except asyncio.CancelledError:
             pass
-        lingering = [t for t in asyncio.all_tasks()
-                     if not t.done() and getattr(t.get_coro(), "__qualname__", "") == "_run_resilient"]
+        lingering = [
+            t
+            for t in asyncio.all_tasks()
+            if not t.done()
+            and getattr(t.get_coro(), "__qualname__", "") == "_run_resilient"
+        ]
         assert not lingering, f"background tasks survive shutdown: {lingering}"
     finally:
         srv.PORT, srv.GM_PORT, srv.HTTP_PORT = saved_ports2
@@ -1892,6 +2211,7 @@ async def main():
 
     # /health reads the cached snapshot, never the live dict (#224)
     import json as _json2
+
     hp1 = mkplayer("HealthOne", 52002)
     hp2 = mkplayer("HealthTwo", 52003)
     srv.refresh_snapshot_json()
@@ -1906,6 +2226,7 @@ async def main():
     # TEXTMMO_LOG_FILE is set): capture stdout through a real dispatch
     import io as _io
     from contextlib import redirect_stdout as _redirect_stdout
+
     srv.send = orig_send
     spam_ws = ScriptWS([json.dumps({"cmd": "login", "name": 123})])
     buf = _io.StringIO()
@@ -1969,7 +2290,9 @@ async def main():
 
     await _clear_room()
     rentry = srv.get_score_entry("Refarmer")
-    assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get("dungeon_floors_cleared")
+    assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get(
+        "dungeon_floors_cleared"
+    )
     rfloor = rd.floors[rfno]
     assert rfloor.clear_rewarded is True
     refarmer.hp = refarmer.max_hp
@@ -1977,7 +2300,9 @@ async def main():
         srv.respawn_npc(_g)  # real respawn path: exits re-arm, rewards must not
     assert rfloor.cleared is False
     await _clear_room()
-    assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get("dungeon_floors_cleared")
+    assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get(
+        "dungeon_floors_cleared"
+    )
     for p in list(srv.parties.values()):
         if refarmer.id in p.member_ids:
             srv._delete_party(p)
@@ -1991,14 +2316,16 @@ async def main():
     idposter.gold = 500
     _n_before = len(srv._commissions)
     await srv.cmd_commission_post(
-        idposter, {"target": "healer", "required_kills": 1, "reward_gold": 10, "reward_xp": 0}
+        idposter,
+        {"target": "healer", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
     )
     assert (
         inbox[-1]["type"] == "error" and "No known creature" in inbox[-1]["text"]
     ), inbox[-1]
     assert len(srv._commissions) == _n_before and idposter.gold == 500
     await srv.cmd_commission_post(
-        idposter, {"target": "sister", "required_kills": 1, "reward_gold": 10, "reward_xp": 0}
+        idposter,
+        {"target": "sister", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
     )
     _cid = max(srv._commissions)
     assert srv._commissions[_cid]["status"] == "open" and idposter.gold == 490
@@ -2085,7 +2412,9 @@ async def main():
     dier.gold = 1000
     _pile0 = srv.room_gold.get("market", 0)
     await srv.respawn_player(dier)
-    assert srv.room_gold.get("market", 0) - _pile0 == 400, srv.room_gold.get("market", 0)
+    assert srv.room_gold.get("market", 0) - _pile0 == 400, srv.room_gold.get(
+        "market", 0
+    )
     assert dier.gold == 500  # 1000 - 400 dropped - 100 lost
     unplayer(dier)
     print("DEATH_PILE_OK")
@@ -2109,7 +2438,9 @@ async def main():
     _leaves = [
         n
         for n, pl in _seen
-        if isinstance(pl, dict) and pl.get("type") == "message" and "leaves" in pl.get("text", "")
+        if isinstance(pl, dict)
+        and pl.get("type") == "message"
+        and "leaves" in pl.get("text", "")
     ]
     assert _leaves and "Mover" not in _leaves, _leaves
     assert any(
@@ -2124,14 +2455,24 @@ async def main():
     # 0-offer legacy rows list as 0g (fill-path guard mirrored in the list)
     _lz = next(srv._commission_counter)
     srv._commissions[_lz] = {
-        "id": _lz, "poster": "ZeroPoster", "target": "rat",
-        "required_kills": 1, "reward_gold": 0, "reward_xp": 0, "escrow": 0,
-        "status": "open", "created_ts": time.time() - 1,
+        "id": _lz,
+        "poster": "ZeroPoster",
+        "target": "rat",
+        "required_kills": 1,
+        "reward_gold": 0,
+        "reward_xp": 0,
+        "escrow": 0,
+        "status": "open",
+        "created_ts": time.time() - 1,
     }
     _viewer = mkplayer("ListViewer", 62006, room="town_square")
     inbox.clear()
     await srv.cmd_commission_list(_viewer, {})
-    _blob = next(m["text"] for m in inbox if m.get("type") == "message" and "#" in m.get("text", ""))
+    _blob = next(
+        m["text"]
+        for m in inbox
+        if m.get("type") == "message" and "#" in m.get("text", "")
+    )
     _zline = next(ln for ln in _blob.splitlines() if ln.startswith(f"#{_lz}:"))
     assert "reward 0g" in _zline, _zline
     del srv._commissions[_lz]
@@ -2143,16 +2484,20 @@ async def main():
     _lru_poster = mkplayer("LruPoster", 62007)
     _lru_poster.gold = 1000000
     _stale = mkplayer("LruStale", 62008)
-    await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
-                                                "reward_gold": 10, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        _lru_poster,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
+    )
     _cid0 = max(srv._commissions)
     srv.record_npc_kill("LruStale", "Giant Rat")
     await srv.cmd_commission_fill(_stale, {"commission_id": _cid0})
     assert srv._commissions[_cid0]["status"] == "completed"
     for _i in range(srv.COMMISSION_COLLAB_CAP - 1):
         _f = mkplayer(f"LruF{_i}", 62100 + _i)
-        await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
-                                                    "reward_gold": 10, "reward_xp": 0})
+        await srv.cmd_commission_post(
+            _lru_poster,
+            {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
+        )
         _c = max(srv._commissions)
         srv.record_npc_kill(f"LruF{_i}", "Giant Rat")
         await srv.cmd_commission_fill(_f, {"commission_id": _c})
@@ -2164,8 +2509,10 @@ async def main():
         _pentry.setdefault("collab_seen", {})[_k] = 2.0
     _pentry["collab_seen"]["lrustale"] = 1.0
     _fresh = mkplayer("LruFresh", 62300)
-    await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
-                                                "reward_gold": 10, "reward_xp": 0})
+    await srv.cmd_commission_post(
+        _lru_poster,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
+    )
     _cf = max(srv._commissions)
     srv.record_npc_kill("LruFresh", "Giant Rat")
     await srv.cmd_commission_fill(_fresh, {"commission_id": _cf})
@@ -2193,7 +2540,8 @@ async def main():
     assert srv.dungeon_for_room(_pa.room) is not None
     assert srv.dungeon_for_room(_pb.room) is None, _pb.room
     assert any(
-        m.get("type") == "error" and "archway rejects" in m.get("text", "") for m in inbox
+        m.get("type") == "error" and "archway rejects" in m.get("text", "")
+        for m in inbox
     ), inbox[-3:]
     for p in list(srv.parties.values()):
         if _pa.id in p.member_ids or _pb.id in p.member_ids:
@@ -2237,7 +2585,9 @@ async def main():
     inbox.clear()
     await srv._enter_dungeon(_mb)
     assert _mb.room == srv.DUNGEON_ENTRANCE_ROOM, _mb.room
-    assert any(m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox)
+    assert any(
+        m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox
+    )
     assert len(srv.dungeons) == _nd0 + 1  # no instance minted on failure
     for _cp in _mfill:
         unplayer(_cp)
@@ -2271,7 +2621,9 @@ async def main():
     await srv._enter_dungeon(_ax)
     assert _ax.room == srv.DUNGEON_ENTRANCE_ROOM, _ax.room
     assert _ay.room == srv.DUNGEON_ENTRANCE_ROOM, _ay.room
-    assert any(m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox)
+    assert any(
+        m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox
+    )
     assert len(srv.dungeons) == _nd1
     for _cp in _afill:
         unplayer(_cp)
@@ -2295,7 +2647,9 @@ async def main():
     inbox.clear()
     await srv.cmd_move(_ea, {"dir": "up"})
     assert _ea.room == _eroom, _ea.room
-    assert any(m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox)
+    assert any(
+        m.get("type") == "error" and "crowded" in m.get("text", "") for m in inbox
+    )
     for _cp in _efill:
         unplayer(_cp)
     for p in list(srv.parties.values()):
@@ -2401,5 +2755,19 @@ async def main():
         await srv.handle_gm_connection(_w)
         assert _w.closed is True, _peer
     print("GM_GATE_OK")
+
+    # Unregistered/dynamic ground item view safety
+    _orig_items = list(srv.room_items["town_square"])
+    srv.room_items["town_square"].append("dungeon_shard_10")
+    try:
+        _rv = srv.room_view("town_square")
+        assert "dungeon_shard_10" in _rv["items"]
+        _ws = srv.world_snapshot()
+        _ts_snap = next(r for r in _ws["rooms"] if r["id"] == "town_square")
+        assert "dungeon_shard_10" in _ts_snap["items"]
+    finally:
+        srv.room_items["town_square"] = _orig_items
+    print("UNREGISTERED_ITEM_VIEW_OK")
+
 
 asyncio.run(main())
