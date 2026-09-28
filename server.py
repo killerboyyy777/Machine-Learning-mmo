@@ -2578,7 +2578,8 @@ async def cmd_craft(player, msg):
 
 async def cmd_commission_post(player, msg):
     if player.room != GUILD_ROOM:
-        await send(player, {"type": "error", "text": "Commissions are posted at the Adventurers Guild hall (south of Artisan Row)."})  # noqa: E501
+        await send(player, {"type": "error", "text": "Commissions are posted at the Adventurers Guild hall (south of Artisan Row)."})
+
         return
     target = (msg.get("target") or "").strip().lower()
     try:
@@ -2685,7 +2686,8 @@ async def cmd_commission_list(player, msg):
 async def cmd_commission_fill(player, msg):
     global tax_treasury, tax_collected_lifetime
     if player.room != GUILD_ROOM:
-        await send(player, {"type": "error", "text": "Commissions are filled at the Adventurers Guild hall (south of Artisan Row)."})  # noqa: E501
+        await send(player, {"type": "error", "text": "Commissions are filled at the Adventurers Guild hall (south of Artisan Row)."})
+
         return
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
@@ -4450,6 +4452,10 @@ def start_dashboard():
 def _standing_post(family_key, target, kills, reward_gold, reward_xp, now):
     """Post one treasury-funded standing bounty. Returns True when posted."""
     global tax_treasury
+    target_frag = str(target or "").lower()
+    if not any(target_frag in n.get("name", "").lower() for n in all_npcs()):
+        return False  # post-time name validation (regular-post parity):
+        # never board an unfillable bounty; the family re-tries next tick.
     if tax_treasury < reward_gold:
         return False  # coverage check: never overdraw the treasury
     tax_treasury -= reward_gold
@@ -4482,7 +4488,7 @@ def _standing_expire(commission, now):
 
 def tick_standing_bounties(now):
     global _last_standing_tick
-    if now - _last_standing_tick < 60.0:
+    if now - _last_standing_tick < STANDING_TICK_SECONDS:
         return
     _last_standing_tick = now
     live = [c for c in _commissions.values() if c.get("status") == "open" and c.get("standing")]

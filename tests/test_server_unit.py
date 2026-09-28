@@ -864,6 +864,14 @@ async def main():
     srv.tax_treasury = _t2_saved
     print("GUILD_EXPIRE_OK")
 
+    # --- Standing-bounty post-time name validation (regular-post parity) ---
+    _t2b_saved = srv.tax_treasury
+    srv.tax_treasury = 940.0
+    assert srv._standing_post("undelved", "Bogus Beast Xyz", 3, 24, 30, time.time()) is False
+    assert srv.tax_treasury == 940.0  # unfillable target: nothing earmarked
+    srv.tax_treasury = _t2b_saved
+    print("GUILD_VALIDATE_OK")
+
     # --- Guild fills skip collusion tracking and pay full escrow ---
     _t3_saved = srv.tax_treasury
     srv.tax_treasury = 940.0
