@@ -1568,13 +1568,17 @@ class TextMMOEnv:
             # Real bounty, parameterized from state (#194): target the first
             # hostile in view (server matches substrings case-insensitively),
             # falling back to the server's own "rat" default when blind; 1
-            # kill, escrow up to 10g of carried gold (0g when broke is now
-            # rejected server-side, so the bot retries once funded).
-            # Never masked: affordability is priced in,
-            # not gated, and the server defaults an empty target.
+            # kill, escrow up to 10g of carried gold. MASKED when broke
+            # (escrow<=0 → server would reject a zero-reward post, #337)
+            # and when away from the guild hall (post is presence-gated).
+            # Never masked otherwise: affordability is priced in.
+            if s.get("room_id") != getattr(srv, "GUILD_ROOM", "guild_hall"):
+                return None
             hostiles = [n for n in (s.get("npc_names") or [])
                         if n not in NON_HOSTILE_NAMES]
             escrow = max(0, min(s.get("gold", 0), 10))
+            if escrow <= 0:
+                return None
             return {"cmd": "commission_post",
                     "target": hostiles[0] if hostiles else "rat",
                     "required_kills": 1, "reward_gold": escrow, "reward_xp": 0}
@@ -1583,6 +1587,9 @@ class TextMMOEnv:
         if action == "commission_fill":
             # Fill the richest open bounty not posted by us (server still
             # verifies kills and rejects self-deals; its error is signal).
+            # MASKED away from the guild hall (fill is presence-gated, #337).
+            if s.get("room_id") != getattr(srv, "GUILD_ROOM", "guild_hall"):
+                return None
             cands = [c for c in (s.get("open_commissions") or []) if c["poster"] != self.name]
             if not cands:
                 return None
