@@ -2520,4 +2520,49 @@ async def main():
     del srv.gather_nodes["ghost_node"]
     print("UNREGISTERED_ITEM_OK")
 
+    # interaction sites resolve display names via _iname(): unregistered
+    # ids flow through take/drop/gather/inventory/market as raw ids
+    _ip = mkplayer("InameProber", 64010, room="market")
+    srv.room_items["market"].append("ghost_zzz_unregistered")
+    inbox.clear()
+    await srv.cmd_take(_ip, {"item": "ghost_zzz_unregistered"})
+    assert "ghost_zzz_unregistered" in _ip.inventory
+    assert any("ghost_zzz_unregistered" in m.get("text", "") for m in inbox), inbox[-3:]
+    inbox.clear()
+    await srv.cmd_inventory(_ip, {})
+    _inv = next(m for m in inbox if m.get("type") == "inventory")
+    assert "ghost_zzz_unregistered" in _inv["items"], _inv["items"]
+    inbox.clear()
+    _ip.inventory = ["rat_tail"] * 23 + ["ghost_zzz_unregistered"]
+    assert srv._pack_full(_ip)
+    await srv.cmd_drop(_ip, {"item": "ghost_zzz_unregistered"})
+    assert "ghost_zzz_unregistered" not in _ip.inventory
+    assert any("ghost_zzz_unregistered" in m.get("text", "") for m in inbox), inbox[-3:]
+    srv.room_items["market"].remove("ghost_zzz_unregistered")
+    srv.gather_nodes["ghost_gather"] = {
+        "id": "ghost_gather",
+        "room": "market",
+        "item": "ghost_zzz_unregistered",
+        "available": True,
+    }
+    inbox.clear()
+    await srv.cmd_gather(_ip, {"node": "ghost_gather"})
+    assert "ghost_zzz_unregistered" in _ip.inventory
+    assert any("ghost_zzz_unregistered" in m.get("text", "") for m in inbox), inbox[-3:]
+    del srv.gather_nodes["ghost_gather"]
+    _ip.inventory = ["ghost_zzz_unregistered"]
+    _ip.gold = 1000
+    inbox.clear()
+    await srv.cmd_market_post(_ip, {"item": "ghost_zzz_unregistered", "price": 5})
+    assert any("ghost_zzz_unregistered" in m.get("text", "") for m in inbox), inbox[-3:]
+    srv.market_orders[:] = [
+        o for o in srv.market_orders if o["seller"] != "InameProber"
+    ]
+    srv.room_items["market"] = [
+        i for i in srv.room_items["market"] if i != "ghost_zzz_unregistered"
+    ]
+    _ip.inventory = []
+    unplayer(_ip)
+    print("INTERACTION_NAMES_OK")
+
 asyncio.run(main())
