@@ -3,6 +3,10 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Ground-item views tolerate unregistered ids (ported from unmerged
+  #395): dungeon/floor/room/snapshot item lists fall back to the raw
+  id instead of raising KeyError when a dynamic id precedes its
+  ITEM_DEFS registration.
 - Histories (#333): bounded craft + commission event rings (seq,
   newest-last, trimmed on append) ride the snapshot as `craft_history`
   and `commission_history`; dashboard shows Recent crafts (crafting
