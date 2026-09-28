@@ -167,8 +167,6 @@ print("COMM_LIST_OK")
 
 # --- commissioner role: empty board, odd step -> (re)stock via post ---
 env = fresh_env()
-env._state["room_id"] = "guild_hall"  # post is guild-gated
-env._state["gold"] = 10  # ITEM-3: broke bots never emit zero-reward posts
 env._state["open_commissions"] = []
 env._step_count = 1
 assert selected(CommissionerPolicy(), env) == "commission_post"
@@ -183,7 +181,6 @@ print("COMM_ATTACK_OK")
 
 # --- commissioner role: other's bounty present -> fill richest ---
 env = fresh_env()
-env._state["room_id"] = "guild_hall"  # fill is guild-gated
 env._state["open_commissions"] = [
     {"id": 7, "kills": 1, "target": "rat", "gold": 10, "xp": 0,
      "rate": 1.0, "poster": "Other"},
