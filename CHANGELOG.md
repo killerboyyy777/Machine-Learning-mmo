@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Interaction display names resolve via `_iname()` (take, drop, gather
+  match + message, inventory view, market buy/sell/list): unregistered
+  ids render as raw ids instead of raising KeyError.
 - Ground-item views tolerate unregistered ids (ported from unmerged
   #395): dungeon/floor/room/snapshot item lists fall back to the raw
   id instead of raising KeyError when a dynamic id precedes its

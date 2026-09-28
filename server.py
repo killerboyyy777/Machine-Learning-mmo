@@ -1578,9 +1578,9 @@ def stats_view(player):
         "gold": player.gold,
         "pack": _inventory_units(player),
         "pack_max": INVENTORY_CAP,
-        "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
-        "armor": ITEM_DEFS[player.armor]["name"] if player.armor else None,
-        "offhand": ITEM_DEFS[player.offhand]["name"] if player.offhand else None,
+        "equipped": _iname(player.equipped) if player.equipped else None,
+        "armor": _iname(player.armor) if player.armor else None,
+        "offhand": _iname(player.offhand) if player.offhand else None,
         "defense": _player_defense(player),
         "score": round(entry["score"], 2) if entry else 0,
         "variety": round(compute_variety(entry), 2) if entry else 1.0,
@@ -2306,7 +2306,7 @@ async def cmd_take(player, msg):
         return
     _remove_ground(player.room, iid)
     player.inventory.append(iid)
-    await send(player, {"type": "message", "text": f"You take {ITEM_DEFS[iid]['name']}."})
+    await send(player, {"type": "message", "text": f"You take {_iname(iid)}."})
     await send(player, stats_view(player))
     await sync_room(player.room)
 
@@ -2342,7 +2342,7 @@ async def cmd_drop(player, msg):
         player.offhand = None
     for _ in range(dropped):
         _add_ground(player.room, iid)
-    await send(player, {"type": "message", "text": f"You drop {dropped}x {ITEM_DEFS[iid]['name']}."})
+    await send(player, {"type": "message", "text": f"You drop {dropped}x {_iname(iid)}."})
     await send(player, stats_view(player))
     await sync_room(player.room)
 
@@ -2355,7 +2355,7 @@ async def cmd_gather(player, msg):
     if requested:
         node = next((n for n in cands
                      if requested in (n["id"].lower(), n["item"].lower(),
-                                      ITEM_DEFS[n["item"]]["name"].lower())), None)
+                                      _iname(n["item"]).lower())), None)
     else:
         node = cands[0] if cands else None
     if not node:
@@ -2371,7 +2371,7 @@ async def cmd_gather(player, msg):
     # remaining space (a full pack already refused above, so >= 1 fits).
     quantity = min(quantity, INVENTORY_CAP - _inventory_units(player))
     player.inventory.extend([node["item"]] * quantity)
-    item_name = ITEM_DEFS[node["item"]]["name"]
+    item_name = _iname(node["item"])
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
     await award_points(player, float(node.get("score", 2)), f"gathered {item_name}")
     await award_xp(player.name, float(node.get("xp", 2)), f"gathered {item_name}")
@@ -2384,7 +2384,7 @@ async def cmd_equip(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": "You don't have that."})
         return
-    itype = ITEM_DEFS[iid].get("type")
+    itype = ITEM_DEFS.get(iid, {}).get("type")
     if itype == "weapon":
         player.equipped = iid
     elif itype == "armor":
@@ -2392,9 +2392,9 @@ async def cmd_equip(player, msg):
     elif itype == "offhand":
         player.offhand = iid
     else:
-        await send(player, {"type": "error", "text": f"You can't equip '{ITEM_DEFS[iid]['name']}'."})
+        await send(player, {"type": "error", "text": f"You can't equip '{_iname(iid)}'."})
         return
-    await send(player, {"type": "message", "text": f"You equip {ITEM_DEFS[iid]['name']}."})
+    await send(player, {"type": "message", "text": f"You equip {_iname(iid)}."})
     await send(player, stats_view(player))
 
 
@@ -2403,11 +2403,11 @@ async def cmd_use(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": "You don't have that."})
         return
-    if not iid or ITEM_DEFS[iid].get("type") != "consumable":
+    if not iid or ITEM_DEFS.get(iid, {}).get("type") != "consumable":
         await send(player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."})
         return
     player.inventory.remove(iid)
-    definition = ITEM_DEFS[iid]
+    definition = ITEM_DEFS.get(iid, {})
     effect = definition.get("buff")
     if effect:
         category = effect["category"]
@@ -2417,7 +2417,7 @@ async def cmd_use(player, msg):
         }
         await send(player, {
             "type": "message",
-            "text": f"You use {definition['name']}: {effect.get('description', 'a temporary effect')} "
+            "text": f"You use {_iname(iid)}: {effect.get('description', 'a temporary effect')} "
                     f"({player.active_buffs[category]['remaining']} actions).",
         })
         await send(player, stats_view(player))
@@ -2425,7 +2425,7 @@ async def cmd_use(player, msg):
     heal = definition.get("heal_amount", 0)
     before = player.hp
     player.hp = min(player.max_hp, player.hp + heal)
-    await send(player, {"type": "message", "text": f"You use {definition['name']} and recover {player.hp - before} HP."})
+    await send(player, {"type": "message", "text": f"You use {_iname(iid)} and recover {player.hp - before} HP."})
     await send(player, stats_view(player))
 
 
@@ -2487,7 +2487,7 @@ async def cmd_buy(player, msg):
         return
     player.gold -= price
     player.inventory.append(iid)
-    await send(player, {"type": "message", "text": f"You buy {ITEM_DEFS[iid]['name']} for {price} gold."})
+    await send(player, {"type": "message", "text": f"You buy {_iname(iid)} for {price} gold."})
     await send(player, stats_view(player))
 
 
@@ -2509,7 +2509,7 @@ async def cmd_sell(player, msg):
     if player.offhand == iid and iid not in player.inventory:
         player.offhand = None
     player.gold += value
-    await send(player, {"type": "message", "text": f"You sell {ITEM_DEFS[iid]['name']} for {value} gold."})
+    await send(player, {"type": "message", "text": f"You sell {_iname(iid)} for {value} gold."})
     await send(player, stats_view(player))
 
 
@@ -2851,10 +2851,10 @@ async def cmd_commission_cancel(player, msg):
 async def cmd_inventory(player, msg):
     await send(player, {
         "type": "inventory",
-        "items": [ITEM_DEFS[i]["name"] for i in player.inventory],
-        "equipped": ITEM_DEFS[player.equipped]["name"] if player.equipped else None,
-        "armor": ITEM_DEFS[player.armor]["name"] if player.armor else None,
-        "offhand": ITEM_DEFS[player.offhand]["name"] if player.offhand else None,
+        "items": [_iname(i) for i in player.inventory],
+        "equipped": _iname(player.equipped) if player.equipped else None,
+        "armor": _iname(player.armor) if player.armor else None,
+        "offhand": _iname(player.offhand) if player.offhand else None,
     })
 
 
@@ -3403,7 +3403,7 @@ async def cmd_market_post(player, msg):
         await send(player, {"type": "message", "text": f"Your listing (order #{oid}) fills a standing bid at {bid['price']} gold."})
         await send(player, stats_view(player))
         return
-    await send(player, {"type": "message", "text": f"Listed {ITEM_DEFS[iid]['name']} for {price} gold (order #{oid})."})
+    await send(player, {"type": "message", "text": f"Listed {_iname(iid)} for {price} gold (order #{oid})."})
     await send(player, stats_view(player))
 
 
