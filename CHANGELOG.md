@@ -12,6 +12,11 @@ All notable changes to the text MMO engine are recorded here.
   escrow refunded when the condition clears. Guild fills skip collusion
   tracking and the poster score cut. Bots mask zero-reward posts and
   post/fill outside the guild.
+- Histories (#333): bounded craft + commission event rings (seq,
+  newest-last, trimmed on append) ride the snapshot as `craft_history`
+  and `commission_history`; dashboard shows Recent crafts (crafting
+  tab) and Commission activity (quests tab) as sortable tables with
+  visible counts.
 - Milestone batch (remaining #374/#375/#376/#377/#378 findings).
   Economy: broker/relist fees now land in the lifetime counter as well
   as the spendable treasury; death floor-piles credit next to the debit

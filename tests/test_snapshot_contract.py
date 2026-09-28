@@ -23,7 +23,8 @@ s = srv.world_snapshot()
 # --- top level: additive subset, extras allowed ---
 need(s, {"server", "rooms", "players", "scores", "activity", "market",
           "buffs", "bosses", "dungeons", "quests", "recipes",
-          "commissions", "catalog", "history"}, "snapshot")
+          "commissions", "catalog", "history", "craft_history",
+          "commission_history"}, "snapshot")
 
 # --- server block: header stats, ports, uptime ticker seed ---
 need(s["server"], {"ws_port", "gm_port", "uptime", "start_ts",
@@ -64,6 +65,24 @@ for c in s["quests"]["catalog"]:
              "reward_gold"}, f"quest {c.get('id')}")
 for t in s["quests"]["recent_turnins"]:
     need(t, {"t", "name", "qid"}, "turn-in")
+
+# --- history rings (#333): bounded, seq-ordered, newest last ---
+assert len(s["craft_history"]) <= 20, len(s["craft_history"])
+for c in s["craft_history"]:
+    need(c, {"seq", "t", "name", "recipe", "result"}, "craft")
+assert [c["seq"] for c in s["craft_history"]] == sorted(
+    c["seq"] for c in s["craft_history"]
+), "craft ring out of order"
+assert len(s["commission_history"]) <= 20, len(s["commission_history"])
+for c in s["commission_history"]:
+    need(c, {"seq", "t", "id", "poster", "status"}, "commission event")
+    if c["status"] == "cancelled":
+        need(c, {"offered_gold", "offered_xp", "refund", "forfeit"}, "cancel event")
+    else:
+        need(c, {"gold", "xp"}, "fill event")
+assert [c["seq"] for c in s["commission_history"]] == sorted(
+    c["seq"] for c in s["commission_history"]
+), "commission ring out of order"
 
 # --- recipes: browser fields, names resolved ---
 assert s["recipes"], "recipe list empty"
