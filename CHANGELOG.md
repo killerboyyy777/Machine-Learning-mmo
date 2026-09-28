@@ -3,15 +3,6 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
-- Adventurers Guild hub + standing bounties (#337). New guild_hall room
-  south of Artisan Row with a Guildmaster NPC; commission post/fill are
-  presence-gated to the guild (list/cancel stay global). Server posts
-  standing bounties from the tax treasury when world-state triggers fire
-  (overpopulation, price spikes, undelved floors), priced NET of death
-  drain with per-family config knobs (default ON); bounties expire with
-  escrow refunded when the condition clears. Guild fills skip collusion
-  tracking and the poster score cut. Bots mask zero-reward posts and
-  post/fill outside the guild.
 - Histories (#333): bounded craft + commission event rings (seq,
   newest-last, trimmed on append) ride the snapshot as `craft_history`
   and `commission_history`; dashboard shows Recent crafts (crafting

@@ -6,7 +6,6 @@ without affecting other agents.
 """
 import asyncio
 import inspect
-import time
 import traceback
 
 import websockets
