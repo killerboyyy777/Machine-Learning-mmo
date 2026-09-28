@@ -2498,6 +2498,26 @@ async def main():
     _mroom = next(r for r in _snap["rooms"] if r["id"] == "market")
     assert "ghost_zzz_unregistered" in _mroom["items"], _mroom["items"]
     srv.room_items["market"].remove("ghost_zzz_unregistered")
+    # dungeon floor items: the reported repro path (shard pre-registration)
+    import types as _types
+
+    _ff = _types.SimpleNamespace(
+        guards=[], items=["ghost_zzz_unregistered"], cleared=False
+    )
+    _fd = _types.SimpleNamespace(floors={1: _ff})
+    _dv = srv.dungeon_room_view("d_9_f1", _fd)
+    assert "ghost_zzz_unregistered" in _dv["items"], _dv["items"]
+    # gatherable display resolves the same way
+    srv.gather_nodes["ghost_node"] = {
+        "id": "ghost_node",
+        "room": "market",
+        "item": "ghost_zzz_unregistered",
+        "available": True,
+    }
+    _rv2 = srv.room_view("market")
+    _g = next(n for n in _rv2["gatherables"] if n["id"] == "ghost_node")
+    assert _g["item"] == "ghost_zzz_unregistered", _g
+    del srv.gather_nodes["ghost_node"]
     print("UNREGISTERED_ITEM_OK")
 
 asyncio.run(main())
