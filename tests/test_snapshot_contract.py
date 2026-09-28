@@ -76,6 +76,10 @@ assert [c["seq"] for c in s["craft_history"]] == sorted(
 assert len(s["commission_history"]) <= 20, len(s["commission_history"])
 for c in s["commission_history"]:
     need(c, {"seq", "t", "id", "poster", "status"}, "commission event")
+    if c["status"] == "cancelled":
+        need(c, {"offered_gold", "offered_xp", "refund", "forfeit"}, "cancel event")
+    else:
+        need(c, {"gold", "xp"}, "fill event")
 assert [c["seq"] for c in s["commission_history"]] == sorted(
     c["seq"] for c in s["commission_history"]
 ), "commission ring out of order"

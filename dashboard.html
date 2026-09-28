@@ -1524,13 +1524,18 @@ function fmtAge(ts) {
 function renderCommHistory(hist) {
   // Commission activity ring (#333): fills + cancels, mirrors the
   // quest turn-in feed shape (seq, newest last in snapshot).
+  // Completed rows pay out; cancelled rows show the escrow split
+  // (refund to poster, forfeit sunk to the treasury).
+  const payout = h => h.status === "cancelled"
+    ? `refund ${h.refund ?? 0}g / forfeit ${h.forfeit ?? 0}g`
+    : `${h.gold ?? 0}g + ${h.xp ?? 0}xp`;
   const rows = sortRows("commHistory", hist || [],
     [h => h.seq ?? 0, h => h.t || "", h => h.id ?? 0, h => h.poster || "",
      h => h.filler || "", h => (h.gold ?? 0) + (h.xp ?? 0), h => h.status || ""], 0, -1);
   setHTML("commHistory", rows.map(h => `
     <tr><td>${h.seq ?? 0}</td><td>${esc(h.t || "")}</td><td><b>#${h.id ?? 0}</b> ${esc(h.target || "")}</td>
         <td>${esc(h.poster || "")}</td><td>${esc(h.filler || "-")}</td>
-        <td><b>${h.gold ?? 0}g + ${h.xp ?? 0}xp</b></td>
+        <td><b>${esc(payout(h))}</b></td>
         <td>${h.status === "completed" ? `<span class="tag alive">completed</span>` : `<span class="dim">${esc(h.status || "")}</span>`}</td></tr>`).join(""));
   $("noCommHistory").style.display = rows.length ? "none" : "";
   $("commHistoryCount").textContent = rows.length;

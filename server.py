@@ -2546,8 +2546,15 @@ async def cmd_craft(player, msg):
     await award_points(player, 8, f"crafted {ITEM_DEFS[result]['name']}")
     await award_xp(player.name, 8, f"crafted {ITEM_DEFS[result]['name']}")
     craft_feed_seq += 1
-    craft_feed.append({"seq": craft_feed_seq, "t": time.strftime("%H:%M:%S"),
-                       "name": player.name, "recipe": rid, "result": result})
+    craft_feed.append(
+        {
+            "seq": craft_feed_seq,
+            "t": time.strftime("%H:%M:%S"),
+            "name": player.name,
+            "recipe": rid,
+            "result": result,
+        }
+    )
     while len(craft_feed) > CRAFT_FEED_SIZE:
         del craft_feed[0]
     if entry["quest_guard_active"] and result == "ancient_guardian_charm":
@@ -2709,7 +2716,9 @@ async def cmd_commission_fill(player, msg):
     offered_xp = commission["reward_xp"]
     eff_gold = max(1, int(offered_gold * mult)) if offered_gold > 0 else 0
     eff_xp = max(0, int(offered_xp * mult))
-    commission["status"] = "filled"
+    # Single terminal vocabulary: open -> completed/cancelled. (An
+    # intermediate "filled" write used to live here, overwritten to
+    # "completed" below before any snapshot or send could observe it.)
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
     poster_entry = get_score_entry(commission["poster"])
@@ -2742,10 +2751,19 @@ async def cmd_commission_fill(player, msg):
         tax_collected_lifetime += remainder
     commission["status"] = "completed"
     comm_feed_seq += 1
-    comm_feed.append({"seq": comm_feed_seq, "t": time.strftime("%H:%M:%S"),
-                      "id": cid, "poster": commission["poster"], "filler": player.name,
-                      "target": commission["target"], "gold": eff_gold, "xp": eff_xp,
-                      "status": "completed"})
+    comm_feed.append(
+        {
+            "seq": comm_feed_seq,
+            "t": time.strftime("%H:%M:%S"),
+            "id": cid,
+            "poster": commission["poster"],
+            "filler": player.name,
+            "target": commission["target"],
+            "gold": eff_gold,
+            "xp": eff_xp,
+            "status": "completed",
+        }
+    )
     while len(comm_feed) > COMM_FEED_SIZE:
         del comm_feed[0]
     # Poster reward: 10% of the bounty as score + XP for coordinating.
@@ -2785,13 +2803,6 @@ async def cmd_commission_cancel(player, msg):
         await send(player, {"type": "error", "text": f"Only {commission['poster']} can cancel commission #{cid}."})
         return
     commission["status"] = "cancelled"
-    comm_feed_seq += 1
-    comm_feed.append({"seq": comm_feed_seq, "t": time.strftime("%H:%M:%S"),
-                      "id": cid, "poster": commission["poster"], "filler": None,
-                      "target": commission["target"], "gold": 0, "xp": 0,
-                      "status": "cancelled"})
-    while len(comm_feed) > COMM_FEED_SIZE:
-        del comm_feed[0]
     # Refund half of the actually-escrowed gold (credit_gold pays live
     # characters directly and banks it for offline ones). The forfeited
     # half is the cancellation fee: sink it to the treasury instead of
@@ -2799,6 +2810,24 @@ async def cmd_commission_cancel(player, msg):
     escrow = commission.get("escrow", commission["reward_gold"])
     refund = escrow // 2
     forfeit = escrow - refund
+    comm_feed_seq += 1
+    comm_feed.append(
+        {
+            "seq": comm_feed_seq,
+            "t": time.strftime("%H:%M:%S"),
+            "id": cid,
+            "poster": commission["poster"],
+            "filler": None,
+            "target": commission["target"],
+            "status": "cancelled",
+            "offered_gold": commission["reward_gold"],
+            "offered_xp": commission["reward_xp"],
+            "refund": refund,
+            "forfeit": forfeit,
+        }
+    )
+    while len(comm_feed) > COMM_FEED_SIZE:
+        del comm_feed[0]
     commission["escrow"] = 0
     if forfeit:
         tax_treasury += forfeit
@@ -4138,7 +4167,7 @@ def _quest_snapshot():
 
 def _commission_snapshot():
     """Dashboard commissions board: open + closed bounties, newest first,
-    capped (filled/cancelled records persist server-side, unbounded)."""
+    capped (completed/cancelled records persist server-side, unbounded)."""
     cmds = sorted(_commissions.values(), key=lambda c: c.get("id", 0), reverse=True)[:100]
     return [
         {"id": c.get("id"), "poster": c.get("poster", ""),

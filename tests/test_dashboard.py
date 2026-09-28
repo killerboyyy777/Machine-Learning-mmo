@@ -274,6 +274,7 @@ for fn in ("renderCraftHistory", "renderCommHistory"):
 ch = re.search(r"craft_history", html)
 assert ch, "craft_history not consumed"
 assert "commission_history" in html, "commission_history not consumed"
+assert "refund" in html and "forfeit" in html, "cancel economics not rendered"
 for tok in ('"craft_history": list(craft_feed)', '"commission_history": list(comm_feed)',
             "craft_feed_seq", "comm_feed_seq"):
     assert tok in _srv, f"server: history token {tok} missing"
