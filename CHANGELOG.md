@@ -3,6 +3,9 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Craft awards resolve result names via the `_iname()` fallback
+  (ported from unmerged #411): recipes whose result id precedes its
+  ITEM_DEFS registration no longer raise KeyError on turn-in.
 - Adventurers Guild hub + standing bounties (#337, restored after the
   #397 revert dropped them). New guild_hall room south of Artisan Row
   with a Guildmaster NPC; commission post/fill are presence-gated to
