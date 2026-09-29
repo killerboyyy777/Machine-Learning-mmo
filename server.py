@@ -184,6 +184,29 @@ COMMISSION_COLLAB_CAP = 200
 # Open bounties hold real escrow and are never pruned.
 COMMISSION_TTL_SECONDS = 3600
 
+# --- Adventurers Guild hub (#337) -------------------------------------------
+# Post/fill are presence-gated to GUILD_ROOM; list/cancel stay global.
+GUILD_ROOM = "guild_hall"
+GUILD_POSTER = "Adventurers Guild"
+# Standing-bounty families posted from the tax treasury. Payouts are NET of
+# expected death drain: each kill risks ~0.29 deaths (overnight measured)
+# at ~6g average penalty, so per-kill payouts default >= 2g.
+BOUNTY_OVERPOP_ENABLED = True
+BOUNTY_OVERPOP_THRESHOLD = 6  # alive mob-family members triggering a bounty
+BOUNTY_OVERPOP_KILLS = 3
+BOUNTY_OVERPOP_PAYOUT_GOLD = 8
+BOUNTY_OVERPOP_PAYOUT_XP = 10
+BOUNTY_PRICESPIKE_ENABLED = True
+BOUNTY_PRICESPIKE_MULT = 3.0  # best ask >= MULT x merchant price
+BOUNTY_PRICESPIKE_KILLS = 3
+BOUNTY_PRICESPIKE_PAYOUT_GOLD = 9
+BOUNTY_PRICESPIKE_PAYOUT_XP = 12
+BOUNTY_UNDELVED_ENABLED = True
+BOUNTY_UNDELVED_KILLS = 2
+BOUNTY_UNDELVED_PAYOUT_GOLD = 12
+BOUNTY_UNDELVED_PAYOUT_XP = 15
+STANDING_TICK_SECONDS = 60
+
 XP_BASE = 100
 XP_GROWTH = 1.5
 LEVEL_HP_PER_LEVEL = 5
@@ -548,6 +571,7 @@ dungeon_clear_log = []
 # (COMMISSION_TTL_SECONDS lives with the other commission tunables above
 # _apply_config so server_config.json -- and --config overlays -- can set it.)
 _last_commission_prune = 0.0
+_last_standing_tick = 0.0
 
 
 def prune_commissions(now=None):
@@ -559,7 +583,7 @@ def prune_commissions(now=None):
     _last_commission_prune = now
     pruned = 0
     for cid, c in list(_commissions.items()):
-        if c.get("status") not in ("completed", "cancelled"):
+        if c.get("status") not in ("completed", "cancelled", "expired"):
             continue
         latest = max(c.get("created_ts", now), c.get("filled_ts", 0) or 0)
         if now - latest > COMMISSION_TTL_SECONDS:
@@ -2006,6 +2030,11 @@ async def cmd_login(player, msg):
     if not name:
         await send(player, {"type": "error", "text": "login requires a 'name'"})
         return
+    if name.lower() == GUILD_POSTER.lower():
+        # Reserved for world-posted standing bounties: a player behind
+        # this name could cancel them and collect poster-side effects.
+        await send(player, {"type": "error", "text": f"The name '{name}' is reserved."})
+        return
     if player.logged_in:
         await send(player, {"type": "error", "text": f"Already logged in as {player.name}. Use a fresh connection to switch."})
         return
@@ -2580,8 +2609,8 @@ async def cmd_craft(player, msg):
     entry.setdefault("crafts_tier", {}).setdefault(recipe.get("tier", 0), 0)
     entry["crafts_tier"][recipe.get("tier", 0)] += 1
     mark_scores_dirty()
-    await award_points(player, 8, f"crafted {ITEM_DEFS[result]['name']}")
-    await award_xp(player.name, 8, f"crafted {ITEM_DEFS[result]['name']}")
+    await award_points(player, 8, f"crafted {result_name}")
+    await award_xp(player.name, 8, f"crafted {result_name}")
     craft_feed_seq += 1
     craft_feed.append(
         {
@@ -2603,6 +2632,10 @@ async def cmd_craft(player, msg):
 
 
 async def cmd_commission_post(player, msg):
+    if player.room != GUILD_ROOM:
+        await send(player, {"type": "error", "text": "Commissions are posted at the Adventurers Guild hall (south of Artisan Row)."})
+
+        return
     target = (msg.get("target") or "").strip().lower()
     try:
         required_kills = int(msg.get("required_kills") or 0)
@@ -2695,7 +2728,11 @@ async def cmd_commission_list(player, msg):
         return
     lines = []
     for c in open_cmds:
-        mult = collusion_multiplier(c["poster"], player.name)
+        # Standing rows skip collusion like fills do (mult 1.0): this also
+        # keeps the read path from minting a score entry for the guild name.
+        mult = (
+            1.0 if c.get("standing") else collusion_multiplier(c["poster"], player.name)
+        )
         # Same 0-guard as the fill path: a 0g offer lists as 0g, never 1g.
         eg = max(1, int(c["reward_gold"] * mult)) if c["reward_gold"] > 0 else 0
         ex = max(0, int(c["reward_xp"] * mult))
@@ -2707,6 +2744,10 @@ async def cmd_commission_list(player, msg):
 
 async def cmd_commission_fill(player, msg):
     global tax_treasury, tax_collected_lifetime, comm_feed_seq
+    if player.room != GUILD_ROOM:
+        await send(player, {"type": "error", "text": "Commissions are filled at the Adventurers Guild hall (south of Artisan Row)."})
+
+        return
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -2762,7 +2803,14 @@ async def cmd_commission_fill(player, msg):
     # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
     # Any escrow remainder (posted gold minus reduced payout) is sunk to the
     # treasury as an additional collusion deterrent.
-    mult = collusion_multiplier(commission["poster"], player.name)
+    # Standing rows skip collusion like the list path does (mult 1.0):
+    # calling the multiplier would mint a score entry for the guild
+    # name as a read side effect. Guild fills never penalize repeat
+    # fillers.
+    if commission.get("standing"):
+        mult = 1.0
+    else:
+        mult = collusion_multiplier(commission["poster"], player.name)
     # The max(1, ...) floors keep collusion-discounted payouts from
     # feel-bad zeroing -- but ONLY when the bounty actually offers that
     # reward. A 0g/0xp bounty must pay 0, not mint 1g/1xp from nothing
@@ -2776,20 +2824,21 @@ async def cmd_commission_fill(player, msg):
     # "completed" below before any snapshot or send could observe it.)
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
-    poster_entry = get_score_entry(commission["poster"])
-    collab = poster_entry.setdefault("collab_fills", {})
-    filler_key = player.name.lower()
-    collab[filler_key] = collab.get(filler_key, 0) + 1
-    seen = poster_entry.setdefault("collab_seen", {})
-    seen[filler_key] = time.time()
-    while len(collab) > COMMISSION_COLLAB_CAP:
-        # Evict least-recently-seen, not least-frequent: least-frequent
-        # deleted exactly the record sustaining the penalty, letting
-        # cycled filler identities reset to full rate. Untimestamped
-        # legacy records age out first.
-        victim = min(collab, key=lambda k: seen.get(k, 0))
-        del collab[victim]
-        seen.pop(victim, None)
+    if commission.get("poster") != GUILD_POSTER:
+        poster_entry = get_score_entry(commission["poster"])
+        collab = poster_entry.setdefault("collab_fills", {})
+        filler_key = player.name.lower()
+        collab[filler_key] = collab.get(filler_key, 0) + 1
+        seen = poster_entry.setdefault("collab_seen", {})
+        seen[filler_key] = time.time()
+        while len(collab) > COMMISSION_COLLAB_CAP:
+            # Evict least-recently-seen, not least-frequent: least-frequent
+            # deleted exactly the record sustaining the penalty, letting
+            # cycled filler identities reset to full rate. Untimestamped
+            # legacy records age out first.
+            victim = min(collab, key=lambda k: seen.get(k, 0))
+            del collab[victim]
+            seen.pop(victim, None)
     mark_scores_dirty()
     collab_note = "" if mult >= 1.0 else f" (collab penalty x{mult:.1f})"
     await send(player, {"type": "message", "text": f"You completed commission #{cid}: +{eff_gold}g, +{eff_xp}xp.{collab_note}"})
@@ -2824,17 +2873,18 @@ async def cmd_commission_fill(player, msg):
     )
     while len(comm_feed) > COMM_FEED_SIZE:
         del comm_feed[0]
-    # Poster reward: 10% of the bounty as score + XP for coordinating.
-    # Gated like the filler floors: no mint from a zero bounty.
-    poster_score = max(1, int(offered_gold * 0.1)) if offered_gold > 0 else 0
-    poster_xp = max(1, int(offered_xp * 0.1)) if offered_xp > 0 else 0
-    poster_name = commission["poster"]
-    await award_points_to_name(poster_name, poster_score, f"commission #{cid} filled by {player.name}")
-    await award_xp(poster_name, poster_xp, f"commission #{cid} filled by {player.name}")
-    for pp in players_by_name.get(poster_name.lower(), ()):
-        if pp.logged_in:
-            treasury_note = f" {remainder}g collusion remainder sunk to treasury." if remainder else ""
-            await send(pp, {"type": "message", "text": f"Your commission #{cid} was filled by {player.name}! +{poster_score} score, +{poster_xp}xp.{treasury_note}"})
+    if commission.get("poster") != GUILD_POSTER:
+        # Poster reward: 10% of the bounty as score + XP for coordinating.
+        # Gated like the filler floors: no mint from a zero bounty.
+        poster_score = max(1, int(offered_gold * 0.1)) if offered_gold > 0 else 0
+        poster_xp = max(1, int(offered_xp * 0.1)) if offered_xp > 0 else 0
+        poster_name = commission["poster"]
+        await award_points_to_name(poster_name, poster_score, f"commission #{cid} filled by {player.name}")
+        await award_xp(poster_name, poster_xp, f"commission #{cid} filled by {player.name}")
+        for pp in players_by_name.get(poster_name.lower(), ()):
+            if pp.logged_in:
+                treasury_note = f" {remainder}g collusion remainder sunk to treasury." if remainder else ""
+                await send(pp, {"type": "message", "text": f"Your commission #{cid} was filled by {player.name}! +{poster_score} score, +{poster_xp}xp.{treasury_note}"})
     mark_scores_dirty()
     await send(player, stats_view(player))
 
@@ -2853,6 +2903,18 @@ async def cmd_commission_cancel(player, msg):
         return
     if commission["status"] != "open":
         await send(player, {"type": "error", "text": f"Commission #{cid} is already {commission['status']} and cannot be cancelled."})
+        return
+    # Standing bounties belong to the world: players can neither post
+    # as the guild (name reserved at login) nor cancel its listings;
+    # only expiry ends them.
+    if commission.get("standing"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Commission #{cid} is a standing guild bounty and cannot be cancelled.",
+            },
+        )
         return
     # Only the poster may cancel: otherwise anyone could grief bounties and
     # force the poster to forfeit half their escrow for nothing.
@@ -4609,6 +4671,125 @@ def start_dashboard():
 
 
 # ---------------------------------------------------------------------------
+# Standing guild bounties (#337) — world-state-posted commissions from the
+# Adventurers Guild, funded by earmarked treasury gold. One open bounty per
+# family; expiry refunds the escrow to the treasury. Runs on the npc_ai_loop
+# tick with its own 60s throttle. Payouts are priced NET of death drain:
+# expected drain ~= deaths/kill x avg penalty (~0.29 x ~6g ~= ~1.8g/kill
+# overnight), so per-kill payouts sit above it by family risk.
+# ---------------------------------------------------------------------------
+
+
+def _standing_post(family_key, target, kills, reward_gold, reward_xp, now):
+    """Post one treasury-funded standing bounty. Returns True when posted."""
+    global tax_treasury
+    target_frag = str(target or "").lower()
+    if not any(target_frag in n.get("name", "").lower() for n in all_npcs()):
+        return False  # post-time name validation (regular-post parity):
+        # never board an unfillable bounty; the family re-tries next tick.
+    if tax_treasury < reward_gold:
+        return False  # coverage check: never overdraw the treasury
+    tax_treasury -= reward_gold
+    cid = next(_commission_counter)
+    _commissions[cid] = {
+        "id": cid,
+        "poster": GUILD_POSTER,
+        "target": target,
+        "required_kills": kills,
+        "reward_gold": reward_gold,
+        "reward_xp": reward_xp,
+        "escrow": reward_gold,
+        "status": "open",
+        "created_ts": now,
+        "standing": family_key,
+    }
+    mark_scores_dirty()
+    return True
+
+
+def _standing_expire(commission, now):
+    """Expire one standing bounty, refunding escrow to the treasury."""
+    global tax_treasury
+    _ = now
+    commission["status"] = "expired"
+    tax_treasury += commission.get("escrow", 0)
+    commission["escrow"] = 0
+    mark_scores_dirty()
+
+
+def tick_standing_bounties(now):
+    global _last_standing_tick
+    if now - _last_standing_tick < STANDING_TICK_SECONDS:
+        return
+    _last_standing_tick = now
+    live = [c for c in _commissions.values() if c.get("status") == "open" and c.get("standing")]
+    have = {c.get("standing") for c in live}
+    # FAMILY 1: overpopulation — a hostile template with >= threshold alive.
+    if BOUNTY_OVERPOP_ENABLED:
+        counts = {}
+        names = {}
+        for npc in npcs.values():
+            if npc.get("hostile") and npc.get("alive"):
+                tpl = str(npc.get("id", npc.get("name", "?"))).split("__x")[0]
+                counts[tpl] = counts.get(tpl, 0) + 1
+                names[tpl] = npc.get("name", tpl)
+        for tpl, count in counts.items():
+            key = f"overpop:{tpl}"
+            if key in have:
+                if count < BOUNTY_OVERPOP_THRESHOLD:
+                    for c in live:
+                        if c.get("standing") == key:
+                            _standing_expire(c, now)
+                continue
+            if count >= BOUNTY_OVERPOP_THRESHOLD:
+                _standing_post(key, names[tpl], BOUNTY_OVERPOP_KILLS,
+                               BOUNTY_OVERPOP_KILLS * BOUNTY_OVERPOP_PAYOUT_GOLD,
+                               BOUNTY_OVERPOP_KILLS * BOUNTY_OVERPOP_PAYOUT_XP, now)
+    # FAMILY 2: price spikes — a resting ask >= MULT x merchant price points
+    # at its loot-source mob.
+    if BOUNTY_PRICESPIKE_ENABLED:
+        merchant = {}
+        for npc in WORLD.get("npcs", {}).values():
+            for iid, price in ((npc.get("shop") or {}).items()):
+                merchant.setdefault(iid, price)
+        spiked = {}
+        for ask in market_orders:
+            mp = merchant.get(ask.get("item"))
+            if mp and ask.get("price", 0) >= BOUNTY_PRICESPIKE_MULT * mp:
+                spiked[ask["item"]] = ask["price"]
+        for iid in spiked:
+            key = f"spike:{iid}"
+            mob = None
+            for npc in npcs.values():
+                if npc.get("hostile") and npc.get("alive") and iid in (npc.get("loot") or []):
+                    mob = npc.get("name")
+                    break
+            if key in have:
+                if mob is None:
+                    for c in live:
+                        if c.get("standing") == key:
+                            _standing_expire(c, now)
+                continue
+            if mob is not None:
+                _standing_post(key, mob, BOUNTY_PRICESPIKE_KILLS,
+                               BOUNTY_PRICESPIKE_KILLS * BOUNTY_PRICESPIKE_PAYOUT_GOLD,
+                               BOUNTY_PRICESPIKE_KILLS * BOUNTY_PRICESPIKE_PAYOUT_XP, now)
+    # FAMILY 3: undelved floors — a live dungeon with uncleared floors.
+    if BOUNTY_UNDELVED_ENABLED:
+        key = "undelved"
+        undelved = any(not getattr(fl, "cleared", True) for d in dungeons.values() for fl in d.floors.values())
+        if key in have:
+            if not undelved:
+                for c in live:
+                    if c.get("standing") == key:
+                        _standing_expire(c, now)
+        elif undelved:
+            _standing_post(key, "Dungeon Guard", BOUNTY_UNDELVED_KILLS,
+                           BOUNTY_UNDELVED_KILLS * BOUNTY_UNDELVED_PAYOUT_GOLD,
+                           BOUNTY_UNDELVED_KILLS * BOUNTY_UNDELVED_PAYOUT_XP, now)
+
+
+# ---------------------------------------------------------------------------
 # NPC AI loop — runs independently of any player connection
 # ---------------------------------------------------------------------------
 
@@ -4617,6 +4798,7 @@ async def npc_ai_loop():
         await asyncio.sleep(NPC_TICK_SECONDS)
         now = time.time()
         prune_commissions(now)
+        tick_standing_bounties(now)
         await prune_market_orders(now)
         prune_invites(now)
         for node in list(gather_nodes.values()):
