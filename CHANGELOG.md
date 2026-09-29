@@ -3,6 +3,21 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Adventurers Guild hub + standing bounties (#337, restored after the
+  #397 revert dropped them). New guild_hall room south of Artisan Row
+  with a Guildmaster NPC; commission post/fill are presence-gated to
+  the guild (list/cancel stay global). Server posts standing bounties
+  from the tax treasury when world-state triggers fire
+  (overpopulation, price spikes, undelved floors), priced NET of death
+  drain with per-family config knobs (default ON); bounties expire with
+  escrow refunded when the condition clears. Guild fills skip collusion
+  tracking and the poster score cut. Bots mask zero-reward posts and
+  post/fill outside the guild.
+- Commission kill-progress (#325): qualifying kills attribute to open
+  matching bounties per hunter (poster self-kills excluded, display
+  only -- fills still verify from timestamps); the snapshot exposes a
+  leader/kills/required progress summary per bounty and the board shows
+  a sortable kills-fraction column with bar.
 - Interaction display names resolve via `_iname()` (take, drop, gather
   match + message, inventory view, market buy/sell/list): unregistered
   ids render as raw ids instead of raising KeyError.

@@ -87,7 +87,7 @@ assert "solid tile = indoor, dashed = outdoor" in html
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
 import json as _json, os as _os
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
-assert len(_world["rooms"]) == 32
+assert len(_world["rooms"]) == 33  # 32 map rooms + guild_hall
 assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
 # Settled-price panel renamed to plain words.
 assert "Price per completed sale" in html
@@ -150,8 +150,13 @@ for wid in ("commissions", "noCommissions"):
 assert 'data-sort="commissions"' in html
 assert "renderCommissions" in html
 assert "<th>posted</th>" in html and "fmtAge" in html
+assert "<th>progress</th>" in html, "progress column missing"
+assert "progFrac" in html and "hpbar" in html, "progress bar wiring missing"
 for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot",
-            '"created_ts": c.get("created_ts", 0)'):
+            '"created_ts": c.get("created_ts", 0)',
+    '"progress": _commission_progress(c)',
+    "def _commission_progress",
+):
     assert tok in _srv, f"server: commissions token {tok} missing"
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
