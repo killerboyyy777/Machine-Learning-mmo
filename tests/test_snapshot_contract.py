@@ -31,8 +31,8 @@ need(s["server"], {"ws_port", "gm_port", "uptime", "start_ts",
                    "players_online", "connections"}, "server")
 assert isinstance(s["server"]["start_ts"], (int, float))
 
-# --- rooms: all 32, map + drawer fields, shelter bool ---
-assert len(s["rooms"]) == 32, f"room count {len(s['rooms'])}"
+# --- rooms: all 33 (32 map + guild_hall), map + drawer fields, shelter bool ---
+assert len(s["rooms"]) == 33, f"room count {len(s['rooms'])}"
 for r in s["rooms"]:
     need(r, {"id", "name", "exits", "players", "npcs", "items",
              "gold", "shelter"}, f"room {r.get('id')}")
@@ -95,9 +95,23 @@ for r in s["recipes"]:
 # --- commissions board (cap 100, newest first not required) ---
 assert isinstance(s["commissions"], list)
 for c in s["commissions"]:
-    need(c, {"id", "poster", "target", "required_kills", "reward_gold",
-             "reward_xp", "status", "filled_by", "created_ts"},
-         f"commission {c.get('id')}")
+    need(
+        c,
+        {
+            "id",
+            "poster",
+            "target",
+            "required_kills",
+            "reward_gold",
+            "reward_xp",
+            "status",
+            "filled_by",
+            "created_ts",
+            "progress",
+        },
+        f"commission {c.get('id')}",
+    )
+    need(c["progress"], {"leader", "kills", "required"}, "progress")
 assert len(s["commissions"]) <= 100, "commissions snapshot uncapped"
 
 # --- catalog datalists ---

@@ -141,6 +141,24 @@ async def wait_party(ws, size=2, attempts=6, timeout=5.0):
     return ev
 
 
+def open_guild_escrow():
+    """Treasury gold currently earmarked by open standing bounties.
+
+    The standing-bounty tick earmarks treasury escrow at post time (refunded
+    on expiry), so exact-treasury asserts must subtract it, read at assert
+    time (posting/expiry churn with world state). For open bounties escrow
+    == reward_gold (only fills/expiry ever move it). Synchronous HTTP read;
+    the race with the 60s tick is negligible next to this test's existing
+    timing assumptions."""
+    import urllib.request
+    with urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3) as r:
+        state = json.loads(r.read())
+    return sum(
+        c.get("reward_gold", 0) for c in state["commissions"]
+        if c.get("status") == "open" and c.get("poster") == "Adventurers Guild"
+    )
+
+
 async def main():
     A = await websockets.connect(URI)
     B = await websockets.connect(URI)
@@ -176,7 +194,7 @@ async def main():
     assert ent.get("room", {}).get("id") == "town_square"
     assert ent.get("welcome", {}).get("protocol_version") == 2, ent.get("welcome")
     msgs = await gm_send("gm_reward", player="LiveA", gold=30)
-    assert any("Treasury now 670.0" in m.get("text", "") for m in msgs), (
+    assert any(f"Treasury now {round(670.0 - open_guild_escrow(), 2)}" in m.get("text", "") for m in msgs), (
         f"{msgs} -- did you reset scores.json to {{}} and start the server "
         f"with TEXTMMO_GM_SEED=700 in this same shell session?")
     print("LOGIN_GM_SEED_OK")
@@ -253,7 +271,7 @@ async def main():
     # A may reach the graveyard hurt, so the pre-dungeon heal debits before
     # this reward lands -- seen as 418.0/416.0 in CI. Accounting stays
     # exact like the downstream asserts; nothing is weakened).
-    assert any(f"Treasury now {round(420.0 - sum(heal_spent), 2)}" in m.get("text", "") for m in msgs), msgs
+    assert any(f"Treasury now {round(420.0 - sum(heal_spent) - open_guild_escrow(), 2)}" in m.get("text", "") for m in msgs), msgs
     await send(B, {"cmd": "move", "dir": "west"})
     await wait_room(B)
     await send(B, {"cmd": "buy", "item": "rusty"})
@@ -276,7 +294,7 @@ async def main():
     assert ml is not None
     # 420 (after B's gold) + 5 (tax on 50 sale) = 425, minus any gm_heal
     # tax spent getting here (solo-enter heal above, if A arrived hurt).
-    assert ml["tax_treasury"] == 425.0 - sum(heal_spent) and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
+    assert ml["tax_treasury"] == 425.0 - sum(heal_spent) - open_guild_escrow() and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
     assert len(ml["orders"]) == 0
     print("MARKET_TRADE_TAX_OK")
 
@@ -284,7 +302,7 @@ async def main():
     got = await gm_send("gm_boss", room="deep_forest", strength=1)
     assert any("spawned" in m.get("text", "") for m in got), got      # 425-100 = 325
     got = await gm_send("gm_buff", type="xp", minutes=1)
-    assert any(f"Treasury now {round(275.0 - sum(heal_spent), 2)}." in m.get("text", "") for m in got), got
+    assert any(f"Treasury now {round(275.0 - sum(heal_spent) - open_guild_escrow(), 2)}." in m.get("text", "") for m in got), got
     print("GM_SPEND_OK")
 
     # ---- Party: invite + accept in graveyard
@@ -329,7 +347,15 @@ async def main():
     import urllib.request
     state = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3).read())
     assert isinstance(state["dungeons"], list) and len(state["dungeons"]) >= 1
-    assert state["market"]["treasury"] == 275.0 - sum(heal_spent), state["market"]
+    # Standing guild bounties earmark treasury escrow at post time (refunded
+    # on expiry): subtract open Adventurers Guild escrow from expected. For
+    # open bounties escrow == reward_gold (only fills/expiry ever move it).
+    # Uses the just-fetched state (no second fetch, no extra tick race).
+    open_escrow = sum(
+        c.get("reward_gold", 0) for c in state["commissions"]
+        if c.get("status") == "open" and c.get("poster") == "Adventurers Guild"
+    )
+    assert state["market"]["treasury"] == 275.0 - sum(heal_spent) - open_escrow, state["market"]
     assert state["market"]["collected_lifetime"] == 5.0, state["market"]
     assert "buffs" in state and "bosses" in state
     assert state["server"]["ws_port"] == GAME_PORT

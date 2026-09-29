@@ -100,17 +100,30 @@ def test_priced_market_post():
 
 
 def test_parameterized_bounty():
-    e = _econ_env(npc_names=["Giant Rat"], gold=50)
+    e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="guild_hall")
     cmd = e._action_to_cmd("commission_post")
     assert cmd == {"cmd": "commission_post", "target": "Giant Rat",
                    "required_kills": 1, "reward_gold": 10,
                    "reward_xp": 0}, cmd
-    # Broke: still a valid 0g listing (affordability priced in, not gated).
-    e = _econ_env(npc_names=["Giant Rat"], gold=0)
-    assert e._action_to_cmd("commission_post")["reward_gold"] == 0
-    # Blind: server's own "rat" default (never masked, like the old post).
-    cmd = _econ_env(npc_names=[], gold=0)._action_to_cmd("commission_post")
-    assert cmd["target"] == "rat" and cmd["reward_gold"] == 0, cmd
+    # Broke: masked (a zero-reward post would be rejected, #337 item 3).
+    e = _econ_env(npc_names=["Giant Rat"], gold=0, room_id="guild_hall")
+    assert e._action_to_cmd("commission_post") is None
+    # Blind but funded: server's own "rat" default.
+    cmd = _econ_env(npc_names=[], gold=50,
+                    room_id="guild_hall")._action_to_cmd("commission_post")
+    assert cmd["target"] == "rat" and cmd["reward_gold"] == 10, cmd
+    # Away from the guild hall: post is presence-gated (#337).
+    e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="town_square")
+    assert e._action_to_cmd("commission_post") is None
+    e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="town_square",
+                   open_commissions=[{"id": 1, "poster": "Other",
+                                      "gold": 5, "xp": 0}])
+    assert e._action_to_cmd("commission_fill") is None
+    e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="guild_hall",
+                   open_commissions=[{"id": 1, "poster": "Other",
+                                      "gold": 5, "xp": 0}])
+    assert e._action_to_cmd("commission_fill") == {
+        "cmd": "commission_fill", "commission_id": 1}
     print("BOUNTY_PARAMS_OK")
 
 
