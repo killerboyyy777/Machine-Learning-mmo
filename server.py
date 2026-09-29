@@ -3404,6 +3404,69 @@ async def cmd_market_list(player, msg):
     })
 
 
+async def _sweep_crossed_orders(iid):
+    while True:
+        best_bid = None
+        for b in market_bids:
+            if b["item"] != iid:
+                continue
+            if best_bid is None or (-b["price"], b["ts"], b["id"]) < (
+                -best_bid["price"],
+                best_bid["ts"],
+                best_bid["id"],
+            ):
+                best_bid = b
+        best_ask = None
+        for a in market_orders:
+            if a["item"] != iid:
+                continue
+            if best_ask is None or (a["price"], a["ts"], a["id"]) < (
+                best_ask["price"],
+                best_ask["ts"],
+                best_ask["id"],
+            ):
+                best_ask = a
+        if best_bid is None or best_ask is None:
+            return
+        if best_bid["buyer"].lower() == best_ask["seller"].lower():
+            return
+        if best_bid["price"] < best_ask["price"]:
+            return
+        if best_bid["ts"] <= best_ask["ts"]:
+            fill_price, via = best_bid["price"], "bid"
+        else:
+            fill_price, via = best_ask["price"], "ask"
+        market_bids.remove(best_bid)
+        market_orders.remove(best_ask)
+        refund = best_bid["price"] - fill_price
+        if refund > 0:
+            await credit_gold(best_bid["buyer"], refund)
+        buyer_obj = _online_player(best_bid["buyer"])
+        seller_obj = _online_player(best_ask["seller"])
+        await _settle_market_fill(
+            buyer_obj, best_bid["buyer"], best_ask["seller"], iid, fill_price, via
+        )
+        if buyer_obj is not None:
+            await send(
+                buyer_obj,
+                {
+                    "type": "message",
+                    "text": f"Your bid #{best_bid['id']} fills: {_iname(iid)} for {fill_price} gold.",
+                },
+            )
+            await send(buyer_obj, stats_view(buyer_obj))
+        if seller_obj is not None:
+            await send(
+                seller_obj,
+                {
+                    "type": "message",
+                    "text": f"Your listing (order #{best_ask['id']}) fills a standing bid at {fill_price} gold.",
+                },
+            )
+            await send(seller_obj, stats_view(seller_obj))
+        mark_scores_dirty()
+
+
 async def cmd_market_post(player, msg):
     iid = find_item_by_name(player.inventory, msg.get("item", ""))
     if not iid:
@@ -3452,6 +3515,7 @@ async def cmd_market_post(player, msg):
         await send(player, {"type": "message", "text": f"Your listing (order #{oid}) fills a standing bid at {bid['price']} gold."})
         await send(player, stats_view(player))
         return
+    await _sweep_crossed_orders(iid)
     await send(player, {"type": "message", "text": f"Listed {_iname(iid)} for {price} gold (order #{oid})."})
     await send(player, stats_view(player))
 
@@ -3657,6 +3721,7 @@ async def cmd_market_buy_order(player, msg):
         await send(player, {"type": "message", "text": f"Your bid #{oid} fills immediately at {ask['price']} gold."})
         await send(player, stats_view(player))
         return
+    await _sweep_crossed_orders(iid)
     iname = ITEM_DEFS.get(iid, {}).get("name", iid)
     await send(player, {"type": "message", "text": f"Bid #{oid}: buying {iname} for {price} gold (fee {fee})."})
     await send(player, stats_view(player))
@@ -3713,6 +3778,7 @@ async def cmd_market_buy_modify(player, msg):
         await send(player, {"type": "message", "text": f"Your bid #{oid} fills immediately at {ask['price']} gold."})
         await send(player, stats_view(player))
         return
+    await _sweep_crossed_orders(bid["item"])
     await send(player, {"type": "message", "text": f"Bid #{oid} now {new_price} gold (relist fee {fee})."})
     await send(player, stats_view(player))
 

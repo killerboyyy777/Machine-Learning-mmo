@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Continuous matching (#405): every order post (ask, bid, or bid
+  repricing) sweeps the opposite book for crossing prices until no
+  crossed non-own pair remains for that item (price-time priority;
+  the older resting side sets the price per #158 convention; own-pair
+  crosses are left alone per #188 wash rules).
 - Commission kill-progress (#325): qualifying kills attribute to open
   matching bounties per hunter (poster self-kills excluded, display
   only -- fills still verify from timestamps); the snapshot exposes a
