@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Continuous matching (#405): every order post (ask, bid, or bid
+  repricing) sweeps the opposite book for crossing prices until no
+  crossed non-own pair remains for that item (price-time priority;
+  the older resting side sets the price per #158 convention; own-pair
+  crosses are left alone per #188 wash rules).
 - Craft awards resolve result names via the `_iname()` fallback
   (ported from unmerged #411): recipes whose result id precedes its
   ITEM_DEFS registration no longer raise KeyError on turn-in.

@@ -1276,6 +1276,46 @@ async def main():
     unplayer(bexp)
     print("BID_EXPIRE_OK")
 
+    # continuous matching: a crossed legacy pair clears on any new post (#405)
+    mnow = __import__("time").time()
+    mbid = next(srv._id_counter)
+    srv.market_bids.append({"id": mbid, "buyer": "MatchA", "item": "rat_tail",
+                            "price": 13, "ts": mnow - 100})
+    mask = next(srv._id_counter)
+    srv.market_orders.append({"id": mask, "seller": "MatchB", "item": "rat_tail",
+                              "price": 2, "ts": mnow - 50})
+    cmatch = mkplayer("MatchC", 50022, room="market")
+    cmatch.inventory.append("rat_tail")
+    await srv.cmd_market_post(cmatch, {"item": rat_name, "price": 99})
+    assert not any(b["id"] == mbid for b in srv.market_bids)
+    assert not any(o["id"] == mask for o in srv.market_orders)
+    assert any(o["seller"] == "MatchC" for o in srv.market_orders)
+    mlast = srv.market_history[-1]
+    assert mlast["price"] == 13 and mlast["via"] == "bid", mlast
+    await srv.cmd_market_cancel(cmatch, {"id": next(
+        o["id"] for o in srv.market_orders if o["seller"] == "MatchC")})
+    unplayer(cmatch)
+    print("MATCH_CLEAR_OK")
+
+    # continuous matching never crosses own pairs (wash stays, #188)
+    wbid = next(srv._id_counter)
+    srv.market_bids.append({"id": wbid, "buyer": "MatchW", "item": "rat_tail",
+                            "price": 13, "ts": mnow - 100})
+    wask = next(srv._id_counter)
+    srv.market_orders.append({"id": wask, "seller": "MatchW", "item": "rat_tail",
+                              "price": 2, "ts": mnow - 50})
+    wmatch = mkplayer("MatchW2", 50023, room="market")
+    wmatch.inventory.append("rat_tail")
+    await srv.cmd_market_post(wmatch, {"item": rat_name, "price": 99})
+    assert any(b["id"] == wbid for b in srv.market_bids)
+    assert any(o["id"] == wask for o in srv.market_orders)
+    srv.market_bids[:] = [b for b in srv.market_bids if b["id"] != wbid]
+    srv.market_orders[:] = [o for o in srv.market_orders if o["id"] != wask]
+    await srv.cmd_market_cancel(wmatch, {"id": next(
+        o["id"] for o in srv.market_orders if o["seller"] == "MatchW2")})
+    unplayer(wmatch)
+    print("MATCH_WASH_OK")
+
     # commission XP cap + kill consumption (#189)
     rich = mkplayer("RichPoster", 50003, room="guild_hall")
     rich.gold = 1000000
