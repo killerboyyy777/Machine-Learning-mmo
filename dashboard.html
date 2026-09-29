@@ -403,7 +403,7 @@
   <div class="panel">
     <h2>Commissions board <span class="legend">open bounties + recent fills</span></h2>
     <div class="tscroll"><table data-sort="commissions">
-      <thead><tr><th>#</th><th>target</th><th>kills</th><th>bounty</th><th>poster</th><th>status</th><th>filled by</th><th>posted</th></tr></thead>
+      <thead><tr><th>#</th><th>target</th><th>kills</th><th>progress</th><th>bounty</th><th>poster</th><th>status</th><th>filled by</th><th>posted</th></tr></thead>
       <tbody id="commissions"></tbody>
     </table></div>
     <p class="empty" id="noCommissions" style="display:none">No commissions posted yet.</p>
@@ -1557,15 +1557,29 @@ function renderCraftHistory(hist) {
 function renderCommissions(commissions) {
   // Kill-commission board (owner commissions spec): additive snapshot key,
   // Quests-adjacent panel, sortable per the sort rule. Newest first.
+  // Progress column (#325): leader kills vs required + fixed-width bar.
+  const progFrac = c => {
+    const p = c.progress || {};
+    const req = p.required ?? c.required_kills ?? 0;
+    if (!req) return 0;
+    return Math.min(1, (p.kills ?? 0) / req);
+  };
   const rows = sortRows("commissions", commissions,
-    [c => c.id ?? 0, c => c.target || "", c => c.required_kills ?? 0,
+    [c => c.id ?? 0, c => c.target || "", c => c.required_kills ?? 0, progFrac,
      c => (c.reward_gold ?? 0) + (c.reward_xp ?? 0), c => c.poster || "",
      c => c.status === "open" ? 0 : 1, c => c.filled_by || "",
      c => c.created_ts ?? 0], 0, -1);
   setHTML("commissions", rows.map(c => {
     const open = c.status === "open";
+    const p = c.progress || {};
+    const req = p.required ?? c.required_kills ?? 0;
+    const got = Math.min(p.kills ?? 0, req);
+    const pct = Math.round(progFrac(c) * 100);
+    const bar = `<span class="hpbar"><i style="width:${pct}%"></i></span>`;
+    const who = p.leader ? ` ${esc(p.leader)}` : "";
     return `
     <tr><td><b>#${c.id}</b></td><td>${esc(c.target)}</td><td>${c.required_kills ?? 0}x</td>
+        <td><b>${got}/${req}</b> ${bar}${who}</td>
         <td>${c.reward_gold ?? 0}g + ${c.reward_xp ?? 0}xp</td>
         <td>${esc(c.poster || "")}</td>
         <td>${open ? `<span class="tag alive">open</span>` : `<span class="dim">${esc(c.status || "")}</span>`}</td>

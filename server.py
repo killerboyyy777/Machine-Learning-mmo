@@ -917,6 +917,33 @@ def record_npc_kill(name, npc_name):
     if len(tss) > COMMISSION_KILL_LOG_CAP:
         del tss[:-COMMISSION_KILL_LOG_CAP]
     mark_scores_dirty()
+    _attribute_commission_progress(name, key)
+
+
+def _attribute_commission_progress(name, npc_key):
+    """Credit one kill toward every open matching bounty (#325).
+
+    Display-only: fill-time verification (timestamps since posting)
+    stays authoritative. Same substring rule as verification, and the
+    poster's own kills never attribute (self-fills are rejected, so
+    counting them would show progress toward an unfillable bounty).
+    One kill credits every matching open bounty, mirroring verification
+    before timestamps are consumed. Bounded scan: open bounties only,
+    one dict probe each -- linear in open count, negligible next to the
+    combat and snapshot work already done per kill at bot counts.
+    """
+    hunter = (name or "").lower()
+    if not hunter or not npc_key:
+        return
+    for c in _commissions.values():
+        if c.get("status") != "open":
+            continue
+        if str(c.get("poster", "")).lower() == hunter:
+            continue
+        if str(c.get("target", "")).lower() not in npc_key:
+            continue
+        prog = c.setdefault("progress", {})
+        prog[hunter] = prog.get(hunter, 0) + 1
 
 
 def verified_npc_kills(name, target, since_ts):
@@ -2744,8 +2771,26 @@ async def cmd_commission_fill(player, msg):
         return
     # Consume the kills this fill uses: without this, one kill's timestamps
     # satisfy unlimited repeat fills of matching bounties.
-    consume_npc_kills(player.name, commission["target"], commission["created_ts"],
-                      commission["required_kills"])
+    consumed = consume_npc_kills(
+        player.name,
+        commission["target"],
+        commission["created_ts"],
+        commission["required_kills"],
+    )
+    # Sibling display sync: the same timestamps fed every same-target open
+    # bounty, so their shown progress just lost `consumed` verifiable
+    # kills. Floor at zero; fill-time verification stays authoritative.
+    if consumed:
+        _sib_frag = str(commission["target"] or "").lower()
+        _filler = player.name.lower()
+        for _sib in _commissions.values():
+            if _sib is commission or _sib.get("status") != "open":
+                continue
+            if str(_sib.get("target", "")).lower() != _sib_frag:
+                continue
+            _sp = _sib.setdefault("progress", {})
+            if _filler in _sp:
+                _sp[_filler] = max(0, _sp[_filler] - consumed)
     # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
     # Any escrow remainder (posted gold minus reduced payout) is sunk to the
     # treasury as an additional collusion deterrent.
@@ -2795,6 +2840,9 @@ async def cmd_commission_fill(player, msg):
         tax_treasury += remainder
         tax_collected_lifetime += remainder
     commission["status"] = "completed"
+    # Terminal rows keep no live counters: progress served its display
+    # purpose, and stale counts would over-read on any later view.
+    commission["progress"] = {}
     comm_feed_seq += 1
     comm_feed.append(
         {
@@ -2849,6 +2897,7 @@ async def cmd_commission_cancel(player, msg):
         await send(player, {"type": "error", "text": f"Only {commission['poster']} can cancel commission #{cid}."})
         return
     commission["status"] = "cancelled"
+    commission["progress"] = {}
     # Refund half of the actually-escrowed gold (credit_gold pays live
     # characters directly and banks it for offline ones). The forfeited
     # half is the cancellation fee: sink it to the treasury instead of
@@ -4211,19 +4260,39 @@ def _quest_snapshot():
     }
 
 
+def _commission_progress(c):
+    """Leader progress summary for one bounty (#325): most kills by any
+    single hunter plus the requirement. Display-only; fill-time
+    verification from kill timestamps stays authoritative. Snapshot
+    builders never mutate: the name resolves via a plain SCORES.get
+    (get_score_entry would mint entries as a read side effect). Ties
+    resolve to the earliest leader (dict insertion order)."""
+    prog = c.get("progress") or {}
+    required = c.get("required_kills", 0)
+    if not prog:
+        return {"leader": None, "kills": 0, "required": required}
+    leader = max(prog, key=lambda k: prog[k])
+    shown = SCORES.get(leader, {}).get("display_name", leader)
+    return {"leader": shown, "kills": prog[leader], "required": required}
+
+
 def _commission_snapshot():
     """Dashboard commissions board: open + closed bounties, newest first,
     capped (completed/cancelled records persist server-side, unbounded)."""
     cmds = sorted(_commissions.values(), key=lambda c: c.get("id", 0), reverse=True)[:100]
     return [
-        {"id": c.get("id"), "poster": c.get("poster", ""),
-         "target": c.get("target", ""),
-         "required_kills": c.get("required_kills", 0),
-         "reward_gold": c.get("reward_gold", 0),
-         "reward_xp": c.get("reward_xp", 0),
-         "status": c.get("status", "open"),
-         "filled_by": c.get("filled_by"),
-         "created_ts": c.get("created_ts", 0)}
+        {
+            "id": c.get("id"),
+            "poster": c.get("poster", ""),
+            "target": c.get("target", ""),
+            "required_kills": c.get("required_kills", 0),
+            "reward_gold": c.get("reward_gold", 0),
+            "reward_xp": c.get("reward_xp", 0),
+            "status": c.get("status", "open"),
+            "filled_by": c.get("filled_by"),
+            "created_ts": c.get("created_ts", 0),
+            "progress": _commission_progress(c),
+        }
         for c in cmds
     ]
 

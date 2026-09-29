@@ -95,9 +95,23 @@ for r in s["recipes"]:
 # --- commissions board (cap 100, newest first not required) ---
 assert isinstance(s["commissions"], list)
 for c in s["commissions"]:
-    need(c, {"id", "poster", "target", "required_kills", "reward_gold",
-             "reward_xp", "status", "filled_by", "created_ts"},
-         f"commission {c.get('id')}")
+    need(
+        c,
+        {
+            "id",
+            "poster",
+            "target",
+            "required_kills",
+            "reward_gold",
+            "reward_xp",
+            "status",
+            "filled_by",
+            "created_ts",
+            "progress",
+        },
+        f"commission {c.get('id')}",
+    )
+    need(c["progress"], {"leader", "kills", "required"}, "progress")
 assert len(s["commissions"]) <= 100, "commissions snapshot uncapped"
 
 # --- catalog datalists ---
