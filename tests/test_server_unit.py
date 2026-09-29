@@ -552,7 +552,7 @@ async def main():
     print("LEVEL_HEAL_OK")
 
     # --- Sheltered wealth counts toward the death penalty (#195.5) ---
-    shelter = mkplayer("Shelter", 60012)
+    shelter = mkplayer("Shelter", 60012, room="guild_hall")
     shelter.gold = 1000
     await srv.cmd_commission_post(shelter, {"target": "rat", "required_kills": 1,
                                             "reward_gold": 100, "reward_xp": 0})
@@ -762,23 +762,25 @@ async def main():
     print("GM_KICK_OK")
 
     # commissions: fill needs verified kills since posting, no self-dealing
-    poster = mkplayer("Poster", 40005)
+    poster = mkplayer("Poster", 40005, room="guild_hall")
     poster.gold = 100
     before_cids = set(srv._commissions)
     await srv.cmd_commission_post(poster, {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 5})
     cid = max(set(srv._commissions) - before_cids)
     assert poster.gold == 90  # escrow locked
-    filler = mkplayer("Filler", 40006, room="old_shop")
+    filler = mkplayer("Filler", 40006, room="guild_hall")
     await srv.cmd_commission_fill(filler, {"commission_id": cid})
     assert inbox[-1]["type"] == "error"  # no verified kills yet
     await srv.cmd_commission_fill(poster, {"commission_id": cid})
     assert inbox[-1]["type"] == "error"  # own bounty
+    filler.room = "old_shop"  # attacks are room-gated; the rat lives here
     for _ in range(40):
         if not srv.npcs["rat"]["alive"]:
             break
         filler.hp = filler.max_hp
         await srv.cmd_attack(filler, {"target": "rat"})
     assert not srv.npcs["rat"]["alive"]
+    filler.room = "guild_hall"  # fills are guild-gated
     assert srv.verified_npc_kills("Filler", "rat", 0) >= 1
     g0 = filler.gold
     s0 = srv.get_score_entry("Filler")["score"]
@@ -790,8 +792,106 @@ async def main():
     unplayer(filler)
     print("COMMISSION_VERIFY_OK")
 
+    # --- Guild presence gates post/fill, list stays global ---
+    gate_out = mkplayer("GateOut", 63001, room="town_square")
+    gate_out.gold = 500
+    await srv.cmd_commission_post(gate_out, {"target": "rat", "required_kills": 1,
+                                             "reward_gold": 10, "reward_xp": 0})
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    assert "artisan row" in inbox[-1]["text"].lower(), inbox[-1]
+    gate_in = mkplayer("GateIn", 63002, room="guild_hall")
+    gate_in.gold = 500
+    _g_before = set(srv._commissions)
+    await srv.cmd_commission_post(gate_in, {"target": "rat", "required_kills": 1,
+                                            "reward_gold": 10, "reward_xp": 0})
+    gcid = max(set(srv._commissions) - _g_before)
+    assert srv._commissions[gcid]["status"] == "open"
+    await srv.cmd_commission_fill(gate_out, {"commission_id": gcid})
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    assert "artisan row" in inbox[-1]["text"].lower(), inbox[-1]
+    await srv.cmd_commission_list(gate_out, {})
+    assert inbox[-1]["type"] != "error", inbox[-1]
+    await srv.cmd_commission_cancel(gate_in, {"commission_id": gcid})
+    unplayer(gate_out)
+    unplayer(gate_in)
+    print("GUILD_GATE_OK")
+
+    # --- Standing-bounty tick posts from the treasury ---
+    _t_saved = srv.tax_treasury
+    _th_saved = srv.BOUNTY_OVERPOP_THRESHOLD
+    _tick_saved = srv._last_standing_tick
+    _spike_saved = srv.BOUNTY_PRICESPIKE_ENABLED
+    _und_saved = srv.BOUNTY_UNDELVED_ENABLED
+    srv.tax_treasury = 940.0
+    srv.BOUNTY_OVERPOP_THRESHOLD = 0  # any hostile template triggers
+    srv.BOUNTY_PRICESPIKE_ENABLED = False
+    srv.BOUNTY_UNDELVED_ENABLED = False
+    srv._last_standing_tick = 0.0
+    _s_before = [c for c in srv._commissions.values()
+                 if str(c.get("standing") or "").startswith("overpop") and c["status"] == "open"]
+    srv.tick_standing_bounties(time.time())
+    _s_after = [c for c in srv._commissions.values()
+                if str(c.get("standing") or "").startswith("overpop") and c["status"] == "open"]
+    _s_new = [c for c in _s_after if c not in _s_before]
+    assert len(_s_new) >= 1, len(_s_new)
+    assert all(c["poster"] == srv.GUILD_POSTER for c in _s_new)
+    assert all({"id", "target", "required_kills", "reward_gold", "reward_xp",
+                "escrow", "status", "created_ts"} <= set(c) for c in _s_new)
+    assert srv.tax_treasury == 940.0 - sum(c["escrow"] for c in _s_new)
+    for c in _s_new:
+        srv._standing_expire(c, time.time())  # refund, keep rows tidy
+    assert srv.tax_treasury == 940.0
+    srv.tax_treasury = _t_saved
+    srv.BOUNTY_OVERPOP_THRESHOLD = _th_saved
+    srv.BOUNTY_PRICESPIKE_ENABLED = _spike_saved
+    srv.BOUNTY_UNDELVED_ENABLED = _und_saved
+    srv._last_standing_tick = _tick_saved
+    print("GUILD_TICK_OK")
+
+    # --- Standing-bounty post/expiry helpers conserve the treasury ---
+    _t2_saved = srv.tax_treasury
+    srv.tax_treasury = 940.0
+    assert srv._standing_post("overpop", "rat", 3, 24, 30, time.time()) is True
+    assert srv.tax_treasury == 916.0  # earmarked at post
+    _scid = max(srv._commissions)
+    srv.tax_treasury = 5.0
+    assert srv._standing_post("overpop", "rat", 3, 24, 30, time.time()) is False
+    assert srv.tax_treasury == 5.0  # coverage refusal: never overdraw
+    srv.tax_treasury = 916.0
+    srv._standing_expire(srv._commissions[_scid], time.time())
+    assert srv._commissions[_scid]["status"] == "expired"
+    assert srv.tax_treasury == 940.0  # refunded
+    srv.tax_treasury = _t2_saved
+    print("GUILD_EXPIRE_OK")
+
+    # --- Standing-bounty post-time name validation (regular-post parity) ---
+    _t2b_saved = srv.tax_treasury
+    srv.tax_treasury = 940.0
+    assert srv._standing_post("undelved", "Bogus Beast Xyz", 3, 24, 30, time.time()) is False
+    assert srv.tax_treasury == 940.0  # unfillable target: nothing earmarked
+    srv.tax_treasury = _t2b_saved
+    print("GUILD_VALIDATE_OK")
+
+    # --- Guild fills skip collusion tracking and pay full escrow ---
+    _t3_saved = srv.tax_treasury
+    srv.tax_treasury = 940.0
+    assert srv._standing_post("overpop", "rat", 1, 100, 0, time.time()) is True
+    _gcid2 = max(srv._commissions)
+    gfill = mkplayer("GuildFill", 63003, room="guild_hall")
+    srv.record_npc_kill("GuildFill", "Giant Rat")
+    _g0 = gfill.gold
+    await srv.cmd_commission_fill(gfill, {"commission_id": _gcid2})
+    assert srv._commissions[_gcid2]["status"] == "completed"
+    assert gfill.gold - _g0 == 100  # full escrow, mult 1.0
+    _gentry = srv.SCORES.get(srv.GUILD_POSTER, {})
+    assert "GuildFill".lower() not in _gentry.get("collab_fills", {}), \
+        _gentry.get("collab_fills")
+    srv.tax_treasury = _t3_saved
+    unplayer(gfill)
+    print("FILL_COLLAB_OK")
+
     # --- Commission cancel: poster cancels, half refund ---
-    canposter = mkplayer("CanPoster", 40020)
+    canposter = mkplayer("CanPoster", 40020, room="guild_hall")
     canposter.gold = 200
     before_cids = set(srv._commissions)
     await srv.cmd_commission_post(canposter, {"target": "wolf", "required_kills": 1, "reward_gold": 100, "reward_xp": 0})
@@ -828,14 +928,14 @@ async def main():
     await srv.respawn_player(broke)
     assert srv.get_score_entry("Broke")["score"] == 95.0
     assert broke.gold == 0
-    rich = mkplayer("Rich", 40008, room="market")
+    rich = mkplayer("Rich", 40008, room="guild_hall")
     srv.get_score_entry("Rich")["score"] = 1000.0
     rich.gold = 1000
     await srv.respawn_player(rich)
     # 400 dropped as floor pile + 100 vanished -> penalty 5 + 0.1*500 = 55
     assert srv.get_score_entry("Rich")["score"] == 945.0
     assert rich.gold == 500
-    assert srv.room_gold.get("market", 0) >= 400
+    assert srv.room_gold.get("guild_hall", 0) >= 400
     assert rich.room == "town_square"
     unplayer(broke)
     unplayer(rich)
@@ -1177,7 +1277,7 @@ async def main():
     print("BID_EXPIRE_OK")
 
     # commission XP cap + kill consumption (#189)
-    rich = mkplayer("RichPoster", 50003)
+    rich = mkplayer("RichPoster", 50003, room="guild_hall")
     rich.gold = 1000000
     await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
                                          "reward_gold": 10, "reward_xp": 999999})
@@ -1192,7 +1292,7 @@ async def main():
     await srv.cmd_commission_post(rich, {"target": "rat", "required_kills": 1,
                                          "reward_gold": 10, "reward_xp": 5})
     cid_b = max(set(srv._commissions) - before)
-    killer = mkplayer("Killer", 50004, room="old_shop")
+    killer = mkplayer("Killer", 50004, room="guild_hall")
     # kill recorded AFTER both postings, so both bounties can see it --
     # the first fill must consume it, leaving the second one empty
     srv.record_npc_kill("Killer", "Giant Rat")
@@ -1209,7 +1309,7 @@ async def main():
 
     # impossible-bounty escrow lock: kill counts no session could reach are
     # rejected before any escrow is taken (open bounties are never pruned)
-    cap_poster = mkplayer("CapPoster", 50006)
+    cap_poster = mkplayer("CapPoster", 50006, room="guild_hall")
     cap_poster.gold = 1000000
     n_comms = len(srv._commissions)
     await srv.cmd_commission_post(cap_poster, {"target": "rat", "required_kills": srv.COMMISSION_MAX_KILLS + 1,
@@ -1228,12 +1328,12 @@ async def main():
 
     # case-variant self-deal: score entries are shared across case variants,
     # so "CaseAlice"/"casealice" are one economic actor everywhere
-    calice = mkplayer("CaseAlice", 50007)
+    calice = mkplayer("CaseAlice", 50007, room="guild_hall")
     calice.gold = 1000
     await srv.cmd_commission_post(calice, {"target": "rat", "required_kills": 1,
                                            "reward_gold": 100, "reward_xp": 10})
     cid_case = max(srv._commissions)
-    calice_lower = mkplayer("casealice", 50008)
+    calice_lower = mkplayer("casealice", 50008, room="guild_hall")
     srv.record_npc_kill("casealice", "Giant Rat")
     await srv.cmd_commission_fill(calice_lower, {"commission_id": cid_case})
     assert inbox[-1]["type"] == "error" and "own commission" in inbox[-1]["text"], inbox[-1]
@@ -1260,7 +1360,7 @@ async def main():
     t_saved = (srv.tax_treasury, srv.tax_collected_lifetime)
     srv.tax_treasury = 0.0
     srv.tax_collected_lifetime = 0.0
-    zposter = mkplayer("ZeroPoster", 50009)
+    zposter = mkplayer("ZeroPoster", 50009, room="guild_hall")
     zposter.gold = 1000
     zentry = srv.get_score_entry("ZeroPoster")
     zscore0, zxp0 = zentry["score"], zentry["xp"]
@@ -1278,7 +1378,7 @@ async def main():
         "required_kills": 1, "reward_gold": 0, "reward_xp": 0, "escrow": 0,
         "status": "open", "created_ts": time.time() - 1,
     }
-    zfill = mkplayer("ZeroFiller", 50010)
+    zfill = mkplayer("ZeroFiller", 50010, room="guild_hall")
     zfill_gold0 = zfill.gold
     zfentry = srv.get_score_entry("ZeroFiller")
     zfscore0 = zfentry["score"]
@@ -1295,9 +1395,9 @@ async def main():
     assert srv.tax_treasury == 0.0
     # repeat-pair collusion: first fill full (no remainder), second fill
     # halved with the other half sunk to the treasury
-    tposter = mkplayer("TreasPoster", 50011)
+    tposter = mkplayer("TreasPoster", 50011, room="guild_hall")
     tposter.gold = 100000
-    tfill = mkplayer("TreasFiller", 50012)
+    tfill = mkplayer("TreasFiller", 50012, room="guild_hall")
     tfill_gold0 = tfill.gold
     for round_ in (1, 2):
         await srv.cmd_commission_post(tposter, {"target": "rat", "required_kills": 1,
@@ -1358,7 +1458,7 @@ async def main():
 
     # per-poster open cap, market/invite TTL sweeps, collusion cap (#192.2)
     t_saved2 = (srv.tax_treasury, srv.tax_collected_lifetime)
-    capper = mkplayer("OpenCapper", 50022)
+    capper = mkplayer("OpenCapper", 50022, room="guild_hall")
     capper.gold = 100000
     inbox.clear()
     for _ in range(srv.COMMISSION_MAX_OPEN_PER_POSTER):
@@ -1508,14 +1608,14 @@ async def main():
     print("PARTY_SWITCH_LEADER_OK")
 
     # collusion cap: seeded history evicts least-frequent first, keeps newcomer
-    clposter = mkplayer("CollabPoster", 50026)
+    clposter = mkplayer("CollabPoster", 50026, room="guild_hall")
     clposter.gold = 100000
     clentry = srv.get_score_entry("CollabPoster")
     clentry["collab_fills"] = {f"filler{i}": 1 for i in range(srv.COMMISSION_COLLAB_CAP)}
     await srv.cmd_commission_post(clposter, {"target": "rat", "required_kills": 1,
                                              "reward_gold": 10, "reward_xp": 0})
     cid_cl = max(srv._commissions)
-    clfiller = mkplayer("CollabNew", 50027)
+    clfiller = mkplayer("CollabNew", 50027, room="guild_hall")
     srv.record_npc_kill("CollabNew", "Giant Rat")
     await srv.cmd_commission_fill(clfiller, {"commission_id": cid_cl})
     assert srv._commissions[cid_cl]["status"] == "completed"
@@ -1987,7 +2087,7 @@ async def main():
     # (3) id-only bounty targets rejected: fills credit the name-keyed
     # kill log, so "healer" (id of "Sister Maren") could never fill and
     # would lock escrow forever (#373)
-    idposter = mkplayer("IdPoster", 61002)
+    idposter = mkplayer("IdPoster", 61002, room="guild_hall")
     idposter.gold = 500
     _n_before = len(srv._commissions)
     await srv.cmd_commission_post(
@@ -2140,9 +2240,9 @@ async def main():
 
     # collusion eviction is least-recently-seen: a high-count stale filler
     # is evicted before a low-count recent one (old code did the reverse)
-    _lru_poster = mkplayer("LruPoster", 62007)
+    _lru_poster = mkplayer("LruPoster", 62007, room="guild_hall")
     _lru_poster.gold = 1000000
-    _stale = mkplayer("LruStale", 62008)
+    _stale = mkplayer("LruStale", 62008, room="guild_hall")
     await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
                                                 "reward_gold": 10, "reward_xp": 0})
     _cid0 = max(srv._commissions)
@@ -2150,7 +2250,7 @@ async def main():
     await srv.cmd_commission_fill(_stale, {"commission_id": _cid0})
     assert srv._commissions[_cid0]["status"] == "completed"
     for _i in range(srv.COMMISSION_COLLAB_CAP - 1):
-        _f = mkplayer(f"LruF{_i}", 62100 + _i)
+        _f = mkplayer(f"LruF{_i}", 62100 + _i, room="guild_hall")
         await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
                                                     "reward_gold": 10, "reward_xp": 0})
         _c = max(srv._commissions)
@@ -2163,7 +2263,7 @@ async def main():
     for _k in list(_collab):
         _pentry.setdefault("collab_seen", {})[_k] = 2.0
     _pentry["collab_seen"]["lrustale"] = 1.0
-    _fresh = mkplayer("LruFresh", 62300)
+    _fresh = mkplayer("LruFresh", 62300, room="guild_hall")
     await srv.cmd_commission_post(_lru_poster, {"target": "rat", "required_kills": 1,
                                                 "reward_gold": 10, "reward_xp": 0})
     _cf = max(srv._commissions)
@@ -2411,9 +2511,9 @@ async def main():
     assert _ce["name"] == "HistCrafter" and _ce["result"] == "arrow", _ce
     assert _ce["seq"] == _cs0 + 1, _ce
     unplayer(_crafter)
-    _hp = mkplayer("HistPoster", 64002)
+    _hp = mkplayer("HistPoster", 64002, room="guild_hall")
     _hp.gold = 1000
-    _hf = mkplayer("HistFiller", 64003)
+    _hf = mkplayer("HistFiller", 64003, room="guild_hall")
     # seq continuity, not absolute length: the ring trims at COMM_FEED_SIZE
     _cs0 = srv.comm_feed[-1]["seq"] if srv.comm_feed else 0
     await srv.cmd_commission_post(_hp, {"target": "rat", "required_kills": 1,
@@ -2444,7 +2544,7 @@ async def main():
     assert len(srv.craft_feed) == srv.CRAFT_FEED_SIZE, len(srv.craft_feed)
     assert srv.craft_feed[-1]["seq"] - srv.craft_feed[0]["seq"] + 1 == len(srv.craft_feed)
     unplayer(_trimmer)
-    _tcp = mkplayer("TrimPoster", 64005)
+    _tcp = mkplayer("TrimPoster", 64005, room="guild_hall")
     _tcp.gold = 100000
     for _i in range(105):
         await srv.cmd_commission_post(_tcp, {"target": "rat", "required_kills": 1,
@@ -2464,9 +2564,9 @@ async def main():
     print("RING_TRIM_OK")
 
     # failure paths append nothing and bump no seq
-    _fp = mkplayer("FailPoster", 64006)
+    _fp = mkplayer("FailPoster", 64006, room="guild_hall")
     _fp.gold = 1000
-    _ff = mkplayer("FailFiller", 64007)
+    _ff = mkplayer("FailFiller", 64007, room="guild_hall")
     _s0 = srv.comm_feed[-1]["seq"]
     await srv.cmd_craft(_fp, {"recipe": "no_such_recipe"})
     _fp.inventory = []
@@ -2587,13 +2687,13 @@ async def main():
 
     # kill-progress attribution (#325): per-hunter counts on open
     # bounties, poster kills excluded, display-only (fill verifies)
-    _kp = mkplayer("KpPoster", 65001)
+    _kp = mkplayer("KpPoster", 65001, room="guild_hall")
     _kp.gold = 1000
     await srv.cmd_commission_post(_kp, {"target": "rat", "required_kills": 3,
                                         "reward_gold": 10, "reward_xp": 0})
     _kcid = max(srv._commissions)
-    _kh1 = mkplayer("KpHunt1", 65002)
-    _kh2 = mkplayer("KpHunt2", 65003)
+    _kh1 = mkplayer("KpHunt1", 65002, room="guild_hall")
+    _kh2 = mkplayer("KpHunt2", 65003, room="guild_hall")
     srv.record_npc_kill("KpHunt1", "Giant Rat")
     srv.record_npc_kill("KpHunt1", "Giant Rat")
     srv.record_npc_kill("KpPoster", "Giant Rat")  # self kills never attribute
@@ -2616,7 +2716,7 @@ async def main():
 
     # progress sync: terminal rows clear; sibling open rows shed exactly
     # what the fill consumed; snapshots never mutate SCORES
-    _sp = mkplayer("SyncPoster", 65101)
+    _sp = mkplayer("SyncPoster", 65101, room="guild_hall")
     _sp.gold = 100000
     await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 2,
                                         "reward_gold": 10, "reward_xp": 0})
@@ -2624,7 +2724,7 @@ async def main():
     await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 5,
                                         "reward_gold": 10, "reward_xp": 0})
     _sb = max(srv._commissions)
-    _sh = mkplayer("SyncHunt", 65102)
+    _sh = mkplayer("SyncHunt", 65102, room="guild_hall")
     for _ in range(3):
         srv.record_npc_kill("SyncHunt", "Giant Rat")
     assert srv._commissions[_sa]["progress"].get("synchunt") == 3
@@ -2641,5 +2741,37 @@ async def main():
     unplayer(_sp)
     unplayer(_sh)
     print("PROGRESS_SYNC_OK")
+
+    # guild standing integrity: poster name reserved, player cancels
+    # refused, list reads mint nothing
+    _gl = srv.Player(ws=FakeWS(), id=66001, name="", logged_in=False)
+    await srv.cmd_login(_gl, {"name": "Adventurers Guild"})
+    assert inbox[-1]["type"] == "error" and "reserved" in inbox[-1]["text"], inbox[-1]
+    assert not _gl.logged_in
+    await srv.cmd_login(_gl, {"name": "adventurers guild"})
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    srv.remove_member(_gl)
+    _gt = srv.tax_treasury
+    srv.tax_treasury = 100000.0
+    assert srv._standing_post("test_fam", "rat", 1, 10, 0, time.time()) is True
+    _gcid = max(srv._commissions)
+    _gp = mkplayer("GuildProber", 66002)
+    inbox.clear()
+    await srv.cmd_commission_cancel(_gp, {"commission_id": _gcid})
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    assert "standing" in inbox[-1]["text"].lower(), inbox[-1]
+    assert srv._commissions[_gcid]["status"] == "open"
+    _keys0 = set(srv.SCORES)
+    await srv.cmd_commission_list(_gp, {})
+    _new = set(srv.SCORES) - _keys0
+    # Only the viewer's own entry may appear (every command ends with
+    # stats_view); no third-party mint, esp. not the guild poster name.
+    assert _new <= {"guildprober"}, _new
+    assert "adventurers guild" not in srv.SCORES
+    srv._standing_expire(srv._commissions[_gcid], time.time())
+    assert srv._commissions[_gcid]["status"] == "expired"
+    srv.tax_treasury = _gt
+    unplayer(_gp)
+    print("GUILD_STANDING_OK")
 
 asyncio.run(main())

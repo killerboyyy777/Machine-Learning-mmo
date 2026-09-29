@@ -80,7 +80,13 @@
       "name": "Artisan Row",
       "description": "Workshops hum along this narrow street. Hammers ring and leather stretches.",
       "shelter": false,
-      "exits": {"east": "market", "west": "tannery", "north": "smithy"}
+      "exits": {"east": "market", "west": "tannery", "north": "smithy", "south": "guild_hall"}
+    },
+    "guild_hall": {
+      "name": "Adventurers Guild Hall",
+      "description": "A high timber hall hung with monster trophies and contract boards. Guild clerks stamp bounties for any hunter brave enough to sign. Post and fill contracts here.",
+      "shelter": true,
+      "exits": {"north": "artisan_row"}
     },
     "tannery": {
       "name": "Tannery",
@@ -227,6 +233,18 @@
     "healer": {
       "name": "Sister Maren",
       "room": "healing_spring",
+      "hp": 40,
+      "max_hp": 40,
+      "attack": 0,
+      "hostile": false,
+      "behavior": "idle",
+      "loot": [],
+      "gold": 0,
+      "respawn_seconds": 30
+    },
+    "guildmaster": {
+      "name": "Guildmaster",
+      "room": "guild_hall",
       "hp": 40,
       "max_hp": 40,
       "attack": 0,
