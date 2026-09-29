@@ -2585,4 +2585,33 @@ async def main():
     unplayer(_ep)
     print("EQUIP_USE_GHOST_OK")
 
+    # kill-progress attribution (#325): per-hunter counts on open
+    # bounties, poster kills excluded, display-only (fill verifies)
+    _kp = mkplayer("KpPoster", 65001)
+    _kp.gold = 1000
+    await srv.cmd_commission_post(_kp, {"target": "rat", "required_kills": 3,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _kcid = max(srv._commissions)
+    _kh1 = mkplayer("KpHunt1", 65002)
+    _kh2 = mkplayer("KpHunt2", 65003)
+    srv.record_npc_kill("KpHunt1", "Giant Rat")
+    srv.record_npc_kill("KpHunt1", "Giant Rat")
+    srv.record_npc_kill("KpPoster", "Giant Rat")  # self kills never attribute
+    srv.record_npc_kill("KpHunt2", "Giant Rat")
+    _kprog = srv._commissions[_kcid].get("progress", {})
+    assert _kprog.get("kphunt1") == 2, _kprog
+    assert _kprog.get("kphunt2") == 1, _kprog
+    assert "kpposter" not in _kprog, _kprog
+    _ksnap = next(c for c in srv._commission_snapshot() if c["id"] == _kcid)
+    assert _ksnap["progress"]["kills"] == 2, _ksnap["progress"]
+    assert _ksnap["progress"]["required"] == 3, _ksnap["progress"]
+    assert _ksnap["progress"]["leader"] == "KpHunt1", _ksnap["progress"]
+    srv.record_npc_kill("KpHunt1", "Giant Rat")
+    await srv.cmd_commission_fill(_kh1, {"commission_id": _kcid})
+    assert srv._commissions[_kcid]["status"] == "completed"
+    unplayer(_kp)
+    unplayer(_kh1)
+    unplayer(_kh2)
+    print("KILL_PROGRESS_OK")
+
 asyncio.run(main())

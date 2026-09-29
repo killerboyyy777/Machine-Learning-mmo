@@ -893,6 +893,31 @@ def record_npc_kill(name, npc_name):
     if len(tss) > COMMISSION_KILL_LOG_CAP:
         del tss[:-COMMISSION_KILL_LOG_CAP]
     mark_scores_dirty()
+    _attribute_commission_progress(name, key)
+
+
+def _attribute_commission_progress(name, npc_key):
+    """Credit one kill toward every open matching bounty (#325).
+
+    Display-only: fill-time verification (timestamps since posting)
+    stays authoritative. Same substring rule as verification, and the
+    poster's own kills never attribute (self-fills are rejected, so
+    counting them would show progress toward an unfillable bounty).
+    One kill credits every matching open bounty, mirroring verification
+    before timestamps are consumed. Bounded scan: open bounties only.
+    """
+    hunter = (name or "").lower()
+    if not hunter or not npc_key:
+        return
+    for c in _commissions.values():
+        if c.get("status") != "open":
+            continue
+        if str(c.get("poster", "")).lower() == hunter:
+            continue
+        if str(c.get("target", "")).lower() not in npc_key:
+            continue
+        prog = c.setdefault("progress", {})
+        prog[hunter] = prog.get(hunter, 0) + 1
 
 
 def verified_npc_kills(name, target, since_ts):
@@ -4175,6 +4200,19 @@ def _quest_snapshot():
     }
 
 
+def _commission_progress(c):
+    """Leader progress summary for one bounty (#325): most kills by any
+    single hunter plus the requirement. Display-only; fill-time
+    verification from kill timestamps stays authoritative."""
+    prog = c.get("progress") or {}
+    required = c.get("required_kills", 0)
+    if not prog:
+        return {"leader": None, "kills": 0, "required": required}
+    leader = max(prog, key=lambda k: prog[k])
+    shown = get_score_entry(leader).get("display_name", leader)
+    return {"leader": shown, "kills": prog[leader], "required": required}
+
+
 def _commission_snapshot():
     """Dashboard commissions board: open + closed bounties, newest first,
     capped (completed/cancelled records persist server-side, unbounded)."""
@@ -4187,7 +4225,8 @@ def _commission_snapshot():
          "reward_xp": c.get("reward_xp", 0),
          "status": c.get("status", "open"),
          "filled_by": c.get("filled_by"),
-         "created_ts": c.get("created_ts", 0)}
+         "created_ts": c.get("created_ts", 0),
+         "progress": _commission_progress(c)}
         for c in cmds
     ]
 
