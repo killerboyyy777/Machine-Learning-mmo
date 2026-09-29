@@ -2614,4 +2614,32 @@ async def main():
     unplayer(_kh2)
     print("KILL_PROGRESS_OK")
 
+    # progress sync: terminal rows clear; sibling open rows shed exactly
+    # what the fill consumed; snapshots never mutate SCORES
+    _sp = mkplayer("SyncPoster", 65101)
+    _sp.gold = 100000
+    await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 2,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _sa = max(srv._commissions)
+    await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 5,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _sb = max(srv._commissions)
+    _sh = mkplayer("SyncHunt", 65102)
+    for _ in range(3):
+        srv.record_npc_kill("SyncHunt", "Giant Rat")
+    assert srv._commissions[_sa]["progress"].get("synchunt") == 3
+    assert srv._commissions[_sb]["progress"].get("synchunt") == 3
+    await srv.cmd_commission_fill(_sh, {"commission_id": _sa})
+    assert srv._commissions[_sa]["status"] == "completed"
+    assert srv._commissions[_sa].get("progress") == {}
+    assert srv._commissions[_sb]["progress"].get("synchunt") == 1, srv._commissions[_sb]
+    await srv.cmd_commission_cancel(_sp, {"commission_id": _sb})
+    assert srv._commissions[_sb].get("progress") == {}
+    _keys0 = set(srv.SCORES)
+    srv.world_snapshot()
+    assert set(srv.SCORES) == _keys0, "snapshot minted score entries"
+    unplayer(_sp)
+    unplayer(_sh)
+    print("PROGRESS_SYNC_OK")
+
 asyncio.run(main())
