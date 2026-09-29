@@ -2609,8 +2609,8 @@ async def cmd_craft(player, msg):
     entry.setdefault("crafts_tier", {}).setdefault(recipe.get("tier", 0), 0)
     entry["crafts_tier"][recipe.get("tier", 0)] += 1
     mark_scores_dirty()
-    await award_points(player, 8, f"crafted {ITEM_DEFS[result]['name']}")
-    await award_xp(player.name, 8, f"crafted {ITEM_DEFS[result]['name']}")
+    await award_points(player, 8, f"crafted {result_name}")
+    await award_xp(player.name, 8, f"crafted {result_name}")
     craft_feed_seq += 1
     craft_feed.append(
         {

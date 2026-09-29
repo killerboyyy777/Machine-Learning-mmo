@@ -2774,4 +2774,22 @@ async def main():
     unplayer(_gp)
     print("GUILD_STANDING_OK")
 
+    # unregistered craft results degrade to raw ids, never KeyError
+    # (ported from #411; dynamic results can precede ITEM_DEFS registration)
+    assert "ghost_zzz_result" not in srv.ITEM_DEFS
+    srv.RECIPES["ghost_zzz_recipe"] = {
+        "inputs": {"iron_ore": 1},
+        "result": "ghost_zzz_result",
+    }
+    _cp = mkplayer("CraftGhost", 67001)
+    _cp.inventory = ["iron_ore"]
+    inbox.clear()
+    await srv.cmd_craft(_cp, {"recipe": "ghost_zzz_recipe"})
+    assert "ghost_zzz_result" in _cp.inventory
+    assert any("ghost_zzz_result" in m.get("text", "") for m in inbox), inbox[-3:]
+    del srv.RECIPES["ghost_zzz_recipe"]
+    _cp.inventory = []
+    unplayer(_cp)
+    print("CRAFT_GHOST_OK")
+
 asyncio.run(main())
