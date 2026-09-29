@@ -2742,4 +2742,36 @@ async def main():
     unplayer(_sh)
     print("PROGRESS_SYNC_OK")
 
+    # guild standing integrity: poster name reserved, player cancels
+    # refused, list reads mint nothing
+    _gl = srv.Player(ws=FakeWS(), id=66001, name="", logged_in=False)
+    await srv.cmd_login(_gl, {"name": "Adventurers Guild"})
+    assert inbox[-1]["type"] == "error" and "reserved" in inbox[-1]["text"], inbox[-1]
+    assert not _gl.logged_in
+    await srv.cmd_login(_gl, {"name": "adventurers guild"})
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    srv.remove_member(_gl)
+    _gt = srv.tax_treasury
+    srv.tax_treasury = 100000.0
+    assert srv._standing_post("test_fam", "rat", 1, 10, 0, time.time()) is True
+    _gcid = max(srv._commissions)
+    _gp = mkplayer("GuildProber", 66002)
+    inbox.clear()
+    await srv.cmd_commission_cancel(_gp, {"commission_id": _gcid})
+    assert inbox[-1]["type"] == "error", inbox[-1]
+    assert "standing" in inbox[-1]["text"].lower(), inbox[-1]
+    assert srv._commissions[_gcid]["status"] == "open"
+    _keys0 = set(srv.SCORES)
+    await srv.cmd_commission_list(_gp, {})
+    _new = set(srv.SCORES) - _keys0
+    # Only the viewer's own entry may appear (every command ends with
+    # stats_view); no third-party mint, esp. not the guild poster name.
+    assert _new <= {"guildprober"}, _new
+    assert "adventurers guild" not in srv.SCORES
+    srv._standing_expire(srv._commissions[_gcid], time.time())
+    assert srv._commissions[_gcid]["status"] == "expired"
+    srv.tax_treasury = _gt
+    unplayer(_gp)
+    print("GUILD_STANDING_OK")
+
 asyncio.run(main())

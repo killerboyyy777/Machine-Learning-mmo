@@ -2030,6 +2030,11 @@ async def cmd_login(player, msg):
     if not name:
         await send(player, {"type": "error", "text": "login requires a 'name'"})
         return
+    if name.lower() == GUILD_POSTER.lower():
+        # Reserved for world-posted standing bounties: a player behind
+        # this name could cancel them and collect poster-side effects.
+        await send(player, {"type": "error", "text": f"The name '{name}' is reserved."})
+        return
     if player.logged_in:
         await send(player, {"type": "error", "text": f"Already logged in as {player.name}. Use a fresh connection to switch."})
         return
@@ -2723,7 +2728,11 @@ async def cmd_commission_list(player, msg):
         return
     lines = []
     for c in open_cmds:
-        mult = collusion_multiplier(c["poster"], player.name)
+        # Standing rows skip collusion like fills do (mult 1.0): this also
+        # keeps the read path from minting a score entry for the guild name.
+        mult = (
+            1.0 if c.get("standing") else collusion_multiplier(c["poster"], player.name)
+        )
         # Same 0-guard as the fill path: a 0g offer lists as 0g, never 1g.
         eg = max(1, int(c["reward_gold"] * mult)) if c["reward_gold"] > 0 else 0
         ex = max(0, int(c["reward_xp"] * mult))
@@ -2794,9 +2803,14 @@ async def cmd_commission_fill(player, msg):
     # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
     # Any escrow remainder (posted gold minus reduced payout) is sunk to the
     # treasury as an additional collusion deterrent.
-    mult = collusion_multiplier(commission["poster"], player.name)
-    if commission.get("poster") == GUILD_POSTER:
-        mult = 1.0  # standing guild bounties never penalize repeat fillers
+    # Standing rows skip collusion like the list path does (mult 1.0):
+    # calling the multiplier would mint a score entry for the guild
+    # name as a read side effect. Guild fills never penalize repeat
+    # fillers.
+    if commission.get("standing"):
+        mult = 1.0
+    else:
+        mult = collusion_multiplier(commission["poster"], player.name)
     # The max(1, ...) floors keep collusion-discounted payouts from
     # feel-bad zeroing -- but ONLY when the bounty actually offers that
     # reward. A 0g/0xp bounty must pay 0, not mint 1g/1xp from nothing
@@ -2889,6 +2903,18 @@ async def cmd_commission_cancel(player, msg):
         return
     if commission["status"] != "open":
         await send(player, {"type": "error", "text": f"Commission #{cid} is already {commission['status']} and cannot be cancelled."})
+        return
+    # Standing bounties belong to the world: players can neither post
+    # as the guild (name reserved at login) nor cancel its listings;
+    # only expiry ends them.
+    if commission.get("standing"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Commission #{cid} is a standing guild bounty and cannot be cancelled.",
+            },
+        )
         return
     # Only the poster may cancel: otherwise anyone could grief bounties and
     # force the poster to forfeit half their escrow for nothing.
