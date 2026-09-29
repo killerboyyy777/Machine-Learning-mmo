@@ -2585,4 +2585,61 @@ async def main():
     unplayer(_ep)
     print("EQUIP_USE_GHOST_OK")
 
+    # kill-progress attribution (#325): per-hunter counts on open
+    # bounties, poster kills excluded, display-only (fill verifies)
+    _kp = mkplayer("KpPoster", 65001)
+    _kp.gold = 1000
+    await srv.cmd_commission_post(_kp, {"target": "rat", "required_kills": 3,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _kcid = max(srv._commissions)
+    _kh1 = mkplayer("KpHunt1", 65002)
+    _kh2 = mkplayer("KpHunt2", 65003)
+    srv.record_npc_kill("KpHunt1", "Giant Rat")
+    srv.record_npc_kill("KpHunt1", "Giant Rat")
+    srv.record_npc_kill("KpPoster", "Giant Rat")  # self kills never attribute
+    srv.record_npc_kill("KpHunt2", "Giant Rat")
+    _kprog = srv._commissions[_kcid].get("progress", {})
+    assert _kprog.get("kphunt1") == 2, _kprog
+    assert _kprog.get("kphunt2") == 1, _kprog
+    assert "kpposter" not in _kprog, _kprog
+    _ksnap = next(c for c in srv._commission_snapshot() if c["id"] == _kcid)
+    assert _ksnap["progress"]["kills"] == 2, _ksnap["progress"]
+    assert _ksnap["progress"]["required"] == 3, _ksnap["progress"]
+    assert _ksnap["progress"]["leader"] == "KpHunt1", _ksnap["progress"]
+    srv.record_npc_kill("KpHunt1", "Giant Rat")
+    await srv.cmd_commission_fill(_kh1, {"commission_id": _kcid})
+    assert srv._commissions[_kcid]["status"] == "completed"
+    unplayer(_kp)
+    unplayer(_kh1)
+    unplayer(_kh2)
+    print("KILL_PROGRESS_OK")
+
+    # progress sync: terminal rows clear; sibling open rows shed exactly
+    # what the fill consumed; snapshots never mutate SCORES
+    _sp = mkplayer("SyncPoster", 65101)
+    _sp.gold = 100000
+    await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 2,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _sa = max(srv._commissions)
+    await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 5,
+                                        "reward_gold": 10, "reward_xp": 0})
+    _sb = max(srv._commissions)
+    _sh = mkplayer("SyncHunt", 65102)
+    for _ in range(3):
+        srv.record_npc_kill("SyncHunt", "Giant Rat")
+    assert srv._commissions[_sa]["progress"].get("synchunt") == 3
+    assert srv._commissions[_sb]["progress"].get("synchunt") == 3
+    await srv.cmd_commission_fill(_sh, {"commission_id": _sa})
+    assert srv._commissions[_sa]["status"] == "completed"
+    assert srv._commissions[_sa].get("progress") == {}
+    assert srv._commissions[_sb]["progress"].get("synchunt") == 1, srv._commissions[_sb]
+    await srv.cmd_commission_cancel(_sp, {"commission_id": _sb})
+    assert srv._commissions[_sb].get("progress") == {}
+    _keys0 = set(srv.SCORES)
+    srv.world_snapshot()
+    assert set(srv.SCORES) == _keys0, "snapshot minted score entries"
+    unplayer(_sp)
+    unplayer(_sh)
+    print("PROGRESS_SYNC_OK")
+
 asyncio.run(main())
