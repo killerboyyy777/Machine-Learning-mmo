@@ -2687,13 +2687,13 @@ async def main():
 
     # kill-progress attribution (#325): per-hunter counts on open
     # bounties, poster kills excluded, display-only (fill verifies)
-    _kp = mkplayer("KpPoster", 65001)
+    _kp = mkplayer("KpPoster", 65001, room="guild_hall")
     _kp.gold = 1000
     await srv.cmd_commission_post(_kp, {"target": "rat", "required_kills": 3,
                                         "reward_gold": 10, "reward_xp": 0})
     _kcid = max(srv._commissions)
-    _kh1 = mkplayer("KpHunt1", 65002)
-    _kh2 = mkplayer("KpHunt2", 65003)
+    _kh1 = mkplayer("KpHunt1", 65002, room="guild_hall")
+    _kh2 = mkplayer("KpHunt2", 65003, room="guild_hall")
     srv.record_npc_kill("KpHunt1", "Giant Rat")
     srv.record_npc_kill("KpHunt1", "Giant Rat")
     srv.record_npc_kill("KpPoster", "Giant Rat")  # self kills never attribute
@@ -2716,7 +2716,7 @@ async def main():
 
     # progress sync: terminal rows clear; sibling open rows shed exactly
     # what the fill consumed; snapshots never mutate SCORES
-    _sp = mkplayer("SyncPoster", 65101)
+    _sp = mkplayer("SyncPoster", 65101, room="guild_hall")
     _sp.gold = 100000
     await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 2,
                                         "reward_gold": 10, "reward_xp": 0})
@@ -2724,7 +2724,7 @@ async def main():
     await srv.cmd_commission_post(_sp, {"target": "rat", "required_kills": 5,
                                         "reward_gold": 10, "reward_xp": 0})
     _sb = max(srv._commissions)
-    _sh = mkplayer("SyncHunt", 65102)
+    _sh = mkplayer("SyncHunt", 65102, room="guild_hall")
     for _ in range(3):
         srv.record_npc_kill("SyncHunt", "Giant Rat")
     assert srv._commissions[_sa]["progress"].get("synchunt") == 3
