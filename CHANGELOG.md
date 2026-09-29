@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Map rewire (#324): every indoor room now has exactly one direct
+  outdoor exit (old_shop drops its harbor link; forge, burial
+  chamber, bone pit and deep catacombs gain one each). Harbor stays
+  reachable via a new market south link, so all 33 rooms remain
+  walkable from town_square.
 - Continuous matching (#405): every order post (ask, bid, or bid
   repricing) sweeps the opposite book for crossing prices until no
   crossed non-own pair remains for that item (price-time priority;

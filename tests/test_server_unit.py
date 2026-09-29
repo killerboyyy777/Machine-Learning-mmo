@@ -2832,4 +2832,25 @@ async def main():
     unplayer(_cp)
     print("CRAFT_GHOST_OK")
 
+    # world topology rule (#324): every indoor (shelter) room has exactly
+    # one directly-accessible outdoor exit, and every room stays
+    # reachable on foot from town_square (bot paths preserved)
+    _rooms = srv.WORLD["rooms"]
+    for _rid, _r in _rooms.items():
+        if not _r.get("shelter"):
+            continue
+        _dests = list(_r.get("exits", {}).values())
+        assert all(t in _rooms for t in _dests), (_rid, _dests)
+        _out = [t for t in _dests if not _rooms[t].get("shelter")]
+        assert len(_out) == 1, (_rid, _out)
+    _seen, _stack = set(), ["town_square"]
+    while _stack:
+        _rr = _stack.pop()
+        if _rr in _seen or _rr not in _rooms:
+            continue
+        _seen.add(_rr)
+        _stack.extend(_rooms[_rr].get("exits", {}).values())
+    assert _seen == set(_rooms), set(_rooms) - _seen
+    print("TOPOLOGY_OK")
+
 asyncio.run(main())
