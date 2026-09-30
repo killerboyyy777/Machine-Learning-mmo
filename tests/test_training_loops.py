@@ -122,6 +122,10 @@ if HAVE_TORCH:
         _a.steps = 100
         _a.save_every = 10
         _a.agents = 1
+        _a.rnd_lambda = 1.0
+        _a.rnd_lambda_min = 0.1
+        _a.rnd_decay_steps = 100000
+        _a.rnd_lr = 1e-3
         return _a
 
     # sidecar round-trip + corrupt cases (null/list/string) fall back
@@ -162,6 +166,22 @@ if HAVE_TORCH:
     assert (tloaded.q.q_head.bias.detach().tolist() ==
             tagent.q.q_head.bias.detach().tolist())
     print("TORCH_LOOP_OK")
+
+    # --- RND curiosity schedule: linear start->floor over
+    # rnd_decay_steps by t_step; zero start disables entirely.
+    _ragent = TorchDQNAgent(
+        rnd_lambda=1.0, rnd_lambda_min=0.1, rnd_decay_steps=100
+    )
+    _ragent.t_step = 0
+    assert _ragent._rnd_weight() == 1.0
+    _ragent.t_step = 50
+    assert abs(_ragent._rnd_weight() - 0.55) < 1e-9
+    _ragent.t_step = 1000
+    assert abs(_ragent._rnd_weight() - 0.1) < 1e-9
+    _zagent = TorchDQNAgent(rnd_lambda=0.0)
+    _zagent.t_step = 1000
+    assert _zagent._rnd_weight() == 0.0
+    print("RND_SCHEDULE_OK")
 
     # --- TD target excludes turn-in points: quest_reward already lives
     # inside the score-delta reward, so adding it again double-counts

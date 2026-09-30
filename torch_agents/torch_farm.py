@@ -51,7 +51,14 @@ class TorchFarm:
         self.steps = 0
         self.last_save_step = -1
         self.last_best_score = float("-inf")
-        self.agent = TorchDQNAgent(name=args.name_prefix + "Shared", url=args.url)
+        self.agent = TorchDQNAgent(
+            name=args.name_prefix + "Shared",
+            url=args.url,
+            rnd_lambda=args.rnd_lambda,
+            rnd_lambda_min=args.rnd_lambda_min,
+            rnd_decay_steps=args.rnd_decay_steps,
+            rnd_lr=args.rnd_lr,
+        )
         loaded = self.agent.load_weights(args.weights)
         if not loaded and args.best_weights and os.path.exists(args.best_weights):
             loaded = self.agent.load_weights(args.best_weights)
@@ -175,7 +182,7 @@ class Runner:
         # (dqn_agent train(): accept + progress transitions only), and the
         # farm docstring promises that same objective (#378).
 
-        rnd_bonus = agent.rnd_bonus(next_features) if agent.rnd_lambda else 0.0
+        rnd_bonus = agent.rnd_bonus(next_features) if agent._rnd_weight() > 0 else 0.0
 
         return (
             gold_delta,
@@ -301,6 +308,27 @@ def parse_args():
         "--weights", default=None, help="shared current checkpoint path"
     )
     parser.add_argument("--best-weights", default=None, help="best checkpoint path")
+    parser.add_argument(
+        "--rnd-lambda",
+        type=float,
+        default=1.0,
+        help="RND curiosity start weight, present from step 0 (0 disables)",
+    )
+    parser.add_argument(
+        "--rnd-lambda-min",
+        type=float,
+        default=0.1,
+        help="RND curiosity floor after decay",
+    )
+    parser.add_argument(
+        "--rnd-decay-steps",
+        type=int,
+        default=100000,
+        help="linear start->floor horizon in shared training steps",
+    )
+    parser.add_argument(
+        "--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate"
+    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
