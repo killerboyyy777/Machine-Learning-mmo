@@ -87,7 +87,7 @@ assert "solid tile = indoor, dashed = outdoor" in html
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
 import json as _json, os as _os
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
-assert len(_world["rooms"]) == 33  # 32 map rooms + guild_hall
+assert len(_world["rooms"]) == 43  # 32 map rooms + guild_hall + 6 wilds (#336) + 4 wild-interior chain rooms (#423)
 assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
 # Settled-price panel renamed to plain words.
 assert "Price per completed sale" in html

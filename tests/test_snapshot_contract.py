@@ -31,8 +31,8 @@ need(s["server"], {"ws_port", "gm_port", "uptime", "start_ts",
                    "players_online", "connections"}, "server")
 assert isinstance(s["server"]["start_ts"], (int, float))
 
-# --- rooms: all 33 (32 map + guild_hall), map + drawer fields, shelter bool ---
-assert len(s["rooms"]) == 33, f"room count {len(s['rooms'])}"
+# --- rooms: all 43 (32 map + guild_hall + 6 wilds + 4 wild-interior chain rooms), map + drawer fields, shelter bool ---
+assert len(s["rooms"]) == 43, f"room count {len(s['rooms'])}"
 for r in s["rooms"]:
     need(r, {"id", "name", "exits", "players", "npcs", "items",
              "gold", "shelter"}, f"room {r.get('id')}")
