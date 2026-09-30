@@ -652,8 +652,12 @@ RETRY_MAX_DELAY = 60.0
 # Same tuple the legacy supervisor already retries on. websockets raises
 # ConnectionClosed from a dead socket mid-step; OSError covers a refused
 # connect on Windows; asyncio.TimeoutError covers the connect/close waits.
-CONNECTION_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError,
-                     websockets.ConnectionClosed)
+CONNECTION_ERRORS = (
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+    websockets.ConnectionClosed,
+)
 
 
 def reachable_path(rooms, start, goal):
@@ -691,8 +695,9 @@ def safe_spread_rooms(start=None):
     safety, not weather. Sorted for stable per-index assignment.
     """
     start = start or srv.START_ROOM
-    hostile_rooms = {v.get("room") for v in srv.WORLD["npcs"].values()
-                     if v.get("hostile")}
+    hostile_rooms = {
+        v.get("room") for v in srv.WORLD["npcs"].values() if v.get("hostile")
+    }
     return sorted(
         room_id
         for room_id in srv.ROOMS
@@ -702,9 +707,16 @@ def safe_spread_rooms(start=None):
     )
 
 
-async def reset_with_retry(env, name="", on_retry=None, backoff_base=RETRY_BASE_DELAY,
-                           backoff_max=RETRY_MAX_DELAY, jitter=0.0,
-                           should_stop=None, sleep=asyncio.sleep):
+async def reset_with_retry(
+    env,
+    name="",
+    on_retry=None,
+    backoff_base=RETRY_BASE_DELAY,
+    backoff_max=RETRY_MAX_DELAY,
+    jitter=0.0,
+    should_stop=None,
+    sleep=asyncio.sleep,
+):
     """`await env.reset()` with logged, capped exponential retry.
 
     A connection error out of reset() used to kill a torch runner task with
@@ -724,8 +736,11 @@ async def reset_with_retry(env, name="", on_retry=None, backoff_base=RETRY_BASE_
             if on_retry is not None:
                 on_retry(attempt, delay, error)
             else:
-                print(f"[{name or 'agent'}] reset failed (attempt {attempt}): "
-                      f"{error}; retrying in {delay:.1f}s", flush=True)
+                print(
+                    f"[{name or 'agent'}] reset failed (attempt {attempt}): "
+                    f"{error}; retrying in {delay:.1f}s",
+                    flush=True,
+                )
             if should_stop is not None and should_stop():
                 raise
             await sleep(delay)
@@ -1114,8 +1129,11 @@ class TextMMOEnv:
             if not await self._walk_to(self.spawn_room):
                 # Not fatal, but never silent: a spread that quietly did
                 # nothing is the #417 failure mode in miniature.
-                print(f"[{self.name}] spawn_room {self.spawn_room} not reached "
-                      f"(from {self._state.get('room_id')}); staying put", flush=True)
+                print(
+                    f"[{self.name}] spawn_room {self.spawn_room} not reached "
+                    f"(from {self._state.get('room_id')}); staying put",
+                    flush=True,
+                )
         return self._build_obs()
 
     async def step(self, action_idx):

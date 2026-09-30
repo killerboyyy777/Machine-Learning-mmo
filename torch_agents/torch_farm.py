@@ -145,8 +145,11 @@ class Runner:
     def log_retry(self, attempt, delay, error):
         self.reset_retries += 1
         self.last_error = f"reset attempt {attempt}: {error}"
-        print(f"[torch-farm] {self.name}: reset failed (attempt {attempt}): "
-              f"{error}; retrying in {delay:.1f}s", flush=True)
+        print(
+            f"[torch-farm] {self.name}: reset failed (attempt {attempt}): "
+            f"{error}; retrying in {delay:.1f}s",
+            flush=True,
+        )
 
     def discovery_bonus(self, obs):
         """One-time reward for the first visit to a room by this character.
@@ -166,9 +169,12 @@ class Runner:
         # retry on the same second and hammer a server that is still
         # coming up.
         self.obs = await reset_with_retry(
-            self.env, name=self.name, on_retry=self.log_retry,
+            self.env,
+            name=self.name,
+            on_retry=self.log_retry,
             jitter=min(0.5, 0.05 * self.index),
-            should_stop=self.farm.stop.is_set)
+            should_stop=self.farm.stop.is_set,
+        )
         self.features = flatten_obs(self.obs)
         self.prev_gold = float(self.obs.get("gold_raw", 0.0))
         self.prev_inventory = set(self.obs.get("inv_names", []) or [])
@@ -260,8 +266,11 @@ class Runner:
                     # below reconnect with backoff -- #418's wedge was this
                     # path taking the whole farm down silently.
                     self.last_error = f"step lost the connection: {e}"
-                    print(f"[torch-farm] {self.name}: {self.last_error}; "
-                          f"reconnecting", flush=True)
+                    print(
+                        f"[torch-farm] {self.name}: {self.last_error}; "
+                        f"reconnecting",
+                        flush=True,
+                    )
                     await self.reset()
                     continue
                 next_features = flatten_obs(next_obs)
@@ -269,8 +278,11 @@ class Runner:
                 if explore:
                     reward += explore
                     self.explore_total += explore
-                    print(f"[torch-farm] {self.name}: discovered "
-                          f"{next_obs['room_id']} (+{explore:.2f})", flush=True)
+                    print(
+                        f"[torch-farm] {self.name}: discovered "
+                        f"{next_obs['room_id']} (+{explore:.2f})",
+                        flush=True,
+                    )
                 (
                     gold_delta,
                     loot_delta,
@@ -323,8 +335,10 @@ class Runner:
             # one #418 was about -- the gather() summary cannot report a
             # failure it never sees.
             self.last_error = f"{type(e).__name__}: {e}"
-            print(f"[torch-farm] {self.name}: runner stopped after "
-                  f"{self.last_error}", flush=True)
+            print(
+                f"[torch-farm] {self.name}: runner stopped after " f"{self.last_error}",
+                flush=True,
+            )
             raise
         finally:
             await self.env.close()
@@ -345,12 +359,16 @@ async def main_async(args):
         f"{args.steps or 'unlimited'} total steps"
     )
     if farm.spawn_rooms:
-        print(f"[torch-farm] spawn spread over {len(farm.spawn_rooms)} safe "
-              f"rooms, first {len(farm.runners)}: "
-              + ", ".join(r.spawn_room for r in farm.runners))
+        print(
+            f"[torch-farm] spawn spread over {len(farm.spawn_rooms)} safe "
+            f"rooms, first {len(farm.runners)}: "
+            + ", ".join(r.spawn_room for r in farm.runners)
+        )
     else:
-        print("[torch-farm] spawn spread off: every agent starts in the "
-              "server's start room")
+        print(
+            "[torch-farm] spawn spread off: every agent starts in the "
+            "server's start room"
+        )
     tasks = [asyncio.create_task(r.run(), name=r.name) for r in farm.runners]
     try:
         # return_exceptions: gather() otherwise reports only the first
@@ -367,12 +385,16 @@ async def main_async(args):
         results = await asyncio.gather(*tasks, return_exceptions=True)
         await farm.checkpoint(force=True)
         crashed = sum(1 for r in results if isinstance(r, BaseException))
-        print(f"[torch-farm] finished: total_steps={farm.steps} "
-              f"runners_alive={len(farm.runners) - crashed} crashed={crashed}")
+        print(
+            f"[torch-farm] finished: total_steps={farm.steps} "
+            f"runners_alive={len(farm.runners) - crashed} crashed={crashed}"
+        )
         for runner, result in zip(farm.runners, results):
-            line = (f"  {runner.name}: steps={runner.steps} "
-                    f"score={runner.score:.2f} rooms={len(runner.discovered)} "
-                    f"reset_retries={runner.reset_retries}")
+            line = (
+                f"  {runner.name}: steps={runner.steps} "
+                f"score={runner.score:.2f} rooms={len(runner.discovered)} "
+                f"reset_retries={runner.reset_retries}"
+            )
             if isinstance(result, BaseException):
                 line += f" CRASHED {type(result).__name__}: {result}"
             elif runner.last_error:
@@ -421,7 +443,7 @@ def parse_args():
         type=float,
         default=0.2,
         help="one-time reward per room a trainee finds for the first time "
-             "(0 disables; the ledger survives death and respawn)",
+        "(0 disables; the ledger survives death and respawn)",
     )
     args = parser.parse_args()
     if args.agents < 1:

@@ -3,6 +3,23 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Training health (#418, #417): a failed `reset()` no longer kills a
+  trainee in silence. `ml_env.reset_with_retry` retries with capped
+  exponential backoff, logs every attempt, and stops on farm shutdown;
+  the torch farm and `dqn_agent.train` both use it at start, after
+  episode end, and after a dropped connection mid-step, so
+  Torch12-15-style wedges become visible lines instead of absent
+  rows. Runner crashes are caught and reported in the farm summary
+  rather than aborting the whole run.
+- Spawn spread and room-discovery bonus (#417): the torch farm assigns
+  each runner a stable starting room (`--spawn-spread`, on by default)
+  drawn from rooms that hold no hostile NPC and are walkable from
+  town_square, walking there over real exits after login. Agents get a
+  one-time bonus per newly visited room (`--explore-bonus`, default
+  0.2). The discovery ledger lives on the character and rides the
+  checkpoint, so it survives death and relaunch and cannot be farmed by
+  dying on purpose. Both knobs are trainer-side; the env reward
+  contract is unchanged.
 - Map rewire (#324): every indoor room now has exactly one direct
   outdoor exit (old_shop drops its harbor link; forge, burial
   chamber, bone pit and deep catacombs gain one each). Harbor stays

@@ -620,8 +620,11 @@ class TorchDQNAgent:
 
     def log_reset_retry(self, attempt, delay, error):
         self.last_reset_error = f"reset attempt {attempt}: {error}"
-        print(f"[torch] {self.name}: reset failed (attempt {attempt}): "
-              f"{error}; retrying in {delay:.1f}s", flush=True)
+        print(
+            f"[torch] {self.name}: reset failed (attempt {attempt}): "
+            f"{error}; retrying in {delay:.1f}s",
+            flush=True,
+        )
 
     async def reset_env(self, env):
         """Reconnect with logged backoff and re-seed per-episode tracking.
@@ -629,8 +632,7 @@ class TorchDQNAgent:
         The retry is the #418 fix: a connection error out of reset() used to
         end the whole training run with no log line naming the character.
         """
-        obs = await reset_with_retry(env, name=self.name,
-                                     on_retry=self.log_reset_retry)
+        obs = await reset_with_retry(env, name=self.name, on_retry=self.log_reset_retry)
         self._prev_gold = float(obs.get("gold_raw", 0.0))
         self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
         self._bought_items = 0
@@ -671,8 +673,11 @@ class TorchDQNAgent:
                 # Socket died between actions: no honest next_state, so
                 # store nothing, reconnect with backoff, and keep the
                 # remaining step budget (#418).
-                print(f"[torch] {self.name}: step lost the connection "
-                      f"({e}); reconnecting", flush=True)
+                print(
+                    f"[torch] {self.name}: step lost the connection "
+                    f"({e}); reconnecting",
+                    flush=True,
+                )
                 obs = await self.reset_env(env)
                 features = flatten_obs(obs)
                 continue
@@ -776,8 +781,11 @@ class TorchDQNAgent:
             if explore:
                 reward += explore
                 explore_total += explore
-                print(f"[torch] {self.name}: discovered "
-                      f"{next_obs['room_id']} (+{explore:.2f})", flush=True)
+                print(
+                    f"[torch] {self.name}: discovered "
+                    f"{next_obs['room_id']} (+{explore:.2f})",
+                    flush=True,
+                )
 
             # Store transition with all auxiliary targets
             self.store(
@@ -839,8 +847,10 @@ class TorchDQNAgent:
         print(f"Quest accepts: {quest_accepts}  Quest turn-ins: {quest_turnins}")
         print(f"Delver accepts: {quest2_accepts}  Delver turn-ins: {quest2_turnins}")
         print(f"Intrinsic exploration bonus total: {intrinsic_total:.1f}")
-        print(f"Room-discovery bonus total: {explore_total:.1f} "
-              f"over {len(self._discovered_rooms)} rooms")
+        print(
+            f"Room-discovery bonus total: {explore_total:.1f} "
+            f"over {len(self._discovered_rooms)} rooms"
+        )
         print(
             "Action usage:", {_ACTIONS[i]: c for i, c in enumerate(action_counts) if c}
         )
@@ -923,13 +933,13 @@ def main():
         type=float,
         default=0.2,
         help="one-time reward per room found for the first time (0 disables; "
-             "the ledger survives death and rides the checkpoint)",
+        "the ledger survives death and rides the checkpoint)",
     )
     parser.add_argument(
         "--spawn-room",
         default=None,
         help="walk here after login instead of the server's start room (#417); "
-             "use safe_spread_rooms() in ml_env to pick from the safe pool",
+        "use safe_spread_rooms() in ml_env to pick from the safe pool",
     )
     args = parser.parse_args()
     if args.explore_bonus < 0:
