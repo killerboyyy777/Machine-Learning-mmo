@@ -2854,12 +2854,20 @@ async def main():
     # edge discipline: every directed exit either has a reciprocating
     # edge with the opposite label, or is a documented intentional
     # one-way below. New accidental one-ways fail here.
-    _opp = {"north": "south", "south": "north", "east": "west",
-            "west": "east", "up": "down", "down": "up"}
-    _oneway = {("forge", "south", "artisan_row"),
-               ("burial_chamber", "up", "graveyard"),
-               ("bone_pit", "up", "graveyard"),
-               ("deep_catacombs", "south", "graveyard")}
+    _opp = {
+        "north": "south",
+        "south": "north",
+        "east": "west",
+        "west": "east",
+        "up": "down",
+        "down": "up",
+    }
+    _oneway = {
+        ("forge", "south", "artisan_row"),
+        ("burial_chamber", "up", "graveyard"),
+        ("bone_pit", "up", "graveyard"),
+        ("deep_catacombs", "south", "graveyard"),
+    }
     for _rid, _r in _rooms.items():
         for _d, _t in _r.get("exits", {}).items():
             if _t not in _rooms:
