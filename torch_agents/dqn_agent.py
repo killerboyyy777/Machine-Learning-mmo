@@ -37,6 +37,9 @@ Key design:
   - Exploration: epsilon-greedy with linear decay, plus RND curiosity
   (frozen random target vs trained predictor; normalized prediction error
   rides the TD target with weight rnd_lambda, predictor trains separately)
+  and a one-time per-room discovery bonus (#417) whose ledger lives on the
+  character and rides the checkpoint, so respawning into the start room
+  cannot re-earn it.
 - Save/load weights to torch_agents/ml_weights.json (torch.save format, separate
      from the JSON weights used by ml_client.py); torch_farm.py defaults to
      ml_farm_weights.json / ml_farm_best.json instead. Note: obs/action
@@ -60,6 +63,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from ml_env import (
+    CONNECTION_ERRORS,
     TextMMOEnv,
     ACTIONS,
     N_ACTIONS,
@@ -71,6 +75,7 @@ from ml_env import (
     QUEST_DELVER_REWARD_POINTS,
     quest_charm_cost,
     quest_charm_net,
+    reset_with_retry,
 )
 from versioning import checkpoint_version, version_notes
 
@@ -205,6 +210,8 @@ class TorchDQNAgent:
         rnd_dim: int = 32,  # RND embedding size
         rnd_lr: float = 1e-3,  # RND predictor learning rate
         rnd_ema: float = 0.01,  # running-stat momentum for bonus norm
+        explore_bonus: float = 0.2,  # one-time reward per new room (#417)
+        spawn_room: str | None = None,  # walk here after login (#417)
     ):
         self.name = name
         self.url = url
@@ -264,6 +271,16 @@ class TorchDQNAgent:
         self.learn_step = 0
         self.best_score: float = -float("inf")
         self.ckpt_version = None  # version dict of the loaded checkpoint
+
+        # Room-discovery ledger (#417). The server respawns every character
+        # in START_ROOM, so without a per-character ledger the exploration
+        # signal dies with the episode and the agent relearns the same three
+        # rooms forever. Stored in the checkpoint, so a relaunched pilot
+        # keeps what it already found.
+        self.explore_bonus = explore_bonus
+        self.spawn_room = spawn_room
+        self._discovered_rooms: set[str] = set()
+        self.last_reset_error = None  # names the failure when a reset wedges
 
         # Tracking per-episode for auxiliary supervision
         self._prev_gold: float = 0.0
@@ -333,6 +350,22 @@ class TorchDQNAgent:
         loss.backward()
         self.rnd_opt.step()
         return float(loss.detach())
+
+    # ---- room discovery ----------------------------------------------------
+
+    def discovery_bonus(self, room_id) -> float:
+        """One-time reward for the first visit to a room by this character.
+
+        Lives on the agent, not the episode: the server respawns everyone in
+        START_ROOM, so a per-episode ledger would pay the starting room over
+        and over (#417) and make dying the cheapest way to earn reward.
+        Rooms already walked during the spawn walk are seeded by train()'s
+        episode reset, so spreading is not paid for as exploration.
+        """
+        if not room_id or room_id in self._discovered_rooms:
+            return 0.0
+        self._discovered_rooms.add(room_id)
+        return float(self.explore_bonus)
 
     # ---- storage ------------------------------------------------------------
 
@@ -517,6 +550,10 @@ class TorchDQNAgent:
                 "training_steps": self.t_step,
                 "learn_step": self.learn_step,
                 "best_score": self.best_score,
+                # Room-discovery ledger (#417): a set has to travel as a
+                # sorted list, and an empty ledger is not a reason to fail
+                # loading an older checkpoint.
+                "discovered_rooms": sorted(self._discovered_rooms),
                 "obs_size": OBS_SIZE,
                 "n_actions": N_ACTIONS,
                 "version": checkpoint_version(OBS_SIZE, N_ACTIONS),
@@ -564,6 +601,9 @@ class TorchDQNAgent:
             self.t_step = int(ckpt.get("training_steps", 0))
             self.learn_step = int(ckpt.get("learn_step", 0))
             self.best_score = float(ckpt.get("best_score", self.best_score))
+            # Absent in pre-#417 checkpoints: keep the empty ledger, the
+            # character just gets paid again for rooms it already knows.
+            self._discovered_rooms = set(ckpt.get("discovered_rooms") or ())
         except RuntimeError as e:
             # Shape mismatch: e.g. checkpoints saved before the quest block
             # grew OBS_SIZE/N_ACTIONS (or changed head count). Warn and keep
@@ -578,24 +618,36 @@ class TorchDQNAgent:
 
     # ---- environment loop ---------------------------------------------------
 
+    def log_reset_retry(self, attempt, delay, error):
+        self.last_reset_error = f"reset attempt {attempt}: {error}"
+        print(f"[torch] {self.name}: reset failed (attempt {attempt}): "
+              f"{error}; retrying in {delay:.1f}s", flush=True)
+
+    async def reset_env(self, env):
+        """Reconnect with logged backoff and re-seed per-episode tracking.
+
+        The retry is the #418 fix: a connection error out of reset() used to
+        end the whole training run with no log line naming the character.
+        """
+        obs = await reset_with_retry(env, name=self.name,
+                                     on_retry=self.log_reset_retry)
+        self._prev_gold = float(obs.get("gold_raw", 0.0))
+        self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
+        self._bought_items = 0
+        self._prev_own_orders = []
+        # The spawn walk is setup, not discovery: mark its rooms seen.
+        self._discovered_rooms.update(getattr(env, "walked_rooms", None) or ())
+        if obs.get("room_id"):
+            self._discovered_rooms.add(obs["room_id"])
+        return obs
+
     async def train(self, total_steps: int, save_every: int = 500):
         _ACTIONS = ACTIONS
 
-        env = TextMMOEnv(self.name, url=self.url)
-        obs = await env.reset()
+        env = TextMMOEnv(self.name, url=self.url, spawn_room=self.spawn_room)
+        obs = await self.reset_env(env)
         features = flatten_obs(obs)
         epsilon = self._epsilon()
-
-        # Initialise auxiliary tracking from the first snapshot
-        # (obs is the structured dict; flatten only for the network).
-        self._prev_gold = float(obs.get("gold_raw", 0.0))
-        self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
-
-        # Market tracking init. The env's step info carries live tax terms,
-        # detected buy fills, and our standing orders with nets, so P&L
-        # targets below can use exact after-tax accounting.
-        self._bought_items = 0
-        self._prev_own_orders = []
 
         total_reward = 0.0
         recent_rewards: list[float] = []
@@ -605,6 +657,7 @@ class TorchDQNAgent:
         quest2_turnins = 0
         quest2_accepts = 0
         intrinsic_total = 0.0
+        explore_total = 0.0
 
         start_step = self.t_step
         for offset in range(total_steps):
@@ -612,7 +665,17 @@ class TorchDQNAgent:
             epsilon = self._epsilon()
             action = self.act(features, epsilon, env.valid_action_mask())
             action_counts[action] += 1
-            next_obs, reward, done, info = await env.step(action)
+            try:
+                next_obs, reward, done, info = await env.step(action)
+            except CONNECTION_ERRORS as e:
+                # Socket died between actions: no honest next_state, so
+                # store nothing, reconnect with backoff, and keep the
+                # remaining step budget (#418).
+                print(f"[torch] {self.name}: step lost the connection "
+                      f"({e}); reconnecting", flush=True)
+                obs = await self.reset_env(env)
+                features = flatten_obs(obs)
+                continue
             next_features = flatten_obs(next_obs)
 
             # ---- compute auxiliary targets from observation changes ----
@@ -706,6 +769,16 @@ class TorchDQNAgent:
             # more; the predictor fit in learn() makes them familiar).
             rnd_bonus = self.rnd_bonus(next_features) if self.rnd_lambda else 0.0
 
+            # Room discovery (#417): one-time, per character, and it rides
+            # the stored reward so the TD target sees it. Without it a farm
+            # respawned into START_ROOM has no reason to walk anywhere.
+            explore = self.discovery_bonus(next_obs.get("room_id"))
+            if explore:
+                reward += explore
+                explore_total += explore
+                print(f"[torch] {self.name}: discovered "
+                      f"{next_obs['room_id']} (+{explore:.2f})", flush=True)
+
             # Store transition with all auxiliary targets
             self.store(
                 {
@@ -741,6 +814,7 @@ class TorchDQNAgent:
                     f"room={obs['room_id']}  quest={obs.get('quest_stage', '?')}/{obs.get('quest2_stage', '?')}  "
                     f"quests(acc/turn)={quest_accepts}/{quest_turnins} "
                     f"delver(acc/turn)={quest2_accepts}/{quest2_turnins} intr={intrinsic_total:.1f}  "
+                    f"rooms={len(self._discovered_rooms)} room_bonus={explore_total:.1f}  "
                     f"losses(TD/Gold/Loot/Mkt/Qst/Rnd)={_fmt_loss(losses['td'])}/{_fmt_loss(losses['gold'])}/{_fmt_loss(losses['loot'])}/{_fmt_loss(losses['market'])}/{_fmt_loss(losses['quest'])}/{_fmt_loss(losses['rnd'])}"
                 )
 
@@ -755,15 +829,9 @@ class TorchDQNAgent:
                     )
 
             if done:
-                obs = await env.reset()
+                obs = await self.reset_env(env)
                 features = flatten_obs(obs)
                 epsilon = self._epsilon()
-                # reset auxiliary tracking
-                self._prev_gold = float(obs.get("gold_raw", 0.0))
-                self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
-                # reset market tracking
-                self._bought_items = 0
-                self._prev_own_orders = []
 
         self.save_weights()
         print(f"\nTraining finished after {self.t_step} steps.")
@@ -771,6 +839,8 @@ class TorchDQNAgent:
         print(f"Quest accepts: {quest_accepts}  Quest turn-ins: {quest_turnins}")
         print(f"Delver accepts: {quest2_accepts}  Delver turn-ins: {quest2_turnins}")
         print(f"Intrinsic exploration bonus total: {intrinsic_total:.1f}")
+        print(f"Room-discovery bonus total: {explore_total:.1f} "
+              f"over {len(self._discovered_rooms)} rooms")
         print(
             "Action usage:", {_ACTIONS[i]: c for i, c in enumerate(action_counts) if c}
         )
@@ -848,13 +918,33 @@ def main():
     parser.add_argument(
         "--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate"
     )
+    parser.add_argument(
+        "--explore-bonus",
+        type=float,
+        default=0.2,
+        help="one-time reward per room found for the first time (0 disables; "
+             "the ledger survives death and rides the checkpoint)",
+    )
+    parser.add_argument(
+        "--spawn-room",
+        default=None,
+        help="walk here after login instead of the server's start room (#417); "
+             "use safe_spread_rooms() in ml_env to pick from the safe pool",
+    )
     args = parser.parse_args()
+    if args.explore_bonus < 0:
+        parser.error("--explore-bonus must be >= 0")
 
     if args.demo:
         asyncio.run(_demo())
         return
     agent = TorchDQNAgent(
-        name=args.name, url=args.url, rnd_lambda=args.rnd_lambda, rnd_lr=args.rnd_lr
+        name=args.name,
+        url=args.url,
+        rnd_lambda=args.rnd_lambda,
+        rnd_lr=args.rnd_lr,
+        explore_bonus=args.explore_bonus,
+        spawn_room=args.spawn_room,
     )
     agent.load_weights()
     asyncio.run(agent.train(total_steps=args.steps, save_every=args.save_every))

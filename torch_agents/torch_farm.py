@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml"))
 from dqn_agent import TorchDQNAgent
 from ml_env import (
     ACTIONS,
+    CONNECTION_ERRORS,
     N_ACTIONS,
     QUEST_DELVER_REWARD_POINTS,
     QUEST_REWARD_POINTS,
@@ -41,6 +42,8 @@ from ml_env import (
     flatten_obs,
     market_net,
     quest_charm_net,
+    reset_with_retry,
+    safe_spread_rooms,
 )
 
 
@@ -72,7 +75,19 @@ class TorchFarm:
             self.last_save_step = int(_st.get("last_save_step", -1))
         except (OSError, ValueError, TypeError, AttributeError):
             pass
+        # Spawn spread (#417): round-robin over the safe room pool so the
+        # farm does not train 16 identical first observations. Computed once
+        # (world.json is static for a process) and reported in the banner.
+        self.spawn_rooms = safe_spread_rooms() if args.spawn_spread else []
         self.runners = []
+
+    def spawn_room_for(self, index):
+        """Stable per-runner spread target. Index-based, not random: a
+        relaunched farm spreads the same way, so a trainee that wanders off
+        its starting room and comes back has not lost its own identity."""
+        if not self.spawn_rooms:
+            return None
+        return self.spawn_rooms[index % len(self.spawn_rooms)]
 
     def should_stop(self):
         return self.stop.is_set() or (
@@ -104,8 +119,10 @@ class TorchFarm:
 class Runner:
     def __init__(self, index, farm):
         self.farm = farm
+        self.index = index
         self.name = f"{farm.args.name_prefix}{index}"
-        self.env = TextMMOEnv(self.name, url=farm.args.url)
+        self.spawn_room = farm.spawn_room_for(index)
+        self.env = TextMMOEnv(self.name, url=farm.args.url, spawn_room=self.spawn_room)
         self.features = None
         self.obs = None
         self.prev_gold = 0.0
@@ -113,13 +130,53 @@ class Runner:
         self.prev_orders = []
         self.score = 0.0
         self.steps = 0
+        # Training health (#418): a runner that wedges must say so. The
+        # pilot lost 4 of 16 trainees with no log line and no entry in the
+        # summary, which silently deflated the shared step rate.
+        self.reset_retries = 0
+        self.last_error = None
+        # Room-discovery ledger (#417). Per runner, not in the shared
+        # weights: one character has not seen a room just because a peer
+        # has. In memory only -- the farm checkpoint is the shared policy,
+        # and a relaunched farm re-earning its first few rooms is harmless.
+        self.discovered = set()
+        self.explore_total = 0.0
+
+    def log_retry(self, attempt, delay, error):
+        self.reset_retries += 1
+        self.last_error = f"reset attempt {attempt}: {error}"
+        print(f"[torch-farm] {self.name}: reset failed (attempt {attempt}): "
+              f"{error}; retrying in {delay:.1f}s", flush=True)
+
+    def discovery_bonus(self, obs):
+        """One-time reward for the first visit to a room by this character.
+
+        Lives on the character, not the episode, so dying back to START_ROOM
+        cannot re-earn it (#417): the bonus is for going somewhere new, not
+        for a respawn loop.
+        """
+        room = obs.get("room_id")
+        if not room or room in self.discovered:
+            return 0.0
+        self.discovered.add(room)
+        return float(self.farm.args.explore_bonus)
 
     async def reset(self):
-        self.obs = await self.env.reset()
+        # Jitter spreads a fleet-wide reconnect: without it all 16 sockets
+        # retry on the same second and hammer a server that is still
+        # coming up.
+        self.obs = await reset_with_retry(
+            self.env, name=self.name, on_retry=self.log_retry,
+            jitter=min(0.5, 0.05 * self.index),
+            should_stop=self.farm.stop.is_set)
         self.features = flatten_obs(self.obs)
         self.prev_gold = float(self.obs.get("gold_raw", 0.0))
         self.prev_inventory = set(self.obs.get("inv_names", []) or [])
         self.prev_orders = []
+        # The spawn walk already used these rooms; they are not discoveries.
+        self.discovered.update(getattr(self.env, "walked_rooms", None) or ())
+        if self.obs.get("room_id"):
+            self.discovered.add(self.obs["room_id"])
 
     def transition_targets(self, next_obs, next_features, info, action_name):
         """Auxiliary targets mirroring single-agent train() (#234): the
@@ -187,16 +244,33 @@ class Runner:
         )
 
     async def run(self):
-        await self.reset()
         try:
+            await self.reset()
             while not self.farm.should_stop():
                 epsilon = self.farm.agent._epsilon()
                 action_index = self.farm.agent.act(
                     self.features, epsilon, self.env.valid_action_mask()
                 )
                 action_name = ACTIONS[action_index]
-                next_obs, reward, done, info = await self.env.step(action_index)
+                try:
+                    next_obs, reward, done, info = await self.env.step(action_index)
+                except CONNECTION_ERRORS as e:
+                    # The socket died between actions. Store nothing (a dead
+                    # connection has no honest next_state) and let the reset
+                    # below reconnect with backoff -- #418's wedge was this
+                    # path taking the whole farm down silently.
+                    self.last_error = f"step lost the connection: {e}"
+                    print(f"[torch-farm] {self.name}: {self.last_error}; "
+                          f"reconnecting", flush=True)
+                    await self.reset()
+                    continue
                 next_features = flatten_obs(next_obs)
+                explore = self.discovery_bonus(next_obs)
+                if explore:
+                    reward += explore
+                    self.explore_total += explore
+                    print(f"[torch-farm] {self.name}: discovered "
+                          f"{next_obs['room_id']} (+{explore:.2f})", flush=True)
                 (
                     gold_delta,
                     loot_delta,
@@ -242,6 +316,16 @@ class Runner:
 
                 if done:
                     await self.reset()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Log before giving up, so the runner's exit is never the silent
+            # one #418 was about -- the gather() summary cannot report a
+            # failure it never sees.
+            self.last_error = f"{type(e).__name__}: {e}"
+            print(f"[torch-farm] {self.name}: runner stopped after "
+                  f"{self.last_error}", flush=True)
+            raise
         finally:
             await self.env.close()
 
@@ -260,9 +344,19 @@ async def main_async(args):
         f"[torch-farm] {args.agents} agents sharing one DQN, {N_ACTIONS} actions, "
         f"{args.steps or 'unlimited'} total steps"
     )
+    if farm.spawn_rooms:
+        print(f"[torch-farm] spawn spread over {len(farm.spawn_rooms)} safe "
+              f"rooms, first {len(farm.runners)}: "
+              + ", ".join(r.spawn_room for r in farm.runners))
+    else:
+        print("[torch-farm] spawn spread off: every agent starts in the "
+              "server's start room")
     tasks = [asyncio.create_task(r.run(), name=r.name) for r in farm.runners]
     try:
-        await asyncio.gather(*tasks)
+        # return_exceptions: gather() otherwise reports only the first
+        # failure and drops the rest, which is how four of sixteen pilot
+        # runners disappeared with no trace (#418).
+        await asyncio.gather(*tasks, return_exceptions=True)
     except KeyboardInterrupt:
         farm.stop.set()
     finally:
@@ -270,11 +364,20 @@ async def main_async(args):
         for task in tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         await farm.checkpoint(force=True)
-        print("[torch-farm] finished: total_steps=" + str(farm.steps))
-        for runner in farm.runners:
-            print(f"  {runner.name}: steps={runner.steps} score={runner.score:.2f}")
+        crashed = sum(1 for r in results if isinstance(r, BaseException))
+        print(f"[torch-farm] finished: total_steps={farm.steps} "
+              f"runners_alive={len(farm.runners) - crashed} crashed={crashed}")
+        for runner, result in zip(farm.runners, results):
+            line = (f"  {runner.name}: steps={runner.steps} "
+                    f"score={runner.score:.2f} rooms={len(runner.discovered)} "
+                    f"reset_retries={runner.reset_retries}")
+            if isinstance(result, BaseException):
+                line += f" CRASHED {type(result).__name__}: {result}"
+            elif runner.last_error:
+                line += f" (last issue: {runner.last_error})"
+            print(line)
 
 
 def parse_args():
@@ -301,11 +404,32 @@ def parse_args():
         "--weights", default=None, help="shared current checkpoint path"
     )
     parser.add_argument("--best-weights", default=None, help="best checkpoint path")
+    parser.add_argument(
+        "--spawn-spread",
+        action="store_true",
+        default=True,
+        help="spread trainees across safe rooms on login/respawn (default on)",
+    )
+    parser.add_argument(
+        "--no-spawn-spread",
+        dest="spawn_spread",
+        action="store_false",
+        help="every trainee starts in the server's start room (pre-#417 behavior)",
+    )
+    parser.add_argument(
+        "--explore-bonus",
+        type=float,
+        default=0.2,
+        help="one-time reward per room a trainee finds for the first time "
+             "(0 disables; the ledger survives death and respawn)",
+    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
     if args.steps < 0 or args.save_every < 1:
         parser.error("--steps must be >= 0 and --save-every must be >= 1")
+    if args.explore_bonus < 0:
+        parser.error("--explore-bonus must be >= 0")
     here = os.path.dirname(os.path.abspath(__file__))
     args.weights = (
         os.path.abspath(args.weights)
