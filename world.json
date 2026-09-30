@@ -12,14 +12,14 @@
       "name": "Market",
       "description": "A small market stall run by a wandering merchant. Prices are chalked on a board. A corner bunkhouse rents rest (2 gold).",
       "shelter": false,
-      "exits": {"east": "town_square", "west": "artisan_row"},
+      "exits": {"east": "town_square", "west": "artisan_row", "north": "harbor_lane"},
       "rest_area": true
     },
     "old_shop": {
       "name": "Old Shop",
       "description": "Dusty shelves line the walls of this abandoned shop. Something might still be worth grabbing.",
       "shelter": true,
-      "exits": {"west": "town_square", "east": "harbor_lane"}
+      "exits": {"west": "town_square"}
     },
     "forest_edge": {
       "name": "Forest Edge",
@@ -56,7 +56,7 @@
       "name": "Harbor Lane",
       "description": "A cobbled lane sloping down to the water. Gulls cry overhead and ropes creak.",
       "shelter": false,
-      "exits": {"west": "old_shop", "east": "salt_docks", "north": "chandlery"}
+      "exits": {"east": "salt_docks", "north": "chandlery", "south": "market"}
     },
     "salt_docks": {
       "name": "Salt Docks",
@@ -104,7 +104,7 @@
       "name": "Deep Forge",
       "description": "The inner forge burns unnaturally hot. Something small and angry tends the coals.",
       "shelter": true,
-      "exits": {"west": "smithy"}
+      "exits": {"west": "smithy", "south": "artisan_row"}
     },
     "stillwater_lake": {
       "name": "Stillwater Lake",
@@ -189,19 +189,19 @@
       "name": "Burial Chamber",
       "description": "A sealed chamber of old kings. Grave goods glint in the dark.",
       "shelter": true,
-      "exits": {"north": "crypt_hall"}
+      "exits": {"north": "crypt_hall", "up": "graveyard"}
     },
     "bone_pit": {
       "name": "Bone Pit",
       "description": "A pit of ancient bones that shift and clatter on their own. Something down here is wrong.",
       "shelter": true,
-      "exits": {"west": "crypt_hall", "down": "deep_catacombs"}
+      "exits": {"west": "crypt_hall", "down": "deep_catacombs", "up": "graveyard"}
     },
     "deep_catacombs": {
       "name": "Deep Catacombs",
       "description": "The lowest dark, where even the dead seem afraid to go. A lost blade gleams ahead.",
       "shelter": true,
-      "exits": {"up": "bone_pit"}
+      "exits": {"up": "bone_pit", "south": "graveyard"}
     }
   },
   "npcs": {
