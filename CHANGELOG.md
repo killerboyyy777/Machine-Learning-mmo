@@ -11,6 +11,35 @@ All notable changes to the text MMO engine are recorded here.
   death tax (20-62 gold per kill incl. coin), plus one gather node per
   region (frost crystal, salt crystal). All new edges reciprocate, so
   the topology law holds unchanged.
+- Training health (#418, #417): a failed `reset()` no longer kills a
+  trainee in silence. `ml_env.reset_with_retry` retries with capped
+  exponential backoff, logs every attempt, and stops on farm shutdown;
+  the torch farm and `dqn_agent.train` both use it at start, after
+  episode end, and after a dropped connection mid-step, so
+  Torch12-15-style wedges become visible lines instead of absent
+  rows. Runner crashes are caught and reported in the farm summary
+  rather than aborting the whole run.
+- Spawn spread (#417): the torch farm assigns each runner a stable
+  starting room (`--spawn-spread`, on by default) drawn from rooms that
+  hold no hostile NPC and are walkable from town_square, walking there
+  over real exits after login. The pool routes over directed edges only,
+  so the one-way shafts from #415 are not treated as two-way. This is
+  where the exploration signal comes from: RND curiosity already pays
+  for unfamiliar states, and the spread is what puts a character in
+  front of unfamiliar ones. No second novelty payment rides on top.
+- Review fixes on the above: a clean stop is no longer reported as a
+  crash (Ctrl-C during a retry, or the step limit, previously printed
+  `CRASHED CancelledError` and deflated `runners_alive`); retry jitter
+  counts against the backoff cap instead of adding past it; and a send
+  on the socket a failed reconnect left behind raises ConnectionError
+  rather than an AttributeError that read like a bug in the caller.
+  `TextMMOEnv.step` now absorbs the whole connection-error tuple, so a
+  refused write ends the episode instead of propagating into the
+  trainer.
+- The room-discovery bonus and its per-character ledger are gone
+  (#417, owner call): exploration is paid once, by RND. `--explore-bonus`
+  is rejected rather than left as a silent no-op, and checkpoints that
+  carry a `discovered_rooms` key still load with the field ignored.
 - Map rewire (#324): every indoor room now has exactly one direct
   outdoor exit (old_shop drops its harbor link; forge, burial
   chamber, bone pit and deep catacombs gain one each). Harbor stays

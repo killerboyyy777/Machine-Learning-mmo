@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml"))
 from dqn_agent import TorchDQNAgent
 from ml_env import (
     ACTIONS,
+    CONNECTION_ERRORS,
     N_ACTIONS,
     QUEST_DELVER_REWARD_POINTS,
     QUEST_REWARD_POINTS,
@@ -41,6 +42,8 @@ from ml_env import (
     flatten_obs,
     market_net,
     quest_charm_net,
+    reset_with_retry,
+    safe_spread_rooms,
 )
 
 
@@ -72,7 +75,19 @@ class TorchFarm:
             self.last_save_step = int(_st.get("last_save_step", -1))
         except (OSError, ValueError, TypeError, AttributeError):
             pass
+        # Spawn spread (#417): round-robin over the safe room pool so the
+        # farm does not train 16 identical first observations. Computed once
+        # (world.json is static for a process) and reported in the banner.
+        self.spawn_rooms = safe_spread_rooms() if args.spawn_spread else []
         self.runners = []
+
+    def spawn_room_for(self, index):
+        """Stable per-runner spread target. Index-based, not random: a
+        relaunched farm spreads the same way, so a trainee that wanders off
+        its starting room and comes back has not lost its own identity."""
+        if not self.spawn_rooms:
+            return None
+        return self.spawn_rooms[index % len(self.spawn_rooms)]
 
     def should_stop(self):
         return self.stop.is_set() or (
@@ -104,8 +119,10 @@ class TorchFarm:
 class Runner:
     def __init__(self, index, farm):
         self.farm = farm
+        self.index = index
         self.name = f"{farm.args.name_prefix}{index}"
-        self.env = TextMMOEnv(self.name, url=farm.args.url)
+        self.spawn_room = farm.spawn_room_for(index)
+        self.env = TextMMOEnv(self.name, url=farm.args.url, spawn_room=self.spawn_room)
         self.features = None
         self.obs = None
         self.prev_gold = 0.0
@@ -113,9 +130,32 @@ class Runner:
         self.prev_orders = []
         self.score = 0.0
         self.steps = 0
+        # Training health (#418): a runner that wedges must say so. The
+        # pilot lost 4 of 16 trainees with no log line and no entry in the
+        # summary, which silently deflated the shared step rate.
+        self.reset_retries = 0
+        self.last_error = None
+
+    def log_retry(self, attempt, delay, error):
+        self.reset_retries += 1
+        self.last_error = f"reset attempt {attempt}: {error}"
+        print(
+            f"[torch-farm] {self.name}: reset failed (attempt {attempt}): "
+            f"{error}; retrying in {delay:.1f}s",
+            flush=True,
+        )
 
     async def reset(self):
-        self.obs = await self.env.reset()
+        # Jitter spreads a fleet-wide reconnect: without it all 16 sockets
+        # retry on the same second and hammer a server that is still
+        # coming up.
+        self.obs = await reset_with_retry(
+            self.env,
+            name=self.name,
+            on_retry=self.log_retry,
+            jitter=min(0.5, 0.05 * self.index),
+            should_stop=self.farm.stop.is_set,
+        )
         self.features = flatten_obs(self.obs)
         self.prev_gold = float(self.obs.get("gold_raw", 0.0))
         self.prev_inventory = set(self.obs.get("inv_names", []) or [])
@@ -187,15 +227,33 @@ class Runner:
         )
 
     async def run(self):
-        await self.reset()
         try:
+            await self.reset()
             while not self.farm.should_stop():
                 epsilon = self.farm.agent._epsilon()
                 action_index = self.farm.agent.act(
                     self.features, epsilon, self.env.valid_action_mask()
                 )
                 action_name = ACTIONS[action_index]
-                next_obs, reward, done, info = await self.env.step(action_index)
+                try:
+                    next_obs, reward, done, info = await self.env.step(action_index)
+                except CONNECTION_ERRORS as e:
+                    # Reached when the socket dies between actions in a way
+                    # step() did not absorb: a refused write, a connect that
+                    # timed out, or a send on the None socket a failed
+                    # reconnect left behind. A clean server restart or kick
+                    # arrives as ConnectionClosed, which step() turns into
+                    # done=True, so the reset below handles that case.
+                    # Store nothing either way: a dead connection has no
+                    # honest next_state.
+                    self.last_error = f"step lost the connection: {e}"
+                    print(
+                        f"[torch-farm] {self.name}: {self.last_error}; "
+                        f"reconnecting",
+                        flush=True,
+                    )
+                    await self.reset()
+                    continue
                 next_features = flatten_obs(next_obs)
                 (
                     gold_delta,
@@ -242,8 +300,34 @@ class Runner:
 
                 if done:
                     await self.reset()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Log before giving up, so the runner's exit is never the silent
+            # one #418 was about -- the gather() summary cannot report a
+            # failure it never sees.
+            self.last_error = f"{type(e).__name__}: {e}"
+            print(
+                f"[torch-farm] {self.name}: runner stopped after " f"{self.last_error}",
+                flush=True,
+            )
+            raise
         finally:
             await self.env.close()
+
+
+def _is_stop(result):
+    """True when a runner ended because the farm was asked to stop, not
+    because it broke. reset_with_retry re-raises the connection error it was
+    retrying when should_stop fires, and task.cancel() raises CancelledError,
+    so both land in the gather results as exceptions (#420)."""
+    return isinstance(result, asyncio.CancelledError) or (
+        isinstance(result, CONNECTION_ERRORS) and result is not None
+    )
+
+
+def _is_crash(result):
+    return isinstance(result, BaseException) and not _is_stop(result)
 
 
 async def main_async(args):
@@ -260,9 +344,23 @@ async def main_async(args):
         f"[torch-farm] {args.agents} agents sharing one DQN, {N_ACTIONS} actions, "
         f"{args.steps or 'unlimited'} total steps"
     )
+    if farm.spawn_rooms:
+        print(
+            f"[torch-farm] spawn spread over {len(farm.spawn_rooms)} safe "
+            f"rooms, first {len(farm.runners)}: "
+            + ", ".join(r.spawn_room for r in farm.runners)
+        )
+    else:
+        print(
+            "[torch-farm] spawn spread off: every agent starts in the "
+            "server's start room"
+        )
     tasks = [asyncio.create_task(r.run(), name=r.name) for r in farm.runners]
     try:
-        await asyncio.gather(*tasks)
+        # return_exceptions: gather() otherwise reports only the first
+        # failure and drops the rest, which is how four of sixteen pilot
+        # runners disappeared with no trace (#418).
+        await asyncio.gather(*tasks, return_exceptions=True)
     except KeyboardInterrupt:
         farm.stop.set()
     finally:
@@ -270,11 +368,29 @@ async def main_async(args):
         for task in tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         await farm.checkpoint(force=True)
-        print("[torch-farm] finished: total_steps=" + str(farm.steps))
-        for runner in farm.runners:
-            print(f"  {runner.name}: steps={runner.steps} score={runner.score:.2f}")
+        # A stop is not a crash: task.cancel() and the should_stop re-raise
+        # both surface as exceptions here, and counting them would deflate
+        # runners_alive on every clean Ctrl-C or step-limit exit (#420).
+        crashed = [r for r in results if _is_crash(r)]
+        stopped = sum(1 for r in results if _is_stop(r))
+        print(
+            f"[torch-farm] finished: total_steps={farm.steps} "
+            f"runners_alive={len(farm.runners) - len(crashed)} "
+            f"crashed={len(crashed)} stopped={stopped}"
+        )
+        for runner, result in zip(farm.runners, results):
+            line = (
+                f"  {runner.name}: steps={runner.steps} "
+                f"score={runner.score:.2f} "
+                f"reset_retries={runner.reset_retries}"
+            )
+            if _is_crash(result):
+                line += f" CRASHED {type(result).__name__}: {result}"
+            elif runner.last_error:
+                line += f" (last issue: {runner.last_error})"
+            print(line)
 
 
 def parse_args():
@@ -301,6 +417,18 @@ def parse_args():
         "--weights", default=None, help="shared current checkpoint path"
     )
     parser.add_argument("--best-weights", default=None, help="best checkpoint path")
+    parser.add_argument(
+        "--spawn-spread",
+        action="store_true",
+        default=True,
+        help="spread trainees across safe rooms on login/respawn (default on)",
+    )
+    parser.add_argument(
+        "--no-spawn-spread",
+        dest="spawn_spread",
+        action="store_false",
+        help="every trainee starts in the server's start room (pre-#417 behavior)",
+    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
