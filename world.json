@@ -74,7 +74,7 @@
       "name": "Tide Pools",
       "description": "Shallow pools left by the tide, full of crabs and glinting shells.",
       "shelter": false,
-      "exits": {"north": "salt_docks"}
+      "exits": {"north": "salt_docks", "south": "sunken_reef"}
     },
     "artisan_row": {
       "name": "Artisan Row",
@@ -153,7 +153,7 @@
       "name": "Storm Summit",
       "description": "The highest peak for miles. Lightning scars the black rock between snowdrifts.",
       "shelter": false,
-      "exits": {"south": "frozen_pass"}
+      "exits": {"south": "frozen_pass", "north": "howling_col"}
     },
     "highland_trail": {
       "name": "Highland Trail",
@@ -202,6 +202,42 @@
       "description": "The lowest dark, where even the dead seem afraid to go. A lost blade gleams ahead.",
       "shelter": true,
       "exits": {"up": "bone_pit", "south": "graveyard"}
+    },
+    "howling_col": {
+      "name": "Howling Col",
+      "description": "A wind-scoured saddle beyond the summit. The gale never stops screaming through the gap.",
+      "shelter": false,
+      "exits": {"south": "storm_summit", "north": "glacier_crown", "east": "windcarved_crag"}
+    },
+    "glacier_crown": {
+      "name": "Glacier Crown",
+      "description": "A dome of ancient blue ice. Deep cracks glow from within, and something vast sleeps below.",
+      "shelter": false,
+      "exits": {"south": "howling_col"}
+    },
+    "windcarved_crag": {
+      "name": "Windcarved Crag",
+      "description": "A lonely tor sculpted by centuries of wind into knives and arches. Loose scree hides patient hunters.",
+      "shelter": false,
+      "exits": {"west": "howling_col"}
+    },
+    "sunken_reef": {
+      "name": "Sunken Reef",
+      "description": "A drowned reef of black coral. Tidewater drains hissing through the rock twice a day.",
+      "shelter": false,
+      "exits": {"north": "tide_pools", "south": "drowned_grotto", "west": "saltspray_bluff"}
+    },
+    "drowned_grotto": {
+      "name": "Drowned Grotto",
+      "description": "A sea-cave that floods at high tide. Barnacled bones and ship fittings litter the floor.",
+      "shelter": false,
+      "exits": {"north": "sunken_reef"}
+    },
+    "saltspray_bluff": {
+      "name": "Saltspray Bluff",
+      "description": "White cliffs crusted with salt. Gulls and patient predators watch the surf below.",
+      "shelter": false,
+      "exits": {"east": "sunken_reef"}
     }
   },
   "npcs": {
@@ -493,6 +529,78 @@
       "loot": ["ectoplasm", "healing_herb"],
       "gold": 18,
       "respawn_seconds": 90
+    },
+    "tempest_roc": {
+      "name": "Tempest Roc",
+      "room": "howling_col",
+      "hp": 95,
+      "max_hp": 95,
+      "attack": 12,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["frost_crystal", "serpent_scale"],
+      "gold": 30,
+      "respawn_seconds": 120
+    },
+    "glacier_wyrm": {
+      "name": "Glacier Wyrm",
+      "room": "glacier_crown",
+      "hp": 105,
+      "max_hp": 105,
+      "attack": 13,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["troll_hide", "frost_crystal"],
+      "gold": 32,
+      "respawn_seconds": 130
+    },
+    "crag_stalker": {
+      "name": "Crag Stalker",
+      "room": "windcarved_crag",
+      "hp": 85,
+      "max_hp": 85,
+      "attack": 11,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["serpent_scale", "iron_ore"],
+      "gold": 26,
+      "respawn_seconds": 100
+    },
+    "reef_reaver": {
+      "name": "Reef Reaver",
+      "room": "sunken_reef",
+      "hp": 80,
+      "max_hp": 80,
+      "attack": 10,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["serpent_scale", "healing_herb"],
+      "gold": 24,
+      "respawn_seconds": 100
+    },
+    "abyssal_maw": {
+      "name": "Abyssal Maw",
+      "room": "drowned_grotto",
+      "hp": 100,
+      "max_hp": 100,
+      "attack": 12,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["frost_crystal", "serpent_scale"],
+      "gold": 30,
+      "respawn_seconds": 120
+    },
+    "dune_lurker": {
+      "name": "Dune Lurker",
+      "room": "saltspray_bluff",
+      "hp": 75,
+      "max_hp": 75,
+      "attack": 10,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["iron_ore", "wolf_pelt"],
+      "gold": 22,
+      "respawn_seconds": 100
     }
   },
   "items": {
@@ -675,6 +783,8 @@
     "mountain_herb_node": {"room": "highland_trail", "item": "mountain_herb", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 3, "score": 1},
     "resin_node": {"room": "pinewood_thicket", "item": "resin", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
     "scrap_iron_node": {"room": "smithy", "item": "scrap_iron", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
-    "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1}
+    "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1},
+    "glacier_frost_node": {"room": "glacier_crown", "item": "frost_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 60, "xp": 3, "score": 1},
+    "bluff_salt_node": {"room": "saltspray_bluff", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1}
   }
 }

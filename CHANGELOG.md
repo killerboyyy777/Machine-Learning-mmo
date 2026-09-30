@@ -3,6 +3,14 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Wild expansion (#336): two new outdoor-only regions as pure map
+  extension (39 rooms total, no existing exit/quest/NPC touched). North
+  of storm_summit: howling_col, glacier_crown, windcarved_crag.
+  South of tide_pools: sunken_reef, drowned_grotto, saltspray_bluff.
+  Six new mobs (hp 75-105, atk 10-13, idle) drop loot priced above the
+  death tax (20-62 gold per kill incl. coin), plus one gather node per
+  region (frost crystal, salt crystal). All new edges reciprocate, so
+  the topology law holds unchanged.
 - Map rewire (#324): every indoor room now has exactly one direct
   outdoor exit (old_shop drops its harbor link; forge, burial
   chamber, bone pit and deep catacombs gain one each). Harbor stays
