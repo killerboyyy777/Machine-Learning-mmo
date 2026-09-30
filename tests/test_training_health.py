@@ -361,7 +361,7 @@ else:
     )
     import tempfile
 
-    from dqn_agent import TorchDQNAgent
+    from dqn_agent import OBS_SIZE, TorchDQNAgent
     from torch_farm import Runner, TorchFarm, _is_crash, _is_stop, parse_args
 
     # The spawn spread is the whole of #417 now: exploration is paid once, by
@@ -398,6 +398,8 @@ else:
         weights = os.path.join(tempfile.gettempdir(), "health_weights.json")
         best_weights = os.path.join(tempfile.gettempdir(), "health_best.json")
         spawn_spread = True
+        td_norm = True
+        td_clip = 5.0
 
     farm = TorchFarm(_Args())
     assert farm.spawn_rooms, "spread pool empty with --spawn-spread on"
@@ -438,6 +440,20 @@ else:
         assert parse_args().spawn_spread is True
         sys.argv = ["torch_farm.py", "--no-spawn-spread"]
         assert parse_args().spawn_spread is False
+        # #416b is on by default and switchable off in one flag.
+        sys.argv = ["torch_farm.py", "--agents", "2"]
+        assert parse_args().td_norm is True
+        assert parse_args().td_clip == 5.0
+        sys.argv = ["torch_farm.py", "--no-td-norm", "--td-clip", "3"]
+        assert parse_args().td_norm is False
+        assert parse_args().td_clip == 3.0
+        sys.argv = ["torch_farm.py", "--td-clip", "0"]
+        try:
+            parse_args()
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit("FAIL: --td-clip 0 accepted; it would divide by zero")
         # The removed flag must not linger as a silent no-op.
         sys.argv = ["torch_farm.py", "--explore-bonus", "0.2"]
         try:
@@ -449,5 +465,102 @@ else:
     finally:
         sys.argv = _argv
     print("TORCH_FARM_SPREAD_OK")
+
+    # #416b: per-batch advantage normalization + clipping. The defining
+    # property is scale invariance: making the reward 100x worse must not
+    # make the update 100x bigger. That is the whole point of conditioning
+    # a 14:1 death:kill signal, so test the property, not magic numbers.
+    def _agent(**kw):
+        # Identical init across instances so losses are comparable.
+        torch.manual_seed(0)
+        return TorchDQNAgent(name="NormProbe", **kw)
+
+    def _fill(agent, reward_list):
+        """Store exactly one minibatch so learn() always samples all of it."""
+        for i, r in enumerate(reward_list):
+            s = [0.0] * OBS_SIZE
+            s[i % 7] = 1.0
+            agent.store(
+                {
+                    "state": s,
+                    "action": i % 3,
+                    "reward": r,
+                    "next_state": s,
+                    "done": 1.0 if i % 6 == 0 else 0.0,
+                    "gold": 0.0,
+                    "loot": 0.0,
+                    "market": 0.0,
+                    "quest_reward": 0.0,
+                    "quest_intrinsic": 0.0,
+                    "rnd_bonus": 0.0,
+                }
+            )
+
+    n = 32
+    small = [-50.0] + [0.0] * (n - 1)  # one death among many ordinary steps
+    huge = [-5000.0] + [0.0] * (n - 1)  # same shape, 100x the punishment
+
+    a = _agent(td_norm=True, td_clip=5.0)
+    _fill(a, small)
+    la = a.learn()
+    b = _agent(td_norm=True, td_clip=5.0)
+    _fill(b, huge)
+    lb = b.learn()
+    c = _agent(td_norm=False)
+    _fill(c, small)
+    lc = c.learn()
+    d = _agent(td_norm=False)
+    _fill(d, huge)
+    ld = d.learn()
+    for x in (la, lb, lc, ld):
+        assert x["td"] is not None, "minibatch should have been trainable"
+
+    # Scale invariance: the normalized fit barely notices a 100x worse reward.
+    assert abs(la["td"] - lb["td"]) < 1e-4 * max(
+        1.0, la["td"]
+    ), f"normalized loss should be scale-invariant: {la['td']} vs {lb['td']}"
+    # The unnormalized fit feels it: this is the gradient blow-up #416 hit.
+    assert (
+        ld["td"] > 50 * lc["td"]
+    ), f"unnormalized loss should track reward scale: {lc['td']} vs {ld['td']}"
+    # Clipping binds on the outlier and reports its share.
+    assert la["adv_clip_frac"] > 0.0, "one death among 32 must trip the clip"
+    assert lb["adv_clip_frac"] >= la["adv_clip_frac"], "bigger spike, no less clipping"
+    assert (
+        lc["adv_clip_frac"] == 0.0 and ld["adv_clip_frac"] == 0.0
+    ), "clipping must be inert when td_norm is off"
+    assert (
+        lc["adv_scale"] == 1.0 and ld["adv_scale"] == 1.0
+    ), "adv_scale must report 1.0 (unconditioned) when td_norm is off"
+    assert (
+        lb["adv_scale"] > 50 * lc["adv_scale"]
+    ), "adv_scale must report the real raw residual spread"
+
+    # Known cost, pinned on purpose: normalizing also amplifies residual
+    # noise when there is no real signal, so an all-zero batch is not inert.
+    # The clip is what keeps that bounded -- at td_clip=5 the Huber term
+    # cannot exceed 4.5, so noise-driven updates stay small and tunable.
+    e = _agent(td_norm=True, td_clip=5.0)
+    _fill(e, [0.0] * n)
+    le = e.learn()
+    f = _agent(td_norm=False)
+    _fill(f, [0.0] * n)
+    lf = f.learn()
+    assert le["td"] is not None and lf["td"] is not None
+    assert le["td"] < 4.5, f"clip must bound noise amplification, got {le['td']}"
+    assert le["td"] > lf["td"], "normalizing does amplify pure noise; expected"
+
+    # A checkpoint from before #416b still loads: no new required keys, and
+    # per-batch statistics are deliberately not persisted.
+    with tempfile.TemporaryDirectory() as tmp2:
+        p2 = os.path.join(tmp2, "n.pt")
+        a.save_weights(p2)
+        blob = torch.load(p2, weights_only=True)
+        assert (
+            "td_norm" not in blob and "adv_scale" not in blob
+        ), "per-batch state must not be checkpointed"
+        older = _agent(td_norm=False)
+        assert older.load_weights(p2) is True
+    print("TORCH_TD_NORM_OK")
 
 print("ALL_TRAINING_HEALTH_OK")

@@ -210,6 +210,8 @@ class TorchDQNAgent:
         rnd_dim: int = 32,  # RND embedding size
         rnd_lr: float = 1e-3,  # RND predictor learning rate
         rnd_ema: float = 0.01,  # running-stat momentum for bonus norm
+        td_norm: bool = True,  # per-batch advantage normalization (#416b)
+        td_clip: float = 5.0,  # clip bound on the normalized advantage
         spawn_room: str | None = None,  # walk here after login (#417)
     ):
         self.name = name
@@ -262,6 +264,15 @@ class TorchDQNAgent:
         self.rnd_opt = optim.Adam(self.rnd_pred.parameters(), lr=rnd_lr)
         self._rnd_mean = 0.0
         self._rnd_var = 1.0
+
+        # #416b: per-batch advantage normalization + clipping. The pilot
+        # showed a 14:1 death:kill ratio at level 1, so raw TD residuals
+        # are one-sided and unbounded -- a handful of death transitions
+        # dominate every minibatch and the gradient scale drifts with
+        # episode length. Normalizing the residual conditions the update
+        # magnitude without touching the value scale or the game.
+        self.td_norm = td_norm
+        self.td_clip = td_clip
 
         self.replay: list = [None] * replay_size
         self.replay_idx = 0
@@ -379,6 +390,8 @@ class TorchDQNAgent:
                 "market": None,
                 "quest": None,
                 "rnd": None,
+                "adv_scale": None,
+                "adv_clip_frac": None,
             }
         indices = random.sample(available, self.batch_size)
         batch = [self.replay[i] for i in indices if self.replay[i] is not None]
@@ -391,6 +404,8 @@ class TorchDQNAgent:
                 "market": None,
                 "quest": None,
                 "rnd": None,
+                "adv_scale": None,
+                "adv_clip_frac": None,
             }
 
         # ---- build tensors from batch ----
@@ -462,7 +477,24 @@ class TorchDQNAgent:
             td_targets = shaped + self.gamma * target_q * (1.0 - dones)
 
         # ---- TD loss (Huber) ----
-        td_loss = nn.functional.smooth_l1_loss(q_vals, td_targets)
+        # #416b: fit q toward its own value plus a per-batch normalized,
+        # clipped advantage. Normalizing the residual (not the target)
+        # keeps the Bellman backup and the absolute value scale intact,
+        # which a centered target would destroy: centering td_targets
+        # would make every state's target zero-mean and unlearnable.
+        adv_raw = td_targets - q_vals.detach()
+        if self.td_norm:
+            adv_std = adv_raw.std()
+            adv_scale = float(adv_std.item())
+            adv = (adv_raw - adv_raw.mean()) / (adv_std + 1e-6)
+            clipped = adv.clamp(-self.td_clip, self.td_clip)
+            clip_frac = float(((clipped - adv).abs() > 0).float().mean().item())
+            adv = clipped
+        else:
+            adv_scale = 1.0
+            clip_frac = 0.0
+            adv = adv_raw
+        td_loss = nn.functional.smooth_l1_loss(q_vals, q_vals.detach() + adv)
 
         # ---- auxiliary losses ----
         heads = self.q(states)
@@ -505,6 +537,8 @@ class TorchDQNAgent:
             "market": float(market_loss.detach()),
             "quest": float(quest_loss.detach()),
             "rnd": rnd_loss,
+            "adv_scale": adv_scale,
+            "adv_clip_frac": clip_frac,
         }
 
     # ---- weight persistence -------------------------------------------------
@@ -778,6 +812,11 @@ class TorchDQNAgent:
                     f"delver(acc/turn)={quest2_accepts}/{quest2_turnins} intr={intrinsic_total:.1f}  "
                     f"losses(TD/Gold/Loot/Mkt/Qst/Rnd)={_fmt_loss(losses['td'])}/{_fmt_loss(losses['gold'])}/{_fmt_loss(losses['loot'])}/{_fmt_loss(losses['market'])}/{_fmt_loss(losses['quest'])}/{_fmt_loss(losses['rnd'])}"
                 )
+                if losses.get("adv_scale") is not None:
+                    print(
+                        f"         adv_scale={losses['adv_scale']:.4f}  "
+                        f"clipped={losses['adv_clip_frac'] * 100:.1f}% of batch"
+                    )
 
             # Save checkpoint + best-model snapshot
             if self.t_step % save_every == 0:

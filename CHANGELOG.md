@@ -3,6 +3,22 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
+  normalized and clipped. `learn()` regresses `q` toward its own detached
+  value plus `(td_target - q)` standardized across the minibatch and
+  clamped to `td_clip` (default 5), so a death penalty 100x larger no
+  longer produces a proportionally larger update. The residual is
+  normalized rather than the target itself, which keeps the Bellman
+  backup and the absolute value scale intact. On by default;
+  `--no-td-norm` restores the old fit. `learn()` reports `adv_scale` and
+  `adv_clip_frac`, and the run log prints them, so a pilot can tell
+  conditioning from a dead signal. No game files touched.
+- Wild interior chains (#423): both frontier paths now cross two chained
+  indoor rooms. `storm_summit -> summit_gatehouse -> howling_tunnel ->
+  howling_col` and `tide_pools -> tideline_lighthouse -> sunken_tunnel ->
+  sunken_reef`. Each new room has exactly two exits, `shelter: true`, and
+  reciprocating opposite labels, so the #324 one-outdoor-exit law holds.
+  43 rooms total; frontier rooms unchanged.
 - Wild expansion (#336): two new outdoor-only regions as pure map
   extension (39 rooms total, no existing exit/quest/NPC touched). North
   of storm_summit: howling_col, glacier_crown, windcarved_crag.
