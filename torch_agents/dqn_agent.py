@@ -36,7 +36,10 @@ Key design:
     auxiliary losses
   - Exploration: epsilon-greedy with linear decay, plus RND curiosity
   (frozen random target vs trained predictor; normalized prediction error
-  rides the TD target with weight rnd_lambda, predictor trains separately)
+  rides the TD target with weight rnd_lambda, predictor trains separately).
+  That is the exploration signal: RND pays for unfamiliar states, and
+  spawn_room/spawn_spread moves the character somewhere unfamiliar to
+  start with. Do not add a second novelty payment on top (#417).
 - Save/load weights to torch_agents/ml_weights.json (torch.save format, separate
      from the JSON weights used by ml_client.py); torch_farm.py defaults to
      ml_farm_weights.json / ml_farm_best.json instead. Note: obs/action
@@ -60,6 +63,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from ml_env import (
+    CONNECTION_ERRORS,
     TextMMOEnv,
     ACTIONS,
     N_ACTIONS,
@@ -71,6 +75,7 @@ from ml_env import (
     QUEST_DELVER_REWARD_POINTS,
     quest_charm_cost,
     quest_charm_net,
+    reset_with_retry,
 )
 from versioning import checkpoint_version, version_notes
 
@@ -205,6 +210,7 @@ class TorchDQNAgent:
         rnd_dim: int = 32,  # RND embedding size
         rnd_lr: float = 1e-3,  # RND predictor learning rate
         rnd_ema: float = 0.01,  # running-stat momentum for bonus norm
+        spawn_room: str | None = None,  # walk here after login (#417)
     ):
         self.name = name
         self.url = url
@@ -264,6 +270,9 @@ class TorchDQNAgent:
         self.learn_step = 0
         self.best_score: float = -float("inf")
         self.ckpt_version = None  # version dict of the loaded checkpoint
+
+        self.spawn_room = spawn_room
+        self.last_reset_error = None  # names the failure when a reset wedges
 
         # Tracking per-episode for auxiliary supervision
         self._prev_gold: float = 0.0
@@ -578,24 +587,34 @@ class TorchDQNAgent:
 
     # ---- environment loop ---------------------------------------------------
 
+    def log_reset_retry(self, attempt, delay, error):
+        self.last_reset_error = f"reset attempt {attempt}: {error}"
+        print(
+            f"[torch] {self.name}: reset failed (attempt {attempt}): "
+            f"{error}; retrying in {delay:.1f}s",
+            flush=True,
+        )
+
+    async def reset_env(self, env):
+        """Reconnect with logged backoff and re-seed per-episode tracking.
+
+        The retry is the #418 fix: a connection error out of reset() used to
+        end the whole training run with no log line naming the character.
+        """
+        obs = await reset_with_retry(env, name=self.name, on_retry=self.log_reset_retry)
+        self._prev_gold = float(obs.get("gold_raw", 0.0))
+        self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
+        self._bought_items = 0
+        self._prev_own_orders = []
+        return obs
+
     async def train(self, total_steps: int, save_every: int = 500):
         _ACTIONS = ACTIONS
 
-        env = TextMMOEnv(self.name, url=self.url)
-        obs = await env.reset()
+        env = TextMMOEnv(self.name, url=self.url, spawn_room=self.spawn_room)
+        obs = await self.reset_env(env)
         features = flatten_obs(obs)
         epsilon = self._epsilon()
-
-        # Initialise auxiliary tracking from the first snapshot
-        # (obs is the structured dict; flatten only for the network).
-        self._prev_gold = float(obs.get("gold_raw", 0.0))
-        self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
-
-        # Market tracking init. The env's step info carries live tax terms,
-        # detected buy fills, and our standing orders with nets, so P&L
-        # targets below can use exact after-tax accounting.
-        self._bought_items = 0
-        self._prev_own_orders = []
 
         total_reward = 0.0
         recent_rewards: list[float] = []
@@ -612,7 +631,23 @@ class TorchDQNAgent:
             epsilon = self._epsilon()
             action = self.act(features, epsilon, env.valid_action_mask())
             action_counts[action] += 1
-            next_obs, reward, done, info = await env.step(action)
+            try:
+                next_obs, reward, done, info = await env.step(action)
+            except CONNECTION_ERRORS as e:
+                # A refused write, a timed-out connect, or a send on the None
+                # socket a failed reconnect left behind. A clean server
+                # restart arrives as ConnectionClosed, which step() turns
+                # into done=True and the reset below handles. Either way
+                # there is no honest next_state, so store nothing and keep
+                # the remaining step budget (#418).
+                print(
+                    f"[torch] {self.name}: step lost the connection "
+                    f"({e}); reconnecting",
+                    flush=True,
+                )
+                obs = await self.reset_env(env)
+                features = flatten_obs(obs)
+                continue
             next_features = flatten_obs(next_obs)
 
             # ---- compute auxiliary targets from observation changes ----
@@ -755,15 +790,9 @@ class TorchDQNAgent:
                     )
 
             if done:
-                obs = await env.reset()
+                obs = await self.reset_env(env)
                 features = flatten_obs(obs)
                 epsilon = self._epsilon()
-                # reset auxiliary tracking
-                self._prev_gold = float(obs.get("gold_raw", 0.0))
-                self._prev_inventory_ids = set(obs.get("inv_names", []) or [])
-                # reset market tracking
-                self._bought_items = 0
-                self._prev_own_orders = []
 
         self.save_weights()
         print(f"\nTraining finished after {self.t_step} steps.")
@@ -848,13 +877,23 @@ def main():
     parser.add_argument(
         "--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate"
     )
+    parser.add_argument(
+        "--spawn-room",
+        default=None,
+        help="walk here after login instead of the server's start room (#417); "
+        "use safe_spread_rooms() in ml_env to pick from the safe pool",
+    )
     args = parser.parse_args()
 
     if args.demo:
         asyncio.run(_demo())
         return
     agent = TorchDQNAgent(
-        name=args.name, url=args.url, rnd_lambda=args.rnd_lambda, rnd_lr=args.rnd_lr
+        name=args.name,
+        url=args.url,
+        rnd_lambda=args.rnd_lambda,
+        rnd_lr=args.rnd_lr,
+        spawn_room=args.spawn_room,
     )
     agent.load_weights()
     asyncio.run(agent.train(total_steps=args.steps, save_every=args.save_every))

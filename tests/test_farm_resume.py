@@ -74,6 +74,7 @@ if HAVE_TORCH:
             best_weights=best,
             steps=0,
             save_every=10,
+            spawn_spread=False,
         )
 
     def test_torchfarm_resume():
