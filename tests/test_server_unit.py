@@ -2851,6 +2851,38 @@ async def main():
         _seen.add(_rr)
         _stack.extend(_rooms[_rr].get("exits", {}).values())
     assert _seen == set(_rooms), set(_rooms) - _seen
+    # edge discipline: every directed exit either has a reciprocating
+    # edge with the opposite label, or is a documented intentional
+    # one-way below. New accidental one-ways fail here.
+    _opp = {"north": "south", "south": "north", "east": "west",
+            "west": "east", "up": "down", "down": "up"}
+    _oneway = {("forge", "south", "artisan_row"),
+               ("burial_chamber", "up", "graveyard"),
+               ("bone_pit", "up", "graveyard"),
+               ("deep_catacombs", "south", "graveyard")}
+    for _rid, _r in _rooms.items():
+        for _d, _t in _r.get("exits", {}).items():
+            if _t not in _rooms:
+                continue
+            _back = _rooms[_t].get("exits", {})
+            if _opp.get(_d) is not None and _back.get(_opp[_d]) == _rid:
+                continue
+            assert (_rid, _d, _t) in _oneway, (_rid, _d, _t)
+    # reverse reachability: every room can walk back to town_square
+    # (escape routes exist; nothing is a trap)
+    _rev = {}
+    for _rid, _r in _rooms.items():
+        for _t in _r.get("exits", {}).values():
+            if _t in _rooms:
+                _rev.setdefault(_t, []).append(_rid)
+    _back_seen, _bstack = set(), ["town_square"]
+    while _bstack:
+        _rr = _bstack.pop()
+        if _rr in _back_seen:
+            continue
+        _back_seen.add(_rr)
+        _bstack.extend(_rev.get(_rr, []))
+    assert _back_seen == set(_rooms), set(_rooms) - _back_seen
     print("TOPOLOGY_OK")
 
 asyncio.run(main())

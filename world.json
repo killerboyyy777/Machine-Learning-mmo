@@ -12,7 +12,7 @@
       "name": "Market",
       "description": "A small market stall run by a wandering merchant. Prices are chalked on a board. A corner bunkhouse rents rest (2 gold).",
       "shelter": false,
-      "exits": {"east": "town_square", "west": "artisan_row", "south": "harbor_lane"},
+      "exits": {"east": "town_square", "west": "artisan_row", "north": "harbor_lane"},
       "rest_area": true
     },
     "old_shop": {
