@@ -74,7 +74,19 @@
       "name": "Tide Pools",
       "description": "Shallow pools left by the tide, full of crabs and glinting shells.",
       "shelter": false,
-      "exits": {"north": "salt_docks", "south": "sunken_reef"}
+      "exits": {"north": "salt_docks", "south": "tideline_lighthouse"}
+    },
+    "tideline_lighthouse": {
+      "name": "Tideline Lighthouse",
+      "description": "A squat stone tower above the pools, its lamp long dark. The keeper's room is dry and windless.",
+      "shelter": true,
+      "exits": {"north": "tide_pools", "south": "sunken_tunnel"}
+    },
+    "sunken_tunnel": {
+      "name": "Sunken Tunnel",
+      "description": "A service tunnel cut under the reef, long since half filled with sand. The drip never stops.",
+      "shelter": true,
+      "exits": {"north": "tideline_lighthouse", "south": "sunken_reef"}
     },
     "artisan_row": {
       "name": "Artisan Row",
@@ -153,7 +165,19 @@
       "name": "Storm Summit",
       "description": "The highest peak for miles. Lightning scars the black rock between snowdrifts.",
       "shelter": false,
-      "exits": {"south": "frozen_pass", "north": "howling_col"}
+      "exits": {"south": "frozen_pass", "north": "summit_gatehouse"}
+    },
+    "summit_gatehouse": {
+      "name": "Summit Gatehouse",
+      "description": "A squat stone refuge wedged below the peak, built by climbers who learned what the gale does to a body left in the open.",
+      "shelter": true,
+      "exits": {"south": "storm_summit", "north": "howling_tunnel"}
+    },
+    "howling_tunnel": {
+      "name": "Howling Tunnel",
+      "description": "A cut-stone tunnel bored under the col. The wind still finds the shaft above and screams down it.",
+      "shelter": true,
+      "exits": {"south": "summit_gatehouse", "north": "howling_col"}
     },
     "highland_trail": {
       "name": "Highland Trail",
@@ -207,7 +231,7 @@
       "name": "Howling Col",
       "description": "A wind-scoured saddle beyond the summit. The gale never stops screaming through the gap.",
       "shelter": false,
-      "exits": {"south": "storm_summit", "north": "glacier_crown", "east": "windcarved_crag"}
+      "exits": {"south": "howling_tunnel", "north": "glacier_crown", "east": "windcarved_crag"}
     },
     "glacier_crown": {
       "name": "Glacier Crown",
@@ -225,7 +249,7 @@
       "name": "Sunken Reef",
       "description": "A drowned reef of black coral. Tidewater drains hissing through the rock twice a day.",
       "shelter": false,
-      "exits": {"north": "tide_pools", "south": "drowned_grotto", "west": "saltspray_bluff"}
+      "exits": {"north": "sunken_tunnel", "south": "drowned_grotto", "west": "saltspray_bluff"}
     },
     "drowned_grotto": {
       "name": "Drowned Grotto",

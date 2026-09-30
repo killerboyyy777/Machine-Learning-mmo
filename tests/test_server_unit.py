@@ -2893,4 +2893,17 @@ async def main():
     assert _back_seen == set(_rooms), set(_rooms) - _back_seen
     print("TOPOLOGY_OK")
 
+    # #423: each frontier path crosses exactly two chained indoor rooms
+    # (shelter, in/out only) before reaching open ground again
+    for _frontier, _lab in (("howling_col", "south"), ("sunken_reef", "north")):
+        _a = _rooms[_frontier]["exits"][_lab]
+        _b = _rooms[_a]["exits"][_lab]
+        _c = _rooms[_b]["exits"][_lab]
+        assert _rooms[_a].get("shelter") is True, (_frontier, _a)
+        assert _rooms[_b].get("shelter") is True, (_frontier, _b)
+        assert not _rooms[_c].get("shelter"), (_frontier, _c)
+        assert len(_rooms[_a]["exits"]) == 2, (_frontier, _a)
+        assert len(_rooms[_b]["exits"]) == 2, (_frontier, _b)
+    print("WILD_CHAIN_OK")
+
 asyncio.run(main())
