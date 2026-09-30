@@ -261,10 +261,14 @@ class Runner:
                 try:
                     next_obs, reward, done, info = await self.env.step(action_index)
                 except CONNECTION_ERRORS as e:
-                    # The socket died between actions. Store nothing (a dead
-                    # connection has no honest next_state) and let the reset
-                    # below reconnect with backoff -- #418's wedge was this
-                    # path taking the whole farm down silently.
+                    # Reached when the socket dies between actions in a way
+                    # step() did not absorb: a refused write, a connect that
+                    # timed out, or a send on the None socket a failed
+                    # reconnect left behind. A clean server restart or kick
+                    # arrives as ConnectionClosed, which step() turns into
+                    # done=True, so the reset below handles that case.
+                    # Store nothing either way: a dead connection has no
+                    # honest next_state.
                     self.last_error = f"step lost the connection: {e}"
                     print(
                         f"[torch-farm] {self.name}: {self.last_error}; "
@@ -344,6 +348,20 @@ class Runner:
             await self.env.close()
 
 
+def _is_stop(result):
+    """True when a runner ended because the farm was asked to stop, not
+    because it broke. reset_with_retry re-raises the connection error it was
+    retrying when should_stop fires, and task.cancel() raises CancelledError,
+    so both land in the gather results as exceptions (#420)."""
+    return isinstance(result, asyncio.CancelledError) or (
+        isinstance(result, CONNECTION_ERRORS) and result is not None
+    )
+
+
+def _is_crash(result):
+    return isinstance(result, BaseException) and not _is_stop(result)
+
+
 async def main_async(args):
     farm = TorchFarm(args)
     farm.runners = [Runner(i, farm) for i in range(args.agents)]
@@ -384,10 +402,15 @@ async def main_async(args):
                 task.cancel()
         results = await asyncio.gather(*tasks, return_exceptions=True)
         await farm.checkpoint(force=True)
-        crashed = sum(1 for r in results if isinstance(r, BaseException))
+        # A stop is not a crash: task.cancel() and the should_stop re-raise
+        # both surface as exceptions here, and counting them would deflate
+        # runners_alive on every clean Ctrl-C or step-limit exit (#420).
+        crashed = [r for r in results if _is_crash(r)]
+        stopped = sum(1 for r in results if _is_stop(r))
         print(
             f"[torch-farm] finished: total_steps={farm.steps} "
-            f"runners_alive={len(farm.runners) - crashed} crashed={crashed}"
+            f"runners_alive={len(farm.runners) - len(crashed)} "
+            f"crashed={len(crashed)} stopped={stopped}"
         )
         for runner, result in zip(farm.runners, results):
             line = (
@@ -395,7 +418,7 @@ async def main_async(args):
                 f"score={runner.score:.2f} rooms={len(runner.discovered)} "
                 f"reset_retries={runner.reset_retries}"
             )
-            if isinstance(result, BaseException):
+            if _is_crash(result):
                 line += f" CRASHED {type(result).__name__}: {result}"
             elif runner.last_error:
                 line += f" (last issue: {runner.last_error})"

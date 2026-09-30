@@ -15,6 +15,7 @@ sys.path.insert(
 )
 
 from ml_env import (
+    ACTIONS,
     CONNECTION_ERRORS,
     TextMMOEnv,
     reachable_path,
@@ -90,6 +91,28 @@ asyncio.run(_retry_backoff_cap())
 print("RESET_BACKOFF_CAP_OK")
 
 
+async def _jitter_stays_under_cap():
+    # Jitter is a fleet stagger, not an exemption from the cap: 60.5s of
+    # "capped" backoff is not capped.
+    delays = []
+    env = _FlakyEnv(8)
+    await reset_with_retry(
+        env,
+        name="Torch4",
+        backoff_base=1.0,
+        backoff_max=4.0,
+        jitter=0.5,
+        on_retry=lambda a, d, e: delays.append(d),
+        sleep=lambda d: asyncio.sleep(0),
+    )
+    assert delays == [1.5, 2.5, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0], delays
+    assert max(delays) <= 4.0, delays
+
+
+asyncio.run(_jitter_stays_under_cap())
+print("RESET_JITTER_CAP_OK")
+
+
 async def _retry_propagates_bugs():
     env = _FlakyEnv(1, exc=RuntimeError)
     try:
@@ -143,6 +166,37 @@ try:
 except ImportError:
     raise SystemExit("FAIL: websockets missing, ConnectionClosed untestable")
 print("CONNECTION_ERRORS_OK")
+
+
+# --- #420: step() absorbs the whole tuple, so a dead socket is done, not a
+# crash. Before this, only ConnectionClosed was caught and an OSError out of
+# _send propagated into the trainer's step handler instead.
+
+
+async def _step_survives_dead_socket():
+    class _DeadSocket:
+        async def send(self, _payload):
+            raise OSError("write on closed transport")
+
+    env = TextMMOEnv("StepDead")
+    env.step_delay = 0
+    env.ws = _DeadSocket()
+    env._state = env._build_obs() and env._state
+    _, _, done, _info = await env.step(ACTIONS.index("look"))
+    assert done is True, "a refused write must end the episode, not raise"
+
+    env.ws = None
+    # A send on the None socket a failed reconnect leaves behind raised
+    # AttributeError, which read like a bug in the caller and raced past
+    # every connection-error handler. _send now raises ConnectionError.
+    env._state["room_id"] = "town_square"
+    obs, _, done, _ = await env.step(ACTIONS.index("look"))
+    assert done is True, "a send with no socket must end the episode"
+    assert obs["room_id"]
+
+
+asyncio.run(_step_survives_dead_socket())
+print("STEP_SURVIVES_DEAD_SOCKET_OK")
 
 
 # --- #417: walk routing honours directed edges -------------------------------
@@ -337,7 +391,7 @@ else:
         ),
     )
     from dqn_agent import TorchDQNAgent
-    from torch_farm import Runner, TorchFarm, parse_args
+    from torch_farm import Runner, TorchFarm, _is_crash, _is_stop, parse_args
 
     agent = TorchDQNAgent(name="HealthTest", explore_bonus=0.25)
     assert agent.discovery_bonus("town_square") == 0.25
@@ -392,6 +446,21 @@ else:
     assert farm_off.spawn_room_for(3) is None
     assert Runner(0, farm_off).spawn_room is None
     assert Runner(0, farm).spawn_room in farm.spawn_rooms
+
+    # A clean stop is not a crash. Ctrl-C during a retry, or the
+    # task.cancel() in the finally block, both reach the gather as
+    # exceptions; counting them deflated runners_alive on every tidy exit.
+    assert _is_stop(asyncio.CancelledError()) is True
+    assert _is_crash(asyncio.CancelledError()) is False
+    assert _is_stop(ConnectionError("stopped")) is True
+    assert _is_crash(ConnectionError("stopped")) is False
+    assert _is_stop(ConnectionResetError("reset")) is True
+    assert _is_stop(RuntimeError("bad state")) is False
+    assert _is_crash(RuntimeError("bad state")) is True
+    assert _is_crash(ValueError("bad obs")) is True
+    assert _is_crash(None) is False
+    # A clean finish returns None and is neither crashed nor stopped.
+    print("TORCH_SHUTDOWN_CLASSIFY_OK")
 
     _argv = sys.argv
     try:

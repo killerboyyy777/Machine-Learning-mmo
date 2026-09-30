@@ -732,7 +732,9 @@ async def reset_with_retry(
             return await env.reset()
         except CONNECTION_ERRORS as error:
             attempt += 1
-            delay = min(backoff_max, backoff_base * (2 ** (attempt - 1))) + jitter
+            # Jitter goes inside the cap: a fleet stagger that can push past
+            # backoff_max is not a capped backoff.
+            delay = min(backoff_max, backoff_base * (2 ** (attempt - 1)) + jitter)
             if on_retry is not None:
                 on_retry(attempt, delay, error)
             else:
@@ -1056,6 +1058,11 @@ class TextMMOEnv:
             pass
 
     async def _send(self, cmd, **kwargs):
+        if self.ws is None:
+            # A failed reconnect leaves no socket behind. Raise the error the
+            # trainers already retry on rather than an AttributeError from
+            # the send itself, which reads like a bug in the caller.
+            raise ConnectionError(f"{self.name}: no open socket for '{cmd}'")
         await self.ws.send(json.dumps({"cmd": cmd, **kwargs}))
 
     async def _close_ws(self):
@@ -1125,15 +1132,18 @@ class TextMMOEnv:
         self._pending_levels = 0
         self._step_count = 0
         self.walked_rooms = []
-        if self.spawn_room and self._state.get("room_id") != self.spawn_room:
-            if not await self._walk_to(self.spawn_room):
-                # Not fatal, but never silent: a spread that quietly did
-                # nothing is the #417 failure mode in miniature.
-                print(
-                    f"[{self.name}] spawn_room {self.spawn_room} not reached "
-                    f"(from {self._state.get('room_id')}); staying put",
-                    flush=True,
-                )
+        if (
+            self.spawn_room
+            and self._state.get("room_id") != self.spawn_room
+            and not await self._walk_to(self.spawn_room)
+        ):
+            # Not fatal, but never silent: a spread that quietly did nothing
+            # is the #417 failure mode in miniature.
+            print(
+                f"[{self.name}] spawn_room {self.spawn_room} not reached "
+                f"(from {self._state.get('room_id')}); staying put",
+                flush=True,
+            )
         return self._build_obs()
 
     async def step(self, action_idx):
@@ -1150,10 +1160,11 @@ class TextMMOEnv:
         if cmd:
             try:
                 await self._send(**cmd)
-            except websockets.ConnectionClosed:
+            except CONNECTION_ERRORS:
                 # Either side can end the connection (server restart/kick,
                 # clean handshake, dropped socket). End the episode instead
-                # of crashing the whole farm process.
+                # of crashing the whole farm process -- a trainer's
+                # reset_with_retry picks it up from the done branch.
                 episode_done = True
         await asyncio.sleep(self.step_delay)
 

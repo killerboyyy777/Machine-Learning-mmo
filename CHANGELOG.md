@@ -20,6 +20,15 @@ All notable changes to the text MMO engine are recorded here.
   checkpoint, so it survives death and relaunch and cannot be farmed by
   dying on purpose. Both knobs are trainer-side; the env reward
   contract is unchanged.
+- Review fixes on the above: a clean stop is no longer reported as a
+  crash (Ctrl-C during a retry, or the step limit, previously printed
+  `CRASHED CancelledError` and deflated `runners_alive`); retry jitter
+  counts against the backoff cap instead of adding past it; and a send
+  on the socket a failed reconnect left behind raises ConnectionError
+  rather than an AttributeError that read like a bug in the caller.
+  `TextMMOEnv.step` now absorbs the whole connection-error tuple, so a
+  refused write ends the episode instead of propagating into the
+  trainer.
 - Map rewire (#324): every indoor room now has exactly one direct
   outdoor exit (old_shop drops its harbor link; forge, burial
   chamber, bone pit and deep catacombs gain one each). Harbor stays

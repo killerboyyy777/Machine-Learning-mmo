@@ -670,9 +670,12 @@ class TorchDQNAgent:
             try:
                 next_obs, reward, done, info = await env.step(action)
             except CONNECTION_ERRORS as e:
-                # Socket died between actions: no honest next_state, so
-                # store nothing, reconnect with backoff, and keep the
-                # remaining step budget (#418).
+                # A refused write, a timed-out connect, or a send on the None
+                # socket a failed reconnect left behind. A clean server
+                # restart arrives as ConnectionClosed, which step() turns
+                # into done=True and the reset below handles. Either way
+                # there is no honest next_state, so store nothing and keep
+                # the remaining step budget (#418).
                 print(
                     f"[torch] {self.name}: step lost the connection "
                     f"({e}); reconnecting",
