@@ -1,6 +1,7 @@
 """Training-health unit tests: #418 reset-retry + logging, #417 spawn
-spread + room-discovery ledger. No live server and no torch needed for the
-env-side halves.
+spread. Exploration itself is paid once, by RND curiosity -- these tests
+pin that the trainers do not carry a second novelty signal. No live server
+and no torch needed for the env-side halves.
 
 Run from the repo root:  python tests/test_training_health.py
 """
@@ -347,38 +348,6 @@ asyncio.run(_walk_to_checks())
 print("WALK_TO_OK")
 
 
-def test_discovery_ledger():
-    """The discovery ledger is per character, not per episode: a death back
-    into the start room cannot re-earn the bonus."""
-
-    class _Ledger:
-        # Same rule as TorchDQNAgent.discovery_bonus, exercised without
-        # importing torch.
-        def __init__(self, explore_bonus=0.2):
-            self.explore_bonus = explore_bonus
-            self.seen = set()
-
-        def discovery_bonus(self, room):
-            if not room or room in self.seen:
-                return 0.0
-            self.seen.add(room)
-            return float(self.explore_bonus)
-
-    agent = _Ledger()
-    assert agent.discovery_bonus("town_square") == 0.2
-    assert agent.discovery_bonus("town_square") == 0.0  # respawn pays nothing
-    assert agent.discovery_bonus("market") == 0.2
-    assert agent.discovery_bonus(None) == 0.0
-    assert agent.seen == {"town_square", "market"}
-
-    off = _Ledger(explore_bonus=0.0)
-    assert off.discovery_bonus("market") == 0.0
-    assert off.seen == {"market"}, "ledger still tracks with the bonus off"
-
-
-test_discovery_ledger()
-print("DISCOVERY_LEDGER_OK")
-
 try:
     import torch
 except ImportError:
@@ -390,33 +359,35 @@ else:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"
         ),
     )
+    import tempfile
+
     from dqn_agent import TorchDQNAgent
     from torch_farm import Runner, TorchFarm, _is_crash, _is_stop, parse_args
 
-    agent = TorchDQNAgent(name="HealthTest", explore_bonus=0.25)
-    assert agent.discovery_bonus("town_square") == 0.25
-    assert agent.discovery_bonus("town_square") == 0.0
-    assert agent._discovered_rooms == {"town_square"}
-    assert agent.discovery_bonus("forest_edge") == 0.25
-    # The checkpoint carries the ledger, so a relaunched pilot keeps it.
-    import tempfile
-
+    # The spawn spread is the whole of #417 now: exploration is paid once, by
+    # RND, so the trainers must not carry a second novelty signal.
+    agent = TorchDQNAgent(name="HealthTest", spawn_room="market")
+    assert agent.spawn_room == "market"
+    assert not hasattr(agent, "discovery_bonus"), "discovery bonus must be gone"
+    assert not hasattr(agent, "explore_bonus"), "explore_bonus must be gone"
+    blob_path_probe = os.path.join(tempfile.gettempdir(), "health_probe.pt")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "w.pt")
         agent.save_weights(path)
-        fresh = TorchDQNAgent(name="HealthTest2", explore_bonus=0.25)
-        assert fresh.load_weights(path) is True
-        assert fresh._discovered_rooms == {"town_square", "forest_edge"}
-        assert fresh.discovery_bonus("forest_edge") == 0.0
-        # Older checkpoints without the key still load, with an empty ledger.
-        legacy = os.path.join(tmp, "legacy.pt")
         blob = torch.load(path, weights_only=True)
-        blob.pop("discovered_rooms")
-        torch.save(blob, legacy)
+        assert "discovered_rooms" not in blob, "ledger key left in the checkpoint"
+        fresh = TorchDQNAgent(name="HealthTest2")
+        assert fresh.load_weights(path) is True
+        assert fresh.spawn_room is None
+        # A checkpoint written while the ledger existed still loads: the
+        # field is ignored, not required.
+        legacy = os.path.join(tmp, "legacy.pt")
+        stale = dict(blob)
+        stale["discovered_rooms"] = ["town_square", "market"]
+        torch.save(stale, legacy)
         old = TorchDQNAgent(name="HealthTest3")
         assert old.load_weights(legacy) is True
-        assert old._discovered_rooms == set()
-    print("TORCH_DISCOVERY_LEDGER_OK")
+    print("TORCH_NO_SECOND_EXPLORATION_OK")
 
     class _Args:
         agents = 4
@@ -427,7 +398,6 @@ else:
         weights = os.path.join(tempfile.gettempdir(), "health_weights.json")
         best_weights = os.path.join(tempfile.gettempdir(), "health_best.json")
         spawn_spread = True
-        explore_bonus = 0.2
 
     farm = TorchFarm(_Args())
     assert farm.spawn_rooms, "spread pool empty with --spawn-spread on"
@@ -439,6 +409,7 @@ else:
     # Sixteen trainees, 16 names: the pool must actually spread them.
     wide = [farm.spawn_room_for(i) for i in range(16)]
     assert len(set(wide)) == min(16, len(farm.spawn_rooms)), wide
+    assert not hasattr(farm.runners if farm.runners else Runner(0, farm), "discovered")
 
     _Args.spawn_spread = False
     farm_off = TorchFarm(_Args())
@@ -459,23 +430,22 @@ else:
     assert _is_crash(RuntimeError("bad state")) is True
     assert _is_crash(ValueError("bad obs")) is True
     assert _is_crash(None) is False
-    # A clean finish returns None and is neither crashed nor stopped.
     print("TORCH_SHUTDOWN_CLASSIFY_OK")
 
     _argv = sys.argv
     try:
-        sys.argv = ["torch_farm.py", "--agents", "2", "--explore-bonus", "0"]
-        off_args = parse_args()
-        assert off_args.spawn_spread is True and off_args.explore_bonus == 0.0
+        sys.argv = ["torch_farm.py", "--agents", "2"]
+        assert parse_args().spawn_spread is True
         sys.argv = ["torch_farm.py", "--no-spawn-spread"]
         assert parse_args().spawn_spread is False
-        sys.argv = ["torch_farm.py", "--explore-bonus", "-1"]
+        # The removed flag must not linger as a silent no-op.
+        sys.argv = ["torch_farm.py", "--explore-bonus", "0.2"]
         try:
             parse_args()
         except SystemExit:
             pass
         else:
-            raise SystemExit("FAIL: negative --explore-bonus accepted")
+            raise SystemExit("FAIL: --explore-bonus still accepted after removal")
     finally:
         sys.argv = _argv
     print("TORCH_FARM_SPREAD_OK")

@@ -95,7 +95,7 @@ from torch_farm import Runner as TorchRunner
 
 _farm = types.SimpleNamespace(
     args=types.SimpleNamespace(
-        name_prefix="T", url="ws://x", spawn_spread=False, explore_bonus=0.2
+        name_prefix="T", url="ws://x", spawn_spread=False
     ),
     agent=types.SimpleNamespace(
         intrinsic_accept=1.0, intrinsic_progress=2.0, rnd_lambda=0

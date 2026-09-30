@@ -135,12 +135,6 @@ class Runner:
         # summary, which silently deflated the shared step rate.
         self.reset_retries = 0
         self.last_error = None
-        # Room-discovery ledger (#417). Per runner, not in the shared
-        # weights: one character has not seen a room just because a peer
-        # has. In memory only -- the farm checkpoint is the shared policy,
-        # and a relaunched farm re-earning its first few rooms is harmless.
-        self.discovered = set()
-        self.explore_total = 0.0
 
     def log_retry(self, attempt, delay, error):
         self.reset_retries += 1
@@ -150,19 +144,6 @@ class Runner:
             f"{error}; retrying in {delay:.1f}s",
             flush=True,
         )
-
-    def discovery_bonus(self, obs):
-        """One-time reward for the first visit to a room by this character.
-
-        Lives on the character, not the episode, so dying back to START_ROOM
-        cannot re-earn it (#417): the bonus is for going somewhere new, not
-        for a respawn loop.
-        """
-        room = obs.get("room_id")
-        if not room or room in self.discovered:
-            return 0.0
-        self.discovered.add(room)
-        return float(self.farm.args.explore_bonus)
 
     async def reset(self):
         # Jitter spreads a fleet-wide reconnect: without it all 16 sockets
@@ -179,10 +160,6 @@ class Runner:
         self.prev_gold = float(self.obs.get("gold_raw", 0.0))
         self.prev_inventory = set(self.obs.get("inv_names", []) or [])
         self.prev_orders = []
-        # The spawn walk already used these rooms; they are not discoveries.
-        self.discovered.update(getattr(self.env, "walked_rooms", None) or ())
-        if self.obs.get("room_id"):
-            self.discovered.add(self.obs["room_id"])
 
     def transition_targets(self, next_obs, next_features, info, action_name):
         """Auxiliary targets mirroring single-agent train() (#234): the
@@ -278,15 +255,6 @@ class Runner:
                     await self.reset()
                     continue
                 next_features = flatten_obs(next_obs)
-                explore = self.discovery_bonus(next_obs)
-                if explore:
-                    reward += explore
-                    self.explore_total += explore
-                    print(
-                        f"[torch-farm] {self.name}: discovered "
-                        f"{next_obs['room_id']} (+{explore:.2f})",
-                        flush=True,
-                    )
                 (
                     gold_delta,
                     loot_delta,
@@ -415,7 +383,7 @@ async def main_async(args):
         for runner, result in zip(farm.runners, results):
             line = (
                 f"  {runner.name}: steps={runner.steps} "
-                f"score={runner.score:.2f} rooms={len(runner.discovered)} "
+                f"score={runner.score:.2f} "
                 f"reset_retries={runner.reset_retries}"
             )
             if _is_crash(result):
@@ -461,20 +429,11 @@ def parse_args():
         action="store_false",
         help="every trainee starts in the server's start room (pre-#417 behavior)",
     )
-    parser.add_argument(
-        "--explore-bonus",
-        type=float,
-        default=0.2,
-        help="one-time reward per room a trainee finds for the first time "
-        "(0 disables; the ledger survives death and respawn)",
-    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
     if args.steps < 0 or args.save_every < 1:
         parser.error("--steps must be >= 0 and --save-every must be >= 1")
-    if args.explore_bonus < 0:
-        parser.error("--explore-bonus must be >= 0")
     here = os.path.dirname(os.path.abspath(__file__))
     args.weights = (
         os.path.abspath(args.weights)

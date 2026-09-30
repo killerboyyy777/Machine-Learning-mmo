@@ -104,9 +104,9 @@ Two ways to use this:
 Spawn spreading (#417): the server always places a character in START_ROOM,
 on login and again after every death, so a farm of N trainers shares one
 starting observation and one respawn point. `spawn_room=` walks the exits
-to a chosen room instead (pool: safe_spread_rooms), and trainers pay a
-one-time per-character discovery bonus on top -- both trainer-side, since
-this env pays no novelty by design (trainers supply it).
+to a chosen room instead (pool: safe_spread_rooms). Where the exploration
+signal comes from is a trainer decision: this env pays no novelty by
+design (RND curiosity lives in the agent).
 
 Usage (see the __main__ block at the bottom for a full random-agent demo):
 
@@ -635,11 +635,10 @@ def pack_full(state):
     return pack_units(state) >= cap
 
 
-# --- Trainer-side exploration plumbing (#417) --------------------------------
-# Spawn spreading and the room-discovery bonus are trainer concerns: the env
-# pays no novelty by contract (Novelty is always 0.0 in the reward vector --
-# trainers supply it), so the primitives live here, torch-free, for both
-# torch_agents trainers to share.
+# --- Trainer-side spawn plumbing (#417) --------------------------------------
+# Spawn spreading is a trainer concern: the env pays no novelty by contract
+# (Novelty is always 0.0 in the reward vector -- trainers supply it), so the
+# primitives live here, torch-free, for both torch_agents trainers to share.
 #
 # The server has no teleport and always places a character in START_ROOM, on
 # login and again on every death. A farm of N trainers therefore shares one
@@ -929,8 +928,7 @@ class TextMMOEnv:
         self._inv_type_cache = {}  # ditto: item-type -> first display name
         self._flip_table = []  # ditto: per-holding value/margin rows
         # Rooms traversed by the last reset()'s spawn walk, so a trainer can
-        # seed its discovery ledger with the rooms already used to get here
-        # (#417) instead of paying a bonus for them later.
+        # tell setup apart from wherever the character wanders next (#417).
         self.walked_rooms: list[str] = []
 
     async def _reader(self):

@@ -75,7 +75,6 @@ if HAVE_TORCH:
             steps=0,
             save_every=10,
             spawn_spread=False,
-            explore_bonus=0.2,
         )
 
     def test_torchfarm_resume():
