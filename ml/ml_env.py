@@ -101,13 +101,6 @@ Two ways to use this:
     philosophy (no permanent solution, always more to learn) better than
     artificial episode boundaries. Pick whichever your training setup wants.
 
-Spawn spreading (#417): the server always places a character in START_ROOM,
-on login and again after every death, so a farm of N trainers shares one
-starting observation and one respawn point. `spawn_room=` walks the exits
-to a chosen room instead (pool: safe_spread_rooms). Where the exploration
-signal comes from is a trainer decision: this env pays no novelty by
-design (RND curiosity lives in the agent).
-
 Usage (see the __main__ block at the bottom for a full random-agent demo):
 
     import asyncio
@@ -633,120 +626,6 @@ def pack_units(state):
 def pack_full(state):
     cap = state.get("pack_max") or INVENTORY_CAP
     return pack_units(state) >= cap
-
-
-# --- Trainer-side spawn plumbing (#417) --------------------------------------
-# Spawn spreading is a trainer concern: the env pays no novelty by contract
-# (Novelty is always 0.0 in the reward vector -- trainers supply it), so the
-# primitives live here, torch-free, for both torch_agents trainers to share.
-#
-# The server has no teleport and always places a character in START_ROOM, on
-# login and again on every death. A farm of N trainers therefore shares one
-# starting observation and one respawn point, and 16 agents observing the
-# same room is exactly what the learning pilot measured. Spreading is done
-# by walking the exits, not by moving world.json (the world lane owns it).
-
-RETRY_BASE_DELAY = 1.0
-RETRY_MAX_DELAY = 60.0
-# Same tuple the legacy supervisor already retries on. websockets raises
-# ConnectionClosed from a dead socket mid-step; OSError covers a refused
-# connect on Windows; asyncio.TimeoutError covers the connect/close waits.
-CONNECTION_ERRORS = (
-    ConnectionError,
-    OSError,
-    asyncio.TimeoutError,
-    websockets.ConnectionClosed,
-)
-
-
-def reachable_path(rooms, start, goal):
-    """Shortest direction sequence walking `start` -> `goal` over a
-    {room_id: {"exits": {dir: room}}} map, or None when unreachable.
-
-    Directed edges only, on purpose: world.json carries one-way exits (the
-    four escape shafts from #415), so a BFS that invented the reverse edge
-    would hand trainers paths that do not exist.
-    """
-    if start == goal:
-        return []
-    if start not in rooms or goal not in rooms:
-        return None
-    seen = {start}
-    queue = [(start, [])]
-    while queue:
-        room, path = queue.pop(0)
-        for direction, dest in (rooms[room].get("exits") or {}).items():
-            if dest in seen or dest not in rooms:
-                continue
-            walked = path + [direction]
-            if dest == goal:
-                return walked
-            seen.add(dest)
-            queue.append((dest, walked))
-    return None
-
-
-def safe_spread_rooms(start=None):
-    """Surface rooms a trainer may park a character in to break spatial
-    collapse: walkable from the spawn room, not inside a dungeon, and with
-    no hostile npc resident (a trainee dropped into a rat room starts the
-    episode already dying). Indoor rooms are fine -- the criterion is
-    safety, not weather. Sorted for stable per-index assignment.
-    """
-    start = start or srv.START_ROOM
-    hostile_rooms = {
-        v.get("room") for v in srv.WORLD["npcs"].values() if v.get("hostile")
-    }
-    return sorted(
-        room_id
-        for room_id in srv.ROOMS
-        if room_id not in hostile_rooms
-        and not srv.dungeon_for_room(room_id)
-        and reachable_path(srv.ROOMS, start, room_id) is not None
-    )
-
-
-async def reset_with_retry(
-    env,
-    name="",
-    on_retry=None,
-    backoff_base=RETRY_BASE_DELAY,
-    backoff_max=RETRY_MAX_DELAY,
-    jitter=0.0,
-    should_stop=None,
-    sleep=asyncio.sleep,
-):
-    """`await env.reset()` with logged, capped exponential retry.
-
-    A connection error out of reset() used to kill a torch runner task with
-    no trace at all: asyncio.gather reported only the first failure, the
-    summary printed only the runners that finished, and nothing was logged
-    per runner -- so 4 of 16 pilot trainees could vanish mid-run with zero
-    evidence (#418). Every failed attempt is now reported, and errors that
-    are not connection problems still propagate immediately.
-    """
-    attempt = 0
-    while True:
-        try:
-            return await env.reset()
-        except CONNECTION_ERRORS as error:
-            attempt += 1
-            # Jitter goes inside the cap: a fleet stagger that can push past
-            # backoff_max is not a capped backoff.
-            delay = min(backoff_max, backoff_base * (2 ** (attempt - 1)) + jitter)
-            if on_retry is not None:
-                on_retry(attempt, delay, error)
-            else:
-                print(
-                    f"[{name or 'agent'}] reset failed (attempt {attempt}): "
-                    f"{error}; retrying in {delay:.1f}s",
-                    flush=True,
-                )
-            if should_stop is not None and should_stop():
-                raise
-            await sleep(delay)
-
-
 ACTIONS = (
     [f"move_{d}" for d in DIRECTIONS]
     + ["attack", "take", "rest", "look",
@@ -857,13 +736,11 @@ class TextMMOEnv:
     def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
                  reward_mode="score", curriculum_stage=3, curriculum_auto=False,
                  connect_timeout=10.0, close_timeout=5.0, connect_retries=3,
-                 goal=None, spawn_room=None):
+                 goal=None):
         if reward_mode not in REWARD_MODES:
             raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
         if curriculum_stage not in (0, 1, 2, 3):
             raise ValueError(f"curriculum_stage must be 0-3, got {curriculum_stage!r}")
-        if spawn_room is not None and spawn_room not in srv.ROOMS:
-            raise ValueError(f"spawn_room {spawn_room!r} is not a room in world.json")
         self.name = name
         self.url = url
         self.step_delay = step_delay
@@ -871,9 +748,6 @@ class TextMMOEnv:
         self.reward_mode = reward_mode
         self.curriculum_stage = curriculum_stage
         self.curriculum_auto = curriculum_auto
-        # Optional spread target walked after login (#417). None = the
-        # server's own placement (START_ROOM), today's behavior unchanged.
-        self.spawn_room = spawn_room
         # reset() timeouts: a half-dead socket's close handshake (or a
         # stalled listener's accept) must never wedge an agent task
         # forever -- supervisor tasks have no other way out of reset().
@@ -927,9 +801,6 @@ class TextMMOEnv:
         self._mask_cache = None  # refreshed by every _build_obs()
         self._inv_type_cache = {}  # ditto: item-type -> first display name
         self._flip_table = []  # ditto: per-holding value/margin rows
-        # Rooms traversed by the last reset()'s spawn walk, so a trainer can
-        # tell setup apart from wherever the character wanders next (#417).
-        self.walked_rooms: list[str] = []
 
     async def _reader(self):
         try:
@@ -1056,11 +927,6 @@ class TextMMOEnv:
             pass
 
     async def _send(self, cmd, **kwargs):
-        if self.ws is None:
-            # A failed reconnect leaves no socket behind. Raise the error the
-            # trainers already retry on rather than an AttributeError from
-            # the send itself, which reads like a bug in the caller.
-            raise ConnectionError(f"{self.name}: no open socket for '{cmd}'")
         await self.ws.send(json.dumps({"cmd": cmd, **kwargs}))
 
     async def _close_ws(self):
@@ -1076,31 +942,6 @@ class TextMMOEnv:
             await asyncio.wait_for(ws.close(), self.close_timeout)
         except Exception:
             pass
-
-    async def _walk_to(self, room):
-        """Walk the exits from the current room to `room` after login.
-
-        Best effort by design: returns False (having walked as far as the
-        map allows) rather than raising, so an unreachable or blocked
-        spawn_room degrades to the server's placement instead of losing the
-        episode. A dead socket propagates, so the caller's reset retry
-        reconnects and tries the walk again.
-        """
-        walked = []
-        here = self._state.get("room_id")
-        if here:
-            walked.append(here)
-        path = reachable_path(srv.ROOMS, here, room)
-        if path is None:
-            self.walked_rooms = walked
-            return False
-        for direction in path:
-            await self._send(cmd="move", dir=direction)
-            await asyncio.sleep(self.step_delay)
-            if self._state.get("room_id"):
-                walked.append(self._state["room_id"])
-        self.walked_rooms = walked
-        return self._state.get("room_id") == room
 
     async def reset(self):
         await self._close_ws()
@@ -1129,19 +970,6 @@ class TextMMOEnv:
         self._pending_xp = 0.0
         self._pending_levels = 0
         self._step_count = 0
-        self.walked_rooms = []
-        if (
-            self.spawn_room
-            and self._state.get("room_id") != self.spawn_room
-            and not await self._walk_to(self.spawn_room)
-        ):
-            # Not fatal, but never silent: a spread that quietly did nothing
-            # is the #417 failure mode in miniature.
-            print(
-                f"[{self.name}] spawn_room {self.spawn_room} not reached "
-                f"(from {self._state.get('room_id')}); staying put",
-                flush=True,
-            )
         return self._build_obs()
 
     async def step(self, action_idx):
@@ -1158,11 +986,10 @@ class TextMMOEnv:
         if cmd:
             try:
                 await self._send(**cmd)
-            except CONNECTION_ERRORS:
+            except websockets.ConnectionClosed:
                 # Either side can end the connection (server restart/kick,
                 # clean handshake, dropped socket). End the episode instead
-                # of crashing the whole farm process -- a trainer's
-                # reset_with_retry picks it up from the done branch.
+                # of crashing the whole farm process.
                 episode_done = True
         await asyncio.sleep(self.step_delay)
 

@@ -122,7 +122,6 @@ if HAVE_TORCH:
         _a.steps = 100
         _a.save_every = 10
         _a.agents = 1
-        _a.spawn_spread = False
         return _a
 
     # sidecar round-trip + corrupt cases (null/list/string) fall back

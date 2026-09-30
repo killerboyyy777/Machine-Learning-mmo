@@ -911,11 +911,13 @@ async def main():
     # --- Crafted equipment provides stat bonus ---
     gearhead = mkplayer("Gearhead", 40022)
     gearhead.inventory = ["wolf_pelt", "rat_tail", "rat_tail"]
+    base_atk = gearhead.attack
     base_def = srv._player_defense(gearhead)
     await srv.cmd_craft(gearhead, {"recipe": "reinforced_leather"})
     assert "reinforced_leather" in gearhead.inventory
     await srv.cmd_equip(gearhead, {"item": "reinforced leather"})
     assert srv._player_defense(gearhead) == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
+    assert gearhead.attack == base_atk
     assert gearhead.armor == "reinforced_leather"
     unplayer(gearhead)
     print("CRAFTED_GEAR_OK")
