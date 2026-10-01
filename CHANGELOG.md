@@ -3,6 +3,23 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Treasury sink and measured tax floor (#403, #404): an 8h soak showed the
+  treasury ratcheting one way (+37k) because tax and fees were the only
+  inflows and nothing spent them fast enough. Every treasury inflow now
+  funnels through `_treasury_credit`, which banks gold only up to
+  `TREASURY_RESERVE` (default 500, config key) and removes the remainder
+  from circulation, so the balance converges to a working reserve instead
+  of climbing. Guild standing bounties spend that reserve. Gross income is
+  unchanged in `collected_lifetime`; the removed amount is reported as
+  `market.sunk_lifetime` and the reserve as `market.reserve`.
+- Tax floor documented, not lowered (#404): a measured 2h window had a
+  median trade price of 4g, so the 1g floor was the tax on 99.4% of fills
+  (21.9% realized against a 10% nominal). The floor stays because at this
+  price scale it is the whole of treasury income -- zeroing it would make
+  the nominal 10% equally fictional in the other direction -- so the
+  honest fix is to publish the measured rate beside the nominal one as
+  `market.tax_effective_pct` (rolling window) rather than to leave the
+  snapshot advertising 10%.
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and

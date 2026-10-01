@@ -140,7 +140,20 @@ DUNGEON_CLEAR_BASE_XP = 25
 DUNGEON_CLEAR_XP_PER_FLOOR = 20
 
 TAX_RATE = 0.10
+# The 1g floor is load-bearing, not rounding slack: a measured 2h window had a
+# median trade price of 4g, so 10% would round to 0 on ~87% of fills and the
+# floor was the tax on 99.4% of them (21.9% realized vs 10% nominal). It stays
+# because it is the whole of treasury income at this price scale; the realized
+# rate is published next to the nominal one (market.tax_effective_pct) instead
+# of pretending 10% is what the market pays.
 TAX_MINIMUM = 1
+# Treasury sink (#403). The soak ratcheted one way (+37k over 8h) because tax
+# and fees were the only inflows and nothing spent them fast enough. The
+# treasury is a budget with a working reserve, not a vault: every coin above
+# the reserve is removed from circulation, so the balance converges to the
+# reserve instead of climbing. Guild standing bounties spend the reserve, which
+# is the outflow the reserve exists to fund.
+TREASURY_RESERVE = 500.0
 
 # Player-market stall slots: each seller may hold this many open orders.
 # Extra slots are bought with `market_expand` for gold (fee -> treasury):
@@ -1325,6 +1338,7 @@ MARKET_HISTORY_SIZE = 50
 market_history = []
 tax_treasury = float(os.environ.get("TEXTMMO_GM_SEED", 0) or 0)
 tax_collected_lifetime = 0.0
+tax_sunk_lifetime = 0.0  # gross inflow removed by the reserve sink (#403)
 
 # Standing-bid (buy order) fees (#158): broker fee on bid creation, relist
 # fee on bid modify, both as a percent of the (new) bid value, sunk to the
@@ -1805,6 +1819,28 @@ def respawn_npc(npc):
         f = d.floors.get(floor_no)
         if f and f.cleared:
             f.cleared = False
+
+
+def _treasury_credit(amount):
+    """Bank one treasury inflow, sinking whatever the reserve does not need.
+
+    Every inflow funnels through here (trade tax, stall-slot and broker fees,
+    commission forfeits and collusion remainders) so the reserve sink cannot be
+    bypassed by a new revenue path. Gross income still counts toward
+    tax_collected_lifetime; only the amount the reserve can absorb is banked.
+    Returns the sunk amount.
+    """
+    global tax_treasury, tax_collected_lifetime, tax_sunk_lifetime
+    if amount <= 0:
+        return 0.0
+    tax_collected_lifetime = round(tax_collected_lifetime + amount, 2)
+    banked = min(amount, max(0.0, TREASURY_RESERVE - tax_treasury))
+    sunk = round(amount - banked, 2)
+    if banked:
+        tax_treasury = round(tax_treasury + banked, 2)
+    if sunk:
+        tax_sunk_lifetime = round(tax_sunk_lifetime + sunk, 2)
+    return sunk
 
 
 async def credit_gold(name, amount):
@@ -2851,8 +2887,7 @@ async def cmd_commission_fill(player, msg):
     remainder = max(0, escrow - eff_gold)
     commission["escrow"] = 0
     if remainder:
-        tax_treasury += remainder
-        tax_collected_lifetime += remainder
+        _treasury_credit(remainder)
     commission["status"] = "completed"
     # Terminal rows keep no live counters: progress served its display
     # purpose, and stale counts would over-read on any later view.
@@ -2951,8 +2986,7 @@ async def cmd_commission_cancel(player, msg):
         del comm_feed[0]
     commission["escrow"] = 0
     if forfeit:
-        tax_treasury += forfeit
-        tax_collected_lifetime += forfeit
+        _treasury_credit(forfeit)
     await credit_gold(commission["poster"], refund)
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"Commission #{cid} cancelled. Half the escrow ({refund}g) returned; {forfeit}g forfeited to the treasury."})
@@ -3466,6 +3500,19 @@ async def cmd_market_list(player, msg):
     })
 
 
+def _realized_tax_pct():
+    """Realized tax as a percent of price over the rolling fill window.
+
+    The nominal TAX_RATE is unreachable at a 4g median price (see the
+    TAX_MINIMUM comment), so the honest number is the measured one.
+    """
+    gross = sum(float(h.get("price", 0) or 0) for h in market_history)
+    if gross <= 0:
+        return 0.0
+    paid = sum(float(h.get("tax", 0) or 0) for h in market_history)
+    return round(100.0 * paid / gross, 2)
+
+
 async def _sweep_crossed_orders(iid):
     while True:
         best_bid = None
@@ -3622,8 +3669,7 @@ async def cmd_market_expand(player, msg):
         await send(player, {"type": "error", "text": f"Next market slot costs {price} gold (you have {player.gold})."})
         return
     player.gold -= price
-    tax_treasury += price
-    tax_collected_lifetime += price
+    _treasury_credit(price)
     entry["market_slots"] = slots + 1
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"Market stall expanded to {slots + 1} slots for {price} gold (next: {market_slot_price(slots + 1)} gold)."})
@@ -3647,8 +3693,7 @@ async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
     else:
         tax = 0
     seller_payout = price - tax
-    tax_treasury += tax
-    tax_collected_lifetime += tax
+    _treasury_credit(tax)
     buyer_entry = get_score_entry(buyer_name)
     seller_entry = get_score_entry(seller_name)
     buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
@@ -3758,8 +3803,7 @@ async def cmd_market_buy_order(player, msg):
         await send(player, {"type": "error", "text": f"You need {price + fee} gold (bid {price} + broker fee {fee})."})
         return
     player.gold -= price + fee
-    tax_treasury = round(tax_treasury + fee, 2)
-    tax_collected_lifetime = round(tax_collected_lifetime + fee, 2)
+    _treasury_credit(fee)
     oid = next(_id_counter)
     bid = {"id": oid, "buyer": player.name, "item": iid, "price": price, "ts": time.time()}
     market_bids.append(bid)
@@ -3820,8 +3864,7 @@ async def cmd_market_buy_modify(player, msg):
         await send(player, {"type": "error", "text": f"You need {new_price + fee} gold (bid {new_price} + relist fee {fee})."})
         return
     player.gold -= new_price + fee
-    tax_treasury = round(tax_treasury + fee, 2)
-    tax_collected_lifetime = round(tax_collected_lifetime + fee, 2)
+    _treasury_credit(fee)
     bid["price"] = new_price
     mark_scores_dirty()
     # Modify keeps id and queue position; sweep once like a new bid.
@@ -4463,7 +4506,9 @@ def world_snapshot():
         "rooms": rooms, "players": online_players, "scores": scores,
         "activity": list(command_log),
         "market": {"treasury": round(tax_treasury, 2), "collected_lifetime": round(tax_collected_lifetime, 2),
-                   "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM, "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
+                   "sunk_lifetime": round(tax_sunk_lifetime, 2), "reserve": TREASURY_RESERVE,
+                   "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
+                   "tax_effective_pct": _realized_tax_pct(), "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
                    "orders": [{"id": o["id"], "seller": o["seller"], "item": ITEM_DEFS.get(o["item"], {}).get("name", o["item"]),
                                "price": o["price"], "ts": o.get("ts", 0)} for o in market_orders],
                    "bids": [{"id": b["id"], "buyer": b["buyer"], "item": ITEM_DEFS.get(b["item"], {}).get("name", b["item"]),
