@@ -73,10 +73,7 @@ def reference():
     lines = ["signals:"]
     lines += [f"  {name:<17} {doc}" for name, doc in SIGNALS.items()]
     lines.append("functions:")
-    lines += [
-        f"  {name}(...)"
-        for name in sorted(FUNCTIONS)
-    ]
+    lines += [f"  {name}(...)" for name in sorted(FUNCTIONS)]
     lines.append("operators: + - * / and parentheses")
     lines.append("examples:")
     lines += [f"  {ex}" for ex in EXAMPLES]
@@ -168,9 +165,7 @@ class _Parser:
     def _expect_op(self, op):
         kind, value, position = self._take()
         if kind != "op" or value != op:
-            raise RewardFormulaError(
-                self.text, position, f"expected {op!r}"
-            )
+            raise RewardFormulaError(self.text, position, f"expected {op!r}")
 
     def parse(self):
         if not self.tokens:
@@ -179,7 +174,9 @@ class _Parser:
         kind, value, position = self._peek()
         if kind is not None:
             raise RewardFormulaError(
-                self.text, position, f"unexpected {_show(value)} after a complete formula"
+                self.text,
+                position,
+                f"unexpected {_show(value)} after a complete formula",
             )
         return node
 

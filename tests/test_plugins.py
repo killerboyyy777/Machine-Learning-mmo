@@ -340,7 +340,10 @@ def _reward_dsl_68():
 
     discover()
     for name in sorted(REGISTRY):
-        assert get(name)().reward({"score_delta": 1.0}) is None, name
+        # Unbound, on purpose: this checks the inherited default on the
+        # class, and constructing the torch plugin would need torch, which
+        # the offline CI job does not install.
+        assert get(name).reward(None, {"score_delta": 1.0}) is None, name
     print("REWARD_HOOK_DEFAULT_OK")
 
     # --- a plugin that overrides reward() ---
