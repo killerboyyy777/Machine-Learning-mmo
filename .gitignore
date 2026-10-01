@@ -18,6 +18,9 @@ ml/ml_weights.json
 ml/ml_best.json
 torch_agents/ml_weights.json
 torch_agents/ml_best.json
+# Per-run training records (runs/<run_id>/): the /api/runs catalog reads them,
+# but a 200-run archive is local history, not source.
+runs/
 *.pt
 *.pth
 

@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2905,5 +2906,36 @@ async def main():
         assert len(_rooms[_a]["exits"]) == 2, (_frontier, _a)
         assert len(_rooms[_b]["exits"]) == 2, (_frontier, _b)
     print("WILD_CHAIN_OK")
+
+    # --- Run index for the dashboard Runs tab (#65) ---------------------
+    # The tab has to compare a finished run against a live one, so the index
+    # is read fresh per request and carries rank direction for the verdict.
+    with tempfile.TemporaryDirectory() as folder:
+        runs_root = os.path.join(folder, "runs")
+        srv._runs_payload("", root=runs_root)  # also puts ml/ on sys.path
+        import runlog
+        a = runlog.start_run("dqn", root=runs_root, seed=1)
+        a.record(score=10, td_loss=0.9)
+        b = runlog.start_run("torch_farm", root=runs_root, seed=2)
+        b.record(score=20)
+        b.finish()
+        payload = srv._runs_payload("", root=runs_root)
+        assert {r["run_id"] for r in payload["runs"]} == {a.run_id, b.run_id}, payload
+        assert not payload.get("series"), "sample history shipped without a selection"
+        fields = {f["name"]: f["higher_is_better"] for f in payload["fields"]}
+        assert fields["score"] is True and fields["td_loss"] is False, fields
+        picked = srv._runs_payload("runs=" + a.run_id, root=runs_root)
+        assert list(picked["series"]) == [a.run_id], picked
+        assert len(picked["series"][a.run_id]) == 1
+        # An id from the query string must not become a read outside the index,
+        # and must not be echoed back either: an unsanitized id in the response
+        # is what a dashboard would go on to render.
+        hostile = srv._runs_payload("runs=../../etc", root=runs_root)
+        assert hostile.get("series") in (None, {}), hostile
+        assert "../../etc" not in repr(hostile), hostile
+        # No index at all is an empty tab, never a 500.
+        empty = srv._runs_payload("", root=os.path.join(folder, "absent"))
+        assert empty["runs"] == [] and empty["fields"] == [] and not empty.get("error")
+    print("RUNS_INDEX_OK")
 
 asyncio.run(main())

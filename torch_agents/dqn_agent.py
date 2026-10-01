@@ -77,12 +77,19 @@ from ml_env import (
     quest_charm_net,
     reset_with_retry,
 )
+from runlog import seed_everything, start_run
 from versioning import checkpoint_version, version_notes
 
 
 def _fmt_loss(v) -> str:
     """Format a loss component that is None while the replay buffer warms up."""
     return f"{v:.3f}" if v is not None else "warmup"
+
+
+def _round_or_none(v):
+    """Loss components are None until the buffer warms up; a float is rounded
+    for the run log so the JSONL stays small and diffable (#65)."""
+    return None if v is None else round(float(v), 6)
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +290,9 @@ class TorchDQNAgent:
         self.replay_idx = 0
 
         self.t_step = 0
+        # Set by the CLI so a directly-constructed agent (tests) opens no run
+        # directory; the run log is opt-in from the command line (#65).
+        self.run = None
         self.learn_step = 0
         self.best_score: float = -float("inf")
         self.ckpt_version = None  # version dict of the loaded checkpoint
@@ -710,6 +720,10 @@ class TorchDQNAgent:
 
     async def train(self, total_steps: int, save_every: int = 500):
         _ACTIONS = ACTIONS
+        # t_step survives a weight resume, so the run log needs the starting
+        # offset to report this run's own steps rather than the character's
+        # lifetime count (#65).
+        base_steps = self.t_step
 
         env = TextMMOEnv(self.name, url=self.url, spawn_room=self.spawn_room)
         obs = await self.reset_env(env)
@@ -883,6 +897,18 @@ class TorchDQNAgent:
                         f"         adv_scale={losses['adv_scale']:.4f}  "
                         f"clipped={losses['adv_clip_frac'] * 100:.1f}% of batch"
                     )
+                if self.run is not None:
+                    # The loss components are the only per-step numbers this
+                    # trainer produces, and they never reached disk before
+                    # (#65): a run comparison is loss curves or nothing.
+                    self.run.record(
+                        steps=self.t_step - base_steps,
+                        total_steps=self.t_step,
+                        score=obs["score_raw"],
+                        avg_reward=avg_recent,
+                        td_loss=_round_or_none(losses.get("td")),
+                        rnd_loss=_round_or_none(losses.get("rnd")),
+                    )
 
             # Save checkpoint + best-model snapshot
             if self.t_step % save_every == 0:
@@ -911,6 +937,17 @@ class TorchDQNAgent:
         print(
             "Weights saved to torch_agents/ml_weights.json (separate from ml/ml_weights.json)"
         )
+        if self.run is not None:
+            self.run.finish(
+                steps=self.t_step - base_steps,
+                total_steps=self.t_step,
+                score=obs["score_raw"],
+                best_score=(
+                    None if self.best_score == float("-inf") else self.best_score
+                ),
+                total_reward=total_reward,
+            )
+            print(f"[dqn] run {self.run.run_id} -> {self.run.manifest['status']}")
         await env.close()
 
 
@@ -988,11 +1025,31 @@ def main():
         help="walk here after login instead of the server's start room (#417); "
         "use safe_spread_rooms() in ml_env to pick from the safe pool",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed (python + torch) recorded in the run record (#65)",
+    )
+    parser.add_argument(
+        "--runs-dir",
+        default=None,
+        help="run-record index directory (default <repo>/runs)",
+    )
+    parser.add_argument(
+        "--no-run-record",
+        dest="run_record",
+        action="store_false",
+        default=True,
+        help="do not write a run record to the dashboard index (#65)",
+    )
     args = parser.parse_args()
 
     if args.demo:
         asyncio.run(_demo())
         return
+    # Before the agent builds its networks.
+    seed_everything(args.seed)
     agent = TorchDQNAgent(
         name=args.name,
         url=args.url,
@@ -1001,6 +1058,17 @@ def main():
         spawn_room=args.spawn_room,
     )
     agent.load_weights()
+    if args.run_record:
+        run = start_run(
+            "dqn",
+            root=args.runs_dir or None,
+            label=args.name,
+            seed=args.seed,
+            hparams=vars(args),
+            checkpoint=str(Path(__file__).with_name("ml_weights.json")),
+        )
+        agent.run = run
+        print(f"[dqn] run record: {run.run_id} ({run.path})")
     asyncio.run(agent.train(total_steps=args.steps, save_every=args.save_every))
 
 

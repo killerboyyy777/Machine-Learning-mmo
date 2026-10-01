@@ -285,4 +285,81 @@ for tok in ('"craft_history": list(craft_feed)', '"commission_history": list(com
     assert tok in _srv, f"server: history token {tok} missing"
 print("HISTORY_TABLES_OK")
 
+# --- Runs tab (#65): compare a finished run against the one still going ---
+assert '<div class="tab" data-tab="runs">Runs</div>' in html
+assert '<div id="view-runs" class="tabview">' in html
+for tid in ("runsTable", "runCmpTable"):
+    assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
+for wid in ("runsCount", "runsMetric", "runsBest", "runsTotal", "runsSelCount",
+            "runsRunning", "runsHead", "runsBody", "noRuns", "runsCmpNote",
+            "runsCmpMetric", "runCmpVal", "runCmp", "runCmpLegend",
+            "runCmpHead", "runCmpBody", "noRunCmp"):
+    assert f'id="{wid}"' in html, f"missing runs widget {wid}"
+assert 'runs: [["runs", s => renderRuns(s)]]' in html, "runs tab has no section"
+for fn in ("renderRuns", "loadRuns", "scheduleRunsPoll", "compareChart",
+           "markSorted", "specHead", "specRow", "bestRunNote"):
+    assert f"function {fn}" in html, f"{fn} missing"
+assert 'fetch("/api/runs"' in html, "runs tab does not read /api/runs"
+for tok in ("def _runs_payload", '"/api/runs"', "runlog.runs_payload"):
+    assert tok in _srv, f"server: runs token {tok} missing"
+# One column spec drives the header AND the sort keys: a header/key list that
+# drifted apart would sort by the wrong field with no error. The runs table
+# sorts by runCols (identity + per-kind metrics), not the identity-only base.
+assert "runCols.map(c => c.key)" in html and "RUN_CMP_COLS.map(c => c.key)" in html
+assert 'sortRows("runsTable"' in html and 'sortRows("runCmpTable"' in html, \
+    "runs tables sort on a key bindSortTables never writes"
+# The static pre-render must be the first bindSortTables() call, or the initial
+# header walk sees an empty row and the table is never sortable.
+assert re.search(r'specHead\(RUN_COLS\)\);\s*\nsetHTML\("runCmpHead".*?\nbindSortTables\(\);',
+                 html, re.DOTALL), "runs headers built after the sorter binds"
+# The client cap is a duplicate of runlog.MAX_RUN_IDS on purpose (the page
+# cannot import it), so it is asserted against the server value instead of a
+# second hardcoded literal.
+with open(os.path.join(ROOT, "ml", "runlog.py"), encoding="utf-8") as _rl_fh:
+    RL_MAX_RUN_IDS = int(
+        re.search(r"^MAX_RUN_IDS = (\d+)", _rl_fh.read(), re.MULTILINE).group(1)
+    )
+
+
+def _runs_section(h, marker):
+    """Body of the runlog/dashboard function whose name starts with marker."""
+    m = re.search(r"function " + marker + r"\w*\([^)]*\) \{(.*?)\n\}", h, re.DOTALL)
+    assert m, f"{marker} not found"
+    return m.group(1)
+
+
+# Per-trainer columns: a fixed score/steps/score_hr list read "-" for every
+# botfarm and soak run, and the header could not be rebuilt per kind.
+assert "runTableCols" in html and "kind_fields" in html
+assert "runsData.root_name" in html and "runsData.root " not in html, \
+    "runs payload path leak"
+# A second poll must not attach a second click handler to a rebuilt <th>.
+assert "dataset.sortBound" in html
+# The server caps a request at MAX_RUN_IDS; a client that allowed more would
+# show a checked box the payload has no series for.
+assert "MAX_RUN_IDS" in html and f"MAX_RUN_IDS = {RL_MAX_RUN_IDS}" in html
+# bestRunNote lands in textContent, so esc() would print its entities.
+assert not re.search(r"esc\(", _runs_section(html, "bestRunNote")), \
+    "bestRunNote escapes into textContent"
+# The verdict ranks on a metric the owner picks, with direction from the
+# server -- never a hardcoded assumption that score is what matters.
+assert 'runsMetric = "score"' in html and "higher_is_better" in html
+assert "dirFor(runsMetric) !== false" in html
+# Selection is delegated: renderRuns rewrites the tbody on every poll, so a
+# per-row listener would be re-attached (and stack) each time.
+rr2 = re.search(r"function renderRuns\(s\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert rr2, "renderRuns not found"
+assert "addEventListener" not in rr2.group(1), "renderRuns rebinds listeners"
+assert '$("runsBody").addEventListener("change"' in html
+# The catalog outlives the snapshot, so it polls only while its tab is up.
+sp = re.search(r"function scheduleRunsPoll\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert sp and 'if (activeTab !== "runs") return;' in sp.group(1), "runs polls off-tab"
+assert re.search(r'activeTab === "runs"\) \{\s*(?://[^\n]*\n\s*)*loadRuns\(\);', html), \
+    "switching to Runs does not load"
+# One dropped poll keeps the last good payload instead of blanking the table.
+assert "runsError = String(e.message || e)" in html and "let runsData = null" in html
+# Multi-series chart reuses the themed palette instead of hardcoding colors.
+assert "seriesColor(i)" in html and "series:" in html
+print("RUNS_TAB_OK")
+
 print("ALL_DASHBOARD_OK")

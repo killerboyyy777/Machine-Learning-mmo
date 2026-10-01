@@ -29,7 +29,13 @@ function makeEl(id) {
     get textContent() { return this._text; },
     style: {}, dataset: {}, value: "",
     classList: { add() {}, remove() {}, toggle() {} },
-    addEventListener() {}, appendChild() {}, prepend() {},
+    // Listeners are recorded so a delegated handler can be dispatched: the
+    // real DOM does the dispatching, and a stub that dropped them would
+    // silently prove nothing about the handler body.
+    _handlers: {},
+    addEventListener(t, fn) { (this._handlers[t] ||= []).push(fn); },
+    fire(t, ev) { for (const fn of this._handlers[t] || []) fn(ev); },
+    appendChild() {}, prepend() {},
     get children() { return []; },
     getContext() {
       PERF.mapRepaints++;
@@ -122,6 +128,55 @@ const live = {
   ],
 };
 
+// Runs catalog (#65). /api/runs cannot resolve in the vm -- fetch throws by
+// design -- so seed the last-good payload the tab renders from. td_loss is
+// deliberately better on the LOWER-scoring run: a verdict that ignores the
+// server's higher_is_better would then crown the same run twice.
+const RUNS_FIXTURE = {
+  // root_name, not root: the payload must not carry an absolute path (#65).
+  root_name: "runs",
+  fields: [{ name: "score", higher_is_better: true },
+           { name: "td_loss", higher_is_better: false },
+           { name: "fitness", higher_is_better: true },
+           { name: "episodes", higher_is_better: true },
+           { name: "steps", higher_is_better: true },
+           { name: "score_hr", higher_is_better: true },
+           { name: "alive", higher_is_better: true }],
+  // Per-kind column lists: the runs table must show a botfarm's fitness and a
+  // soak's episodes, not just the dqn metrics (#65 send-back).
+  kind_fields: {
+    dqn: ["steps", "total_steps", "total_reward"],
+    ml_botfarm: ["steps", "fitness", "top_score"],
+    soak: ["episodes", "mean_reward", "alive"],
+  },
+  runs: [
+    { run_id: "20260101-120000", kind: "dqn", status: "finished", seed: 7,
+      config_hash: "abcdef1234567890", git_sha: "1234567890abcdef",
+      started: 1700000000, metrics: { score: 10, steps: 500, score_hr: 20, td_loss: 0.9,
+                                      total_steps: 500, total_reward: 12 } },
+    { run_id: "20260101-130000", kind: "dqn", status: "running", seed: 8,
+      config_hash: "abcdef1234567890", git_sha: "1234567890abcdef",
+      started: 1700003600, metrics: { score: 4, steps: 120, score_hr: 8, td_loss: 0.5,
+                                      total_steps: 120, total_reward: 3 } },
+    { run_id: "20260101-140000", kind: "ml_botfarm", status: "finished", seed: 9,
+      config_hash: "12345678abcdef90", git_sha: "abcdef1234567890",
+      started: 1700007200, metrics: { steps: 900, fitness: 3.5, top_score: 44,
+                                      total_reward: null } },
+    { run_id: "20260101-150000", kind: "soak", status: "failed", seed: null,
+      config_hash: "", git_sha: "",
+      started: 1700010800, metrics: { episodes: 120, mean_reward: -0.25, alive: 0,
+                                      steps: null, total_steps: null } },
+  ],
+  series: {
+    "20260101-120000": [{ _ts: 1700000000, score: 1, td_loss: 1.4 },
+                        { _ts: 1700000100, score: 6, td_loss: 1.1 },
+                        { _ts: 1700000200, score: 10, td_loss: 0.9 }],
+    "20260101-130000": [{ _ts: 1700003600, score: 2, td_loss: 0.7 },
+                        { _ts: 1700003700, score: 4, td_loss: 0.5 }],
+  },
+};
+vm.runInContext("runsData = " + JSON.stringify(RUNS_FIXTURE) + "; runsSel = []", sandbox);
+
 const sections = vm.runInContext("TAB_SECTIONS", sandbox);
 let failed = 0;
 function runAll(snap, label) {
@@ -210,8 +265,138 @@ if (PERF.mapRepaints !== mm0) { failed++; console.error("FAIL map guard skipped"
 vm.runInContext('lastMapKey = ""', sandbox);
 vm.runInContext("renderWorldMap", sandbox)(roomsOnce);
 if (PERF.mapRepaints !== mm0 + 1) { failed++; console.error("FAIL theme invalidate repaint"); }
+
+// ---- Runs tab (#65) --------------------------------------------------
+const runRowsHtml = els["runsBody"]._html;
+if (runRowsHtml.indexOf("20260101-120000") < runRowsHtml.indexOf("20260101-130000")) {
+  failed++; console.error("FAIL runs not newest-first");
+}
+if (!runRowsHtml.includes('data-run="20260101-130000"')) {
+  failed++; console.error("FAIL runs compare checkbox missing");
+}
+if (!runRowsHtml.includes(">finished<") || !runRowsHtml.includes(">running<")) {
+  failed++; console.error("FAIL runs status column");
+}
+if (els["runsTotal"]._text !== "4" || els["runsRunning"]._text !== "1") {
+  failed++; console.error(`FAIL runs counters ${els["runsTotal"]._text}/${els["runsRunning"]._text}`);
+}
+// setHTML, so innerHTML: the directory name comes from the payload and is
+// never an absolute path.
+if (!els["runsCount"]._html.includes("in runs")) {
+  failed++; console.error("FAIL runs count missing dir name: " + els["runsCount"]._html);
+}
+// Per-kind columns (#65 send-back): a fixed score/steps/score_hr list left
+// every botfarm and soak metric blank. Column set = identity + union of kinds.
+const runColsLabels = vm.runInContext("runCols.map(c => c.label)", sandbox);
+for (const want of ["steps", "total_steps", "total_reward", "fitness", "top_score",
+                    "episodes", "mean_reward", "alive"]) {
+  if (!runColsLabels.includes(want)) {
+    failed++; console.error("FAIL runs table missing per-kind column " + want);
+  }
+}
+const nAll = els["runsHead"]._html.split("</th>").length;
+const oneKind = {dqn: ["steps"]};
+vm.runInContext("runsData.kind_fields = ONE_KIND; renderRuns({})", Object.assign(sandbox, { ONE_KIND: oneKind }));
+const nOne = els["runsHead"]._html.split("</th>").length;
+if (nOne === nAll) {
+  failed++; console.error("FAIL runs header ignored a changed kind-field set");
+}
+// An unchanged kind set must not rebuild the column spec or re-bind the
+// sorter: the tab polls every 5s and the handlers stack if they do.
+vm.runInContext("runColsRef = runCols", sandbox);
+vm.runInContext("runsData.kind_fields = ONE_KIND; renderRuns({})", sandbox);
+if (vm.runInContext("runColsRef === runCols", sandbox) !== true) {
+  failed++; console.error("FAIL runs column spec rebuilt on every poll");
+}
+sandbox.RUNS0 = RUNS_FIXTURE;
+vm.runInContext("runsData = RUNS0; renderRuns({})", sandbox);
+// A metric the server no longer offers snaps back to one it does, instead of
+// leaving the verdict reading about a metric no run has.
+vm.runInContext('runsMetric = "gone_metric"; renderRuns({})', sandbox);
+const snapped = vm.runInContext("runsMetric", sandbox);
+if (!["score", "td_loss", "fitness", "episodes", "steps", "score_hr", "alive"].includes(snapped)) {
+  failed++; console.error("FAIL metric snap left an unknown metric: " + snapped);
+}
+// Score ranks the better-scoring run first...
+if (!els["runsBest"]._text.startsWith("20260101-120000 wins on score")) {
+  failed++; console.error("FAIL best-by-score verdict: " + els["runsBest"]._text);
+}
+// Runs of a kind that records no "score" at all (botfarm/soak) used to make the
+// verdict claim nothing had a score. fitness is the farm's own axis.
+vm.runInContext('runsMetric = "fitness"; runsSel = ["20260101-140000"]; renderRuns({})', sandbox);
+if (!els["runsBest"]._text.startsWith("20260101-140000 is the only run with a fitness")) {
+  failed++; console.error("FAIL per-kind verdict: " + els["runsBest"]._text);
+}
+// bestRunNote lands in textContent: esc() there printed "&amp;" literally.
+vm.runInContext('runsSel = []; runsMetric = "score"; renderRuns({})', sandbox);
+const escNote = vm.runInContext("bestRunNote", sandbox)(
+  [{ run_id: "a&b", metrics: { score: 1 } }, { run_id: "c", metrics: { score: 2 } }],
+  "score", true);
+if (escNote.includes("&amp;") || escNote.includes("&lt;")) {
+  failed++; console.error("FAIL bestRunNote double-escapes: " + escNote);
+}
+// ...and switching to a loss metric must flip it, not keep crowning the same
+// run, since the direction comes from the server rather than the column name.
+vm.runInContext('runsMetric = "td_loss"; renderRuns({})', sandbox);
+if (!els["runsBest"]._text.startsWith("20260101-130000 wins on td_loss")) {
+  failed++; console.error("FAIL best-by-loss verdict: " + els["runsBest"]._text);
+}
+if (!els["runsMetric"]._html.includes("td_loss (lower is better)")) {
+  failed++; console.error("FAIL metric picker direction hint missing");
+}
+// Two selected runs: comparison table fills, chart builds one line each,
+// padded to a shared x axis so the shorter run ends in a gap not a resample.
+vm.runInContext('runsMetric = "score"; runsSel = ["20260101-120000", "20260101-130000"]; renderRuns({})', sandbox);
+if (els["runsSelCount"]._text !== "2") { failed++; console.error("FAIL sel count " + els["runsSelCount"]._text); }
+const cmpHtml = els["runCmpBody"]._html;
+if (!cmpHtml.includes("20260101-120000") || !cmpHtml.includes("20260101-130000")) {
+  failed++; console.error("FAIL comparison rows missing");
+}
+const cmpU = vm.runInContext("charts['runCmp']", sandbox);
+if (!cmpU || cmpU.data.length !== 3 || cmpU.data[2][2] !== null) {
+  failed++; console.error("FAIL comparison chart series/padding");
+}
+if ((els["runCmpLegend"]._html.match(/<span>/g) || []).length !== 2) {
+  failed++; console.error("FAIL comparison legend");
+}
+const cmpHook = cmpU.opts.hooks.setCursor[0];
+cmpHook({ cursor: { idx: 1 }, data: cmpU.data, _times: cmpU._times, _current: cmpU._current });
+if (!els["runCmpVal"]._text.includes("20260101-120000: 6") ||
+    !els["runCmpVal"]._text.includes("20260101-130000: 4")) {
+  failed++; console.error("FAIL comparison hover names every run: " + els["runCmpVal"]._text);
+}
+cmpHook({ cursor: { idx: null }, data: cmpU.data, _times: cmpU._times, _current: cmpU._current });
+if (els["runCmpVal"]._text !== cmpU._current) {
+  failed++; console.error("FAIL comparison hover restore");
+}
+// Dropping a run changes the series count, which uPlot treats as creation-time
+// config: the chart has to rebuild, not setData onto a 2-line config.
+const destroyedBefore = sandbox.uPlot.destroyed;
+vm.runInContext('runsSel = ["20260101-120000"]; renderRuns({})', sandbox);
+const cmpU2 = vm.runInContext("charts['runCmp']", sandbox);
+if (sandbox.uPlot.destroyed !== destroyedBefore + 1 || cmpU2.data.length !== 2) {
+  failed++; console.error("FAIL comparison chart rebuild on series change");
+}
+// Ticking past the server's MAX_RUN_IDS: the box un-ticks itself instead of
+// sending a query the server silently truncates (checked box, no series).
+const cap = vm.runInContext("MAX_RUN_IDS", sandbox);
+sandbox.FULL_SEL = Array.from({ length: cap }, (_, i) => "20260101-12000" + i);
+vm.runInContext("runsSel = FULL_SEL", sandbox);
+const box = { checked: true, dataset: { run: "20260101-999999" } };
+els["runsBody"].fire("change", { target: box });
+if (box.checked !== false) {
+  failed++; console.error("FAIL selection cap: a " + (cap + 1) + "th run stayed ticked");
+}
+if (vm.runInContext("runsSel.length", sandbox) !== cap) {
+  failed++; console.error("FAIL selection cap: runsSel grew past " + cap);
+}
+// Un-ticking still removes, or a capped selection could never be reduced.
+els["runsBody"].fire("change", { target: { checked: false, dataset: { run: sandbox.FULL_SEL[0] } } });
+if (vm.runInContext("runsSel.length", sandbox) !== cap - 1) {
+  failed++; console.error("FAIL selection cap: un-tick did not remove");
+}
 if (failed) { console.error(`PROVE_FAIL (${failed})`); process.exit(1); }
-console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme)");
+console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme+runs)");
 
 // North-up GEO + tile OVERLAP on the town subgraph (real world.json exits).
 const geoRooms = [
