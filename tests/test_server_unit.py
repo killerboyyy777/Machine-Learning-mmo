@@ -1002,6 +1002,53 @@ async def main():
     unplayer(safer)
     print("ITEM_DROP_ZONE_OK")
 
+    # --- #424 wild flag: orthogonal to shelter, implies risk, drops the pack ---
+    wild_room = "glacier_crown"
+    assert srv.ROOMS[wild_room]["wild"] is True
+    assert "risk" not in srv.ROOMS[wild_room], "wild must not need a risk flag"
+    assert srv._room_is_risk(wild_room) is True
+    assert srv._room_is_risk("summit_gatehouse") is True  # indoor AND wild
+    assert srv._room_is_risk("town_square") is False
+    assert srv._room_is_risk("d_1_f1") is False  # dungeon floors stay safe
+
+    wildling = mkplayer("WildDiver", 40021, room=wild_room)
+    wildling.gold = 0
+    wildling.inventory = ["glacier_core", "frost_crystal"]
+    wildling.equipped = "glacier_core"  # equipped slot survives, rest does not
+    wpv = srv.death_preview(wildling)
+    assert wpv["risk_zone"] is True, wpv
+    assert wpv["items_at_risk"] == ["Frost Crystal"], wpv["items_at_risk"]
+    wentry = srv.get_score_entry("WildDiver")
+    wentry["score"] = 100.0
+    wentry["level"] = 1
+    wentry["xp"] = 0.0
+    wentry["xp_to_next"] = srv.xp_to_next(1)
+    await srv.respawn_player(wildling)
+    assert wildling.inventory == ["glacier_core"], wildling.inventory
+    assert srv.room_items[wild_room].count("frost_crystal") == 1
+    unplayer(wildling)
+    srv.room_items[wild_room].remove("frost_crystal")
+    print("WILD_RISK_OK")
+
+    # --- #424 wild-exclusive materials + wild-only high-tier craftables ---
+    wild_rooms = {r for r, v in srv.ROOMS.items() if v.get("wild")}
+    for mat, minval in (("glacier_core", 40), ("abyssal_heart", 40)):
+        assert mat in srv.ITEM_DEFS, mat
+        assert srv.ITEM_DEFS[mat]["value"] >= minval, (mat, srv.ITEM_DEFS[mat])
+        carriers = [n for n, v in srv.WORLD["npcs"].items() if mat in (v.get("loot") or [])]
+        assert carriers, mat
+        for nid in carriers:
+            assert srv.WORLD["npcs"][nid]["room"] in wild_rooms, (mat, nid)
+        # no recipe-free path: the mat exists nowhere else in the world
+        assert not [n for n, v in srv.WORLD["npcs"].items()
+                    if n not in carriers and mat in (v.get("loot") or [])]
+    wild_recipes = {"stormforged_aegis", "abyssal_warden_draught"}
+    for rname in wild_recipes:
+        rec = srv.RECIPES[rname]
+        inputs = set(rec["inputs"])
+        assert inputs & {"glacier_core", "abyssal_heart"}, (rname, inputs)
+    print("WILD_EXCLUSIVE_OK")
+
     # --- Duplicate equipped items in risk zones drop unequipped instances ---
     srv.ROOMS["market"]["risk"] = True
     duper = mkplayer("DupEquip", 40015, room="market")
@@ -2905,5 +2952,21 @@ async def main():
         assert len(_rooms[_a]["exits"]) == 2, (_frontier, _a)
         assert len(_rooms[_b]["exits"]) == 2, (_frontier, _b)
     print("WILD_CHAIN_OK")
+
+    # #424: the flag is orthogonal to shelter -- the two indoor-B gates are
+    # both indoor and wild, and wild implies risk (item drops on death).
+    _wild = {r for r, v in _rooms.items() if v.get("wild")}
+    assert _wild, "no wild rooms flagged"
+    _both = {r for r in _wild if _rooms[r].get("shelter")}
+    assert _both, "wild must be orthogonal to shelter, not a subset of outdoor"
+    for _frontier, _lab in (("howling_col", "south"), ("sunken_reef", "north")):
+        _a = _rooms[_frontier]["exits"][_lab]
+        _b = _rooms[_a]["exits"][_lab]
+        assert _a in _wild and _b in _wild, (_frontier, _a, _b)
+        assert _rooms[_frontier].get("wild") is True, _frontier
+    for _rid, _r in _rooms.items():
+        if _rid not in _wild:
+            assert "risk" not in _r or not _r.get("risk"), _rid
+    print("WILD_FLAG_OK")
 
 asyncio.run(main())

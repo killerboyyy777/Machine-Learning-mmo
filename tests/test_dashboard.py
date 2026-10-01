@@ -83,6 +83,12 @@ assert "TILE_W + TILE_GAP" not in html, "map still grows+scrolls"
 assert html.index("Recent flow") < html.index("Recipe browser")
 # Indoor/outdoor legend + full shelter coverage in world.json.
 assert "solid tile = indoor, dashed = outdoor" in html
+# #424 wild rendering: its own axis on top of indoor/outdoor, ASCII corner
+# tooth (no emoji anywhere in this file), plus the legend entry.
+for tok in ("red wash + W = wild", 'WILD_MARK = "W"', "if (room.wild)",
+            'wild = cssVar("--bad"'):
+    assert tok in html, f"wild render token {tok} missing"
+assert chr(0x25B2) not in html, "non-ASCII wild marker in dashboard"
 # Spawn-border fix: outdoor-home tile carries accent AND dash.
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
 import json as _json, os as _os
