@@ -134,6 +134,82 @@ def runlog_check(folder):
     print("RUNLOG_OK")
 
 
+def runlog_sendback_check(folder):
+    """The #65 review findings: a query string is attacker-controlled, a bool
+    extra is not a metric, and two trainers can start in the same second."""
+    root = os.path.join(folder, "runs2")
+
+    # --- query parsing (#6) ------------------------------------------------
+    # Only the LAST runs= used to survive, so a multi-param query silently dropped
+    # every earlier one. Ids are minted-shape-checked, so use real shapes here.
+    assert runlog.parse_run_ids("?runs=20260101-120000&runs=20260101-130000") == [
+        "20260101-120000", "20260101-130000"]
+    # A percent-encoded id never reached valid_run_id before, and an encoded
+    # traversal is the case that matters.
+    assert runlog.parse_run_ids("?runs=20260101-1200%30") == []
+    assert runlog.parse_run_ids("?runs=..%2f..%2fetc") == []
+    # 100k ids is 100k file opens per request unless the caller caps it.
+    flood = "?" + "&".join(f"runs=20260101-{i:06d}" for i in range(100000))
+    assert len(runlog.parse_run_ids(flood)) == runlog.MAX_RUN_IDS
+    # Over-long query strings are truncated before parsing, not parsed slowly.
+    assert len(runlog.parse_run_ids("?" + "x" * (runlog.MAX_QUERY_CHARS + 5000))) == 0
+    # Duplicates collapse: two boxes for one run must not open it twice.
+    assert runlog.parse_run_ids("?runs=20260101-120000,20260101-120000") == [
+        "20260101-120000"]
+    # runs_payload re-validates, so a caller bypassing parse_run_ids is safe too.
+    assert runlog.runs_payload(root=root, ids=["../../etc"])["series"] == {}
+
+    # --- bool extras (#8) --------------------------------------------------
+    # stopped=True is a state flag, not a metric; as a manifest key it vanished
+    # from the dashboard's field list and could never be compared.
+    with runlog.start_run("torch_farm", root=root) as b:
+        b.record(steps=5, total_reward=1.0)
+        b.finish("finished", steps=5, stopped=True, crash_reason=None)
+    m = runlog.read_run(root, b.run_id)
+    assert m["metrics"]["stopped"] is True, m["metrics"]
+    assert m["metrics"]["crash_reason"] is None
+    assert m["metrics"]["steps"] == 5
+    assert any(f["name"] == "stopped" for f in
+               runlog.runs_payload(root=root)["fields"]), "bool field missing"
+
+    # --- direction (#5) ---------------------------------------------------
+    # A substring match called these "higher", so a loss was ranked as a win.
+    # A loss, though, must still rank by its own end.
+    for tok in ("td_loss", "rnd_loss", "loss", "mae", "rmse", "value_error"):
+        assert runlog.higher_is_better(tok) is False, tok
+    # Direction is a whole word, not a fragment: "gloss" (g-loss) and "terror"
+    # (t-error) are not losses.
+    for tok in ("gloss", "terror", "my_lossy_metric", "losses", "runtimE",
+                "myloss", "avg_reward"):
+        assert runlog.higher_is_better(tok) is True, tok
+
+    # --- same-second collision (#4) ---------------------------------------
+    # exists()+makedirs(exist_ok=True) raced: two runs could share one run.json
+    # and interleave their jsonl.
+    made = {runlog.start_run("ml_client", root=root).run_id for _ in range(4)}
+    assert len(made) == 4, made
+
+    # --- per-kind columns (#1) -------------------------------------------
+    kinds = runlog.kind_fields([
+        {"kind": "dqn", "metrics": {"steps": 1, "total_steps": 1}},
+        {"kind": "ml_botfarm", "metrics": {"fitness": 1.0}},
+        {"kind": "soak", "metrics": {"episodes": 2}},
+    ])
+    assert kinds["ml_botfarm"] == ["fitness"], kinds
+    assert kinds["soak"] == ["episodes"], kinds
+    # A kind the table has never seen still gets its canonical columns rather
+    # than nothing, so a first botfarm run is readable.
+    assert runlog.kind_fields([{"kind": "ml_botfarm", "metrics": {"top_score": 4}}]) == {
+        "ml_botfarm": ["top_score"]}, runlog.kind_fields([{"kind": "ml_botfarm", "metrics": {"top_score": 4}}])
+    # An empty index still needs columns for the picker to have anything.
+    assert runlog.kind_fields([]) == {}, runlog.kind_fields([])
+
+    # --- no absolute path to the client (#7) -----------------------------
+    assert runlog.runs_payload(root=root)["root_name"] == "runs2"
+    assert "root" not in runlog.runs_payload(root=root)
+    print("RUNLOG_SENDBACK_OK")
+
+
 def runlog_pkg_import_check():
     """soak.py imports runlog as ml.runlog, which leaves ml/ off sys.path, so
     the flat `import versioning` cannot resolve.  Provenance must survive that
@@ -164,5 +240,6 @@ with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
     torch_check(folder)
     runlog_check(folder)
+    runlog_sendback_check(folder)
     runlog_pkg_import_check()
 print("PERSISTENCE_ALL_OK")

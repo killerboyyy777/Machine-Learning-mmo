@@ -2927,9 +2927,12 @@ async def main():
         picked = srv._runs_payload("runs=" + a.run_id, root=runs_root)
         assert list(picked["series"]) == [a.run_id], picked
         assert len(picked["series"][a.run_id]) == 1
-        # An id from the query string must not become a read outside the index.
+        # An id from the query string must not become a read outside the index,
+        # and must not be echoed back either: an unsanitized id in the response
+        # is what a dashboard would go on to render.
         hostile = srv._runs_payload("runs=../../etc", root=runs_root)
-        assert hostile["series"] == {"../../etc": []}, hostile
+        assert hostile.get("series") in (None, {}), hostile
+        assert "../../etc" not in repr(hostile), hostile
         # No index at all is an empty tab, never a 500.
         empty = srv._runs_payload("", root=os.path.join(folder, "absent"))
         assert empty["runs"] == [] and empty["fields"] == [] and not empty.get("error")

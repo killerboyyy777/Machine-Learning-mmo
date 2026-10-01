@@ -17,6 +17,7 @@ overlay ml/conductor/soak_server_config.json, mixed role slots, 1 hour).
 
 import argparse
 import asyncio
+import contextlib
 import faulthandler
 import json
 import os
@@ -196,7 +197,19 @@ async def status_logger(cond, path, interval, run=None):
                 duration=snap["uptime"],
             )
         await asyncio.sleep(interval)
-    _append_jsonl(path, summarize(cond))
+    final = summarize(cond)
+    _append_jsonl(path, final)
+    if run is not None:
+        # The loop exits without one more record, so a soak's last sample
+        # would otherwise be up to interval seconds stale -- and with
+        # --status-every large enough to be the whole run, the run would
+        # record nothing at all and compare as a flat line.
+        run.record(
+            episodes=final["episodes"],
+            mean_reward=final["mean_reward"],
+            alive=final["alive"],
+            duration=final["uptime"],
+        )
 
 
 async def gm_tables_snapshot(gm_url, timeout=10.0):
@@ -308,73 +321,76 @@ async def main():
             hparams=vars(args),
         )
         print(f"[soak] run record: {run.run_id} ({run.path})", flush=True)
-    tasks = [
-        cond.run(
-            duration_seconds=args.duration,
-            wave_size=args.wave_size,
-            wave_delay=args.wave_delay,
-        )
-    ]
-    if args.status_every > 0:
-        tasks.append(status_logger(cond, status_file, args.status_every, run=run))
-    try:
-        await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        print("[soak] Interrupted, shutting down...")
-        cond.stop()
-        await asyncio.sleep(1)
-    st = cond.status()
-    alive = st["registry"]["alive"]
-    running = st["supervisor"]["running"]
-    print(f"[soak] end: alive={alive}/{args.agents} running={running}")
-    by_type = st.get("by_type", {})
-    for ptype, cell in sorted(by_type.items()):
-        print(
-            f"[soak]   {ptype}: alive={cell['alive']} "
-            f"episodes={cell['episodes']} mean_reward={cell['mean_reward']}"
-        )
-    # Snapshot report (phase 1 of the correctness gate): server table
-    # sizes, treasury values, and log error counts, plus per-type reward
-    # windows. Informational only -- the verdict stays liveness-based
-    # until the snapshot version catches a real drift.
-    tables = await gm_tables_snapshot(args.gm_url)
-    log_errors = count_server_errors(args.server_log)
-    print(f"[soak] tables: {tables}", flush=True)
-    print(f"[soak] server_log_errors: {log_errors}", flush=True)
-    report = {
-        "ts": time.time(),
-        "duration": args.duration,
-        "agents": args.agents,
-        "alive": alive,
-        "supervisor_running": running,
-        "episodes": sum(c.get("episodes", 0) for c in by_type.values()),
-        "by_type": {k: {"alive": c.get("alive"), "episodes": c.get("episodes"),
-                        "mean_reward": c.get("mean_reward")}
-                    for k, c in by_type.items()},
-        "tables": tables,
-        "server_log_errors": log_errors,
-    }
-    report_path = os.path.join(args.base_dir, "soak_report.json")
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
-    print(f"[soak] report: {report_path}", flush=True)
-    if run is not None:
-        # Recorded before the verdict so a FAIL still leaves a comparable row.
-        run.finish(
-            "failed" if alive < args.min_agents else "finished",
-            episodes=report["episodes"],
-            mean_reward=(
-                round(
-                    sum(c.get("mean_reward", 0) * c.get("episodes", 0)
-                        for c in by_type.values()) / max(1, report["episodes"]),
-                    4,
-                )
-            ),
-            alive=alive,
-            duration=report["duration"],
-            report=report_path,
-        )
-        print(f"[soak] run {run.run_id} -> {run.manifest['status']}", flush=True)
+    with contextlib.ExitStack() as stack:
+        if run is not None:
+            stack.enter_context(run)
+        tasks = [
+            cond.run(
+                duration_seconds=args.duration,
+                wave_size=args.wave_size,
+                wave_delay=args.wave_delay,
+            )
+        ]
+        if args.status_every > 0:
+            tasks.append(status_logger(cond, status_file, args.status_every, run=run))
+        try:
+            await asyncio.gather(*tasks)
+        except KeyboardInterrupt:
+            print("[soak] Interrupted, shutting down...")
+            cond.stop()
+            await asyncio.sleep(1)
+        st = cond.status()
+        alive = st["registry"]["alive"]
+        running = st["supervisor"]["running"]
+        print(f"[soak] end: alive={alive}/{args.agents} running={running}")
+        by_type = st.get("by_type", {})
+        for ptype, cell in sorted(by_type.items()):
+            print(
+                f"[soak]   {ptype}: alive={cell['alive']} "
+                f"episodes={cell['episodes']} mean_reward={cell['mean_reward']}"
+            )
+        # Snapshot report (phase 1 of the correctness gate): server table
+        # sizes, treasury values, and log error counts, plus per-type reward
+        # windows. Informational only -- the verdict stays liveness-based
+        # until the snapshot version catches a real drift.
+        tables = await gm_tables_snapshot(args.gm_url)
+        log_errors = count_server_errors(args.server_log)
+        print(f"[soak] tables: {tables}", flush=True)
+        print(f"[soak] server_log_errors: {log_errors}", flush=True)
+        report = {
+            "ts": time.time(),
+            "duration": args.duration,
+            "agents": args.agents,
+            "alive": alive,
+            "supervisor_running": running,
+            "episodes": sum(c.get("episodes", 0) for c in by_type.values()),
+            "by_type": {k: {"alive": c.get("alive"), "episodes": c.get("episodes"),
+                            "mean_reward": c.get("mean_reward")}
+                        for k, c in by_type.items()},
+            "tables": tables,
+            "server_log_errors": log_errors,
+        }
+        report_path = os.path.join(args.base_dir, "soak_report.json")
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"[soak] report: {report_path}", flush=True)
+        if run is not None:
+            # Recorded before the verdict so a FAIL still leaves a comparable row.
+            run.finish(
+                "failed" if alive < args.min_agents else "finished",
+                episodes=report["episodes"],
+                mean_reward=(
+                    round(
+                        sum(c.get("mean_reward", 0) * c.get("episodes", 0)
+                            for c in by_type.values()) / max(1, report["episodes"]),
+                        4,
+                    )
+                ),
+                alive=alive,
+                duration=report["duration"],
+                report=report_path,
+            )
+            print(f"[soak] run {run.run_id} -> {run.manifest['status']}", flush=True)
     if alive < args.min_agents:
         print(f"[soak] FAIL: alive {alive} < min {args.min_agents}")
         return 1

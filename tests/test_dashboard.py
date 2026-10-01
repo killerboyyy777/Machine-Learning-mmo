@@ -303,10 +303,44 @@ assert 'fetch("/api/runs"' in html, "runs tab does not read /api/runs"
 for tok in ("def _runs_payload", '"/api/runs"', "runlog.runs_payload"):
     assert tok in _srv, f"server: runs token {tok} missing"
 # One column spec drives the header AND the sort keys: a header/key list that
-# drifted apart would sort by the wrong field with no error.
-assert "RUN_COLS.map(c => c.key)" in html and "RUN_CMP_COLS.map(c => c.key)" in html
-assert html.index('specHead(RUN_COLS)') < html.index("bindSortTables();"), \
-    "runs headers built after the sorter binds"
+# drifted apart would sort by the wrong field with no error. The runs table
+# sorts by runCols (identity + per-kind metrics), not the identity-only base.
+assert "runCols.map(c => c.key)" in html and "RUN_CMP_COLS.map(c => c.key)" in html
+assert 'sortRows("runsTable"' in html and 'sortRows("runCmpTable"' in html, \
+    "runs tables sort on a key bindSortTables never writes"
+# The static pre-render must be the first bindSortTables() call, or the initial
+# header walk sees an empty row and the table is never sortable.
+assert re.search(r'specHead\(RUN_COLS\)\);\s*\nsetHTML\("runCmpHead".*?\nbindSortTables\(\);',
+                 html, re.DOTALL), "runs headers built after the sorter binds"
+# The client cap is a duplicate of runlog.MAX_RUN_IDS on purpose (the page
+# cannot import it), so it is asserted against the server value instead of a
+# second hardcoded literal.
+with open(os.path.join(ROOT, "ml", "runlog.py"), encoding="utf-8") as _rl_fh:
+    RL_MAX_RUN_IDS = int(
+        re.search(r"^MAX_RUN_IDS = (\d+)", _rl_fh.read(), re.MULTILINE).group(1)
+    )
+
+
+def _runs_section(h, marker):
+    """Body of the runlog/dashboard function whose name starts with marker."""
+    m = re.search(r"function " + marker + r"\w*\([^)]*\) \{(.*?)\n\}", h, re.DOTALL)
+    assert m, f"{marker} not found"
+    return m.group(1)
+
+
+# Per-trainer columns: a fixed score/steps/score_hr list read "-" for every
+# botfarm and soak run, and the header could not be rebuilt per kind.
+assert "runTableCols" in html and "kind_fields" in html
+assert "runsData.root_name" in html and "runsData.root " not in html, \
+    "runs payload path leak"
+# A second poll must not attach a second click handler to a rebuilt <th>.
+assert "dataset.sortBound" in html
+# The server caps a request at MAX_RUN_IDS; a client that allowed more would
+# show a checked box the payload has no series for.
+assert "MAX_RUN_IDS" in html and f"MAX_RUN_IDS = {RL_MAX_RUN_IDS}" in html
+# bestRunNote lands in textContent, so esc() would print its entities.
+assert not re.search(r"esc\(", _runs_section(html, "bestRunNote")), \
+    "bestRunNote escapes into textContent"
 # The verdict ranks on a metric the owner picks, with direction from the
 # server -- never a hardcoded assumption that score is what matters.
 assert 'runsMetric = "score"' in html and "higher_is_better" in html

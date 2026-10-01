@@ -65,6 +65,31 @@ TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
 
+## Training runs
+
+Every trainer writes a run record under `runs/<run_id>/` (gitignored):
+`run.json` for identity, seed, hyper-parameters and git provenance, plus an
+append-only `metrics.jsonl` series. That makes two runs comparable after the
+fact instead of by scrolling back through stdout.
+
+```bash
+python3 ml/ml_client.py --seed 7 --steps 300    # reproducible run
+python3 torch_agents/torch_farm.py --runs-dir /tmp/pilot-runs
+python3 ml/ml_client.py --no-run-record         # train without recording
+```
+
+`--seed`, `--runs-dir` and `--no-run-record` work on `ml/ml_client.py`,
+`ml/ml_botfarm.py`, `ml/conductor/soak.py`, `torch_agents/dqn_agent.py` and
+`torch_agents/torch_farm.py`. `--seed` is independent of recording.
+
+The dashboard Runs tab lists every run; tick up to 24 to overlay them on one
+chart and diff them in a wide table. The column set follows the run kinds
+present (`dqn`/`torch_farm`/`ml_client` report steps and reward,
+`ml_botfarm` fitness and top score, `soak` episodes and mean reward), and each
+metric is ranked in the direction that is actually better, so a loss is not
+crowned as a winner. `GET /api/runs` serves the same data; it returns the runs
+directory by name only, never an absolute path.
+
 ## Docs (wiki)
 
 The README is intentionally short — everything lives in the
@@ -78,7 +103,7 @@ The README is intentionally short — everything lives in the
 | [ML Guide](../../wiki/ML-Guide) | Env, reward modes, curriculum, agents, DQN+curiosity, eval, PBT, conductor, soak tests |
 | [Configuration](../../wiki/Configuration) | `server_config.json`, `ml_config.json`, env vars, ports |
 | [Testing](../../wiki/Testing) | Suites, CI, live-test procedure |
-| [Dashboard](../../wiki/Dashboard) | Panels, `/api/state`, GM tab, `/health` |
+| [Dashboard](../../wiki/Dashboard) | Panels, `/api/state`, GM tab, `/health`, Runs tab |
 | [Troubleshooting](../../wiki/Troubleshooting) | 0 players, wedges, ghosts, stale checkpoints, ports |
 
 ## Community

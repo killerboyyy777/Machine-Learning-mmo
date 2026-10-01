@@ -4547,13 +4547,17 @@ def _runs_payload(query, root=None):
         if join(dirname(abspath(__file__)), "ml") not in sys.path:
             sys.path.insert(0, join(dirname(abspath(__file__)), "ml"))
         import runlog
-        ids = []
-        for part in (query or "").split("&"):
-            if part.startswith("runs="):
-                ids = [i for i in part[5:].split(",") if i]
-        return runlog.runs_payload(root=root, ids=ids or None)
+        return runlog.runs_payload(
+            root=root, ids=runlog.parse_run_ids(query) or None
+        )
     except Exception:  # noqa: BLE001 - the dashboard gets an empty index instead
-        return {"root": "", "runs": [], "fields": [], "error": "run log unavailable"}
+        return {
+            "root_name": "",
+            "runs": [],
+            "fields": [],
+            "kind_fields": {},
+            "error": "run log unavailable",
+        }
 
 
 def start_dashboard():

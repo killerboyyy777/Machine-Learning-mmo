@@ -23,7 +23,9 @@ both trainers can import it without torch.
 import json
 import os
 import random
+import re
 import time
+from urllib.parse import parse_qsl
 
 RUNS_DIRNAME = "runs"
 MANIFEST_NAME = "run.json"
@@ -46,6 +48,26 @@ METRIC_ORDER = (
     "duration",
 )
 
+# Per-trainer columns for the Runs table (#65 send-back).  Each trainer writes
+# a different headline metric, so one hardcoded score/steps list printed "-"
+# for every botfarm and soak run -- the trainer that produced a run should be
+# readable without switching to the comparison tab.  Kept to three per kind so
+# the table stays narrow; the comparison tab keeps the full field list.
+KIND_FIELDS = {
+    "torch_farm": ("steps", "total_steps", "total_reward"),
+    "dqn": ("steps", "total_steps", "total_reward"),
+    "ml_client": ("steps", "total_steps", "total_reward"),
+    "ml_botfarm": ("steps", "fitness", "top_score"),
+    "soak": ("episodes", "mean_reward", "alive"),
+}
+DEFAULT_KIND_FIELDS = ("score", "steps", "total_steps")
+
+# A dashboard comparison past this many runs is unreadable anyway, and the cap
+# is what stops "?runs=a,a,...x100k" from turning one 5s poll into 100k file
+# reads.  The dashboard applies the same number before it builds a query.
+MAX_RUN_IDS = 24
+MAX_QUERY_CHARS = 4096
+
 
 def repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -55,8 +77,18 @@ def default_root():
     return os.path.join(repo_root(), RUNS_DIRNAME)
 
 
+def field_tokens(field):
+    """Lowercase word tokens of a metric name.
+
+    Direction used to be a substring test, which called "gloss" and "terror"
+    lower-is-better (terror contains error) and would have ranked a run by the
+    wrong end.  Tokenizing means only a real word flips the direction.
+    """
+    return set(re.split(r"[^a-z0-9]+", str(field).lower()))
+
+
 def higher_is_better(field):
-    return not any(tok in str(field).lower() for tok in LOWER_IS_BETTER)
+    return not (field_tokens(field) & set(LOWER_IS_BETTER))
 
 
 def _utc(epoch):
@@ -77,13 +109,35 @@ def _append_jsonl(path, obj):
         fh.write(json.dumps(obj, sort_keys=True) + "\n")
 
 
+def _claim_run_dir(path):
+    """Create a run directory, reporting whether this process won the name.
+
+    mkdir is the claim: it either creates the directory or fails, so two
+    trainers cannot both believe they own one run_id.
+    """
+    try:
+        os.mkdir(path)
+        return True
+    except OSError:
+        return False
+
+
 def new_run_id(root):
+    """Mint an id whose directory this process has already claimed.
+
+    The old exists-check-then-makedirs was a race: two same-second invocations
+    (a soak and a botfarm, say) took the same id, the second overwrote
+    run.json and both appended to one metrics.jsonl.  Claiming the directory
+    makes the loser walk to the next suffix instead of corrupting a live run.
+    """
     base = time.strftime("%Y%m%d-%H%M%S")
     for n in range(1, 1000):
         rid = base if n == 1 else f"{base}-{n}"
-        if not os.path.exists(os.path.join(root, rid)):
+        if _claim_run_dir(os.path.join(root, rid)):
             return rid
-    return f"{base}-{int(time.time() * 1000)}"
+    rid = f"{base}-{int(time.time() * 1000)}"
+    _claim_run_dir(os.path.join(root, rid))
+    return rid
 
 
 def valid_run_id(run_id):
@@ -183,16 +237,14 @@ class Run:
         return sample
 
     def finish(self, status="finished", **extra):
-        """Close the run.  Numeric extras are metrics and land in the same bag
+        """Close the run.  Scalars are metrics and land in the same bag
         record() writes, so a final summary cannot end up outside the field
         list the dashboard ranks on; everything else (paths, labels) stays a
-        manifest field."""
+        manifest field.  Bools are metrics too -- record() has always taken
+        them -- and an int-flag must not be filed as an invisible top-level
+        key just because Python distinguishes bool from int."""
         for key, val in extra.items():
-            if (
-                val is None
-                or isinstance(val, (int, float))
-                and not isinstance(val, bool)
-            ):
+            if val is None or isinstance(val, (int, float, bool)):
                 self.manifest["metrics"][key] = val
             else:
                 self.manifest[key] = val
@@ -206,8 +258,12 @@ class Run:
         return self
 
     def __exit__(self, exc_type, exc, _tb):
+        # An explicit finish() wins: a caller that closed the run with a
+        # verdict (a soak that failed its liveness gate, say) must not have
+        # that verdict rewritten to "finished" on the way out of the with.
         if exc_type is None:
-            self.finish("finished")
+            if self.manifest.get("status") == "running":
+                self.finish("finished")
         else:
             self.finish("failed", error=f"{exc_type.__name__}: {exc}")
         return False
@@ -359,6 +415,62 @@ def field_meta(runs):
     ]
 
 
+def kind_fields(runs):
+    """Per-trainer column list, so a run table can show each kind's own
+    metrics instead of a hardcoded score column that is "-" everywhere else.
+
+    Unioned across every run of that kind, so a trainer whose first run died
+    before its first sample does not decide the columns for its later runs.
+    """
+    by_kind = {}
+    for r in runs:
+        kind = str(r.get("kind") or "")
+        if not kind:
+            continue
+        have = by_kind.setdefault(kind, set())
+        have.update((r.get("metrics") or {}).keys())
+    out = {}
+    for kind, have in by_kind.items():
+        wanted = [f for f in KIND_FIELDS.get(kind, DEFAULT_KIND_FIELDS) if f in have]
+        out[kind] = wanted or [f for f in DEFAULT_KIND_FIELDS if f in have]
+    return out
+
+
+def parse_run_ids(query, cap=MAX_RUN_IDS):
+    """Every run id a client asked for, validated and capped.
+
+    A query string is attacker-shaped input, so this is the one place that
+    decides how much work a request can cost: parse_qsl keeps every repeated
+    parameter (a hand-rolled split kept only the last runs= and silently
+    dropped the rest), unquoting means an id arrives as the id its writer
+    minted, and the cap means a thousand-id query cannot become a thousand
+    file reads on one 5s poll.  Malformed ids are dropped here instead of
+    reaching the readers.
+    """
+    q = (query or "")[:MAX_QUERY_CHARS]
+    # The server hands over everything after "?", but a caller may pass the raw
+    # path -- and parse_qsl reads a leading "?" as part of the first key, which
+    # would silently drop the first runs= and keep the rest.
+    out = []
+    for key, val in parse_qsl(q.lstrip("?"), keep_blank_values=True):
+        if key != "runs":
+            continue
+        for part in val.split(","):
+            rid = part.strip()
+            if valid_run_id(rid) and rid not in out:
+                out.append(rid)
+                if len(out) >= cap:
+                    return out
+    return out
+
+
+def root_name(root):
+    """Directory name only.  The dashboard is served to a browser on the
+    operator's network, and an absolute path in the payload tells a reader
+    where the operator's checkout lives for no dashboard benefit."""
+    return os.path.basename(str(root or "").rstrip("/\\"))
+
+
 def runs_payload(root=None, ids=None):
     """Everything the Runs tab needs in one read.  `series` (the per-sample
     history behind the comparison chart) is only included for the runs the
@@ -366,11 +478,15 @@ def runs_payload(root=None, ids=None):
     root = root or default_root()
     runs = list_runs(root)
     payload = {
-        "root": root,
+        "root_name": root_name(root),
         "generated": round(time.time(), 3),
         "runs": runs,
         "fields": field_meta(runs),
+        "kind_fields": kind_fields(runs),
     }
     if ids:
-        payload["series"] = {i: read_samples(root, i) for i in ids}
+        # Re-validated and re-capped here as well: a direct caller must not be
+        # able to skip the checks parse_run_ids does for a query string.
+        wanted = [i for i in ids if valid_run_id(i)][:MAX_RUN_IDS]
+        payload["series"] = {i: read_samples(root, i) for i in wanted}
     return payload

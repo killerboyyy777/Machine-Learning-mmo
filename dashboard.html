@@ -687,6 +687,10 @@ function setHTMLEl(el, key, html) {
 const sortState = {}; // tbodyId -> {col, dir}
 function sortRows(tbodyId, rows, keyFns, defCol, defDir) {
   const st = sortState[tbodyId] || (sortState[tbodyId] = {col: defCol, dir: defDir});
+  // A table whose columns came back fewer (the runs header follows the server's
+  // field list) would otherwise keep a column index that no longer exists,
+  // leaving the rows unsorted while the header still claims a sort.
+  if (st.col >= keyFns.length) { st.col = defCol; st.dir = defDir; }
   const fn = keyFns[st.col];
   const indexed = rows.map((r, i) => [i, r]);
   indexed.sort((a, b) => {
@@ -715,6 +719,11 @@ function bindSortTables() {
   for (const table of document.querySelectorAll("table[data-sort]")) {
     const id = table.dataset.sort;
     table.querySelectorAll("thead th").forEach((th, i) => {
+      // Idempotent: the runs table rebuilds its <th> from the server's field
+      // list, and re-binding would attach a second click handler per poll,
+      // so one click flips the sort twice and reads as no sort at all.
+      if (th.dataset.sortBound) return;
+      th.dataset.sortBound = "1";
       th.title = (th.title ? th.title + " " : "") + "(click to sort)";
       th.addEventListener("click", () => {
         const st = sortState[id] || (sortState[id] = {col: 0, dir: 1});
@@ -1947,11 +1956,25 @@ const RUN_COLS = [
   {label: "seed", key: r => numOrNull(r.seed), fmt: v => (v == null ? "-" : String(v))},
   {label: "config", key: r => r.config_hash, fmt: v => (v ? String(v).slice(0, 8) : "-")},
   {label: "git", key: r => r.git_sha, fmt: v => (v ? String(v).slice(0, 7) : "-")},
-  {label: "score", key: r => numOrNull(pick(r, "score")), fmt: fmtNum},
-  {label: "steps", key: r => numOrNull(pick(r, "steps")), fmt: fmtNum},
-  {label: "score/hr", key: r => numOrNull(pick(r, "score_hr")), fmt: fmtNum},
   {label: "age", key: r => r.started, fmt: v => fmtAge(v)},
 ];
+// Per-trainer metric columns (#65 send-back): a fixed score/steps/score_hr
+// list printed "-" for every botfarm and soak run, because those trainers
+// never write "score" at all. The server sends each kind's own column list,
+// so a run shows the numbers its own trainer recorded and the other trainers'
+// columns stay blank. Rebuilt only when the kind set actually changes, so a
+// 5s poll does not rewrite a header nobody is looking at.
+let runCols = RUN_COLS;
+let runColsSig = "";
+function runTableCols(kindFields) {
+  const seen = [];
+  for (const list of Object.values(kindFields || {})) {
+    for (const f of list) if (!seen.includes(f)) seen.push(f);
+  }
+  return RUN_COLS.concat(seen.map(f => ({
+    label: f, key: r => numOrNull(pick(r, f)), fmt: fmtNum,
+  })));
+}
 // Every metric the trainers actually record, so a comparison is one glance
 // rather than one column per run. A metric outside this list still shows in
 // the chart via the metric picker.
@@ -1984,6 +2007,8 @@ function specRow(cols, row, i) {
 // explicit (a picker, not a hardcoded assumption that score is what matters)
 // and the direction comes from the server, so a loss comparison reads as
 // "lowest wins" instead of silently crowning the worst run.
+// Plain text, no esc(): this lands in textContent, where esc() would render
+// its entities literally -- "a &amp; b" instead of "a & b".
 function bestRunNote(runs, field, higher) {
   const scored = runs.filter(r => numOrNull(pick(r, field)) != null);
   if (!scored.length) return `no run recorded a ${field} value yet`;
@@ -1993,17 +2018,17 @@ function bestRunNote(runs, field, higher) {
   const top = rank[0], val = pick(top, field);
   const dir = higher ? "highest" : "lowest";
   if (rank.length === 1) {
-    return `${esc(top.run_id)} is the only run with a ${esc(field)} (${fmtNum(val)})`;
+    return `${top.run_id} is the only run with a ${field} (${fmtNum(val)})`;
   }
   const next = pick(rank[1], field);
   const diff = Math.abs(val - next);
   if (!diff) {
     // "0 clear" reads like a rounding bug; say what actually happened.
     const others = rank.length - 1;
-    return `${esc(top.run_id)} ties ${others} other run${others === 1 ? "" : "s"} ` +
-           `on ${esc(field)} at ${fmtNum(val)}`;
+    return `${top.run_id} ties ${others} other run${others === 1 ? "" : "s"} ` +
+           `on ${field} at ${fmtNum(val)}`;
   }
-  return `${esc(top.run_id)} wins on ${esc(field)}: ${fmtNum(val)} vs ${fmtNum(next)} ` +
+  return `${top.run_id} wins on ${field}: ${fmtNum(val)} vs ${fmtNum(next)} ` +
          `(${dir} of ${rank.length} runs, ${fmtNum(diff)} clear)`;
 }
 function renderRuns(s) {
@@ -2012,8 +2037,11 @@ function renderRuns(s) {
   const running = runs.filter(r => r.status === "running").length;
   setHTML("runsCount", runsError
     ? `run log: ${runsError}`
-    : `${runs.length} run${runs.length === 1 ? "" : "s"} indexed` +
-      (runsData && runsData.root ? ` in ${runsData.root}` : ""));
+    // textContent, not innerHTML, so no escaping here. The payload carries only
+  // the directory name: this renders over HTTP to anyone who can reach the
+  // dashboard, and an absolute path is a machine detail it has no use for.
+  : `${runs.length} run${runs.length === 1 ? "" : "s"} indexed` +
+      (runsData && runsData.root_name ? ` in ${runsData.root_name}` : ""));
   $("runsTotal").textContent = runs.length;
   $("runsRunning").textContent = running;
   $("runsSelCount").textContent = runsSel.length;
@@ -2025,6 +2053,12 @@ function renderRuns(s) {
   const opts = f => fields.map(x =>
     `<option value="${esc(x.name)}"${x.name === f ? " selected" : ""}>` +
     `${esc(x.name)}${x.higher_is_better ? "" : " (lower is better)"}</option>`).join("");
+  // A metric the server stopped offering (pruned runs, a renamed field) would
+  // leave a picker on a value no run has: the verdict then reads "no run
+  // recorded a score value yet" about a metric the user never chose.
+  const snap = f => (fields.some(x => x.name === f) ? f : (fields[0] || {}).name || f);
+  runsMetric = snap(runsMetric);
+  runsCmpMetric = snap(runsCmpMetric);
   setHTML("runsMetric", opts(runsMetric));
   setHTML("runsCmpMetric", opts(runsCmpMetric));
 
@@ -2033,8 +2067,20 @@ function renderRuns(s) {
     ? bestRunNote(pool, runsMetric, dirFor(runsMetric) !== false)
     : "-";
 
-  setHTML("runsBody", sortRows("runsBody", runs, RUN_COLS.map(c => c.key), 2, -1)
-    .map((r, i) => specRow(RUN_COLS, r, i)).join(""));
+  const sig = JSON.stringify((runsData && runsData.kind_fields) || {});
+  if (sig !== runColsSig) {
+    runColsSig = sig;
+    runCols = runTableCols(runsData && runsData.kind_fields);
+    setHTML("runsHead", specHead(runCols));
+    // Fresh <th> elements need fresh handlers; the guard on the binder keeps
+    // the untouched columns from collecting a listener per poll.
+    bindSortTables();
+  }
+  // Keyed by data-sort, not the tbody id: bindSortTables() writes the state
+  // under the table's data-sort name, so a different key would leave the header
+  // arrow on a column the rows are not actually sorted by.
+  setHTML("runsBody", sortRows("runsTable", runs, runCols.map(c => c.key), 2, -1)
+    .map((r, i) => specRow(runCols, r, i)).join(""));
   markSorted("runsHead", "runsTable");
 
   const sel = runs.filter(r => runsSel.includes(r.run_id));
@@ -2042,7 +2088,7 @@ function renderRuns(s) {
   $("runsCmpNote").textContent = sel.length
     ? `${sel.length} selected, newest first`
     : "tick runs above to compare them";
-  setHTML("runCmpBody", sortRows("runCmpBody", sel, RUN_CMP_COLS.map(c => c.key), 1, -1)
+  setHTML("runCmpBody", sortRows("runCmpTable", sel, RUN_CMP_COLS.map(c => c.key), 1, -1)
     .map((r, i) => specRow(RUN_CMP_COLS, r, i)).join(""));
   markSorted("runCmpHead", "runCmpTable");
 
@@ -2107,6 +2153,8 @@ function scheduleRunsPoll() {
 // The runs tables derive their <th> from RUN_COLS, so the headers must be in
 // the DOM before bindSortTables() walks them -- binding against an empty
 // header row leaves the table permanently unsortable.
+// Identity columns only; renderRuns() rebuilds the head from the server's
+// per-kind field list once it arrives.
 setHTML("runsHead", specHead(RUN_COLS));
 setHTML("runCmpHead", specHead(RUN_CMP_COLS));
 bindSortTables();
@@ -2119,20 +2167,34 @@ $("steamItem")?.addEventListener("change", e => {
   steamItem = e.target.value || null;
   if (lastState) renderSteam(lastState.market || {});
 });
+// Must match runlog.MAX_RUN_IDS: the cap is enforced server-side too, and a
+// client that allowed more would show a checked box the payload has no series
+// for.
+const MAX_RUN_IDS = 24;
 // Delegated, because renderRuns rewrites #runsBody on every poll: a per-row
 // listener would be thrown away each time and stack up as it re-attached.
 $("runsBody").addEventListener("change", e => {
   const id = e.target.dataset.run;
   if (!id) return;
   const i = runsSel.indexOf(id);
-  if (e.target.checked && i < 0) runsSel.push(id);
-  else if (!e.target.checked && i >= 0) runsSel.splice(i, 1);
+  if (e.target.checked && i < 0) {
+    // The server caps a request at MAX_RUN_IDS; ticking past it would send a
+    // query the server silently truncates, so the visible selection and the
+    // compared series would disagree.
+    if (runsSel.length >= MAX_RUN_IDS) {
+      e.target.checked = false;
+      $("runsSelCount").textContent = `${runsSel.length} (max ${MAX_RUN_IDS})`;
+      return;
+    }
+    runsSel.push(id);
+  } else if (!e.target.checked && i >= 0) runsSel.splice(i, 1);
   // Re-poll rather than re-render: the chart series only arrive with the
   // payload, so a local redraw would show a selection the chart has no data
   // for yet.
-  loadRuns();
+loadRuns();
   scheduleRunsPoll();
 });
+
 for (const id of ["runsMetric", "runsCmpMetric"]) {
   $(id)?.addEventListener("change", e => {
     if (id === "runsMetric") runsMetric = e.target.value;

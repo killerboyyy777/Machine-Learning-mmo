@@ -35,6 +35,7 @@ Options:
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import random
@@ -344,36 +345,43 @@ async def evaluator(farm):
             best_checkpoint=BEST_FILE,
         )
         print(f"[farm] run record: {run.run_id} ({run.path})")
-    while not farm.stop.is_set():
-        await asyncio.sleep(farm.args.eval_every)
-        if farm.steps >= farm.next_checkpoint:
-            cands = [b.fitness() for b in farm.bots]
-            cands = [c for c in cands if c is not None]
-            if cands and max(cands) > farm.best_fitness + 1e-6:
-                best_bot = max(farm.bots, key=lambda b: b.fitness() or float("-inf"))
-                farm.promote(max(cands), best_bot.score)
-            while farm.next_checkpoint <= farm.steps:
-                farm.next_checkpoint += max(1, farm.args.checkpoint_every)
-        # periodic status line so you can watch the farm from the console
-        per = "  ".join(f"{b.name}={b.score:.1f}" for b in farm.bots)
-        best = farm.best_fitness if farm.best_fitness > float("-inf") else 0.0
-        print(f"[farm] steps={farm.steps} eps={farm.epsilon_now():.2f} "
-              f"best={best:.4f} bots: {per}")
+    # The loop below is the first thing to be cancelled when the owner
+    # Ctrl-C's, and a cancelled task would skip the finish() at the end of the
+    # function -- leaving a run pinned at status "running" in the dashboard
+    # forever, for a process that is already gone.
+    with contextlib.ExitStack() as stack:
         if run is not None:
-            # fitness is the farm's own selection signal, so it is the axis
-            # worth comparing; score is what a player would recognise.
-            run.record(
+            stack.enter_context(run)
+        while not farm.stop.is_set():
+            await asyncio.sleep(farm.args.eval_every)
+            if farm.steps >= farm.next_checkpoint:
+                cands = [b.fitness() for b in farm.bots]
+                cands = [c for c in cands if c is not None]
+                if cands and max(cands) > farm.best_fitness + 1e-6:
+                    best_bot = max(farm.bots, key=lambda b: b.fitness() or float("-inf"))
+                    farm.promote(max(cands), best_bot.score)
+                while farm.next_checkpoint <= farm.steps:
+                    farm.next_checkpoint += max(1, farm.args.checkpoint_every)
+            # periodic status line so you can watch the farm from the console
+            per = "  ".join(f"{b.name}={b.score:.1f}" for b in farm.bots)
+            best = farm.best_fitness if farm.best_fitness > float("-inf") else 0.0
+            print(f"[farm] steps={farm.steps} eps={farm.epsilon_now():.2f} "
+                  f"best={best:.4f} bots: {per}")
+            if run is not None:
+                # fitness is the farm's own selection signal, so it is the axis
+                # worth comparing; score is what a player would recognise.
+                run.record(
+                    steps=farm.steps,
+                    fitness=best,
+                    top_score=max((b.score for b in farm.bots), default=None),
+                    epsilon=farm.epsilon_now(),
+                )
+        if run is not None:
+            run.finish(
                 steps=farm.steps,
-                fitness=best,
-                top_score=max((b.score for b in farm.bots), default=None),
-                epsilon=farm.epsilon_now(),
+                fitness=farm.best_fitness if farm.best_fitness > float("-inf") else None,
             )
-    if run is not None:
-        run.finish(
-            steps=farm.steps,
-            fitness=farm.best_fitness if farm.best_fitness > float("-inf") else None,
-        )
-        print(f"[farm] run {run.run_id} -> {run.manifest['status']}")
+            print(f"[farm] run {run.run_id} -> {run.manifest['status']}")
 
 
 def parse_args():
