@@ -357,10 +357,14 @@ def validate(file_id, section, key, raw):
             return None, f"{key} needs exactly {spec['count']} numbers"
         out = []
         for part in parts:
+            # float() first, then narrow: int("1e2") is a ValueError, so
+            # testing for a decimal point and otherwise calling int() would
+            # reject a number JSON itself accepts.
             try:
-                out.append(float(part) if "." in part else int(part))
+                number = float(part)
             except ValueError:
                 return None, f"{key}: {part!r} is not a number"
+            out.append(int(number) if number.is_integer() else number)
         for item in out:
             if not spec["min"] <= item <= spec["max"]:
                 return None, f"{key}: {item} outside {spec['min']}-{spec['max']}"

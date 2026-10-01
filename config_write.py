@@ -142,10 +142,14 @@ def _apply_section(lines, file_id, section, edits):
             )
         added = [k for k in pending if k not in updates]
         if added:
-            # New entries go last in the section, each comma-terminated except
-            # the final one so the closing brace keeps a clean neighbour.
+            # New entries go last in the section. The entry that currently ends
+            # the section carries no trailing comma (a valid file has none
+            # before a closing brace), so it needs one ADDED, not stripped:
+            # stripping it left the old last entry and the new first entry
+            # unseparated, which made every reset-then-set round trip die on a
+            # re-parse instead of writing.
             if close - 1 > body_start:
-                lines[close - 1] = _strip_comma(lines[close - 1])
+                lines[close - 1] = _ensure_comma(lines[close - 1])
             for offset, key in enumerate(added):
                 last = offset == len(added) - 1
                 lines.insert(
@@ -160,6 +164,11 @@ def _apply_section(lines, file_id, section, edits):
 
 def _strip_comma(line):
     return line.rstrip().rstrip(",")
+
+
+def _ensure_comma(line):
+    stripped = line.rstrip()
+    return stripped if stripped.endswith(",") else stripped + ","
 
 
 def write_edits(path, file_id, edits):
@@ -195,9 +204,14 @@ def write_edits(path, file_id, edits):
         if not ok:
             return False, note, []
 
-    updated = "\n".join(lines)
-    if original.endswith("\n"):
-        updated += "\n"
+    # The file's own line ending, not "\n". A checkout on Windows can hand us a
+    # CRLF config, and these bytes are hashed into every checkpoint's
+    # config_hash: rejoining with "\n" would rewrite every line of the file.
+    newline = "\r\n" if "\r\n" in original else "\n"
+
+    updated = newline.join(lines)
+    if original.endswith(("\n", "\r")):
+        updated += newline
     if updated == original:
         return True, "no changes", []
 

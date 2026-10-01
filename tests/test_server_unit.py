@@ -54,6 +54,14 @@ def config_editor_check(folder):
         live = {s for s, v in data.items() if isinstance(v, dict)}
         assert live == known, f"{file_id}: file sections {live} vs schema {known}"
         for section, keys in config_schema.sections(file_id):
+            # A key in the file but not in the schema is the case the section
+            # comparison above cannot see: the editor would have no field for
+            # it, so the operator could neither read nor change it.
+            schema_keys = set(keys)
+            for key in data[section]:
+                assert key in schema_keys, (
+                    f"{file_id}: {section}.{key} is in the file but not the schema"
+                )
             for key in keys:
                 assert key in data[section], f"{file_id}: {section}.{key} missing"
                 spec = config_schema.field_spec(file_id, section, key)
@@ -260,6 +268,58 @@ def config_editor_check(folder):
         assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
         data = json.loads(read_text(path))
         assert "TAX_RATE" not in data["economy"], data["economy"]
+
+        # Reset then set again. The override has to be re-addable, or "reset"
+        # is a one-way door: the add path has to comma-terminate the entry that
+        # used to end the section, which it did not.
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.2"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        data = json.loads(read_text(path))
+        assert data["economy"]["TAX_RATE"] == 0.2, data["economy"]
+        assert data["economy"]["MOB_EXTRA_SPAWNS"] == 1, "the new last entry was lost"
+        # A key that was never in the file lands in its section too.
+        del data["economy"]["TAX_RATE"]
+        with open(path, "w", newline="") as fh:
+            fh.write(json.dumps(data, indent=2))
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.2"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        assert json.loads(read_text(path))["economy"]["TAX_RATE"] == 0.2
+    finally:
+        srv.CONFIG_FILE = real_srv
+
+    # --- an empty section can receive its first key ------------------------
+    path = os.path.join(folder, "empty_section.json")
+    with open(path, "w", newline="") as fh:
+        fh.write('{\n  "economy": {\n  },\n  "commissions": {\n'
+                 '    "COMMISSION_TTL_SECONDS": 3600\n  }\n}\n')
+    real_srv = srv.CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.2"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], (status, body)
+        data = json.loads(read_text(path))
+        assert data["economy"] == {"TAX_RATE": 0.2}, data["economy"]
+        assert data["commissions"]["COMMISSION_TTL_SECONDS"] == 3600
+    finally:
+        srv.CONFIG_FILE = real_srv
+
+    # --- a CRLF file keeps CRLF: the config hash covers these bytes --------
+    path = sandbox("crlf.json", "server_config.json")
+    crlf = read_text(path).replace("\n", "\r\n")
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(crlf)
+    assert b"\r\n" in read_bytes(path), "CRLF fixture did not take"
+    real_srv = srv.CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.3"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], (status, body)
+        raw = read_bytes(path)
+        assert raw.count(b"\r\n") > 40, "CRLF endings were rewritten"
+        # No bare LF survives: a mix would still move the config hash even
+        # though the file parses.
+        assert b"\n" not in raw.replace(b"\r\n", b""), "mixed line endings"
+        assert json.loads(raw.decode())["economy"]["TAX_RATE"] == 0.3
     finally:
         srv.CONFIG_FILE = real_srv
 

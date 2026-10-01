@@ -3149,6 +3149,24 @@ def _refresh_quests():
         "reward_points": QUEST_TONIC_POINTS})
 
 
+# The code defaults, snapshotted before the single config pass below
+# overwrites them. The editor has to show what a key falls back to when it is
+# absent from the file, and after _apply_config() the globals hold the file's
+# values instead.
+CONFIG_DEFAULTS = {}
+try:
+    import config_schema as _config_schema_for_defaults
+
+    for _file_id in ("server", "ml"):
+        for _section, _keys in _config_schema_for_defaults.sections(_file_id):
+            for _key in _keys:
+                _value = globals().get(_key)
+                if isinstance(_value, (int, float)) and not isinstance(_value, bool):
+                    CONFIG_DEFAULTS[_key] = _value
+except ImportError:
+    pass
+
+
 # Single config pass, HERE at module bottom: every overridable global
 # (including the QUEST_* block above) exists by now, so no config section
 # misses (#251). Then sync the catalog copies from the tuned values.
@@ -4588,8 +4606,18 @@ def _loopback_peer(host):
 
     The dashboard binds 0.0.0.0 with no auth, so an off-box viewer can read
     the config and must not be able to write it.
+
+    127.0.0.0/8 rather than just 127.0.0.1: the whole /8 is loopback by
+    definition, and an IPv4-mapped peer (::ffff:127.0.0.1) arrives as that
+    string on a dual-stack socket. Both are this machine, so refusing them
+    would only cost the operator their own dashboard.
     """
-    return str(host) in ("127.0.0.1", "::1")
+    text = str(host).removeprefix("::ffff:")
+    if text == "localhost":
+        return True
+    if ":" in text:
+        return text in ("::1", "0:0:0:0:0:0:0:1")
+    return text.startswith("127.") and text.count(".") == 3
 
 
 def _loopback_origin(origin):
@@ -4691,10 +4719,14 @@ def _config_payload():
 
 
 def _config_default(file_id, key):
-    """The code default a missing key falls back to, or None if unknowable."""
+    """The code default a missing key falls back to, or None if unknowable.
+
+    Read from CONFIG_DEFAULTS, not from the globals: _apply_config() overwrites
+    those with the file's values, so globals() would report the file's own
+    value back as the default for every overridden key.
+    """
     if file_id == "server":
-        value = globals().get(key)
-        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        return CONFIG_DEFAULTS.get(key)
     try:
         import config_schema
     except ImportError:
@@ -4872,6 +4904,16 @@ def start_dashboard():
             origin = self.headers.get("Origin")
             if origin and not _loopback_origin(origin):
                 self._send_json({"ok": False, "error": "cross-origin config write refused"}, 403)
+                return
+            # application/json is not CORS-safelisted, so a cross-origin page
+            # cannot send it without a preflight this server never answers.
+            # That is what closes the no-cors text/plain POST, which Origin
+            # alone does not stop.
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._send_json(
+                    {"ok": False, "error": "Content-Type must be application/json"}, 415
+                )
                 return
             raw, error = self._read_body(_CONFIG_BODY_MAX)
             if raw is None:
