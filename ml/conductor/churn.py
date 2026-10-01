@@ -13,6 +13,7 @@ New spawns carry inheritable goal weights (#162 Phase 1): half fresh
 Dirichlet samples, half mutations of recent goals (in-memory pool;
 lineage files arrive in Phase 2).
 """
+
 import asyncio
 import random
 import time
@@ -59,8 +60,13 @@ def wave_startup(count, wave_size, wave_delay_seconds):
 class ChurnManager:
     """Manages agent lifecycle: arrivals, deaths, wave startup."""
 
-    def __init__(self, registry, arrivals_per_minute=2.0, mean_lifetime_episodes=100,
-                 top_up_per_tick=1):
+    def __init__(
+        self,
+        registry,
+        arrivals_per_minute=2.0,
+        mean_lifetime_episodes=100,
+        top_up_per_tick=1,
+    ):
         self.registry = registry
         self.arrivals_per_minute = arrivals_per_minute
         self.mean_lifetime_episodes = mean_lifetime_episodes
@@ -157,8 +163,10 @@ class ChurnManager:
         lifetime row and the top-up fill came up short. Exhaustion
         raises RuntimeError, which both tick paths already tolerate."""
         for _ in range(max_attempts):
-            agent_id = (f"agent_{int(time.time() * 1000) % 100000}"
-                        f"_{random.randint(0, 999999):06d}")
+            agent_id = (
+                f"agent_{int(time.time() * 1000) % 100000}"
+                f"_{random.randint(0, 999999):06d}"
+            )
             if self.registry.get(agent_id) is None:
                 break
         else:
@@ -170,9 +178,13 @@ class ChurnManager:
         # for this incarnation. Freed by deaths (alloc skips live
         # holders), so respawns continue the same character. None when
         # the pool is full -- the conductor then logs in as agent_id.
-        entry = self.registry.register(agent_id, agent_type, goal=goal,
-                                       character=self.registry.alloc_character(),
-                                       parent_id=parent_id)
+        self.registry.register(
+            agent_id,
+            agent_type,
+            goal=goal,
+            character=self.registry.alloc_character(),
+            parent_id=parent_id,
+        )
         # Lineage files at spawn (#293): goal.json + parent now; the ckpt
         # copy lands on the next registry.save() once training has written
         # a checkpoint file.
