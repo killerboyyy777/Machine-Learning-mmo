@@ -4560,6 +4560,203 @@ def _runs_payload(query, root=None):
         }
 
 
+# ---------------------------------------------------------------------------
+# Config editor (#63). Two operator-editable files, one endpoint pair:
+# GET returns the editable schema + current values, POST writes a batch of
+# edits. Writes are refused off-box (see the loopback gate in do_POST).
+# ---------------------------------------------------------------------------
+_ML_CONFIG_FILE = join(dirname(abspath(__file__)), "ml", "ml_config.json")
+_CONFIG_BODY_MAX = 64 * 1024
+_CONFIG_VALUES_MAX = 200
+_CONFIG_TEXT_MAX = 200
+
+
+def _config_path(file_id):
+    """Resolve at call time, not import time.
+
+    CONFIG_FILE is reassigned by --config (server.py ~L5121), and the editor
+    must write the file this process is actually reading, not the default
+    location.
+    """
+    if file_id == "server":
+        return CONFIG_FILE
+    return _ML_CONFIG_FILE
+
+
+def _loopback_peer(host):
+    """Loopback-only allowlist, same one the GM stream uses.
+
+    The dashboard binds 0.0.0.0 with no auth, so an off-box viewer can read
+    the config and must not be able to write it.
+    """
+    return str(host) in ("127.0.0.1", "::1")
+
+
+def _loopback_origin(origin):
+    """True when a browser Origin names this machine's own dashboard.
+
+    A cross-origin page POSTing to the dashboard sends its own Origin and
+    cannot forge it, so refusing everything else is what stops a page the
+    operator happens to be browsing from rewriting their config.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    # The GM gate matches IPs only because remote_address is an IP tuple. An
+    # Origin carries a hostname, so "localhost" has to be accepted here or the
+    # operator's own dashboard refuses its own writes in the common case.
+    local = host == "localhost" or _loopback_peer(host)
+    return parts.scheme in ("http", "https") and local
+
+
+def _config_read(path):
+    """(data, error). A file that does not parse is reported, not rewritten."""
+    try:
+        with open(path, encoding="utf-8", newline="") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None, "file not found"
+    except OSError as exc:
+        return None, f"unreadable ({exc.strerror or exc})"
+    if not text.strip():
+        return None, "file is empty"
+    try:
+        return json.loads(text), ""
+    except ValueError as exc:
+        return None, f"invalid JSON ({exc})"
+
+
+def _config_payload():
+    """Editor schema + current values for every field of both config files.
+
+    Read fresh per request: the files are edited outside the server too, and a
+    cached copy would let the operator save a value they cannot see.
+    """
+    try:
+        import config_schema
+    except ImportError as exc:
+        return {"editable": False, "files": [], "presets": [],
+                "error": f"config editor unavailable ({exc})"}
+
+    files = []
+    for file_id in ("server", "ml"):
+        meta = config_schema.FILES[file_id]
+        data, error = _config_read(_config_path(file_id))
+        sections = []
+        for section, keys in config_schema.sections(file_id):
+            body = data.get(section) if isinstance(data, dict) else None
+            body = body if isinstance(body, dict) else {}
+            fields = []
+            for key in keys:
+                spec = config_schema.field_spec(file_id, section, key)
+                default = _config_default(file_id, key)
+                present = key in body
+                value = body.get(key, default)
+                fields.append({
+                    "key": key,
+                    "section": section,
+                    "type": spec["type"],
+                    "min": spec.get("min"),
+                    "max": spec.get("max"),
+                    "step": spec.get("step"),
+                    "count": spec.get("count"),
+                    "help": spec["help"],
+                    "default": default,
+                    "value": value,
+                    "text": (config_schema.format_value(spec, value)
+                             if value is not None else ""),
+                    "present": present,
+                })
+            sections.append({"name": section, "fields": fields})
+        files.append({
+            "id": file_id,
+            "label": meta["label"],
+            # repo-relative only: an absolute path would publish the operator's
+            # home directory to every off-box viewer of the dashboard.
+            "path": meta["path"],
+            "restart": meta["restart"],
+            "error": error,
+            "sections": sections,
+        })
+    return {
+        "editable": True,
+        "files": files,
+        "presets": [{"name": p["name"], "help": p["help"], "values": p["values"]}
+                    for p in config_schema.PRESETS],
+    }
+
+
+def _config_default(file_id, key):
+    """The code default a missing key falls back to, or None if unknowable."""
+    if file_id == "server":
+        value = globals().get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    try:
+        import config_schema
+    except ImportError:
+        return None
+    return config_schema.ML_DEFAULTS.get(key)
+
+
+def _config_apply(file_id, edits):
+    """Validate a batch of {section: {key: raw-or-None}} and write it.
+
+    Returns (status, body). Validation happens before the writer is called, so
+    a bad batch never reaches the file.
+    """
+    try:
+        import config_schema
+        import config_write
+    except ImportError as exc:
+        return 503, {"ok": False, "error": f"config editor unavailable ({exc})"}
+    if file_id not in config_schema.FILES:
+        return 400, {"ok": False, "error": f"unknown config file {file_id!r}"}
+    if not isinstance(edits, dict) or not edits:
+        return 400, {"ok": False, "error": "edits must be a non-empty object"}
+    if len(edits) > _CONFIG_VALUES_MAX:
+        return 400, {"ok": False, "error": f"at most {_CONFIG_VALUES_MAX} values per save"}
+
+    resolved = {}
+    errors = []
+    for dotted, raw in edits.items():
+        section, _, key = str(dotted).partition(".")
+        if config_schema.field_spec(file_id, section, key) is None:
+            errors.append(f"unknown key {dotted}")
+            continue
+        if raw is None:
+            # Null means "drop the override", so the code default applies.
+            resolved.setdefault(section, {})[key] = None
+            continue
+        if not isinstance(raw, (str, int, float)) or isinstance(raw, bool):
+            errors.append(f"{key} must be a number")
+            continue
+        text = str(raw)
+        if len(text) > _CONFIG_TEXT_MAX:
+            errors.append(f"{key} value is too long")
+            continue
+        value, error = config_schema.validate(file_id, section, key, text)
+        if error:
+            errors.append(error)
+            continue
+        resolved.setdefault(section, {})[key] = value
+    if errors:
+        return 400, {"ok": False, "error": "; ".join(errors[:5])}
+
+    path = _config_path(file_id)
+    ok, message, changed = config_write.write_edits(path, file_id, resolved)
+    if not ok:
+        return 500, {"ok": False, "error": message}
+    # No live apply, deliberately: both files say "restart after changes",
+    # ml_env reads ml_config.json at import only, and _sync_extra_spawns() is
+    # documented startup-only (it drops live extra instances).
+    return 200, {"ok": True, "message": message, "changed": changed,
+                 "restart": config_schema.FILES[file_id]["restart"]}
+
+
 def start_dashboard():
     import threading
     here = dirname(abspath(__file__))
@@ -4577,13 +4774,35 @@ def start_dashboard():
             if VERBOSE:
                 print(f"[http] {self.address_string()}: {fmt % args}")
 
-        def _send(self, body, content_type):
-            self.send_response(200)
+        def _send(self, body, content_type, status=200):
+            self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_json(self, obj, status=200):
+            self._send(json.dumps(obj).encode(), "application/json", status)
+
+        def _read_body(self, cap):
+            """(raw, error) for a POST body, read under a hard cap.
+
+            Content-Length decides before a byte is read, so an enormous
+            declared length costs nothing; refusing an oversized body closes
+            the connection because the unread bytes would otherwise be parsed
+            as the next keep-alive request.
+            """
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return None, "bad Content-Length"
+            if length <= 0:
+                return None, "empty body"
+            if length > cap:
+                self.close_connection = True
+                return None, "body too large"
+            return self.rfile.read(length), ""
 
         def do_GET(self):
             path = self.path.split("?")[0]
@@ -4618,6 +4837,14 @@ def start_dashboard():
             elif path == "/uplot.min.js" and os.path.exists(uplot_path):
                 with open(uplot_path, "rb") as f:
                     self._send(f.read(), "application/javascript")
+            elif path == "/api/config":
+                # Editor schema + current values (#63). `editable` is decided
+                # per request, not here: the dashboard binds 0.0.0.0, so an
+                # off-box viewer gets the same fields with writes disabled.
+                payload = _config_payload()
+                peer = self.client_address[0] if self.client_address else ""
+                payload["editable"] = bool(payload.get("editable")) and _loopback_peer(peer)
+                self._send_json(payload)
             elif path == "/api/runs":
                 # Run index + per-run sample history for the Runs tab (#65).
                 # No path parameter: the reader scans a fixed directory and
@@ -4631,6 +4858,35 @@ def start_dashboard():
                 self._serve_activity_stream()
             else:
                 self.send_error(404)
+
+        def do_POST(self):
+            # Config writes (#63). The first POST route in the repo: every
+            # other mutating path goes over the GM WebSocket.
+            if self.path.split("?")[0] != "/api/config":
+                self.send_error(404)
+                return
+            peer = self.client_address[0] if self.client_address else ""
+            if not _loopback_peer(peer):
+                self._send_json({"ok": False, "error": "config writes are loopback-only"}, 403)
+                return
+            origin = self.headers.get("Origin")
+            if origin and not _loopback_origin(origin):
+                self._send_json({"ok": False, "error": "cross-origin config write refused"}, 403)
+                return
+            raw, error = self._read_body(_CONFIG_BODY_MAX)
+            if raw is None:
+                self._send_json({"ok": False, "error": error}, 400)
+                return
+            try:
+                body = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": f"invalid JSON ({exc})"}, 400)
+                return
+            if not isinstance(body, dict):
+                self._send_json({"ok": False, "error": "body must be a JSON object"}, 400)
+                return
+            status, result = _config_apply(body.get("file"), body.get("edits"))
+            self._send_json(result, status)
 
         def _serve_activity_stream(self):
             """Server-sent activity events (split-lane dashboard live feel).

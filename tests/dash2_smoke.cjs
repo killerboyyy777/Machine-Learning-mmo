@@ -47,6 +47,7 @@ function makeEl(id) {
 }
 
 const els = {};
+const docHandlers = {};
 const sandbox = {
   console, Math, JSON, Object, Array, String, Number, Boolean, Date,
   document: {
@@ -55,7 +56,9 @@ const sandbox = {
     getElementById: id => (els[id] ||= (realIds.has(id) ? makeEl(id) : undefined)),
     querySelectorAll: () => [],
     createElement: () => makeEl("dyn"),
-    addEventListener() {},
+    // Recorded like the element stubs: the config editor delegates on
+    // document, and a no-op here would prove nothing about those handlers.
+    addEventListener(t, fn) { (docHandlers[t] ||= []).push(fn); },
   },
   window: { devicePixelRatio: 1, addEventListener() {} },
   uPlot: class {
@@ -395,11 +398,146 @@ els["runsBody"].fire("change", { target: { checked: false, dataset: { run: sandb
 if (vm.runInContext("runsSel.length", sandbox) !== cap - 1) {
   failed++; console.error("FAIL selection cap: un-tick did not remove");
 }
-if (failed) { console.error(`PROVE_FAIL (${failed})`); process.exit(1); }
-console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme+runs)");
+// --- Config editor (#63) -------------------------------------------------
+// The config tab's editor is async (fetch + save), so this case lives in an
+// async function and the verdicts run from its continuation: a promise the
+// harness never awaits would prove nothing.
+const CFG_FIXTURE = {
+  editable: true,
+  files: [
+    { id: "server", label: "server_config.json", path: "server_config.json",
+      restart: "Restart the server to apply.",
+      sections: [
+        { name: "scoring", fields: [
+          { key: "ACTION_WINDOW", type: "int", value: 20, text: "20", default: 20,
+            present: true, min: 1, max: 500, step: 1, help: "actions scored per turn" },
+          { key: "DEATH_PENALTY", type: "float", value: 5, text: "5.0", default: 5,
+            present: true, min: 0, max: 100, step: 0.5, help: "score lost on death" } ] },
+        { name: "economy", fields: [
+          { key: "TAX_RATE", type: "float", value: 0.1, text: "0.1", default: 0.1,
+            present: true, min: 0, max: 1, step: 0.01, help: "market tax fraction" } ] } ] },
+    { id: "ml", label: "ml/ml_config.json", path: "ml/ml_config.json",
+      restart: "Restart training to apply.",
+      sections: [
+        { name: "curriculum", fields: [
+          { key: "CURRICULUM_THRESHOLDS", type: "list", value: [0, 10, 30, 60],
+            text: "[0, 10, 30, 60]", default: [0, 10, 30, 60], present: true, count: 4,
+            min: 0, max: 1000, step: 1, help: "score gates per stage" } ] } ] },
+  ],
+  presets: [
+    { name: "Balanced", help: "code defaults", values: { server: {}, ml: {} } },
+    { name: "Fast Training", help: "sharper reward, denser curriculum",
+      values: { server: { "scoring.DEATH_PENALTY": 2 }, ml: { "curriculum.CURRICULUM_THRESHOLDS": [0, 5, 15, 30] } } },
+    { name: "Economy Focus", help: "lower tax", values: { server: { "economy.TAX_RATE": 0.05 }, ml: {} } },
+  ],
+};
+const cfgFetches = [];
+let cfgPayload = CFG_FIXTURE;
+sandbox.fetch = async (url, opts) => {
+  cfgFetches.push({ url, opts });
+  if (opts && opts.method === "POST") {
+    return { ok: true, status: 200, json: async () => ({ ok: true, changed: ["economy.TAX_RATE"],
+      restart: "Restart the server to apply." }) };
+  }
+  return { ok: true, status: 200, json: async () => cfgPayload };
+};
 
-// North-up GEO + tile OVERLAP on the town subgraph (real world.json exits).
-const geoRooms = [
+async function configCase() {
+  await vm.runInContext("loadConfig()", sandbox);
+  if (vm.runInContext("cfgData === null", sandbox)) {
+    failed++; console.error("FAIL config editor did not load the payload");
+  }
+  // Every field carries its bounds, its tooltip, and the server's value text
+  // (0.10 on disk has to read 0.1 here, or every load looks dirty).
+  const form = els["cfgForm"]._html;
+  if (!form.includes('title="actions scored per turn"') || !form.includes('min="1"') ||
+      !form.includes('max="500"') || !form.includes('value="0.1"') ||
+      !form.includes("data-cfgreset")) {
+    failed++; console.error("FAIL config field row missing bounds/tooltip/value: " + form);
+  }
+  if (!els["cfgPresets"]._html.includes("Fast Training") ||
+      (els["cfgPresets"]._html.match(/data-cfgpreset=/g) || []).length !== 3) {
+    failed++; console.error("FAIL config presets not rendered");
+  }
+  if (els["cfgSave"].disabled !== false) {
+    failed++; console.error("FAIL save disabled on a loopback editable payload");
+  }
+  // The other file renders its own shape: a list field, not a scalar.
+  vm.runInContext('cfgFile = "ml"; renderConfigEditor()', sandbox);
+  if (!els["cfgForm"]._html.includes('value="[0, 10, 30, 60]"')) {
+    failed++; console.error("FAIL ml file not rendered: " + els["cfgForm"]._html);
+  }
+  // A preset stages into the draft and must not fetch: the operator still
+  // presses Save, so a preset can never be a silent write.
+  vm.runInContext('cfgFile = "server"; cfgDraft = {}; renderConfigEditor()', sandbox);
+  const beforePreset = cfgFetches.length;
+  for (const fn of docHandlers["click"] || []) {
+    fn({ target: { closest: sel => (sel === "[data-cfgpreset]" ? { dataset: { cfgpreset: "2" } } : null) } });
+  }
+  if (cfgFetches.length !== beforePreset) {
+    failed++; console.error("FAIL preset wrote without pressing Save");
+  }
+  if (vm.runInContext('cfgDraft["server|economy.TAX_RATE"]', sandbox) !== "0.05") {
+    failed++; console.error("FAIL preset did not stage its value");
+  }
+  // A value retyped to what the field already holds is not an edit.
+  vm.runInContext('cfgDraft = { "server|economy.TAX_RATE": "0.1" }; renderConfigEditor()', sandbox);
+  const beforeNoop = cfgFetches.length;
+  await vm.runInContext("saveConfig()", sandbox);
+  if (cfgFetches.length !== beforeNoop) {
+    failed++; console.error("FAIL save sent an edit that changes nothing");
+  }
+  if (!els["cfgMsg"]._text.includes("nothing changed")) {
+    failed++; console.error("FAIL no-op save verdict: " + els["cfgMsg"]._text);
+  }
+  // A real edit posts the file id and the dotted keys.
+  vm.runInContext('cfgDraft = { "server|economy.TAX_RATE": "0.05" }; renderConfigEditor()', sandbox);
+  const beforeEdit = cfgFetches.length;
+  await vm.runInContext("saveConfig()", sandbox);
+  // A successful save reloads, so the POST is in the middle of the window
+  // rather than last; looking only at the tail would miss it.
+  const window = cfgFetches.slice(beforeEdit);
+  const post = window.find(f => f.opts && f.opts.method === "POST");
+  if (!post || post.url !== "/api/config") {
+    failed++; console.error("FAIL save did not POST /api/config");
+  } else {
+    const sent = JSON.parse(post.opts.body);
+    if (sent.file !== "server" || sent.edits["economy.TAX_RATE"] !== "0.05") {
+      failed++; console.error("FAIL save body wrong: " + post.opts.body);
+    }
+  }
+  // An off-box viewer gets the same fields with writes refused: the dashboard
+  // binds 0.0.0.0, so the client has to honour the server's verdict.
+  vm.runInContext("cfgData.editable = false; renderConfigEditor()", sandbox);
+  if (els["cfgSave"].disabled !== true || !els["cfgPresets"]._html.includes("disabled")) {
+    failed++; console.error("FAIL read-only payload still offered a save");
+  }
+  const beforeReadOnly = cfgFetches.length;
+  await vm.runInContext("saveConfig()", sandbox);
+  if (cfgFetches.length !== beforeReadOnly) {
+    failed++; console.error("FAIL save fired on a non-editable payload");
+  }
+  // A dropped fetch must not wipe the form the operator is halfway through.
+  sandbox.CFG_FIXTURE_2 = CFG_FIXTURE;
+  vm.runInContext('cfgFile = "server"; cfgData = CFG_FIXTURE_2', sandbox);
+  cfgPayload = null;
+  sandbox.fetch = async () => { throw new Error("boom"); };
+  await vm.runInContext("loadConfig()", sandbox);
+  if (!els["cfgMsg"]._text.includes("could not load config")) {
+    failed++; console.error("FAIL load error not surfaced: " + els["cfgMsg"]._text);
+  }
+  if (vm.runInContext("cfgData === null", sandbox)) {
+    failed++; console.error("FAIL a failed load dropped the last good schema");
+  }
+  sandbox.fetch = async (url, opts) => {
+    cfgFetches.push({ url, opts });
+    return { ok: true, status: 200, json: async () => CFG_FIXTURE };
+  };
+}
+
+async function geoCase() {
+  // North-up GEO + tile OVERLAP on the town subgraph (real world.json exits).
+  const geoRooms = [
   { id: "town_square", exits: { north: "forest_edge", east: "old_shop", south: "graveyard", west: "market" } },
   { id: "market", exits: { east: "town_square", west: "artisan_row" } },
   { id: "graveyard", exits: { north: "town_square", up: "mountain_pass", enter: "dungeon_entrance", down: "crypt_hall" } },
@@ -442,4 +580,13 @@ for (let i = 0; i < ids.length; i++) {
   }
 }
 if (geoFail) { console.error(`GEO_FAIL (${geoFail})`); process.exit(1); }
-console.log(`GEO_OK (north-up, deterministic, no overlap at tile ${TW}x${TH})`);
+  console.log(`GEO_OK (north-up, deterministic, no overlap at tile ${TW}x${TH})`);
+
+  if (failed) { console.error("PROVE_FAIL (" + failed + ")"); process.exit(1); }
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme+runs+config)");
+}
+
+configCase().then(geoCase).catch(e => {
+  console.error("SMOKE_THREW " + ((e && e.stack) || e));
+  process.exit(1);
+});
