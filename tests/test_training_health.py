@@ -7,8 +7,12 @@ Run from the repo root:  python tests/test_training_health.py
 """
 
 import asyncio
+import contextlib
+import io
+import math
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(
@@ -359,9 +363,7 @@ else:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"
         ),
     )
-    import tempfile
-
-    from dqn_agent import TorchDQNAgent
+    from dqn_agent import OBS_SIZE, TorchDQNAgent
     from torch_farm import Runner, TorchFarm, _is_crash, _is_stop, parse_args
 
     # The spawn spread is the whole of #417 now: exploration is paid once, by
@@ -398,6 +400,8 @@ else:
         weights = os.path.join(tempfile.gettempdir(), "health_weights.json")
         best_weights = os.path.join(tempfile.gettempdir(), "health_best.json")
         spawn_spread = True
+        td_norm = True
+        td_clip = 5.0
 
     farm = TorchFarm(_Args())
     assert farm.spawn_rooms, "spread pool empty with --spawn-spread on"
@@ -438,6 +442,20 @@ else:
         assert parse_args().spawn_spread is True
         sys.argv = ["torch_farm.py", "--no-spawn-spread"]
         assert parse_args().spawn_spread is False
+        # #416b is on by default and switchable off in one flag.
+        sys.argv = ["torch_farm.py", "--agents", "2"]
+        assert parse_args().td_norm is True
+        assert parse_args().td_clip == 5.0
+        sys.argv = ["torch_farm.py", "--no-td-norm", "--td-clip", "3"]
+        assert parse_args().td_norm is False
+        assert parse_args().td_clip == 3.0
+        sys.argv = ["torch_farm.py", "--td-clip", "0"]
+        try:
+            parse_args()
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit("FAIL: --td-clip 0 accepted; it would divide by zero")
         # The removed flag must not linger as a silent no-op.
         sys.argv = ["torch_farm.py", "--explore-bonus", "0.2"]
         try:
@@ -449,5 +467,215 @@ else:
     finally:
         sys.argv = _argv
     print("TORCH_FARM_SPREAD_OK")
+
+    # #416b: per-batch advantage normalization + clipping. The defining
+    # property is scale invariance: making the reward 100x worse must not
+    # make the update 100x bigger. That is the whole point of conditioning
+    # a 14:1 death:kill signal, so test the property, not magic numbers.
+    def _agent(**kw):
+        # Identical init across instances so losses are comparable.
+        torch.manual_seed(0)
+        return TorchDQNAgent(name="NormProbe", **kw)
+
+    def _fill(agent, reward_list):
+        """Store exactly one minibatch so learn() always samples all of it."""
+        for i, r in enumerate(reward_list):
+            s = [0.0] * OBS_SIZE
+            s[i % 7] = 1.0
+            agent.store(
+                {
+                    "state": s,
+                    "action": i % 3,
+                    "reward": r,
+                    "next_state": s,
+                    "done": 1.0 if i % 6 == 0 else 0.0,
+                    "gold": 0.0,
+                    "loot": 0.0,
+                    "market": 0.0,
+                    "quest_reward": 0.0,
+                    "quest_intrinsic": 0.0,
+                    "rnd_bonus": 0.0,
+                }
+            )
+
+    n = 32
+    small = [-50.0] + [0.0] * (n - 1)  # one death among many ordinary steps
+    huge = [-5000.0] + [0.0] * (n - 1)  # same shape, 100x the punishment
+
+    a = _agent(td_norm=True, td_clip=5.0)
+    _fill(a, small)
+    la = a.learn()
+    b = _agent(td_norm=True, td_clip=5.0)
+    _fill(b, huge)
+    lb = b.learn()
+    c = _agent(td_norm=False)
+    _fill(c, small)
+    lc = c.learn()
+    d = _agent(td_norm=False)
+    _fill(d, huge)
+    ld = d.learn()
+    for x in (la, lb, lc, ld):
+        assert x["td"] is not None, "minibatch should have been trainable"
+
+    # Scale invariance: the normalized fit barely notices a 100x worse reward.
+    assert abs(la["td"] - lb["td"]) < 1e-4 * max(
+        1.0, la["td"]
+    ), f"normalized loss should be scale-invariant: {la['td']} vs {lb['td']}"
+    # The unnormalized fit feels it: this is the gradient blow-up #416 hit.
+    assert (
+        ld["td"] > 50 * lc["td"]
+    ), f"unnormalized loss should track reward scale: {lc['td']} vs {ld['td']}"
+    # Clipping binds on the outlier and reports its share.
+    assert la["adv_clip_frac"] > 0.0, "one death among 32 must trip the clip"
+    assert lb["adv_clip_frac"] >= la["adv_clip_frac"], "bigger spike, no less clipping"
+    assert (
+        lc["adv_clip_frac"] == 0.0 and ld["adv_clip_frac"] == 0.0
+    ), "clipping must be inert when td_norm is off"
+    assert (
+        lc["adv_scale"] == 1.0 and ld["adv_scale"] == 1.0
+    ), "adv_scale must report 1.0 (unconditioned) when td_norm is off"
+    assert (
+        lb["adv_scale"] > 50 * lc["adv_scale"]
+    ), "adv_scale must report the real raw residual spread"
+
+    # Known cost, pinned on purpose: normalizing also amplifies residual
+    # noise when there is no real signal, so an all-zero batch is not inert.
+    # The clip is what keeps that bounded -- at td_clip=5 the Huber term
+    # cannot exceed 4.5, so noise-driven updates stay small and tunable.
+    e = _agent(td_norm=True, td_clip=5.0)
+    _fill(e, [0.0] * n)
+    le = e.learn()
+    f = _agent(td_norm=False)
+    _fill(f, [0.0] * n)
+    lf = f.learn()
+    assert le["td"] is not None and lf["td"] is not None
+    assert le["td"] < 4.5, f"clip must bound noise amplification, got {le['td']}"
+    assert le["td"] > lf["td"], "normalizing does amplify pure noise; expected"
+
+    # #416b send-back: the unbiased-std NaN. std() divides by n-1, so a
+    # minibatch of one returns NaN and that NaN lands in the weights. Pin
+    # the guard at the size that used to break it, and assert finiteness
+    # rather than a value.
+    g = _agent(td_norm=True, td_clip=5.0, batch_size=1)
+    _fill(g, [-50.0])
+    lg = g.learn()
+    assert lg["td"] is not None, "single-sample minibatch should still train"
+    assert math.isfinite(lg["td"]), f"batch of 1 must not NaN: {lg['td']}"
+    assert math.isfinite(lg["adv_scale"]), "adv_scale must be finite at batch 1"
+
+    # Degenerate batch: identical transitions make every residual equal, so
+    # the population std is 0. Centering would divide by ~0 and zero out the
+    # common-mode shift, which is real signal; the guard keeps the raw
+    # residual (clipped) instead. Loss must be finite AND non-zero.
+    #
+    # Note the batch is NOT numerically identical: float32 rounding across
+    # 8 rows of a -5000 residual leaves a spread of ~5e-4. The guard has to
+    # be relative to the residual level or it never fires here, which is why
+    # the assertions below are on clip_frac and the Huber bound rather than
+    # on adv_scale (1.0 == took the fallback, not standardized).
+    def _fill_uniform(agent, reward, n=8):
+        for _ in range(n):
+            s = [0.0] * OBS_SIZE
+            s[0] = 1.0
+            agent.store(
+                {
+                    "state": s,
+                    "action": 0,
+                    "reward": reward,
+                    "next_state": s,
+                    "done": 1.0,
+                    "gold": 0.0,
+                    "loot": 0.0,
+                    "market": 0.0,
+                    "quest_reward": 0.0,
+                    "quest_intrinsic": 0.0,
+                    "rnd_bonus": 0.0,
+                }
+            )
+
+    h = _agent(td_norm=True, td_clip=5.0, batch_size=8)
+    _fill_uniform(h, 0.0)
+    lh = h.learn()
+    assert lh["td"] is not None and math.isfinite(lh["td"]), f"zero-std: {lh['td']}"
+    assert lh["td"] > 1e-6, "zero-std batch must keep its common-mode signal"
+
+    # The same guard still honours the clip: a large uniform residual is
+    # bounded by td_clip, so a degenerate batch cannot become the new
+    # gradient blow-up this PR exists to remove.
+    h2 = _agent(td_norm=True, td_clip=5.0, batch_size=8)
+    _fill_uniform(h2, -5000.0)
+    lh2 = h2.learn()
+    # The clip is exactly 5.0, so the Huber maximum is exactly 0.5*5 - 0.5
+    # = 4.5. Asserting <= the bound (not <) keeps this from passing or
+    # failing on a float32 ULP; clip_frac == 1.0 is the real claim, that
+    # every residual in a degenerate batch was bounded.
+    assert (
+        math.isfinite(lh2["td"]) and lh2["td"] <= 4.5
+    ), f"degenerate batch must stay clipped, got {lh2['td']}"
+    assert (
+        lh2["adv_clip_frac"] == 1.0
+    ), f"every residual should be clipped, got {lh2['adv_clip_frac']}"
+
+    # #416b send-back: td_clip is validated at the constructor too, not just
+    # the CLI. clamp(-0, 0) would silently zero every update.
+    for bad in (0.0, -1.0, -5.0):
+        try:
+            _agent(td_norm=True, td_clip=bad)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit(f"FAIL: ctor accepted td_clip={bad}")
+    assert _agent(td_norm=True, td_clip=0.5).td_clip == 0.5
+
+    # #416b send-back: provenance travels with the weights, and a resume that
+    # switches conditioning says so. Per-batch statistics are still not
+    # checkpointed -- they are recomputed every learn() call by design.
+    with tempfile.TemporaryDirectory() as tmp2:
+        p2 = os.path.join(tmp2, "n.pt")
+        a.save_weights(p2)
+        blob = torch.load(p2, weights_only=True)
+        assert (
+            blob["td_norm"] is True and blob["td_clip"] == 5.0
+        ), "conditioning must be recorded so a resume can detect a switch"
+        assert "adv_scale" not in blob, "per-batch state must not be checkpointed"
+
+        # Same conditioning: no warning.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=True, td_clip=5.0).load_weights(p2) is True
+        assert (
+            "td_norm=" not in buf.getvalue()
+        ), f"matching provenance should be quiet: {buf.getvalue()}"
+
+        # Switched off: the resume is legal but the weights were fit under a
+        # different objective, which is exactly when a pilot draws the
+        # wrong conclusion. It has to be visible in the log.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=False).load_weights(p2) is True
+        assert (
+            "td_norm=True" in buf.getvalue() and "td_norm=False" in buf.getvalue()
+        ), f"conditioning switch must warn: {buf.getvalue()}"
+
+        # Different clip, same norm on.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=True, td_clip=3.0).load_weights(p2) is True
+        assert (
+            "used td_clip=5.0" in buf.getvalue() and "uses 3.0" in buf.getvalue()
+        ), f"clip change must warn: {buf.getvalue()}"
+
+        # A pre-#416b checkpoint (no provenance keys) still loads, and says
+        # it predates the switch when this run has normalization on.
+        p3 = os.path.join(tmp2, "old.pt")
+        old_blob = {k: v for k, v in blob.items() if k not in ("td_norm", "td_clip")}
+        torch.save(old_blob, p3)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=True, td_clip=5.0).load_weights(p3) is True
+        assert (
+            "predates td_norm provenance" in buf.getvalue()
+        ), f"pre-#416b checkpoint must announce itself: {buf.getvalue()}"
+    print("TORCH_TD_NORM_OK")
 
 print("ALL_TRAINING_HEALTH_OK")

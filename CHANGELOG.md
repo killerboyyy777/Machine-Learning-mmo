@@ -3,6 +3,34 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
+  normalized and clipped. `learn()` regresses `q` toward its own detached
+  value plus `(td_target - q)` standardized across the minibatch and
+  clamped to `td_clip` (default 5), so a death penalty 100x larger no
+  longer produces a proportionally larger update. The residual is
+  normalized rather than the target itself, which keeps the Bellman
+  backup and the absolute value scale intact. On by default;
+  `--no-td-norm` restores the old fit. `learn()` reports `adv_scale` and
+  `adv_clip_frac`, and the run log prints them, so a pilot can tell
+  conditioning from a dead signal. Batch statistics use the population
+  std with an explicit guard: the unbiased estimator returns NaN for a
+  one-sample minibatch, which would put NaN in the weights from a single
+  short batch, and a zero-variance batch falls back to the clipped raw
+  residual instead of dividing by ~0 and discarding the common-mode
+  shift. `td_clip` is rejected when non-positive, and the conditioning
+  is recorded in the checkpoint so a resume that switches it says so in
+  the log. No game files touched.
+  Scope, stated plainly: scale invariance is a property of the loss the
+  optimizer receives. It conditions the update magnitude and preserves
+  the within-batch ordering of advantages; it does not promise faster
+  learning, a better policy, or a moved pilot needle. Only a pilot run
+  can say which.
+- Wild interior chains (#423): both frontier paths now cross two chained
+  indoor rooms. `storm_summit -> summit_gatehouse -> howling_tunnel ->
+  howling_col` and `tide_pools -> tideline_lighthouse -> sunken_tunnel ->
+  sunken_reef`. Each new room has exactly two exits, `shelter: true`, and
+  reciprocating opposite labels, so the #324 one-outdoor-exit law holds.
+  43 rooms total; frontier rooms unchanged.
 - Wild expansion (#336): two new outdoor-only regions as pure map
   extension (39 rooms total, no existing exit/quest/NPC touched). North
   of storm_summit: howling_col, glacier_crown, windcarved_crag.

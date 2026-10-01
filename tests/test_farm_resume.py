@@ -75,6 +75,8 @@ if HAVE_TORCH:
             steps=0,
             save_every=10,
             spawn_spread=False,
+        td_norm=True,
+        td_clip=5.0,
         )
 
     def test_torchfarm_resume():

@@ -54,7 +54,12 @@ class TorchFarm:
         self.steps = 0
         self.last_save_step = -1
         self.last_best_score = float("-inf")
-        self.agent = TorchDQNAgent(name=args.name_prefix + "Shared", url=args.url)
+        self.agent = TorchDQNAgent(
+            name=args.name_prefix + "Shared",
+            url=args.url,
+            td_norm=args.td_norm,
+            td_clip=args.td_clip,
+        )
         loaded = self.agent.load_weights(args.weights)
         if not loaded and args.best_weights and os.path.exists(args.best_weights):
             loaded = self.agent.load_weights(args.best_weights)
@@ -429,11 +434,26 @@ def parse_args():
         action="store_false",
         help="every trainee starts in the server's start room (pre-#417 behavior)",
     )
+    parser.add_argument(
+        "--no-td-norm",
+        dest="td_norm",
+        action="store_false",
+        default=True,
+        help="skip per-batch advantage normalization + clipping (pre-#416b)",
+    )
+    parser.add_argument(
+        "--td-clip",
+        type=float,
+        default=5.0,
+        help="clip bound on the normalized advantage (#416b)",
+    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
     if args.steps < 0 or args.save_every < 1:
         parser.error("--steps must be >= 0 and --save-every must be >= 1")
+    if args.td_clip <= 0:
+        parser.error("--td-clip must be > 0")
     here = os.path.dirname(os.path.abspath(__file__))
     args.weights = (
         os.path.abspath(args.weights)
