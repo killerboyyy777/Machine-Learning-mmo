@@ -28,7 +28,8 @@
     "INVENTORY_CAP": 24,
     "AMMO_EXEMPT_COUNT": 5,
     "STARTING_GOLD": 10,
-    "MOB_EXTRA_SPAWNS": 1
+    "MOB_EXTRA_SPAWNS": 1,
+    "TRAINING_DAMAGE_FRACTION": 1.0
   },
 
   "commissions": {

@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Training-mode damage dampening (#416a): trainees take a configured
+  fraction of incoming NPC damage via `TRAINING_DAMAGE_FRACTION`
+  (server_config.json economy section, default 1.0 = off). Applies at
+  both player-damage sites (combat retaliation, NPC auto-attack);
+  civilian runs are exactly untouched at the default.
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and

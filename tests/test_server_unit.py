@@ -455,6 +455,40 @@ async def main():
     unplayer(loser_b)
     print("CORPSE_NO_RETALIATION_OK")
 
+    # --- Training-mode damage dampening (#416a): flag-gated fraction of
+    # incoming damage; default 1.0 (off, civilian runs identical).
+    assert srv.TRAINING_DAMAGE_FRACTION == 1.0
+    assert srv._training_damage(7) == 7
+    srv.TRAINING_DAMAGE_FRACTION = 0.0
+    try:
+        assert srv._training_damage(50) == 0
+        damp = mkplayer("Damp", 60027, room="town_square", hp=20, max_hp=20)
+        srv.npcs["damp_dummy"] = {
+            "id": "damp_dummy",
+            "name": "Damp Dummy",
+            "room": "town_square",
+            "hp": 1000,
+            "max_hp": 1000,
+            "attack": 50,
+            "hostile": True,
+            "behavior": "idle",
+            "loot": [],
+            "gold": 0,
+            "respawn_seconds": 60,
+            "alive": True,
+            "respawn_at": None,
+            "contributors": {},
+        }
+        for _ in range(5):
+            await srv.cmd_attack(damp, {"target": "damp dummy"})
+        assert damp.hp == 20
+        assert srv.get_score_entry("Damp")["deaths"] == 0
+    finally:
+        srv.TRAINING_DAMAGE_FRACTION = 1.0
+    del srv.npcs["damp_dummy"]
+    unplayer(damp)
+    print("DAMPEN_OK")
+
     # --- Floor-1 reset farming delay (#195.2): leaving an uncleared
     # descent stamps re-entry delay; cleared/unstamped leaves don't.
     farmer = mkplayer("Farmer", 60006, room="graveyard")
