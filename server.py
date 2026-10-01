@@ -4534,6 +4534,28 @@ def _memory_mb():
         return None
 
 
+def _runs_payload(query, root=None):
+    """Run index for the dashboard Runs tab (#65).
+
+    Read fresh on every request (no cache): the runs directory is written by
+    independent trainer processes, so a cached copy would show a stale
+    "which run is best".  The ml/ module is flat-imported like the trainers
+    do it, and every failure degrades to an empty index rather than taking
+    the dashboard down with it.
+    """
+    try:
+        if join(dirname(abspath(__file__)), "ml") not in sys.path:
+            sys.path.insert(0, join(dirname(abspath(__file__)), "ml"))
+        import runlog
+        ids = []
+        for part in (query or "").split("&"):
+            if part.startswith("runs="):
+                ids = [i for i in part[5:].split(",") if i]
+        return runlog.runs_payload(root=root, ids=ids or None)
+    except Exception:  # noqa: BLE001 - the dashboard gets an empty index instead
+        return {"root": "", "runs": [], "fields": [], "error": "run log unavailable"}
+
+
 def start_dashboard():
     import threading
     here = dirname(abspath(__file__))
@@ -4592,6 +4614,15 @@ def start_dashboard():
             elif path == "/uplot.min.js" and os.path.exists(uplot_path):
                 with open(uplot_path, "rb") as f:
                     self._send(f.read(), "application/javascript")
+            elif path == "/api/runs":
+                # Run index + per-run sample history for the Runs tab (#65).
+                # No path parameter: the reader scans a fixed directory and
+                # runlog.valid_run_id() rejects anything that is not an id it
+                # minted, so a query string can never escape the index.
+                self._send(
+                    json.dumps(_runs_payload(self.path.partition("?")[2])).encode(),
+                    "application/json",
+                )
             elif path == "/api/activity/stream":
                 self._serve_activity_stream()
             else:

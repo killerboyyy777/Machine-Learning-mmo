@@ -46,6 +46,7 @@ import websockets
 try:
     from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
     from .ml_client import LinearQAgent
+    from .runlog import seed_everything, start_run
     # Scripted baselines live in ml/plugins now; imported here so the
     # farm CLI, --scripted roles, and existing import sites keep working.
     from .plugins.scripted import (
@@ -57,6 +58,7 @@ except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
     from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
     from ml_client import LinearQAgent
+    from runlog import seed_everything, start_run
     from plugins.scripted import (
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
@@ -330,6 +332,18 @@ class BotRunner:
 async def evaluator(farm):
     """Every --eval-every seconds, look at the most-fit bot and promote the
     current weights if it beat the stored best."""
+    run = None
+    if farm.args.run_record:
+        run = start_run(
+            "ml_botfarm",
+            root=farm.args.runs_dir or None,
+            label=f"{farm.args.bots} bots {farm.args.scripted}",
+            seed=farm.args.seed,
+            hparams=vars(farm.args),
+            checkpoint=WEIGHTS_FILE,
+            best_checkpoint=BEST_FILE,
+        )
+        print(f"[farm] run record: {run.run_id} ({run.path})")
     while not farm.stop.is_set():
         await asyncio.sleep(farm.args.eval_every)
         if farm.steps >= farm.next_checkpoint:
@@ -345,6 +359,21 @@ async def evaluator(farm):
         best = farm.best_fitness if farm.best_fitness > float("-inf") else 0.0
         print(f"[farm] steps={farm.steps} eps={farm.epsilon_now():.2f} "
               f"best={best:.4f} bots: {per}")
+        if run is not None:
+            # fitness is the farm's own selection signal, so it is the axis
+            # worth comparing; score is what a player would recognise.
+            run.record(
+                steps=farm.steps,
+                fitness=best,
+                top_score=max((b.score for b in farm.bots), default=None),
+                epsilon=farm.epsilon_now(),
+            )
+    if run is not None:
+        run.finish(
+            steps=farm.steps,
+            fitness=farm.best_fitness if farm.best_fitness > float("-inf") else None,
+        )
+        print(f"[farm] run {run.run_id} -> {run.manifest['status']}")
 
 
 def parse_args():
@@ -371,6 +400,12 @@ def parse_args():
     p.add_argument("--epsilon-start", type=float, default=1.0)
     p.add_argument("--epsilon-end", type=float, default=0.05)
     p.add_argument("--epsilon-decay-steps", type=int, default=5000)
+    p.add_argument("--seed", type=int, default=None,
+                   help="RNG seed, recorded in the run record so two runs are comparable (#65)")
+    p.add_argument("--runs-dir", default=None,
+                   help="run-record index directory (default <repo>/runs)")
+    p.add_argument("--no-run-record", dest="run_record", action="store_false", default=True,
+                   help="do not write a run record to the dashboard index (#65)")
     args = p.parse_args()
     if args.bots < 1:
         p.error("--bots must be >= 1")
@@ -379,6 +414,8 @@ def parse_args():
     except ValueError as e:
         p.error(str(e))
     args.weights = os.path.abspath(args.weights)
+    # Before any bot acts or any scripted role picks a random branch.
+    seed_everything(args.seed)
     return args
 
 

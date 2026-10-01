@@ -29,6 +29,7 @@ sys.path.insert(
 )
 
 from ml.conductor.conductor import Conductor
+from ml.runlog import seed_everything, start_run
 
 
 def setup_file_logging(base_dir):
@@ -132,7 +133,22 @@ def parse_args():
         help="resume the previous run's population (default on; "
              "--no-resume starts empty; --reset all implies fresh).",
     )
-    return p.parse_args()
+    p.add_argument(
+        "--seed", type=int, default=None,
+        help="RNG seed, recorded in the run record so two soaks are comparable (#65)",
+    )
+    p.add_argument(
+        "--runs-dir", default=None,
+        help="run-record index directory (default <repo>/runs)",
+    )
+    p.add_argument(
+        "--no-run-record", dest="run_record", action="store_false", default=True,
+        help="do not write a run record to the dashboard index (#65)",
+    )
+    args = p.parse_args()
+    # Before any agent is built: churn and the mixer both draw from random.
+    seed_everything(args.seed)
+    return args
 
 
 def summarize(cond):
@@ -163,11 +179,22 @@ def _append_jsonl(path, obj):
         f.write(json.dumps(obj) + "\n")
 
 
-async def status_logger(cond, path, interval):
+async def status_logger(cond, path, interval, run=None):
     """Append summarize() lines until the run ends, plus a final snapshot."""
     await asyncio.sleep(min(interval, 5.0))
     while cond.status()["running"]:
-        _append_jsonl(path, summarize(cond))
+        snap = summarize(cond)
+        _append_jsonl(path, snap)
+        if run is not None:
+            # One run-log sample per status line (#65): a soak is hours long,
+            # so this is the only thing that makes its progress comparable
+            # against a shorter run.
+            run.record(
+                episodes=snap["episodes"],
+                mean_reward=snap["mean_reward"],
+                alive=snap["alive"],
+                duration=snap["uptime"],
+            )
         await asyncio.sleep(interval)
     _append_jsonl(path, summarize(cond))
 
@@ -271,6 +298,16 @@ async def main():
         flush=True,
     )
     print(f"[soak] settings: {vars(args)}", flush=True)
+    run = None
+    if args.run_record:
+        run = start_run(
+            "soak",
+            root=args.runs_dir or None,
+            label=f"{args.agents} agents {args.duration:.0f}s",
+            seed=args.seed,
+            hparams=vars(args),
+        )
+        print(f"[soak] run record: {run.run_id} ({run.path})", flush=True)
     tasks = [
         cond.run(
             duration_seconds=args.duration,
@@ -279,7 +316,7 @@ async def main():
         )
     ]
     if args.status_every > 0:
-        tasks.append(status_logger(cond, status_file, args.status_every))
+        tasks.append(status_logger(cond, status_file, args.status_every, run=run))
     try:
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:
@@ -321,6 +358,23 @@ async def main():
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"[soak] report: {report_path}", flush=True)
+    if run is not None:
+        # Recorded before the verdict so a FAIL still leaves a comparable row.
+        run.finish(
+            "failed" if alive < args.min_agents else "finished",
+            episodes=report["episodes"],
+            mean_reward=(
+                round(
+                    sum(c.get("mean_reward", 0) * c.get("episodes", 0)
+                        for c in by_type.values()) / max(1, report["episodes"]),
+                    4,
+                )
+            ),
+            alive=alive,
+            duration=report["duration"],
+            report=report_path,
+        )
+        print(f"[soak] run {run.run_id} -> {run.manifest['status']}", flush=True)
     if alive < args.min_agents:
         print(f"[soak] FAIL: alive {alive} < min {args.min_agents}")
         return 1

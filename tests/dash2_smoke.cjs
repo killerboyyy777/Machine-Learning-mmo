@@ -122,6 +122,32 @@ const live = {
   ],
 };
 
+// Runs catalog (#65). /api/runs cannot resolve in the vm -- fetch throws by
+// design -- so seed the last-good payload the tab renders from. td_loss is
+// deliberately better on the LOWER-scoring run: a verdict that ignores the
+// server's higher_is_better would then crown the same run twice.
+const RUNS_FIXTURE = {
+  root: "runs",
+  fields: [{ name: "score", higher_is_better: true },
+           { name: "td_loss", higher_is_better: false }],
+  runs: [
+    { run_id: "20260101-120000", kind: "dqn", status: "finished", seed: 7,
+      config_hash: "abcdef1234567890", git_sha: "1234567890abcdef",
+      started: 1700000000, metrics: { score: 10, steps: 500, score_hr: 20, td_loss: 0.9 } },
+    { run_id: "20260101-130000", kind: "dqn", status: "running", seed: 8,
+      config_hash: "abcdef1234567890", git_sha: "1234567890abcdef",
+      started: 1700003600, metrics: { score: 4, steps: 120, score_hr: 8, td_loss: 0.5 } },
+  ],
+  series: {
+    "20260101-120000": [{ _ts: 1700000000, score: 1, td_loss: 1.4 },
+                        { _ts: 1700000100, score: 6, td_loss: 1.1 },
+                        { _ts: 1700000200, score: 10, td_loss: 0.9 }],
+    "20260101-130000": [{ _ts: 1700003600, score: 2, td_loss: 0.7 },
+                        { _ts: 1700003700, score: 4, td_loss: 0.5 }],
+  },
+};
+vm.runInContext("runsData = " + JSON.stringify(RUNS_FIXTURE) + "; runsSel = []", sandbox);
+
 const sections = vm.runInContext("TAB_SECTIONS", sandbox);
 let failed = 0;
 function runAll(snap, label) {
@@ -210,8 +236,69 @@ if (PERF.mapRepaints !== mm0) { failed++; console.error("FAIL map guard skipped"
 vm.runInContext('lastMapKey = ""', sandbox);
 vm.runInContext("renderWorldMap", sandbox)(roomsOnce);
 if (PERF.mapRepaints !== mm0 + 1) { failed++; console.error("FAIL theme invalidate repaint"); }
+
+// ---- Runs tab (#65) --------------------------------------------------
+const runRowsHtml = els["runsBody"]._html;
+if (runRowsHtml.indexOf("20260101-120000") < runRowsHtml.indexOf("20260101-130000")) {
+  failed++; console.error("FAIL runs not newest-first");
+}
+if (!runRowsHtml.includes('data-run="20260101-130000"')) {
+  failed++; console.error("FAIL runs compare checkbox missing");
+}
+if (!runRowsHtml.includes(">finished<") || !runRowsHtml.includes(">running<")) {
+  failed++; console.error("FAIL runs status column");
+}
+if (els["runsTotal"]._text !== "2" || els["runsRunning"]._text !== "1") {
+  failed++; console.error(`FAIL runs counters ${els["runsTotal"]._text}/${els["runsRunning"]._text}`);
+}
+// Score ranks the better-scoring run first...
+if (!els["runsBest"]._text.startsWith("20260101-120000 wins on score")) {
+  failed++; console.error("FAIL best-by-score verdict: " + els["runsBest"]._text);
+}
+// ...and switching to a loss metric must flip it, not keep crowning the same
+// run, since the direction comes from the server rather than the column name.
+vm.runInContext('runsMetric = "td_loss"; renderRuns({})', sandbox);
+if (!els["runsBest"]._text.startsWith("20260101-130000 wins on td_loss")) {
+  failed++; console.error("FAIL best-by-loss verdict: " + els["runsBest"]._text);
+}
+if (!els["runsMetric"]._html.includes("td_loss (lower is better)")) {
+  failed++; console.error("FAIL metric picker direction hint missing");
+}
+// Two selected runs: comparison table fills, chart builds one line each,
+// padded to a shared x axis so the shorter run ends in a gap not a resample.
+vm.runInContext('runsMetric = "score"; runsSel = ["20260101-120000", "20260101-130000"]; renderRuns({})', sandbox);
+if (els["runsSelCount"]._text !== "2") { failed++; console.error("FAIL sel count " + els["runsSelCount"]._text); }
+const cmpHtml = els["runCmpBody"]._html;
+if (!cmpHtml.includes("20260101-120000") || !cmpHtml.includes("20260101-130000")) {
+  failed++; console.error("FAIL comparison rows missing");
+}
+const cmpU = vm.runInContext("charts['runCmp']", sandbox);
+if (!cmpU || cmpU.data.length !== 3 || cmpU.data[2][2] !== null) {
+  failed++; console.error("FAIL comparison chart series/padding");
+}
+if ((els["runCmpLegend"]._html.match(/<span>/g) || []).length !== 2) {
+  failed++; console.error("FAIL comparison legend");
+}
+const cmpHook = cmpU.opts.hooks.setCursor[0];
+cmpHook({ cursor: { idx: 1 }, data: cmpU.data, _times: cmpU._times, _current: cmpU._current });
+if (!els["runCmpVal"]._text.includes("20260101-120000: 6") ||
+    !els["runCmpVal"]._text.includes("20260101-130000: 4")) {
+  failed++; console.error("FAIL comparison hover names every run: " + els["runCmpVal"]._text);
+}
+cmpHook({ cursor: { idx: null }, data: cmpU.data, _times: cmpU._times, _current: cmpU._current });
+if (els["runCmpVal"]._text !== cmpU._current) {
+  failed++; console.error("FAIL comparison hover restore");
+}
+// Dropping a run changes the series count, which uPlot treats as creation-time
+// config: the chart has to rebuild, not setData onto a 2-line config.
+const destroyedBefore = sandbox.uPlot.destroyed;
+vm.runInContext('runsSel = ["20260101-120000"]; renderRuns({})', sandbox);
+const cmpU2 = vm.runInContext("charts['runCmp']", sandbox);
+if (sandbox.uPlot.destroyed !== destroyedBefore + 1 || cmpU2.data.length !== 2) {
+  failed++; console.error("FAIL comparison chart rebuild on series change");
+}
 if (failed) { console.error(`PROVE_FAIL (${failed})`); process.exit(1); }
-console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme)");
+console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme+runs)");
 
 // North-up GEO + tile OVERLAP on the town subgraph (real world.json exits).
 const geoRooms = [

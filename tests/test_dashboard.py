@@ -285,4 +285,47 @@ for tok in ('"craft_history": list(craft_feed)', '"commission_history": list(com
     assert tok in _srv, f"server: history token {tok} missing"
 print("HISTORY_TABLES_OK")
 
+# --- Runs tab (#65): compare a finished run against the one still going ---
+assert '<div class="tab" data-tab="runs">Runs</div>' in html
+assert '<div id="view-runs" class="tabview">' in html
+for tid in ("runsTable", "runCmpTable"):
+    assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
+for wid in ("runsCount", "runsMetric", "runsBest", "runsTotal", "runsSelCount",
+            "runsRunning", "runsHead", "runsBody", "noRuns", "runsCmpNote",
+            "runsCmpMetric", "runCmpVal", "runCmp", "runCmpLegend",
+            "runCmpHead", "runCmpBody", "noRunCmp"):
+    assert f'id="{wid}"' in html, f"missing runs widget {wid}"
+assert 'runs: [["runs", s => renderRuns(s)]]' in html, "runs tab has no section"
+for fn in ("renderRuns", "loadRuns", "scheduleRunsPoll", "compareChart",
+           "markSorted", "specHead", "specRow", "bestRunNote"):
+    assert f"function {fn}" in html, f"{fn} missing"
+assert 'fetch("/api/runs"' in html, "runs tab does not read /api/runs"
+for tok in ("def _runs_payload", '"/api/runs"', "runlog.runs_payload"):
+    assert tok in _srv, f"server: runs token {tok} missing"
+# One column spec drives the header AND the sort keys: a header/key list that
+# drifted apart would sort by the wrong field with no error.
+assert "RUN_COLS.map(c => c.key)" in html and "RUN_CMP_COLS.map(c => c.key)" in html
+assert html.index('specHead(RUN_COLS)') < html.index("bindSortTables();"), \
+    "runs headers built after the sorter binds"
+# The verdict ranks on a metric the owner picks, with direction from the
+# server -- never a hardcoded assumption that score is what matters.
+assert 'runsMetric = "score"' in html and "higher_is_better" in html
+assert "dirFor(runsMetric) !== false" in html
+# Selection is delegated: renderRuns rewrites the tbody on every poll, so a
+# per-row listener would be re-attached (and stack) each time.
+rr2 = re.search(r"function renderRuns\(s\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert rr2, "renderRuns not found"
+assert "addEventListener" not in rr2.group(1), "renderRuns rebinds listeners"
+assert '$("runsBody").addEventListener("change"' in html
+# The catalog outlives the snapshot, so it polls only while its tab is up.
+sp = re.search(r"function scheduleRunsPoll\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert sp and 'if (activeTab !== "runs") return;' in sp.group(1), "runs polls off-tab"
+assert re.search(r'activeTab === "runs"\) \{\s*(?://[^\n]*\n\s*)*loadRuns\(\);', html), \
+    "switching to Runs does not load"
+# One dropped poll keeps the last good payload instead of blanking the table.
+assert "runsError = String(e.message || e)" in html and "let runsData = null" in html
+# Multi-series chart reuses the themed palette instead of hardcoding colors.
+assert "seriesColor(i)" in html and "series:" in html
+print("RUNS_TAB_OK")
+
 print("ALL_DASHBOARD_OK")

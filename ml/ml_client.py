@@ -30,11 +30,13 @@ import random
 
 try:
     from .ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
+    from .runlog import seed_everything, start_run
     from .versioning import checkpoint_version, version_notes
 except ImportError:
     # Running as a script (python ml/ml_client.py) or imported as a
     # top-level module (tests/test_persistence.py): no parent package.
     from ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
+    from runlog import seed_everything, start_run
     from versioning import checkpoint_version, version_notes
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -135,12 +137,15 @@ class LinearQAgent:
         return False
 
 
-async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, epsilon_decay_steps):
+async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, epsilon_decay_steps, run=None):
     agent = LinearQAgent(OBS_SIZE, N_ACTIONS)
     if agent.load(WEIGHTS_FILE):
         print(f"Loaded existing weights from {WEIGHTS_FILE}")
     else:
         print("Starting from fresh (zeroed) weights")
+    # --steps is per invocation but training_steps is the character's lifetime
+    # count and survives a resume, so the run log reports both (#65).
+    base_steps = agent.training_steps
 
     env = TextMMOEnv(name, url=url)
     obs = await env.reset()
@@ -176,6 +181,17 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
             print(f"step {agent.training_steps:>6}  eps={epsilon:.3f}  score={obs['score_raw']:.2f}  "
                   f"avg_reward(last {len(recent_rewards)})={avg_recent:+.4f}  "
                   f"room={obs['room_id']}")
+            if run is not None:
+                # Same cadence as the print above, so the run log and stdout
+                # never disagree about how far the run got (#65).  steps is
+                # this run's work; total_steps matches the printed counter.
+                run.record(
+                    steps=agent.training_steps - base_steps,
+                    total_steps=agent.training_steps,
+                    score=obs["score_raw"],
+                    avg_reward=avg_recent,
+                    epsilon=epsilon,
+                )
 
         if agent.training_steps % save_every == 0:
             agent.save(WEIGHTS_FILE)
@@ -189,6 +205,13 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
     print(f"Final score: {obs['score_raw']:.2f}   Total reward accumulated: {total_reward:.2f}")
     print("Action usage:", {ACTIONS[i]: c for i, c in enumerate(action_counts) if c})
     print(f"Weights saved to {WEIGHTS_FILE} -- rerun with the same --name to keep training this character.")
+    if run is not None:
+        run.finish(
+            steps=agent.training_steps - base_steps,
+            total_steps=agent.training_steps,
+            score=obs["score_raw"],
+            total_reward=total_reward,
+        )
     await env.close()
 
 
@@ -204,11 +227,27 @@ def main():
     parser.add_argument("--epsilon-end", type=float, default=0.05, help="Final exploration rate")
     parser.add_argument("--epsilon-decay-steps", type=int, default=1500,
                          help="Steps over which epsilon decays from start to end")
+    parser.add_argument("--seed", type=int, default=None,
+                         help="RNG seed, recorded in the run record so two runs are comparable (#65)")
+    parser.add_argument("--runs-dir", default=None,
+                         help="run-record index directory (default <repo>/runs)")
+    parser.add_argument("--no-run-record", dest="run_record", action="store_false", default=True,
+                         help="do not write a run record to the dashboard index (#65)")
     args = parser.parse_args()
+
+    # Seeding is independent of the run record: --seed must work even with
+    # --no-run-record, and it has to land before the first random action.
+    seed_everything(args.seed)
+    run = None
+    if args.run_record:
+        run = start_run("ml_client", root=args.runs_dir or None, label=args.name,
+                        seed=args.seed, hparams=vars(args), checkpoint=WEIGHTS_FILE)
+        print(f"[ml-client] run record: {run.run_id}")
 
     asyncio.run(train(
         args.name, args.url, args.steps, args.save_every,
         args.epsilon_start, args.epsilon_end, args.epsilon_decay_steps,
+        run=run,
     ))
 
 
