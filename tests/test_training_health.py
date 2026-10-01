@@ -402,6 +402,7 @@ else:
         spawn_spread = True
         td_norm = True
         td_clip = 5.0
+        reward_formula = None
 
     farm = TorchFarm(_Args())
     assert farm.spawn_rooms, "spread pool empty with --spawn-spread on"

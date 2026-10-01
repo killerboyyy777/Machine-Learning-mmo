@@ -91,6 +91,24 @@ class AgentPlugin:
     def on_episode_end(self, info):
         """Optional hook after each episode (logging, schedules)."""
 
+    def reward(self, signals):
+        """Optional per-step reward hook (#68). Called from inside
+        ``env.step()`` as ``hook(signals)`` with the per-step signal dict
+        (the same names a ``reward_formula`` may use -- see
+        ``ml.reward_dsl.reference()``); returns a float reward, or None
+        to abstain.
+
+        This is the researcher-injected-Python half of #68: anything the
+        expression language cannot express belongs here. Exceptions never
+        propagate and a non-finite result is refused -- the step keeps the
+        reward it would otherwise have given and the env counts the
+        failure (see ``info["custom_reward_errors"]``), so a bad hook
+        degrades a reward curve instead of ending an overnight run.
+
+        Base default: abstain, leaving the formula/mode reward in place.
+        """
+        return
+
     goal_dim = None  # goal-vector width this policy consumes (None =
     # ignores-goals; slice 6/6 wires goal-conditioned policies in).
 
@@ -100,7 +118,7 @@ class AgentPlugin:
         ``hook(prev_obs, action, reward, next_obs, done)``; returns a
         loss-ish float or None. Base default: no learning (scripted
         policies). Exceptions never propagate (supervisor guards)."""
-        return None
+        return None  # noqa: RET501 - documented as "returns None or a float"
 
     def save(self, path):
         """Persist learned weights. Base default: nothing to save."""
@@ -190,14 +208,41 @@ def _coerce_value(text):
     return text
 
 
+def _split_params(text):
+    """Split ``a=1,b=2`` on top-level commas only.
+
+    Reward formulas (#68) legitimately contain commas -- ``min(a, b)`` --
+    and a blind split would shred them into junk slots, so track
+    parenthesis depth. A leading '(' as the whole value is left intact by
+    the caller's partition, and unbalanced parens are passed through
+    un-split rather than rejected here: the formula parser reports that
+    far better than this splitter can (#68).
+    """
+    out, buf, depth = [], [], 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    out.append("".join(buf))
+    return out
+
+
 def parse_slot(spec):
     """Parse a ``--slot`` spec into a slot dict.
 
     ``"gather"`` -> ``{"plugin": "gather", "config": {}, "env": {},
     "weight": 1}``; ``"torch:checkpoint=X,epsilon=0.1"`` fills config;
     ``env_*`` keys (``env_reward_mode``, ``env_max_steps``,
-    ``env_curriculum_stage``, ``env_step_delay``) route to the env
-    factory instead of the policy. Raises ValueError on bad syntax.
+    ``env_curriculum_stage``, ``env_step_delay``, ``env_reward_formula``)
+    route to the env factory instead of the policy. Commas inside
+    parentheses do not split params, so an ``env_reward_formula`` may use
+    ``clamp(0, 1)``. Raises ValueError on bad syntax.
     """
     if ":" in spec:
         name, _, rest = spec.partition(":")
@@ -208,7 +253,7 @@ def parse_slot(spec):
         raise ValueError(f"empty plugin name in slot {spec!r}")
     config, env = {}, {}
     weight = 1
-    for chunk in rest.split(","):
+    for chunk in _split_params(rest):
         chunk = chunk.strip()
         if not chunk:
             continue

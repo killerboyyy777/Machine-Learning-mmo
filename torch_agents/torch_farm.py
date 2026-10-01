@@ -45,6 +45,7 @@ from ml_env import (
     reset_with_retry,
     safe_spread_rooms,
 )
+from reward_dsl import RewardFormulaError, compile_formula, reference
 
 
 class TorchFarm:
@@ -127,7 +128,12 @@ class Runner:
         self.index = index
         self.name = f"{farm.args.name_prefix}{index}"
         self.spawn_room = farm.spawn_room_for(index)
-        self.env = TextMMOEnv(self.name, url=farm.args.url, spawn_room=self.spawn_room)
+        self.env = TextMMOEnv(
+            self.name,
+            url=farm.args.url,
+            spawn_room=self.spawn_room,
+            reward_formula=farm.args.reward_formula,
+        )
         self.features = None
         self.obs = None
         self.prev_gold = 0.0
@@ -447,6 +453,15 @@ def parse_args():
         default=5.0,
         help="clip bound on the normalized advantage (#416b)",
     )
+    parser.add_argument(
+        "--reward-formula",
+        default=None,
+        metavar="EXPR",
+        help="custom reward expression (#68), e.g. "
+        "'0.5*xp_delta + 1.2*profit - 0.1*deaths'. Replaces the score "
+        "reward entirely, so a formula that omits a term omits its "
+        "shaping too. Signals:\n" + reference(),
+    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
@@ -454,6 +469,11 @@ def parse_args():
         parser.error("--steps must be >= 0 and --save-every must be >= 1")
     if args.td_clip <= 0:
         parser.error("--td-clip must be > 0")
+    if args.reward_formula:
+        try:
+            compile_formula(args.reward_formula)
+        except RewardFormulaError as e:
+            parser.error(f"--reward-formula: {e}")
     here = os.path.dirname(os.path.abspath(__file__))
     args.weights = (
         os.path.abspath(args.weights)

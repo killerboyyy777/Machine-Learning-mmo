@@ -128,6 +128,7 @@ Usage (see the __main__ block at the bottom for a full random-agent demo):
 
 import asyncio
 import json
+import math
 import os
 import random
 import re
@@ -139,6 +140,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import websockets
 import server as srv
+
+# Absolute, not relative: this module is imported both as ml.ml_env and as a
+# bare ml_env (tests add ml/ to sys.path), and only the repo root is
+# guaranteed to be on the path either way.
+from ml.reward_dsl import RewardFormulaError, compile_formula
 
 DEFAULT_URL = "ws://localhost:8765"
 
@@ -270,6 +276,15 @@ DIFFICULTY_K = getattr(srv, "DIFFICULTY_K", 50.0)
 def diminish_factor(score):
     """Server's difficulty multiplier at a given total score."""
     return DIFFICULTY_K / (DIFFICULTY_K + max(0.0, score))
+
+
+def _as_float(value):
+    """Event payloads are optional and untyped; a reward signal must be a
+    float or the formula walk dies mid-episode."""
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # Group-play shaping (reward only -- no behavior is scripted, so agents must
@@ -857,7 +872,8 @@ class TextMMOEnv:
     def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
                  reward_mode="score", curriculum_stage=3, curriculum_auto=False,
                  connect_timeout=10.0, close_timeout=5.0, connect_retries=3,
-                 goal=None, spawn_room=None):
+                 goal=None, spawn_room=None, reward_formula=None,
+                 reward_fn=None):
         if reward_mode not in REWARD_MODES:
             raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
         if curriculum_stage not in (0, 1, 2, 3):
@@ -869,6 +885,21 @@ class TextMMOEnv:
         self.step_delay = step_delay
         self.max_steps = max_steps
         self.reward_mode = reward_mode
+        # Custom reward (#68). A formula (or a plugin's reward hook) replaces
+        # the mode computation outright, social/formation shaping included,
+        # so both are exposed as signals instead of being applied silently.
+        # Compiled here, not lazily: a typo should stop the run at startup,
+        # not once per step for the next six hours.
+        self._formula = compile_formula(reward_formula) if reward_formula else None
+        self._reward_fn = reward_fn
+        self._has_custom_reward = self._formula is not None or reward_fn is not None
+        self.custom_reward_errors = 0
+        if reward_formula and reward_mode != "score":
+            print(
+                f"Warning: {name}: reward_formula is set, so reward_mode="
+                f"{reward_mode!r} is ignored (the formula replaces it)",
+                flush=True,
+            )
         self.curriculum_stage = curriculum_stage
         self.curriculum_auto = curriculum_auto
         # Optional spread target walked after login (#417). None = the
@@ -922,6 +953,14 @@ class TextMMOEnv:
         self._pending_reward = 0.0
         self._pending_xp = 0.0  # accumulated "xp" event gains (for "xp" mode)
         self._pending_levels = 0  # accumulated "level_up" events (for "xp" mode)
+        # Per-step death economics (#68). The server already sends the whole
+        # accounting on the death event; the env read only the counter, so a
+        # formula had no way to ask what a death cost.
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        self._steps_since_death = 0
         self._step_count = 0
         self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
         self._mask_cache = None  # refreshed by every _build_obs()
@@ -1052,6 +1091,11 @@ class TextMMOEnv:
         elif t == "death":
             self._state["hp"] = self._state["max_hp"]
             self._state["deaths"] = self._state.get("deaths", 0) + 1
+            self._pending_deaths += 1
+            self._steps_since_death = 0
+            self._pending_gold_lost += _as_float(event.get("gold_lost"))
+            self._pending_gold_dropped += _as_float(event.get("gold_dropped"))
+            self._pending_xp_lost += _as_float(event.get("xp_lost"))
         elif t == "error":
             pass
 
@@ -1128,6 +1172,11 @@ class TextMMOEnv:
         self._pending_reward = 0.0
         self._pending_xp = 0.0
         self._pending_levels = 0
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        self._steps_since_death = 0
         self._step_count = 0
         self.walked_rooms = []
         if (
@@ -1171,12 +1220,28 @@ class TextMMOEnv:
         score_gain = self._pending_reward
         gold_delta = self._state["gold"] - gold_before
         inv_delta = inventory_value(self._state["inv_names"]) - inv_value_before
+        signals = None
+        if self._has_custom_reward:
+            # Read before the bump, so a step carrying a death reports 0.
+            steps_since_death = self._steps_since_death
+            signals = self._reward_signals(
+                score_gain, xp_gained, levels_gained, gold_delta, inv_delta,
+                deaths=self._pending_deaths,
+                gold_lost=self._pending_gold_lost,
+                gold_dropped=self._pending_gold_dropped,
+                xp_lost=self._pending_xp_lost,
+                steps_since_death=steps_since_death)
         reward = self._compute_reward(
             self._pending_reward, xp_gained, levels_gained,
-            gold_delta, inv_delta, party_before)
+            gold_delta, inv_delta, party_before, signals)
         self._pending_reward = 0.0
         self._pending_xp = 0.0
         self._pending_levels = 0
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        self._steps_since_death += 1
         self._step_count += 1
         self._maybe_advance_curriculum()
         if episode_done:
@@ -1295,6 +1360,15 @@ class TextMMOEnv:
         done = episode_done or (self.max_steps is not None and self._step_count >= self.max_steps)
         info.update(self._version_info())
         info["action_mask"] = 1 if cmd is not None else 0
+        if signals is not None:
+            # Only present on a custom-reward run, so the default step info
+            # stays exactly what it was. A formula author needs to see what
+            # the formula actually read, and a trainer needs to see which
+            # signals are live when a reward looks wrong.
+            info["reward_signals"] = signals
+            info["custom_reward_errors"] = self.custom_reward_errors
+            info["zero_divisions"] = (
+                self._formula.zero_divisions if self._formula else 0)
         return next_obs, reward, done, info
 
     def _version_info(self):
@@ -1305,7 +1379,7 @@ class TextMMOEnv:
                 "version_match": server in (None, PROTOCOL_VERSION)}
 
     def _compute_reward(self, score_gain, xp_gain, levels, gold_delta,
-                          inv_delta, party_before):
+                        inv_delta, party_before, signals=None):
         """Step reward for the configured `reward_mode`, from accumulated
         event pendings and state diffs (pure function of its arguments plus
         the social/formation state -- no I/O, unit-testable).
@@ -1314,7 +1388,22 @@ class TextMMOEnv:
           score, and social terms by design (pure combat/quest agent).
         - "econ": gold flow plus ECON_INV_LAMBDA times carried-value flow.
           Ignores XP and score by design (pure market/craft/loot agent).
-        - "score" (default): server score gain plus group-play shaping."""
+        - "score" (default): server score gain plus group-play shaping.
+
+        A custom formula or plugin reward hook (#68) replaces all of that
+        outright; see _resolve_custom_reward.
+        """
+        if self._has_custom_reward:
+            return self._resolve_custom_reward(
+                signals, score_gain, xp_gain, levels, gold_delta, inv_delta,
+                party_before)
+        return self._mode_reward(
+            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+
+    def _mode_reward(self, score_gain, xp_gain, levels, gold_delta,
+                     inv_delta, party_before):
+        """The reward_mode computation on its own, so the custom-reward
+        fallback below can reach it without re-entering the dispatch."""
         if self.reward_mode == "xp":
             return xp_gain + XP_LEVEL_BONUS * levels
         if self.reward_mode == "econ":
@@ -1337,6 +1426,100 @@ class TextMMOEnv:
                 reward += FORMATION_BONUS * diminish_factor(self._state.get("score", 0.0))
                 self._last_formation_step = self._step_count
         return reward
+
+    def _reward_signals(self, score_gain, xp_gain, levels, gold_delta,
+                        inv_delta, deaths, gold_lost, gold_dropped, xp_lost,
+                        steps_since_death):
+        """The per-step signal dict a custom reward sees (#68).
+
+        `social` and `formation` are the exact terms the "score" mode would
+        have paid, computed here so a formula can opt back into them rather
+        than silently losing group-play shaping.
+        """
+        state = self._state
+        social = 0.0
+        if state.get("other_players", 0) > 0 and state.get("party_size", 1) > 1:
+            allies = state.get("party_size", 1) - 1
+            social = SOCIAL_PER_ALLY * allies * diminish_factor(state.get("score", 0.0))
+        formation = 0.0
+        if (state.get("party_size", 1) > 1
+                and self._step_count - self._last_formation_step
+                >= FORMATION_COOLDOWN_STEPS):
+            formation = FORMATION_BONUS * diminish_factor(state.get("score", 0.0))
+        max_hp = state.get("max_hp") or 0.0
+        return {
+            "score_delta": float(score_gain),
+            "xp_delta": float(xp_gain),
+            "level_delta": float(levels),
+            "gold_delta": float(gold_delta),
+            "inv_delta": float(inv_delta),
+            "profit": float(gold_delta) + float(inv_delta),
+            "deaths": float(deaths),
+            "deaths_total": float(state.get("deaths", 0)),
+            "gold_lost": float(gold_lost),
+            "gold_dropped": float(gold_dropped),
+            "xp_lost": float(xp_lost),
+            "level": float(state.get("level", 1)),
+            "hp_frac": float(state.get("hp", 0)) / max_hp if max_hp else 0.0,
+            "party_size": float(state.get("party_size", 1)),
+            "social": social,
+            "formation": formation,
+            "novelty": 0.0,
+            "steps": float(self._step_count),
+            "steps_since_death": float(steps_since_death),
+        }
+
+    def _resolve_custom_reward(self, signals, score_gain, xp_gain, levels,
+                               gold_delta, inv_delta, party_before):
+        """Resolve a custom reward (#68): plugin hook, then formula, then the
+        mode reward.
+
+        The fallback is the point. This runs inside step(), so a raising
+        research hook or a non-finite formula would end an overnight run
+        that has already invested hours; the step instead keeps the reward
+        the mode would have given, and the failure is counted rather than
+        swallowed.
+        """
+        value = self._call_reward_hook(signals)
+        if value is None and self._formula is not None:
+            value = self._evaluate_formula(signals)
+        if value is not None:
+            if math.isfinite(value):
+                return value
+            self._note_custom_reward_error(
+                f"custom reward produced a non-finite value ({value!r})")
+        return self._mode_reward(
+            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+
+    def _call_reward_hook(self, signals):
+        """None means "no opinion", which is what the default plugin hook
+        returns -- an exception here is a real failure, a None is not."""
+        if self._reward_fn is None:
+            return None
+        try:
+            raw = self._reward_fn(signals)
+            return None if raw is None else float(raw)
+        except Exception as e:  # noqa: BLE001 - a research hook must not end the run
+            self._note_custom_reward_error(
+                f"reward hook raised {type(e).__name__}: {e}")
+            return None
+
+    def _evaluate_formula(self, signals):
+        if self._formula is None:
+            return None
+        try:
+            return float(self._formula.evaluate(signals))
+        except RewardFormulaError as e:
+            self._note_custom_reward_error(str(e))
+            return None
+
+    def _note_custom_reward_error(self, message):
+        self.custom_reward_errors += 1
+        # Once is enough to be diagnosed; a per-step wall of the same line
+        # would bury the training log it is corrupting.
+        if self.custom_reward_errors == 1:
+            print(f"Warning: {self.name}: custom reward fell back to "
+                  f"reward_mode={self.reward_mode!r}: {message}", flush=True)
 
     def _own_orders(self):
         """Our standing sell orders with exact after-tax net, from the latest
