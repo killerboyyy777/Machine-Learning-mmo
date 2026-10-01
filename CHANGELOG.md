@@ -12,7 +12,19 @@ All notable changes to the text MMO engine are recorded here.
   backup and the absolute value scale intact. On by default;
   `--no-td-norm` restores the old fit. `learn()` reports `adv_scale` and
   `adv_clip_frac`, and the run log prints them, so a pilot can tell
-  conditioning from a dead signal. No game files touched.
+  conditioning from a dead signal. Batch statistics use the population
+  std with an explicit guard: the unbiased estimator returns NaN for a
+  one-sample minibatch, which would put NaN in the weights from a single
+  short batch, and a zero-variance batch falls back to the clipped raw
+  residual instead of dividing by ~0 and discarding the common-mode
+  shift. `td_clip` is rejected when non-positive, and the conditioning
+  is recorded in the checkpoint so a resume that switches it says so in
+  the log. No game files touched.
+  Scope, stated plainly: scale invariance is a property of the loss the
+  optimizer receives. It conditions the update magnitude and preserves
+  the within-batch ordering of advantages; it does not promise faster
+  learning, a better policy, or a moved pilot needle. Only a pilot run
+  can say which.
 - Wild interior chains (#423): both frontier paths now cross two chained
   indoor rooms. `storm_summit -> summit_gatehouse -> howling_tunnel ->
   howling_col` and `tide_pools -> tideline_lighthouse -> sunken_tunnel ->

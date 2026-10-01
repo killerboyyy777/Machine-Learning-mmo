@@ -271,8 +271,13 @@ class TorchDQNAgent:
         # dominate every minibatch and the gradient scale drifts with
         # episode length. Normalizing the residual conditions the update
         # magnitude without touching the value scale or the game.
+        # A non-positive clip is rejected here rather than at the CLI alone:
+        # this is the only guard between a bad argument and a silently
+        # disabled bound (clamp(x, -0, 0) zeroes every update).
+        if td_clip <= 0:
+            raise ValueError(f"td_clip must be > 0, got {td_clip!r}")
         self.td_norm = td_norm
-        self.td_clip = td_clip
+        self.td_clip = float(td_clip)
 
         self.replay: list = [None] * replay_size
         self.replay_idx = 0
@@ -483,13 +488,38 @@ class TorchDQNAgent:
         # which a centered target would destroy: centering td_targets
         # would make every state's target zero-mean and unlearnable.
         adv_raw = td_targets - q_vals.detach()
-        if self.td_norm:
-            adv_std = adv_raw.std()
-            adv_scale = float(adv_std.item())
+        # #416b NaN guard. std() defaults to the unbiased estimator, which
+        # divides by n-1: a batch of one returns NaN, and that NaN would
+        # reach the loss and then the weights, so a single short minibatch
+        # silently ends the run. The population std is the right
+        # denominator for a batch statistic regardless.
+        adv_std = (
+            float(adv_raw.std(unbiased=False).item()) if adv_raw.numel() >= 2 else 0.0
+        )
+        # Degeneracy is judged relative to the residual level, not against
+        # an absolute epsilon. A batch of mathematically identical rows
+        # still carries float32 rounding spread, and that spread scales
+        # with the magnitude: a -5000 residual lands at std ~5e-4, which
+        # an absolute 1e-8 threshold would sail straight past, leaving the
+        # division by ~0 in place. Comparing the spread to the level
+        # catches true degeneracy at any reward scale while still
+        # standardizing any batch with real variation.
+        adv_level = abs(float(adv_raw.mean().item())) + 1.0
+        if self.td_norm and adv_std > 1e-6 * adv_level:
+            adv_scale = adv_std
             adv = (adv_raw - adv_raw.mean()) / (adv_std + 1e-6)
             clipped = adv.clamp(-self.td_clip, self.td_clip)
             clip_frac = float(((clipped - adv).abs() > 0).float().mean().item())
             adv = clipped
+        elif self.td_norm:
+            # Degenerate batch: fewer than two samples, or every residual
+            # identical (std ~ 0, e.g. an all-zero reward stretch). Centering
+            # then divides by ~0 and would zero out the common-mode signal,
+            # which is real information. Keep the raw residual, still
+            # clipped, so the direction is learned and stays bounded.
+            adv = adv_raw.clamp(-self.td_clip, self.td_clip)
+            adv_scale = 1.0
+            clip_frac = float(((adv - adv_raw).abs() > 0).float().mean().item())
         else:
             adv_scale = 1.0
             clip_frac = 0.0
@@ -563,6 +593,13 @@ class TorchDQNAgent:
                 "obs_size": OBS_SIZE,
                 "n_actions": N_ACTIONS,
                 "version": checkpoint_version(OBS_SIZE, N_ACTIONS),
+                # #416b provenance: the conditioning is part of the
+                # objective these weights were fit under, so it has to
+                # travel with the weights or a resume cannot tell that
+                # the loaded Q was trained against a different target
+                # shape. Per-batch statistics deliberately stay out.
+                "td_norm": bool(self.td_norm),
+                "td_clip": float(self.td_clip),
             },
             tmp,
         )
@@ -607,6 +644,35 @@ class TorchDQNAgent:
             self.t_step = int(ckpt.get("training_steps", 0))
             self.learn_step = int(ckpt.get("learn_step", 0))
             self.best_score = float(ckpt.get("best_score", self.best_score))
+            # #416b: warn when the loaded weights were fit under a
+            # different conditioning than this run will use. It is not an
+            # error -- warm-up still moves the objective -- but silently
+            # resuming across the switch is exactly how a pilot concludes
+            # normalization "does nothing" when the first N steps were
+            # spent unlearning the old fit.
+            saved_norm = ckpt.get("td_norm")
+            if saved_norm is None:
+                if self.td_norm:
+                    print(
+                        f"Checkpoint {path} predates td_norm provenance; it was "
+                        f"fit unconditioned, this run uses td_norm=True."
+                    )
+            elif bool(saved_norm) != bool(self.td_norm):
+                print(
+                    f"Checkpoint {path} was saved with td_norm={bool(saved_norm)} "
+                    f"but this run uses td_norm={bool(self.td_norm)}; the loaded "
+                    f"weights were fit under a different TD conditioning."
+                )
+            saved_clip = ckpt.get("td_clip")
+            if (
+                saved_clip is not None
+                and float(saved_clip) != float(self.td_clip)
+                and self.td_norm
+            ):
+                print(
+                    f"Checkpoint {path} used td_clip={float(saved_clip)}, this run "
+                    f"uses {self.td_clip}."
+                )
         except RuntimeError as e:
             # Shape mismatch: e.g. checkpoints saved before the quest block
             # grew OBS_SIZE/N_ACTIONS (or changed head count). Warn and keep

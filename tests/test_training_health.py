@@ -7,8 +7,12 @@ Run from the repo root:  python tests/test_training_health.py
 """
 
 import asyncio
+import contextlib
+import io
+import math
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(
@@ -359,8 +363,6 @@ else:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"
         ),
     )
-    import tempfile
-
     from dqn_agent import OBS_SIZE, TorchDQNAgent
     from torch_farm import Runner, TorchFarm, _is_crash, _is_stop, parse_args
 
@@ -550,17 +552,130 @@ else:
     assert le["td"] < 4.5, f"clip must bound noise amplification, got {le['td']}"
     assert le["td"] > lf["td"], "normalizing does amplify pure noise; expected"
 
-    # A checkpoint from before #416b still loads: no new required keys, and
-    # per-batch statistics are deliberately not persisted.
+    # #416b send-back: the unbiased-std NaN. std() divides by n-1, so a
+    # minibatch of one returns NaN and that NaN lands in the weights. Pin
+    # the guard at the size that used to break it, and assert finiteness
+    # rather than a value.
+    g = _agent(td_norm=True, td_clip=5.0, batch_size=1)
+    _fill(g, [-50.0])
+    lg = g.learn()
+    assert lg["td"] is not None, "single-sample minibatch should still train"
+    assert math.isfinite(lg["td"]), f"batch of 1 must not NaN: {lg['td']}"
+    assert math.isfinite(lg["adv_scale"]), "adv_scale must be finite at batch 1"
+
+    # Degenerate batch: identical transitions make every residual equal, so
+    # the population std is 0. Centering would divide by ~0 and zero out the
+    # common-mode shift, which is real signal; the guard keeps the raw
+    # residual (clipped) instead. Loss must be finite AND non-zero.
+    #
+    # Note the batch is NOT numerically identical: float32 rounding across
+    # 8 rows of a -5000 residual leaves a spread of ~5e-4. The guard has to
+    # be relative to the residual level or it never fires here, which is why
+    # the assertions below are on clip_frac and the Huber bound rather than
+    # on adv_scale (1.0 == took the fallback, not standardized).
+    def _fill_uniform(agent, reward, n=8):
+        for _ in range(n):
+            s = [0.0] * OBS_SIZE
+            s[0] = 1.0
+            agent.store(
+                {
+                    "state": s,
+                    "action": 0,
+                    "reward": reward,
+                    "next_state": s,
+                    "done": 1.0,
+                    "gold": 0.0,
+                    "loot": 0.0,
+                    "market": 0.0,
+                    "quest_reward": 0.0,
+                    "quest_intrinsic": 0.0,
+                    "rnd_bonus": 0.0,
+                }
+            )
+
+    h = _agent(td_norm=True, td_clip=5.0, batch_size=8)
+    _fill_uniform(h, 0.0)
+    lh = h.learn()
+    assert lh["td"] is not None and math.isfinite(lh["td"]), f"zero-std: {lh['td']}"
+    assert lh["td"] > 1e-6, "zero-std batch must keep its common-mode signal"
+
+    # The same guard still honours the clip: a large uniform residual is
+    # bounded by td_clip, so a degenerate batch cannot become the new
+    # gradient blow-up this PR exists to remove.
+    h2 = _agent(td_norm=True, td_clip=5.0, batch_size=8)
+    _fill_uniform(h2, -5000.0)
+    lh2 = h2.learn()
+    # The clip is exactly 5.0, so the Huber maximum is exactly 0.5*5 - 0.5
+    # = 4.5. Asserting <= the bound (not <) keeps this from passing or
+    # failing on a float32 ULP; clip_frac == 1.0 is the real claim, that
+    # every residual in a degenerate batch was bounded.
+    assert (
+        math.isfinite(lh2["td"]) and lh2["td"] <= 4.5
+    ), f"degenerate batch must stay clipped, got {lh2['td']}"
+    assert (
+        lh2["adv_clip_frac"] == 1.0
+    ), f"every residual should be clipped, got {lh2['adv_clip_frac']}"
+
+    # #416b send-back: td_clip is validated at the constructor too, not just
+    # the CLI. clamp(-0, 0) would silently zero every update.
+    for bad in (0.0, -1.0, -5.0):
+        try:
+            _agent(td_norm=True, td_clip=bad)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit(f"FAIL: ctor accepted td_clip={bad}")
+    assert _agent(td_norm=True, td_clip=0.5).td_clip == 0.5
+
+    # #416b send-back: provenance travels with the weights, and a resume that
+    # switches conditioning says so. Per-batch statistics are still not
+    # checkpointed -- they are recomputed every learn() call by design.
     with tempfile.TemporaryDirectory() as tmp2:
         p2 = os.path.join(tmp2, "n.pt")
         a.save_weights(p2)
         blob = torch.load(p2, weights_only=True)
         assert (
-            "td_norm" not in blob and "adv_scale" not in blob
-        ), "per-batch state must not be checkpointed"
-        older = _agent(td_norm=False)
-        assert older.load_weights(p2) is True
+            blob["td_norm"] is True and blob["td_clip"] == 5.0
+        ), "conditioning must be recorded so a resume can detect a switch"
+        assert "adv_scale" not in blob, "per-batch state must not be checkpointed"
+
+        # Same conditioning: no warning.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=True, td_clip=5.0).load_weights(p2) is True
+        assert (
+            "td_norm=" not in buf.getvalue()
+        ), f"matching provenance should be quiet: {buf.getvalue()}"
+
+        # Switched off: the resume is legal but the weights were fit under a
+        # different objective, which is exactly when a pilot draws the
+        # wrong conclusion. It has to be visible in the log.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=False).load_weights(p2) is True
+        assert (
+            "td_norm=True" in buf.getvalue() and "td_norm=False" in buf.getvalue()
+        ), f"conditioning switch must warn: {buf.getvalue()}"
+
+        # Different clip, same norm on.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=True, td_clip=3.0).load_weights(p2) is True
+        assert (
+            "used td_clip=5.0" in buf.getvalue() and "uses 3.0" in buf.getvalue()
+        ), f"clip change must warn: {buf.getvalue()}"
+
+        # A pre-#416b checkpoint (no provenance keys) still loads, and says
+        # it predates the switch when this run has normalization on.
+        p3 = os.path.join(tmp2, "old.pt")
+        old_blob = {k: v for k, v in blob.items() if k not in ("td_norm", "td_clip")}
+        torch.save(old_blob, p3)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert _agent(td_norm=True, td_clip=5.0).load_weights(p3) is True
+        assert (
+            "predates td_norm provenance" in buf.getvalue()
+        ), f"pre-#416b checkpoint must announce itself: {buf.getvalue()}"
     print("TORCH_TD_NORM_OK")
 
 print("ALL_TRAINING_HEALTH_OK")
