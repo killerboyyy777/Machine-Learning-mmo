@@ -3,6 +3,25 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Wild interiors (#424): a `wild` room flag, orthogonal to `shelter`, on the
+  two spans that begin at the #423 indoor-B gates (north: summit gatehouse,
+  howling tunnel, howling col, glacier crown, windcarved crag; south: tideline
+  lighthouse, sunken tunnel, sunken reef, drowned grotto, saltspray bluff).
+  Four of the ten are both indoor and wild, so a tile can be sheltered and
+  still wild. `wild` implies risk on its own: `_room_is_risk()` now returns
+  true for `risk` OR `wild`, so dying in the wild scatters the unequipped
+  pack at floor value through the existing #157 death path. No exit changed,
+  so paths, quests and bot routes are untouched; the two 2-exit gates are the
+  only new traffic choke and nothing gates on it. Agents observe the terrain:
+  room payloads and the dashboard snapshot carry `shelter` and `wild`, and
+  the observation gains two trailing scalars (`wild_flag`, `indoor_flag`,
+  appended last per the never-shift rule). The reward for the risk is two
+  wild-exclusive materials -- Glacier Core (42) and Abyssal Heart (45),
+  dropped only by wild mobs -- feeding two high-tier wild-only craftables,
+  Stormforged Aegis and Abyssal Warden Draught. Priced above the measured
+  ~1.8g/kill death drain, and one mat already outruns the 0.1x floor-value
+  penalty on itself. Dashboard wild tiles get a red wash plus an ASCII
+  corner tooth, layered on top of the indoor/outdoor dash.
 - Browser config editor (#63): the dashboard Config tab now edits
   `server_config.json` and `ml/ml_config.json` in place, so tuning a value no
   longer means hand-editing JSON. `config_schema.py` declares all 65 server

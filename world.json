@@ -80,12 +80,14 @@
       "name": "Tideline Lighthouse",
       "description": "A squat stone tower above the pools, its lamp long dark. The keeper's room is dry and windless.",
       "shelter": true,
+      "wild": true,
       "exits": {"north": "tide_pools", "south": "sunken_tunnel"}
     },
     "sunken_tunnel": {
       "name": "Sunken Tunnel",
       "description": "A service tunnel cut under the reef, long since half filled with sand. The drip never stops.",
       "shelter": true,
+      "wild": true,
       "exits": {"north": "tideline_lighthouse", "south": "sunken_reef"}
     },
     "artisan_row": {
@@ -171,12 +173,14 @@
       "name": "Summit Gatehouse",
       "description": "A squat stone refuge wedged below the peak, built by climbers who learned what the gale does to a body left in the open.",
       "shelter": true,
+      "wild": true,
       "exits": {"south": "storm_summit", "north": "howling_tunnel"}
     },
     "howling_tunnel": {
       "name": "Howling Tunnel",
       "description": "A cut-stone tunnel bored under the col. The wind still finds the shaft above and screams down it.",
       "shelter": true,
+      "wild": true,
       "exits": {"south": "summit_gatehouse", "north": "howling_col"}
     },
     "highland_trail": {
@@ -231,36 +235,42 @@
       "name": "Howling Col",
       "description": "A wind-scoured saddle beyond the summit. The gale never stops screaming through the gap.",
       "shelter": false,
+      "wild": true,
       "exits": {"south": "howling_tunnel", "north": "glacier_crown", "east": "windcarved_crag"}
     },
     "glacier_crown": {
       "name": "Glacier Crown",
       "description": "A dome of ancient blue ice. Deep cracks glow from within, and something vast sleeps below.",
       "shelter": false,
+      "wild": true,
       "exits": {"south": "howling_col"}
     },
     "windcarved_crag": {
       "name": "Windcarved Crag",
       "description": "A lonely tor sculpted by centuries of wind into knives and arches. Loose scree hides patient hunters.",
       "shelter": false,
+      "wild": true,
       "exits": {"west": "howling_col"}
     },
     "sunken_reef": {
       "name": "Sunken Reef",
       "description": "A drowned reef of black coral. Tidewater drains hissing through the rock twice a day.",
       "shelter": false,
+      "wild": true,
       "exits": {"north": "sunken_tunnel", "south": "drowned_grotto", "west": "saltspray_bluff"}
     },
     "drowned_grotto": {
       "name": "Drowned Grotto",
       "description": "A sea-cave that floods at high tide. Barnacled bones and ship fittings litter the floor.",
       "shelter": false,
+      "wild": true,
       "exits": {"north": "sunken_reef"}
     },
     "saltspray_bluff": {
       "name": "Saltspray Bluff",
       "description": "White cliffs crusted with salt. Gulls and patient predators watch the surf below.",
       "shelter": false,
+      "wild": true,
       "exits": {"east": "sunken_reef"}
     }
   },
@@ -562,7 +572,7 @@
       "attack": 12,
       "hostile": true,
       "behavior": "idle",
-      "loot": ["frost_crystal", "serpent_scale"],
+      "loot": ["frost_crystal", "serpent_scale", "glacier_core"],
       "gold": 30,
       "respawn_seconds": 120
     },
@@ -574,7 +584,7 @@
       "attack": 13,
       "hostile": true,
       "behavior": "idle",
-      "loot": ["troll_hide", "frost_crystal"],
+      "loot": ["troll_hide", "frost_crystal", "glacier_core"],
       "gold": 32,
       "respawn_seconds": 130
     },
@@ -586,7 +596,7 @@
       "attack": 11,
       "hostile": true,
       "behavior": "idle",
-      "loot": ["serpent_scale", "iron_ore"],
+      "loot": ["serpent_scale", "iron_ore", "glacier_core"],
       "gold": 26,
       "respawn_seconds": 100
     },
@@ -598,7 +608,7 @@
       "attack": 10,
       "hostile": true,
       "behavior": "idle",
-      "loot": ["serpent_scale", "healing_herb"],
+      "loot": ["serpent_scale", "healing_herb", "abyssal_heart"],
       "gold": 24,
       "respawn_seconds": 100
     },
@@ -610,7 +620,7 @@
       "attack": 12,
       "hostile": true,
       "behavior": "idle",
-      "loot": ["frost_crystal", "serpent_scale"],
+      "loot": ["frost_crystal", "serpent_scale", "abyssal_heart"],
       "gold": 30,
       "respawn_seconds": 120
     },
@@ -640,6 +650,9 @@
       "buff": {"category": "attack", "amount": 5, "duration_actions": 15,
         "description": "+5 attack"}},
     "warden_trophy": {"name": "Warden's Trophy", "type": "junk", "value": 30},
+    "stormforged_aegis": {"name": "Stormforged Aegis", "type": "armor", "defense": 8, "value": 90},
+    "abyssal_warden_draught": {"name": "Abyssal Warden Draught", "type": "consumable", "value": 95,
+      "heal_amount": 40},
     "wardens_blade": {"name": "Warden's Blade", "type": "weapon", "damage": 13, "value": 60},
     "rat_tail": {"name": "Rat Tail", "type": "junk", "value": 1},
     "wolf_pelt": {"name": "Wolf Pelt", "type": "junk", "value": 4},
@@ -676,7 +689,9 @@
     "mountain_herb": {"name": "Mountain Herb", "type": "junk", "value": 4},
     "resin": {"name": "Pine Resin", "type": "junk", "value": 4},
     "scrap_iron": {"name": "Scrap Iron", "type": "junk", "value": 4},
-    "salt_crystal": {"name": "Salt Crystal", "type": "junk", "value": 3}
+    "salt_crystal": {"name": "Salt Crystal", "type": "junk", "value": 3},
+    "glacier_core": {"name": "Glacier Core", "type": "junk", "value": 42},
+    "abyssal_heart": {"name": "Abyssal Heart", "type": "junk", "value": 45}
   },
   "recipes": {
     "reinforced_leather": {
@@ -782,6 +797,18 @@
       "inputs": {"frost_crystal": 2, "ironhide_draught": 1, "ectoplasm": 1},
       "result": "wardens_elixir",
       "tier": 5,
+      "category": "buff"
+    },
+    "stormforged_aegis": {
+      "inputs": {"glacier_core": 2, "frost_crystal": 2, "iron_plate": 1},
+      "result": "stormforged_aegis",
+      "tier": 6,
+      "category": "equipment"
+    },
+    "abyssal_warden_draught": {
+      "inputs": {"abyssal_heart": 2, "ectoplasm": 2, "serpent_scale": 2},
+      "result": "abyssal_warden_draught",
+      "tier": 6,
       "category": "buff"
     }
   },

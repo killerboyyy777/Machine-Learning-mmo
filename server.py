@@ -739,13 +739,19 @@ def gather_nodes_in_room(room_id):
 
 
 def _room_is_risk(room_id):
-    """True when a surface room is a #157 risk zone (item drops on death).
+    """True when a surface room risks carried items on death.
 
-    Dungeon floors are not #157 zones; they keep the gold-only death rule.
-    Safe-vs-risk is decided by the room's "risk" flag alone -- the Wild
-    does not exist yet (#336), so no wild-set geography is consulted."""
+    Two independent flags feed it: "risk" (#157 risk zones) and "wild" (#424).
+    Wild implies risk automatically, so a wild tile drops your pack however
+    sheltered it looks -- the two flags are orthogonal and a room may be both
+    (the indoor-B gates inside the wild spans are shelter AND wild).
+
+    Dungeon floors are in neither set; they keep the gold-only death rule.
+    """
     room = ROOMS.get(room_id)
-    return bool(room and room.get("risk"))
+    if not room:
+        return False
+    return bool(room.get("risk") or room.get("wild"))
 
 
 # ---------------------------------------------------------------------------
@@ -1561,6 +1567,8 @@ def dungeon_room_view(room_id, dungeon):
         "is_dungeon": True,
         "dungeon_floor": floor_no,
         "party_size": _party_size_in_room(room_id),
+        "shelter": True,
+        "wild": False,
     }
 
 
@@ -1582,6 +1590,9 @@ def room_view(room_id):
         "is_dungeon": False,
         "dungeon_floor": 0,
         "party_size": _party_size_in_room(room_id),
+        # Wild/indoor are separate axes (#424): a tile can be both.
+        "shelter": bool(room.get("shelter", False)),
+        "wild": bool(room.get("wild", False)),
         "gatherables": [
             {
                 "id": n["id"],
@@ -4427,6 +4438,7 @@ def world_snapshot():
     for rid, r in ROOMS.items():
         rooms.append({
             "id": rid, "name": r["name"], "shelter": bool(r.get("shelter", False)),
+            "wild": bool(r.get("wild", False)),
             "exits": [{"dir": d, "to": t, "to_name": ROOMS.get(t, {}).get("name", t)} for d, t in r.get("exits", {}).items()],
             "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
             "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
