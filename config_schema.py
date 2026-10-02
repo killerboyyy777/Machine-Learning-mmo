@@ -108,6 +108,9 @@ SERVER_SCHEMA = {
     "economy": {
         "TAX_RATE": _ratio("Market tax share of each sale."),
         "TAX_MINIMUM": _i(0, 10000, "Flat minimum tax per sale, in gold."),
+        "TREASURY_RESERVE": _f(
+            0, 1000000, "Gold the treasury banks before sinking the rest."
+        ),
         "MARKET_ORDER_SLOTS_BASE": _i(
             1, 200, "Base sell order slots available to every character."
         ),
