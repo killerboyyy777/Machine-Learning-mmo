@@ -1266,6 +1266,7 @@ async def main():
     await srv.cmd_craft(gearhead, {"recipe": "reinforced_leather"})
     assert "reinforced_leather" in gearhead.inventory
     await srv.cmd_equip(gearhead, {"item": "reinforced leather"})
+    assert gearhead.attack == base_atk
     assert srv._player_defense(gearhead) == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
     assert gearhead.armor == "reinforced_leather"
     unplayer(gearhead)
