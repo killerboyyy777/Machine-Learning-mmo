@@ -2779,7 +2779,7 @@ async def cmd_commission_list(player, msg):
 
 
 async def cmd_commission_fill(player, msg):
-    global tax_treasury, tax_collected_lifetime, comm_feed_seq
+    global comm_feed_seq
     if player.room != GUILD_ROOM:
         await send(player, {"type": "error", "text": "Commissions are filled at the Adventurers Guild hall (south of Artisan Row)."})
 
@@ -2925,7 +2925,7 @@ async def cmd_commission_fill(player, msg):
 
 
 async def cmd_commission_cancel(player, msg):
-    global tax_treasury, tax_collected_lifetime, comm_feed_seq
+    global comm_feed_seq
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -3661,7 +3661,6 @@ async def cmd_market_cancel(player, msg):
 
 async def cmd_market_expand(player, msg):
     """Buy +1 market stall slot. Fee goes to the GM treasury (gold sink)."""
-    global tax_treasury, tax_collected_lifetime
     entry = get_score_entry(player.name)
     slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
     price = market_slot_price(slots)
@@ -3683,7 +3682,6 @@ async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
     (buyers pay now, bid escrow was prepaid); this handles tax, seller
     payout, buyer delivery (item_bank when the buyer is offline or pack-full),
     history, and both sides' trade score."""
-    global tax_treasury, tax_collected_lifetime
     # Commercial rounding, documented (#195.8): half away from zero, not
     # Python's banker's half-even (round(2.5) == 2 surprises sellers), and
     # the tax never eats the whole price -- 1g trades used to pay the
@@ -3777,7 +3775,6 @@ async def cmd_market_buy(player, msg):
 
 
 async def cmd_market_buy_order(player, msg):
-    global tax_treasury, tax_collected_lifetime
     if player.room != "market":
         await send(player, {"type": "error", "text": "Bids are managed from the market room."})
         return
@@ -3834,7 +3831,6 @@ async def cmd_market_buy_order(player, msg):
 
 
 async def cmd_market_buy_modify(player, msg):
-    global tax_treasury, tax_collected_lifetime
     if player.room != "market":
         await send(player, {"type": "error", "text": "Bids are managed from the market room."})
         return
