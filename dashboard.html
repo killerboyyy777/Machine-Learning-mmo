@@ -258,7 +258,7 @@
   <div class="grid">
     <div>
       <div class="panel">
-        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail · solid tile = indoor, dashed = outdoor</span></h2>
+        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail · solid tile = indoor, dashed = outdoor · red wash + W = wild (pack drops on death)</span></h2>
         <div class="world-map"><canvas id="worldMapCanvas" width="1200" height="480" style="width:100%;height:480px;cursor:grab"></canvas></div>
         <div id="roomDrawer" style="display:none"></div>
         <div id="rooms" class="rooms"></div>
@@ -951,7 +951,9 @@ function renderWorldMap(rooms) {
   // Tokens are read per render; the smoke harness falls back to dark values.
   const bg = cssVar("--panel2", "#1e252d"), tile = cssVar("--panel", "#171c22"),
         edge = cssVar("--border", "#2a333d"), ink = cssVar("--text", "#d7e0e8"),
-        sub = cssVar("--dim", "#8b98a5"), acc = cssVar("--accent", "#6fc3ff");
+        sub = cssVar("--dim", "#8b98a5"), acc = cssVar("--accent", "#6fc3ff"),
+        wild = cssVar("--bad", "#ff7b72");
+  const WILD_MARK = "W";  // ASCII corner tooth marking a wild tile (#424)
   const {x: ox, y: oy, k} = mapView;
   ctx.clearRect(0, 0, worldW, worldH);
   ctx.fillStyle = bg;
@@ -993,6 +995,22 @@ function renderWorldMap(rooms) {
     ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
     ctx.fill();
     ctx.stroke();
+    // Wild (#424) is its own axis, orthogonal to indoor/outdoor: the danger
+    // wash + corner tooth ride on top of whatever dash the shelter flag chose,
+    // so an indoor wild gate still reads differently from open wild ground.
+    if (room.wild) {
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = wild;
+      ctx.beginPath();
+      ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = wild;
+      ctx.font = "10px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(WILD_MARK, px - w / 2 + 3, py - h / 2 + 10);
+    }
     // Text only when the drawn tile can hold it (narrow fit-width tiles
     // stay legible instead of overflowing their rooms).
     if (w >= 70) {

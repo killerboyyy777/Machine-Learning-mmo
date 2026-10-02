@@ -825,6 +825,9 @@ def flatten_obs(obs):
         + [obs["buff_attack"], obs["buff_dr"]]
         + [obs["ammo_best_norm"], obs["defense_norm"]]
         + [obs.get("adaptive_score", 0.0)]  # descent-readiness hint (#335), appended last
+        # Terrain flags (#424) appended last, same never-shift rule; .get so a
+        # hand-built obs dict (tests) predating the flag still flattens.
+        + [obs.get("wild_flag", 0.0), obs.get("indoor_flag", 0.0)]
     )
 
 
@@ -844,6 +847,7 @@ OBS_SIZE = (
     + 2                                    # buff block (attack active, damage-reduction active)
     + 2                                    # gear block (best ammo bonus, worn defense)
     + 1                                    # adaptive descent-readiness hint (#335)
+    + 2                                    # terrain flags (#424): wild, indoor
 )
 
 
@@ -889,7 +893,7 @@ class TextMMOEnv:
         self._state = {
             "room_id": None, "exits": [], "npc_names": [], "item_names": [],
             "player_names": [], "is_dungeon": False, "dungeon_floor": 0,
-            "party_size": 1,
+            "party_size": 1, "shelter": False, "wild": False,
             "hp": 0, "max_hp": 1, "gold": 0, "score": 0.0, "variety": 1.0,
             "level": 1, "xp": 0.0, "xp_to_next": 100.0,
             "equipped": None, "armor": None, "offhand": None, "defense": 0,
@@ -956,6 +960,8 @@ class TextMMOEnv:
             self._state["is_dungeon"] = event.get("is_dungeon", False)
             self._state["dungeon_floor"] = event.get("dungeon_floor") or 0
             self._state["party_size"] = event.get("party_size", 1)
+            self._state["shelter"] = bool(event.get("shelter", False))
+            self._state["wild"] = bool(event.get("wild", False))
             self._state["other_players"] = max(0, len(event["players"]) - 1)
         elif t == "stats":
             self._state["hp"] = event["hp"]
@@ -2061,6 +2067,9 @@ class TextMMOEnv:
             "ammo_best_norm": ammo_best_norm,
             "defense_norm": defense_norm,
             "adaptive_score": adaptive_norm,
+            # Wild/indoor terrain flags (#424), orthogonal axes.
+            "wild_flag": 1.0 if s.get("wild") else 0.0,
+            "indoor_flag": 1.0 if s.get("shelter") else 0.0,
             # Not part of flatten_obs() -- handy for debugging/logging only:
             "room_id": s["room_id"],
             "score_raw": s["score"],
