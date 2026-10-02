@@ -3,6 +3,39 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Custom reward DSL (#68): reward is now a formula, not a fixed mode.
+  `reward_formula="0.5*xp_delta + 1.2*profit - 0.1*deaths"` on `TextMMOEnv`
+  (or `--reward-formula` on the torch farm, or `env_reward_formula=` in a
+  conductor slot) replaces the `reward_mode` computation outright. The
+  expression language is a hand-written tokenizer + recursive-descent
+  parser (`ml/reward_dsl.py`) over 19 named signals and 7 functions; no
+  `eval`/`exec`, no new dependency, and unknown signal names fail at
+  construction with a "did you mean" hint. Division by zero pays 0.0 and
+  increments a visible counter rather than ending a run. Researchers who
+  need real Python can override the new `AgentPlugin.reward(signals)`
+  hook, which takes precedence over a formula and may abstain by
+  returning None. Both surfaces fail soft: a raising hook or a non-finite
+  result falls back to the `reward_mode` reward and counts the failure in
+  `info["custom_reward_errors"]`, so an overnight run cannot be lost to a
+  bad formula. Step info gains `reward_signals` only on custom-reward
+  runs, so default runs are byte-identical. Death events now retain the
+  server's `gold_lost`/`gold_dropped`/`xp_lost` accounting the env
+  previously discarded, which is what makes `gold_lost` nameable.
+- Reward DSL fixes (#68 review round 1): a plugin's `AgentPlugin.reward`
+  hook now actually reaches a live agent. The supervisor attaches it by
+  assigning `env.reward_fn`, but the env stored a private
+  `_reward_fn` and froze its "has a custom reward" flag at
+  construction, so on a real `TextMMOEnv` the hook was silently dead and
+  every run paid the mode reward instead. `formation` is a pulse rather
+  than a level again: a formula naming it advances the same cooldown
+  cursor score mode uses, instead of paying on every grouped step. A
+  formula that raises mid-step (`floor(1e308*1e308)` is an
+  `OverflowError`, `ceil(nan)` a `ValueError`) now falls back to the
+  mode reward and counts the failure like any other, instead of
+  escaping `step()` and killing the run. A numeric-looking
+  `env_reward_formula=42` stays the string `"42"` instead of being
+  coerced to an int that the parser rejected, which used to kill the
+  agent at startup.
 - Wild interiors (#424): a `wild` room flag, orthogonal to `shelter`, on the
   two spans that begin at the #423 indoor-B gates (north: summit gatehouse,
   howling tunnel, howling col, glacier crown, windcarved crag; south: tideline
