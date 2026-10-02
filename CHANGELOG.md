@@ -22,6 +22,30 @@ All notable changes to the text MMO engine are recorded here.
   ~1.8g/kill death drain, and one mat already outruns the 0.1x floor-value
   penalty on itself. Dashboard wild tiles get a red wash plus an ASCII
   corner tooth, layered on top of the indoor/outdoor dash.
+- Run tracking and comparison (#65): every trainer now writes a run record
+  under `runs/<run_id>/` -- `run.json` (kind, label, seed, hyper-parameters,
+  git sha, config hash, status) plus an append-only `metrics.jsonl` series.
+  `ml/runlog.py` is stdlib-only and shared by all five trainers, which gain
+  `--seed`, `--runs-dir` and `--no-run-record`; seeding happens before any
+  network or bot is built and `--seed` works without recording. Steps are
+  reported per run with the lifetime `total_steps` beside them, since both
+  `--steps` counters resume. New `GET /api/runs` reads the index fresh per
+  request (trainers are separate processes, so the catalog must outlive one
+  server lifetime) and returns rank direction per field, so the dashboard
+  verdict says "lowest wins" for a loss instead of crowning the worst run.
+  The Runs tab lists every run and the comparison panel overlays up to 24 on
+  one chart; the column set follows the run kinds present rather than a fixed
+  list, so botfarm `fitness` and soak `mean_reward` are readable instead of
+  rendering as "-". Query handling is hardened: every `runs=` parameter is
+  honored (not just the last), values are URL-decoded, ids are validated and
+  deduped and capped at 24, and a flood of ids costs one bounded file open
+  per requested run. The response carries the runs directory name only --
+  absolute paths are no longer exposed to clients. Torn final JSONL lines are
+  tolerated, manifest writes are atomic (tmp + `os.replace`), and run-id
+  creation claims the directory so two same-second runs cannot share one.
+  Cancel or interrupt now closes the run as `failed` instead of leaving it
+  `running` forever, `stopped=True`-style extras land in metrics, and a soak's
+  final summary is recorded rather than dropped. No game files touched.
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and
