@@ -138,6 +138,26 @@
   button:hover { border-color: var(--accent); color: var(--accent); }
   .gmform { display: grid; grid-template-columns: 150px 1fr; gap: 8px 12px; align-items: center; }
   .gmform label { color: var(--dim); }
+  /* Config editor (#63): a label/input/reset grid. The reset column is always
+     reserved so a field toggling between "overridden" and "code default"
+     cannot shift the inputs sideways. */
+  .cfgform { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 84px auto;
+             gap: 6px 10px; align-items: center; }
+  .cfgform h3 { grid-column: 1 / -1; margin: 10px 0 0; font-size: var(--fs-sm);
+                color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+  .cfgform .cfgsec { display: contents; }
+  .cfgform label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+  .cfgform input { width: 100%; font-variant-numeric: tabular-nums; }
+  .cfgform input:disabled { opacity: .6; }
+  .cfgvals { font-size: var(--fs-xs); color: var(--dim); }
+  .cfgreset { font-size: var(--fs-xs); padding: 3px 7px; }
+  .cfgmsg { min-height: 1.4em; margin: 8px 0 0; font-size: var(--fs-sm); }
+  .cfgmsg.good { color: var(--good); }
+  .cfgmsg.bad { color: var(--bad); }
+  .cfgmsg.dim, .cfgform .dim { color: var(--dim); }
+  #cfgPresets { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .cfgrow-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+  .cfgrow-actions button { padding: 6px 14px; }
   .gm-pane { display: none; margin-top: 10px; }
   .gm-pane.active { display: grid; }
   .gm-cost { color: var(--warn); font-size: var(--fs-xs); }
@@ -478,12 +498,17 @@
 
 <div id="view-config" class="tabview">
   <div class="panel">
-    <h2>Config (read-only)</h2>
-    <p class="empty">Values below are read from the live snapshot. Full editing lands with the config editor (#63).</p>
-    <table>
-      <thead><tr><th>key</th><th>value</th></tr></thead>
-      <tbody id="configRows"></tbody>
-    </table>
+    <h2>Config editor <span class="sortctl">file
+      <select id="cfgFile"></select>
+    </span></h2>
+    <p class="empty" id="cfgPath">-</p>
+    <div id="cfgPresets"></div>
+    <div class="cfgform" id="cfgForm"></div>
+    <p id="cfgMsg" class="cfgmsg"></p>
+    <div class="cfgrow-actions">
+      <button id="cfgSave" type="button">Save to file</button>
+      <span id="cfgRestart" class="dim"></span>
+    </div>
   </div>
 </div>
 
@@ -1874,19 +1899,187 @@ function renderCrafting(rooms, market, activity, recipes, craftHistory) {
   for (const [k, v] of Object.entries(flow)) $("flow-" + k).textContent = v;
 }
 
-function renderConfig(s) {
-  // Read-only viewer over snapshot-exposed tunables (ports, tax terms).
-  // Full editing lands with the config editor (#63).
-  const m = s.market || {};
-  const sv = s.server || {};
-  const rows = [
-    ["game websocket port", sv.ws_port ?? "-"],
-    ["GM stream port (loopback-only)", sv.gm_port ?? "-"],
-    ["market tax rate", m.tax_rate ?? "-"],
-    ["market tax minimum", m.tax_min ?? "-"],
-    ["server uptime", (sv.uptime ?? 0) + "s"],
-  ];
-  setHTML("configRows", rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join(""));
+// ---- Config editor (#63) ---------------------------------------------------
+// Schema, current values and presets come from GET /api/config; the file is
+// written by POST /api/config and takes effect on restart (both loaders read
+// these files at startup, and the server's spawn sync is startup-only).
+// `editable` is the server's loopback verdict, not a client guess: off-box
+// viewers get every field with the inputs and save button disabled.
+let cfgData = null;
+let cfgFile = "server";
+let cfgDraft = {};
+let cfgSaving = false;
+let cfgGen = 0;
+
+function cfgFileMeta() {
+  return (cfgData && (cfgData.files || []).find(f => f.id === cfgFile)) || null;
+}
+
+function cfgFieldId(f) {
+  return `cfg-${cfgFile}-${f.section}-${f.key}`;
+}
+
+function cfgSetMsg(text, cls) {
+  const el = $("cfgMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "cfgmsg" + (cls ? " " + cls : "");
+}
+
+function cfgDraftValue(field) {
+  // The draft holds raw strings exactly as typed; null means "drop the
+  // override" and is only ever set by the reset button.
+  const key = `${cfgFile}|${field.section}.${field.key}`;
+  return key in cfgDraft ? cfgDraft[key] : field.text;
+}
+
+function cfgResetButton(field) {
+  if (!field.present) return "";
+  return `<button type="button" class="cfgreset" data-cfgreset="${esc(field.key)}"` +
+    ` title="Remove this override so the code default applies"${cfgSaving ? " disabled" : ""}>reset</button>`;
+}
+
+function cfgFieldRow(field) {
+  const editable = cfgData && cfgData.editable;
+  const id = cfgFieldId(field);
+  const listy = field.type === "list";
+  const attrs = `id="${id}" data-cfgkey="${esc(field.section + "." + field.key)}"` +
+    ` type="${listy ? "text" : "number"}"` +
+    (listy ? "" : ` min="${field.min}" max="${field.max}" step="${field.step}"`) +
+    ` value="${esc(cfgDraftValue(field))}"` +
+    ` title="${esc(field.help)}"` +
+    (editable ? "" : " disabled");
+  return `<div class="cfgrow" data-field="${esc(field.section + "." + field.key)}">` +
+    `<label for="${id}" title="${esc(field.help)}">${esc(field.key)}` +
+    (field.present ? "" : ` <span class="tag">default ${esc(String(field.default))}</span>`) +
+    `</label>` +
+    `<input ${attrs}>` +
+    `<span class="cfgvals">${field.present ? "overridden" : "code default"}</span>` +
+    cfgResetButton(field) +
+    `</div>`;
+}
+
+function renderConfigEditor() {
+  if (!cfgData) return;
+  const meta = cfgFileMeta();
+  setHTML("cfgFile", (cfgData.files || []).map(f =>
+    `<option value="${esc(f.id)}"${f.id === cfgFile ? " selected" : ""}>` +
+    `${esc(f.label)}</option>`).join(""));
+  if (!meta) {
+    setHTML("cfgPath", `<span class="empty">config schema unavailable</span>`);
+    setHTML("cfgForm", "");
+    $("cfgSave").disabled = true;
+    return;
+  }
+  setHTML("cfgPath", meta.error
+    ? `<span class="bad">${esc(meta.path)}: ${esc(meta.error)}</span>`
+    : `${esc(meta.path)} <span class="dim">${esc(meta.restart)}</span>`);
+  setHTML("cfgPresets", (cfgData.presets || []).map((p, i) =>
+    `<button type="button" class="gm-preset" data-cfgpreset="${i}"` +
+    ` title="${esc(p.help)}"${cfgData.editable ? "" : " disabled"}>${esc(p.name)}</button>`
+  ).join(""));
+  setHTML("cfgForm", meta.sections.map(sec =>
+    `<h3>${esc(sec.name)}</h3><div class="cfgsec">` +
+    sec.fields.map(cfgFieldRow).join("") + `</div>`).join(""));
+  $("cfgSave").disabled = !cfgData.editable || cfgSaving;
+  setHTML("cfgRestart", "");
+}
+
+async function loadConfig() {
+  const gen = ++cfgGen;
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (gen !== cfgGen) return;
+    cfgData = data;
+    // Never keep a draft whose file is no longer on screen.
+    cfgDraft = {};
+    renderConfigEditor();
+    if (data.error) cfgSetMsg(data.error, "bad");
+  } catch (e) {
+    if (gen !== cfgGen) return;
+    // Keep the last good schema: one dropped request must not wipe the form
+    // the operator is halfway through editing.
+    cfgSetMsg(`could not load config: ${String(e.message || e)}`, "bad");
+  }
+}
+
+async function saveConfig() {
+  if (!cfgData || !cfgData.editable || cfgSaving) return;
+  const meta = cfgFileMeta();
+  if (!meta) return;
+  const edits = {};
+  for (const [draftKey, value] of Object.entries(cfgDraft)) {
+    // Draft keys carry a "<file>|" prefix so switching files cannot mix
+    // drafts. The wire key is the dotted path alone; sending the prefix
+    // would make every section lookup miss.
+    const key = draftKey.slice(draftKey.indexOf("|") + 1);
+    if (value === null) { edits[key] = null; continue; }
+    const text = String(value);
+    // Compare against the rendered current value, so a field that was
+    // retyped identically is not sent as an edit.
+    const [section, ...rest] = key.split(".");
+    const field = (meta.sections.find(s => s.name === section) || { fields: [] })
+      .fields.find(f => f.key === rest.join("."));
+    if (field && text === field.text) continue;
+    edits[key] = text;
+  }
+  if (!Object.keys(edits).length) {
+    cfgSetMsg("nothing changed", "dim");
+    return;
+  }
+  cfgSaving = true;
+  $("cfgSave").disabled = true;
+  cfgSetMsg("saving...");
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: cfgFile, edits }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || res.status);
+    cfgDraft = {};
+    const n = (body.changed || []).length;
+    cfgSetMsg(n ? `wrote ${n} value${n === 1 ? "" : "s"}` : "no changes",
+      n ? "good" : "dim");
+    // Clear the in-flight flag before reloading: renderConfigEditor disables
+    // every reset button while cfgSaving is set, and the reload is what puts
+    // the freshly written values back on screen.
+    cfgSaving = false;
+    await loadConfig();
+    // renderConfigEditor clears this, so the hint has to land after the reload.
+    setHTML("cfgRestart", n ? (body.restart || "") : "");
+  } catch (e) {
+    cfgSetMsg(`save failed: ${String(e.message || e)}`, "bad");
+  } finally {
+    cfgSaving = false;
+    if (cfgData) $("cfgSave").disabled = !cfgData.editable;
+  }
+}
+
+function applyConfigPreset(index) {
+  const preset = (cfgData && cfgData.presets || [])[index];
+  if (!preset) return;
+  const meta = cfgFileMeta();
+  const values = preset.values[cfgFile] || {};
+  // Stage into the form, never straight to the file: a preset is a reviewable
+  // set of values, and the operator still has to press Save.
+  for (const key of Object.keys(values)) {
+    const [section, ...rest] = key.split(".");
+    const field = meta && (meta.sections.find(s => s.name === section) || { fields: [] })
+      .fields.find(f => f.key === rest.join("."));
+    if (!field) continue;
+    cfgDraft[`${cfgFile}|${key}`] = values[key] === null ? null : cfgFormatDraft(field, values[key]);
+  }
+  renderConfigEditor();
+  cfgSetMsg(`${preset.name} staged - review, then Save.`, "dim");
+}
+
+function cfgFormatDraft(field, value) {
+  if (field.type === "list") return "[" + value.join(", ") + "]";
+  return String(value);
 }
 
 let trackedName = null;
@@ -2300,7 +2493,9 @@ const TAB_SECTIONS = {
     ["commission history", s => renderCommHistory(s.commission_history || [])],
   ],
   crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [], s.craft_history || [])]],
-  config: [["config", s => renderConfig(s)]],
+  // The editor has its own endpoint and its own state (an in-progress draft
+  // must survive a snapshot poll), so it renders on tab entry, not per tick.
+  config: [],
   runs: [["runs", s => renderRuns(s)]],
   gm: [
     ["gm catalog", s => populateDatalists(s.catalog || {})],
@@ -2384,6 +2579,7 @@ for (const tab of document.querySelectorAll(".tab")) {
       loadRuns();
       scheduleRunsPoll();
     }
+    if (activeTab === "config") loadConfig();
     if (lastState) renderAll(lastState);
     // The new tab's panels have real widths now: refit any chart that was
     // sized while hidden (or while the window was a different size).
@@ -2556,6 +2752,42 @@ $("gm-send-kick").addEventListener("click", () => {
   if (reason) payload.reason = reason.slice(0, 120);
   gmSend(payload);
 });
+
+// Config editor listeners (#63). Delegated on document, like the GM presets:
+// the field rows are re-rendered on every load, so per-row binding would stack
+// up duplicate handlers on each fetch.
+document.addEventListener("input", e => {
+  const input = e.target;
+  const key = input && input.dataset && input.dataset.cfgkey;
+  if (!key) return;
+  cfgDraft[`${cfgFile}|${key}`] = input.value;
+});
+document.addEventListener("click", e => {
+  const preset = e.target.closest("[data-cfgpreset]");
+  if (preset) {
+    applyConfigPreset(Number(preset.dataset.cfgpreset));
+    return;
+  }
+  const reset = e.target.closest("[data-cfgreset]");
+  if (reset) {
+    const row = reset.closest("[data-field]");
+    if (!row) return;
+    // null is the wire value for "drop the override"; the input goes blank so
+    // the reset is visible in the form before the save.
+    cfgDraft[`${cfgFile}|${row.dataset.field}`] = null;
+    const input = row.querySelector("input");
+    if (input) input.value = "";
+    reset.disabled = true;
+    cfgSetMsg("override removed - press Save to write", "dim");
+  }
+});
+$("cfgFile")?.addEventListener("change", () => {
+  cfgFile = $("cfgFile").value;
+  cfgDraft = {};
+  cfgSetMsg("");
+  renderConfigEditor();
+});
+$("cfgSave")?.addEventListener("click", saveConfig);
 
 // Preset buttons (gold amounts, buff shortcuts)
 document.addEventListener("click", e => {

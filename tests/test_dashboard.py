@@ -28,11 +28,9 @@ assert '<script src="/uplot.min.js">' in html, "uplot script tag missing"
 # Design tokens: spacing/type scales + font + radius on top of legacy vars.
 for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
     assert tok in html, f"token {tok} missing"
-# Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are
-# functional; only Config still points at its follow-up (#63).
+# Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are functional.
 assert "revamp 2/4 (#206)" not in html, "market/dungeon/gm still placeholder"
 assert "revamp 3/4 (#209)" not in html, "agents/quests/crafting still placeholder"
-assert "(#63)" in html, "config editor pointer missing"
 for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
              "gm-action", "gm-players", "gm-rooms",
@@ -40,7 +38,8 @@ for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "q-active", "q-turnins", "questCatalog",
              "matSupply", "noSupply", "matOrders", "noMatOrders",
              "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
-             "configRows", "themeToggle"):
+             "cfgFile", "cfgForm", "cfgPresets", "cfgSave", "cfgMsg",
+             "cfgPath", "cfgRestart", "themeToggle"):
     assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Players tab split out of World (more tabs, less content each).
 assert '<div class="tab" data-tab="players">Players</div>' in html
@@ -367,5 +366,42 @@ assert "runsError = String(e.message || e)" in html and "let runsData = null" in
 # Multi-series chart reuses the themed palette instead of hardcoding colors.
 assert "seriesColor(i)" in html and "series:" in html
 print("RUNS_TAB_OK")
+
+# --- config editor (#63) --------------------------------------------------
+# The read-only viewer is gone: the tab now edits both config files.
+assert "Config (read-only)" not in html, "read-only config viewer still present"
+assert "Full editing lands with the config editor" not in html
+assert 'fetch("/api/config"' in html, "config tab does not read /api/config"
+assert "cfgForm" in html and "cfgSave" in html and "cfgFile" in html
+# The editor's draft must survive a snapshot poll, so it is not wired into the
+# per-tick section table; it loads on tab entry instead.
+ts = re.search(r"const TAB_SECTIONS = \{(.*?)\n\};", html, re.DOTALL)
+assert ts, "TAB_SECTIONS not found"
+assert "config: []" in ts.group(1), "config still renders per tick"
+assert re.search(r'activeTab === "config"\) loadConfig\(\);', html), \
+    "switching to Config does not load"
+# Writes go through POST; a GET-only dashboard could never save.
+assert 'method: "POST"' in html and "Content-Type\": \"application/json\"" in html
+# The server's loopback verdict gates the form: off-box viewers get every field
+# with the inputs disabled rather than a form that fails on submit.
+ce = _runs_section(html, "renderConfigEditor")
+assert "cfgData.editable" in ce, "editor ignores the server's editable verdict"
+assert "disabled" in ce, "editor never disables inputs"
+# Delegated, like every other re-rendered surface: per-row binding would stack
+# duplicate handlers on every load.
+cf = re.search(r"function renderConfigEditor\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert cf and "addEventListener" not in cf.group(1), "editor rebinds listeners"
+assert "data-cfgkey" in html and "data-cfgreset" in html and "data-cfgpreset" in html
+assert 'document.addEventListener("input"' in html
+# Presets stage into the form; nothing is written until Save.
+ap = _runs_section(html, "applyConfigPreset")
+assert "cfgDraft[" in ap and "saveConfig" not in ap, "preset writes instead of staging"
+sv = re.search(r"async function saveConfig\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert sv and "cfgData.editable" in sv.group(1), "save ignores the editable verdict"
+# Tooltips: every field carries its help text, from the server schema.
+assert 'title="${esc(field.help)}"' in html
+# Restart, not live-apply: both loaders read these files at startup.
+assert "restart" in html.lower() and "Restart" in html
+print("CONFIG_EDITOR_OK")
 
 print("ALL_DASHBOARD_OK")

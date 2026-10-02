@@ -22,6 +22,34 @@ All notable changes to the text MMO engine are recorded here.
   ~1.8g/kill death drain, and one mat already outruns the 0.1x floor-value
   penalty on itself. Dashboard wild tiles get a red wash plus an ASCII
   corner tooth, layered on top of the indoor/outdoor dash.
+- Browser config editor (#63): the dashboard Config tab now edits
+  `server_config.json` and `ml/ml_config.json` in place, so tuning a value no
+  longer means hand-editing JSON. `config_schema.py` declares all 65 server
+  tunables across six sections plus the 6 ML ones, each with its type, bounds,
+  step and help text, and marks every key as either an override in the file or
+  a code default. The panel shows both, and a reset button drops an override
+  (the key leaves the file) rather than pinning a copy of the default. Three
+  presets -- Balanced, Fast Training, Economy Focus -- stage values into the
+  form for review; a preset never writes. `GET /api/config` is read-only and
+  `no-store`; `POST /api/config` takes `{"file", "edits"}` with a null value
+  meaning "drop this override". Writes are gated twice, on a loopback peer
+  *and* a local `Origin`, so reached from another machine the editor reports
+  `editable: false` and refuses to save. Validation happens before any write:
+  unknown keys, out-of-range values, wrong types, oversized bodies, non-object
+  JSON and unknown files all come back 400 with the file byte-identical, and a
+  refused save never half-applies. Writes are surgical, rewriting only the
+  changed lines and keeping LF endings, because `ml/versioning.py` hashes raw
+  config bytes into `config_hash` -- a reformatted-but-equivalent file would
+  invalidate every saved checkpoint. A save whose parsed value already matches
+  writes zero bytes, so `0.1` against `0.10` is a no-op. New values are staged
+  to a temp file, re-parsed and verified, then `os.replace`d in, so a crash
+  cannot leave half a config behind. Deliberately no live apply: both loaders
+  read config at startup (`_sync_extra_spawns()` is startup-only), so the reply
+  and the panel both say to restart rather than pretending a value took
+  effect. Deliberately no automatic backups, to match every other writer in the
+  repo; git is the undo. Body reads and value counts are bounded, no absolute
+  path is ever returned to a client, and an unknown `POST` path is still a 404
+  rather than a silent write. No game files touched.
 - Run tracking and comparison (#65): every trainer now writes a run record
   under `runs/<run_id>/` -- `run.json` (kind, label, seed, hyper-parameters,
   git sha, config hash, status) plus an append-only `metrics.jsonl` series.
