@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server as srv
 from ml.ml_env import (
     ECON_INV_LAMBDA,
+    FORMATION_BONUS,
+    FORMATION_COOLDOWN_STEPS,
     REWARD_MODES,
     XP_LEVEL_BONUS,
     TextMMOEnv,
@@ -429,5 +431,111 @@ _none = TextMMOEnv("DslNone")
 assert _none._call_reward_hook({"score_delta": 1.0}) is None
 assert _none.custom_reward_errors == 0
 print("FORMULA_FAILSOFT_OK")
+
+
+def _sig(env, **over):
+    """Signals for one step through the real _reward_signals, so the
+    formation/party terms are computed the way step() computes them."""
+    kw = {
+        "score_gain": 0.0,
+        "xp_gain": 0.0,
+        "levels": 0,
+        "gold_delta": 0.0,
+        "inv_delta": 0.0,
+        "deaths": 0,
+        "gold_lost": 0.0,
+        "gold_dropped": 0.0,
+        "xp_lost": 0.0,
+        "steps_since_death": 0,
+    }
+    kw.update(over)
+    return env._reward_signals(**kw)
+
+
+# --- a formula that raises mid-evaluation must not end the run (#68
+# send-back): math.floor(inf) is OverflowError and math.ceil(nan) is
+# ValueError, neither of which is a RewardFormulaError, so the narrow
+# except let them out of step() and kill an overnight run.
+for _formula, _label in (
+    ("floor(1e308*1e308)", "overflow"),
+    ("ceil(hp_frac)", "nan"),
+    ("1e308*1e308", "non-finite"),
+):
+    _e = TextMMOEnv(f"DslRaise{_label}", reward_formula=_formula)
+    _e._state.update(hp=float("nan"), max_hp=100.0)
+    _signals = _sig(_e, score_gain=6.0)
+    _r = _e._compute_reward(
+        score_gain=6.0,
+        xp_gain=0.0,
+        levels=0,
+        gold_delta=0.0,
+        inv_delta=0.0,
+        party_before=1,
+        signals=_signals,
+    )
+    assert _r == 6.0, (_label, _r)  # the step keeps the mode reward
+    assert _e.custom_reward_errors == 1, (_label, _e.custom_reward_errors)
+print("FORMULA_RAISE_FAILSOFT_OK")
+
+# --- formation is a pulse, not a level (#68 send-back): score mode
+# advances _last_formation_step when it pays, so a formula naming
+# `formation` must advance it too or it pays every grouped step.
+_fm = TextMMOEnv("DslFormation", reward_formula="formation")
+_fm._state.update(party_size=2, other_players=1, score=0.0)
+_fm._step_count = 10
+_fm._last_formation_step = -(10**9)
+assert _sig(_fm)["formation"] == FORMATION_BONUS
+assert _fm._last_formation_step == -(10**9), "computing the signal moved the cursor"
+_fm._step_count = 11
+_r = _fm._compute_reward(
+    score_gain=0.0,
+    xp_gain=0.0,
+    levels=0,
+    gold_delta=0.0,
+    inv_delta=0.0,
+    party_before=2,
+    signals=_sig(_fm),
+)
+assert _r == FORMATION_BONUS, _r
+assert _fm._last_formation_step == 11, "a paid pulse did not consume the cooldown"
+# inside the cooldown the term is worth nothing, and after it, it pays again
+assert _sig(_fm)["formation"] == 0.0, "the cooldown did not suppress a second pulse"
+_fm._step_count = 11 + FORMATION_COOLDOWN_STEPS
+assert _sig(_fm)["formation"] == FORMATION_BONUS, "the cooldown never expired"
+
+# a formula that does not name `formation` leaves the cursor alone, and so
+# does a hook: there the hook's return value is the reward, not the signal
+_nf = TextMMOEnv("DslNoFormation", reward_formula="score_delta")
+_nf._state.update(party_size=2, other_players=1, score=0.0)
+_nf._step_count = 10
+_nf._last_formation_step = -(10**9)
+_nf._compute_reward(
+    score_gain=1.0,
+    xp_gain=0.0,
+    levels=0,
+    gold_delta=0.0,
+    inv_delta=0.0,
+    party_before=2,
+    signals=_sig(_nf),
+)
+assert _nf._last_formation_step == -(10**9), "an unrelated formula ate the pulse"
+_hk = TextMMOEnv("DslHookFormation", reward_fn=lambda s: 1.0)
+_hk._state.update(party_size=2, other_players=1, score=0.0)
+_hk._step_count = 10
+_hk._last_formation_step = -(10**9)
+assert (
+    _hk._compute_reward(
+        score_gain=0.0,
+        xp_gain=0.0,
+        levels=0,
+        gold_delta=0.0,
+        inv_delta=0.0,
+        party_before=2,
+        signals=_sig(_hk),
+    )
+    == 1.0
+)
+assert _hk._last_formation_step == -(10**9), "the hook path moved the cursor"
+print("FORMATION_PULSE_OK")
 
 print("ALL_REWARD_MODES_OK")

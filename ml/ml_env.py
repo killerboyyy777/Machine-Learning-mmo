@@ -1434,7 +1434,8 @@ class TextMMOEnv:
 
         `social` and `formation` are the exact terms the "score" mode would
         have paid, computed here so a formula can opt back into them rather
-        than silently losing group-play shaping.
+        than silently losing group-play shaping. Computing does not consume
+        the formation cooldown; see _consume_formation_pulse.
         """
         state = self._state
         social = 0.0
@@ -1481,15 +1482,48 @@ class TextMMOEnv:
         swallowed.
         """
         value = self._call_reward_hook(signals)
+        from_formula = False
         if value is None and self._formula is not None:
             value = self._evaluate_formula(signals)
+            from_formula = value is not None
         if value is not None:
             if math.isfinite(value):
+                if from_formula:
+                    self._consume_formation_pulse(signals)
                 return value
             self._note_custom_reward_error(
                 f"custom reward produced a non-finite value ({value!r})")
         return self._mode_reward(
             score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+
+    def _consume_formation_pulse(self, signals):
+        """Move the formation cursor once a formula has been paid for it.
+
+        `formation` is a pulse, not a level: score mode advances
+        _last_formation_step when it pays (#68 review), so a formula naming
+        `formation` has to advance it too or the term pays on every grouped
+        step and the cooldown means nothing. Only a formula moves it -- the
+        hook path is opaque, and there the hook's own return value, not the
+        signal, is the reward.
+        """
+        if (self._formula is not None
+                and "formation" in self._formula.signals_used
+                and signals.get("formation")):
+            self._last_formation_step = self._step_count
+
+    # The supervisor attaches a plugin's reward hook by plain assignment
+    # (supervisor.py env.reward_fn = reward_hook), so this public name has to
+    # be the one that reaches _reward_fn AND the _has_custom_reward gate.
+    # Post-construction assignment is the point: the env is built first, the
+    # slot's hook is only known once the plugin is built.
+    @property
+    def reward_fn(self):
+        return self._reward_fn
+
+    @reward_fn.setter
+    def reward_fn(self, fn):
+        self._reward_fn = fn
+        self._has_custom_reward = self._formula is not None or fn is not None
 
     def _call_reward_hook(self, signals):
         """None means "no opinion", which is what the default plugin hook
@@ -1511,6 +1545,14 @@ class TextMMOEnv:
             return float(self._formula.evaluate(signals))
         except RewardFormulaError as e:
             self._note_custom_reward_error(str(e))
+            return None
+        except Exception as e:  # noqa: BLE001 - a formula must not end the run
+            # floor(1e308*1e308) raises OverflowError and ceil(nan) raises
+            # ValueError inside FUNCTIONS, below any RewardFormulaError. This
+            # is the same contract _call_reward_hook honors: an overnight run
+            # keeps training on the mode reward instead of dying on step one.
+            self._note_custom_reward_error(
+                f"reward formula raised {type(e).__name__}: {e}")
             return None
 
     def _note_custom_reward_error(self, message):

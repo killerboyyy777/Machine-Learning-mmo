@@ -299,8 +299,8 @@ class RewardFormula:
             return _evaluate(self.tree, signals, self.text)
         except ZeroDivisionError:
             # A non-coder will divide by a count that is legitimately zero
-            # (an empty party, no deaths yet). Dropping just that factor
-            # and counting it beats ending a training run, and the count
+            # (an empty party, no deaths yet). Zeroing the formula and
+            # counting that beats ending a training run, and the count
             # lets the caller see it happened rather than guessing.
             self.zero_divisions += 1
             return 0.0

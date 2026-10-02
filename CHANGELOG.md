@@ -21,6 +21,21 @@ All notable changes to the text MMO engine are recorded here.
   runs, so default runs are byte-identical. Death events now retain the
   server's `gold_lost`/`gold_dropped`/`xp_lost` accounting the env
   previously discarded, which is what makes `gold_lost` nameable.
+- Reward DSL fixes (#68 review round 1): a plugin's `AgentPlugin.reward`
+  hook now actually reaches a live agent. The supervisor attaches it by
+  assigning `env.reward_fn`, but the env stored a private
+  `_reward_fn` and froze its "has a custom reward" flag at
+  construction, so on a real `TextMMOEnv` the hook was silently dead and
+  every run paid the mode reward instead. `formation` is a pulse rather
+  than a level again: a formula naming it advances the same cooldown
+  cursor score mode uses, instead of paying on every grouped step. A
+  formula that raises mid-step (`floor(1e308*1e308)` is an
+  `OverflowError`, `ceil(nan)` a `ValueError`) now falls back to the
+  mode reward and counts the failure like any other, instead of
+  escaping `step()` and killing the run. A numeric-looking
+  `env_reward_formula=42` stays the string `"42"` instead of being
+  coerced to an int that the parser rejected, which used to kill the
+  agent at startup.
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and

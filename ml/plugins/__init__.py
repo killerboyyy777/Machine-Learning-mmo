@@ -193,8 +193,28 @@ def instantiate(name, **config):
     return get(name)(**config)
 
 
-def _coerce_value(text):
+# Slot keys (before the env_ prefix is stripped) whose value is text no
+# matter how numeric it looks. Every other key is coerced, so plugin config
+# like ``learning_rate=0.001`` still arrives as a float.
+_TEXT_VALUES = frozenset(
+    (
+        "env_url",
+        "env_spawn_room",
+        "env_reward_mode",
+        "env_reward_formula",
+    )
+)
+
+
+def _coerce_value(text, key=None):
     text = text.strip()
+    if key in _TEXT_VALUES:
+        # Env keys whose value is text whatever it looks like. Coercing
+        # ``env_reward_formula=42`` to int 42 handed compile_formula a
+        # non-string, which raised inside the env factory and killed the
+        # agent at startup (#68 review). Degenerate formulas are still the
+        # user's own typo to see, not a reason to lose the slot.
+        return text
     try:
         return int(text)
     except ValueError:
@@ -262,7 +282,7 @@ def parse_slot(spec):
                 f"bad slot param {chunk!r} in {spec!r} " "(want key=value)"
             )
         key, _, value = chunk.partition("=")
-        key, value = key.strip(), _coerce_value(value)
+        key, value = key.strip(), _coerce_value(value, key)
         if not key:
             raise ValueError(f"empty key in slot {spec!r}")
         if key == "weight":
