@@ -35,8 +35,9 @@ assert isinstance(s["server"]["start_ts"], (int, float))
 assert len(s["rooms"]) == 43, f"room count {len(s['rooms'])}"
 for r in s["rooms"]:
     need(r, {"id", "name", "exits", "players", "npcs", "items",
-             "gold", "shelter"}, f"room {r.get('id')}")
+             "gold", "shelter", "wild"}, f"room {r.get('id')}")
     assert isinstance(r["shelter"], bool), f"room {r['id']} shelter not bool"
+    assert isinstance(r["wild"], bool), f"room {r['id']} wild not bool"
     for p in r["players"]:
         need(p, {"name", "level"}, f"room {r['id']} player")
 

@@ -46,6 +46,23 @@ from ml_env import (
     safe_spread_rooms,
 )
 from reward_dsl import RewardFormulaError, compile_formula, reference
+from runlog import seed_everything, start_run
+
+
+def open_run(args):
+    """Run record for the dashboard's Runs tab (#65).  Opt out with
+    --no-run-record so a batch sweep leaves no artifacts behind."""
+    if not args.run_record:
+        return None
+    return start_run(
+        "torch_farm",
+        root=args.runs_dir or None,
+        label=f"{args.agents} agents x {N_ACTIONS} actions",
+        seed=args.seed,
+        hparams=vars(args),
+        checkpoint=args.weights,
+        best_checkpoint=args.best_weights,
+    )
 
 
 class TorchFarm:
@@ -86,6 +103,13 @@ class TorchFarm:
         # (world.json is static for a process) and reported in the banner.
         self.spawn_rooms = safe_spread_rooms() if args.spawn_spread else []
         self.runners = []
+        # Set by main_async so a directly-constructed TorchFarm (tests) opens
+        # no run directory.
+        self.run = None
+        # --steps is a lifetime total, so a resumed farm starts counting from
+        # the restored value; the run log has to subtract this to report the
+        # steps this run actually did (#65).
+        self.base_steps = self.steps
 
     def spawn_room_for(self, index):
         """Stable per-runner spread target. Index-based, not random: a
@@ -118,8 +142,23 @@ class TorchFarm:
                     )
             except OSError:
                 pass
+            self._sample_run()
 
         await asyncio.to_thread(_write_state)
+
+    def _sample_run(self):
+        """One run-log sample per checkpoint (#65).  Score is the run's best so
+        far: a mean over runners would move with fleet churn and read as noise
+        next to the checkpoint the manifest points at.  -inf before the first
+        improvement is stored as null rather than as -Infinity (not JSON)."""
+        if self.run is None:
+            return
+        best = self.last_best_score
+        self.run.record(
+            steps=self.steps - self.base_steps,
+            total_steps=self.steps,
+            score=None if best == float("-inf") else best,
+        )
 
 
 class Runner:
@@ -343,6 +382,9 @@ def _is_crash(result):
 
 async def main_async(args):
     farm = TorchFarm(args)
+    farm.run = open_run(args)
+    if farm.run is not None:
+        print(f"[torch-farm] run record: {farm.run.run_id} ({farm.run.path})")
     farm.runners = [Runner(i, farm) for i in range(args.agents)]
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -402,6 +444,23 @@ async def main_async(args):
             elif runner.last_error:
                 line += f" (last issue: {runner.last_error})"
             print(line)
+        if farm.run is not None:
+            farm.run.finish(
+                "failed" if crashed else "finished",
+                steps=farm.steps - farm.base_steps,
+                total_steps=farm.steps,
+                best_score=(
+                    None
+                    if farm.last_best_score == float("-inf")
+                    else farm.last_best_score
+                ),
+                runners_alive=len(farm.runners) - len(crashed),
+                crashed=len(crashed),
+                stopped=stopped,
+            )
+            print(
+                f"[torch-farm] run {farm.run.run_id} -> {farm.run.manifest['status']}"
+            )
 
 
 def parse_args():
@@ -462,6 +521,24 @@ def parse_args():
         "reward entirely, so a formula that omits a term omits its "
         "shaping too. Signals:\n" + reference(),
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed (python + torch) recorded in the run record (#65)",
+    )
+    parser.add_argument(
+        "--runs-dir",
+        default=None,
+        help="run-record index directory (default <repo>/runs)",
+    )
+    parser.add_argument(
+        "--no-run-record",
+        dest="run_record",
+        action="store_false",
+        default=True,
+        help="do not write a run record to the dashboard index (#65)",
+    )
     args = parser.parse_args()
     if args.agents < 1:
         parser.error("--agents must be >= 1")
@@ -485,6 +562,9 @@ def parse_args():
         if args.best_weights
         else os.path.join(here, "ml_farm_best.json")
     )
+    # Seed before any network is built: torch_farm constructs the shared DQN
+    # from args, so seeding after main_async would be one init too late.
+    seed_everything(args.seed)
     return args
 
 

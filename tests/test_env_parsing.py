@@ -259,6 +259,31 @@ def _pendings(e):
     )
 
 
+def test_wild_indoor_flags_observed():
+    e = TextMMOEnv("WildObs")
+    base = {"type": "room", "exits": {}, "npcs": [], "items": [],
+            "gold": 0, "players": [], "is_dungeon": False, "dungeon_floor": 0,
+            "party_size": 1, "gatherables": []}
+    e._apply_event(dict(base, id="town_square", shelter=False, wild=False))
+    assert e._state["wild"] is False and e._state["shelter"] is False
+    # an indoor wild gate: both axes true at once (orthogonal flags)
+    e._apply_event(dict(base, id="summit_gatehouse", shelter=True, wild=True))
+    assert e._state["wild"] is True and e._state["shelter"] is True
+    obs = e._build_obs()
+    assert obs["wild_flag"] == 1.0 and obs["indoor_flag"] == 1.0
+    e._apply_event(dict(base, id="howling_col", shelter=False, wild=True))
+    obs = e._build_obs()
+    assert obs["wild_flag"] == 1.0 and obs["indoor_flag"] == 0.0
+    # a server predating the flag still parses (additive wire change)
+    e._apply_event(dict(base, id="market"))
+    obs = e._build_obs()
+    assert obs["wild_flag"] == 0.0 and obs["indoor_flag"] == 0.0
+    flat = flatten_obs(obs)
+    assert len(flat) == OBS_SIZE, (len(flat), OBS_SIZE)
+    assert flat[-2:] == [0.0, 0.0], flat[-2:]
+    print("WILD_OBS_OK")
+
+
 def test_maren_obs_features():
     e = TextMMOEnv("ParseObs")
     e._state["quest_remedy_active"] = True
@@ -389,6 +414,7 @@ test_maren_mirror_and_stages()
 test_quest_transitions_all_four()
 test_event_parsing_maren_combat_inventory()
 test_death_accounting_reaches_reward_signals()
+test_wild_indoor_flags_observed()
 test_maren_obs_features()
 test_presence_obs_flags()
 test_equip_mask_excludes_worn_weapon()
