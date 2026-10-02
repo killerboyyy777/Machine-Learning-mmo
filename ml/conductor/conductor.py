@@ -50,7 +50,9 @@ def _materialize_slot(slot, url):
     "label"}`` plus ``policy_factory`` (plugin slots only, else None) and
     ``learn_hook`` (the shared plugin instance's learn, so the slot's
     agents learn into one policy; raw runners and scripted plugins get
-    None via the base default). The plugin instance is built once and shared across the
+    None via the base default) and ``reward_hook`` (the plugin's reward
+    function, #68; always present, abstaining by default). The plugin
+    instance is built once and shared across the
     slot's agents (policies are stateless at act time)."""
     from .runners import make_env_factory
     weight = max(1, int(slot.get("weight", 1)))
@@ -70,6 +72,11 @@ def _materialize_slot(slot, url):
             "policy_factory": _plugin_policy_factory(
                 slot["plugin"], slot.get("config", {})),
             "learn_hook": plugin.learn,
+            # #68: a plugin may supply its own reward function. Attached
+            # to the env by the supervisor, so it must not be a bound
+            # method of a per-agent instance -- it is the slot's shared
+            # plugin, matching learn_hook above.
+            "reward_hook": plugin.reward,
             "step_timeout": slot.get("step_timeout"),
         }
     return {
@@ -80,6 +87,7 @@ def _materialize_slot(slot, url):
         "policy_fn": slot["policy_fn"],
         "policy_factory": None,  # raw runners have no checkpoint to reload
         "learn_hook": None,  # raw runners don't learn per step
+        "reward_hook": None,  # raw runners supply their own env reward
         "step_timeout": slot.get("step_timeout"),
     }
 
@@ -172,7 +180,8 @@ class Conductor:
                 slot["policy_fn"],
                 step_timeout=slot.get("step_timeout"),
                 policy_factory=slot.get("policy_factory"),
-                learn_hook=slot.get("learn_hook"))
+                learn_hook=slot.get("learn_hook"),
+                reward_hook=slot.get("reward_hook"))
             if not started:
                 self.registry.mark_dead(agent_id)
             return started

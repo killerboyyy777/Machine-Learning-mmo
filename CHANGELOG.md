@@ -20,6 +20,110 @@ All notable changes to the text MMO engine are recorded here.
   honest fix is to publish the measured rate beside the nominal one as
   `market.tax_effective_pct` (rolling window) rather than to leave the
   snapshot advertising 10%.
+- Custom reward DSL (#68): reward is now a formula, not a fixed mode.
+  `reward_formula="0.5*xp_delta + 1.2*profit - 0.1*deaths"` on `TextMMOEnv`
+  (or `--reward-formula` on the torch farm, or `env_reward_formula=` in a
+  conductor slot) replaces the `reward_mode` computation outright. The
+  expression language is a hand-written tokenizer + recursive-descent
+  parser (`ml/reward_dsl.py`) over 19 named signals and 7 functions; no
+  `eval`/`exec`, no new dependency, and unknown signal names fail at
+  construction with a "did you mean" hint. Division by zero pays 0.0 and
+  increments a visible counter rather than ending a run. Researchers who
+  need real Python can override the new `AgentPlugin.reward(signals)`
+  hook, which takes precedence over a formula and may abstain by
+  returning None. Both surfaces fail soft: a raising hook or a non-finite
+  result falls back to the `reward_mode` reward and counts the failure in
+  `info["custom_reward_errors"]`, so an overnight run cannot be lost to a
+  bad formula. Step info gains `reward_signals` only on custom-reward
+  runs, so default runs are byte-identical. Death events now retain the
+  server's `gold_lost`/`gold_dropped`/`xp_lost` accounting the env
+  previously discarded, which is what makes `gold_lost` nameable.
+- Reward DSL fixes (#68 review round 1): a plugin's `AgentPlugin.reward`
+  hook now actually reaches a live agent. The supervisor attaches it by
+  assigning `env.reward_fn`, but the env stored a private
+  `_reward_fn` and froze its "has a custom reward" flag at
+  construction, so on a real `TextMMOEnv` the hook was silently dead and
+  every run paid the mode reward instead. `formation` is a pulse rather
+  than a level again: a formula naming it advances the same cooldown
+  cursor score mode uses, instead of paying on every grouped step. A
+  formula that raises mid-step (`floor(1e308*1e308)` is an
+  `OverflowError`, `ceil(nan)` a `ValueError`) now falls back to the
+  mode reward and counts the failure like any other, instead of
+  escaping `step()` and killing the run. A numeric-looking
+  `env_reward_formula=42` stays the string `"42"` instead of being
+  coerced to an int that the parser rejected, which used to kill the
+  agent at startup.
+- Wild interiors (#424): a `wild` room flag, orthogonal to `shelter`, on the
+  two spans that begin at the #423 indoor-B gates (north: summit gatehouse,
+  howling tunnel, howling col, glacier crown, windcarved crag; south: tideline
+  lighthouse, sunken tunnel, sunken reef, drowned grotto, saltspray bluff).
+  Four of the ten are both indoor and wild, so a tile can be sheltered and
+  still wild. `wild` implies risk on its own: `_room_is_risk()` now returns
+  true for `risk` OR `wild`, so dying in the wild scatters the unequipped
+  pack at floor value through the existing #157 death path. No exit changed,
+  so paths, quests and bot routes are untouched; the two 2-exit gates are the
+  only new traffic choke and nothing gates on it. Agents observe the terrain:
+  room payloads and the dashboard snapshot carry `shelter` and `wild`, and
+  the observation gains two trailing scalars (`wild_flag`, `indoor_flag`,
+  appended last per the never-shift rule). The reward for the risk is two
+  wild-exclusive materials -- Glacier Core (42) and Abyssal Heart (45),
+  dropped only by wild mobs -- feeding two high-tier wild-only craftables,
+  Stormforged Aegis and Abyssal Warden Draught. Priced above the measured
+  ~1.8g/kill death drain, and one mat already outruns the 0.1x floor-value
+  penalty on itself. Dashboard wild tiles get a red wash plus an ASCII
+  corner tooth, layered on top of the indoor/outdoor dash.
+- Browser config editor (#63): the dashboard Config tab now edits
+  `server_config.json` and `ml/ml_config.json` in place, so tuning a value no
+  longer means hand-editing JSON. `config_schema.py` declares all 65 server
+  tunables across six sections plus the 6 ML ones, each with its type, bounds,
+  step and help text, and marks every key as either an override in the file or
+  a code default. The panel shows both, and a reset button drops an override
+  (the key leaves the file) rather than pinning a copy of the default. Three
+  presets -- Balanced, Fast Training, Economy Focus -- stage values into the
+  form for review; a preset never writes. `GET /api/config` is read-only and
+  `no-store`; `POST /api/config` takes `{"file", "edits"}` with a null value
+  meaning "drop this override". Writes are gated twice, on a loopback peer
+  *and* a local `Origin`, so reached from another machine the editor reports
+  `editable: false` and refuses to save. Validation happens before any write:
+  unknown keys, out-of-range values, wrong types, oversized bodies, non-object
+  JSON and unknown files all come back 400 with the file byte-identical, and a
+  refused save never half-applies. Writes are surgical, rewriting only the
+  changed lines and keeping LF endings, because `ml/versioning.py` hashes raw
+  config bytes into `config_hash` -- a reformatted-but-equivalent file would
+  invalidate every saved checkpoint. A save whose parsed value already matches
+  writes zero bytes, so `0.1` against `0.10` is a no-op. New values are staged
+  to a temp file, re-parsed and verified, then `os.replace`d in, so a crash
+  cannot leave half a config behind. Deliberately no live apply: both loaders
+  read config at startup (`_sync_extra_spawns()` is startup-only), so the reply
+  and the panel both say to restart rather than pretending a value took
+  effect. Deliberately no automatic backups, to match every other writer in the
+  repo; git is the undo. Body reads and value counts are bounded, no absolute
+  path is ever returned to a client, and an unknown `POST` path is still a 404
+  rather than a silent write. No game files touched.
+- Run tracking and comparison (#65): every trainer now writes a run record
+  under `runs/<run_id>/` -- `run.json` (kind, label, seed, hyper-parameters,
+  git sha, config hash, status) plus an append-only `metrics.jsonl` series.
+  `ml/runlog.py` is stdlib-only and shared by all five trainers, which gain
+  `--seed`, `--runs-dir` and `--no-run-record`; seeding happens before any
+  network or bot is built and `--seed` works without recording. Steps are
+  reported per run with the lifetime `total_steps` beside them, since both
+  `--steps` counters resume. New `GET /api/runs` reads the index fresh per
+  request (trainers are separate processes, so the catalog must outlive one
+  server lifetime) and returns rank direction per field, so the dashboard
+  verdict says "lowest wins" for a loss instead of crowning the worst run.
+  The Runs tab lists every run and the comparison panel overlays up to 24 on
+  one chart; the column set follows the run kinds present rather than a fixed
+  list, so botfarm `fitness` and soak `mean_reward` are readable instead of
+  rendering as "-". Query handling is hardened: every `runs=` parameter is
+  honored (not just the last), values are URL-decoded, ids are validated and
+  deduped and capped at 24, and a flood of ids costs one bounded file open
+  per requested run. The response carries the runs directory name only --
+  absolute paths are no longer exposed to clients. Torn final JSONL lines are
+  tolerated, manifest writes are atomic (tmp + `os.replace`), and run-id
+  creation claims the directory so two same-second runs cannot share one.
+  Cancel or interrupt now closes the run as `failed` instead of leaving it
+  `running` forever, `stopped=True`-style extras land in metrics, and a soak's
+  final summary is recorded rather than dropped. No game files touched.
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and
