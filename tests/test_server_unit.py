@@ -364,6 +364,84 @@ def config_editor_check(folder):
     print("CONFIG_EDITOR_OK")
 
 
+def training_launch_check(folder):
+    """#64 launcher surface: schema, strict validation, the argv it builds, and
+    the server-side guards. Spawns nothing -- process control is proven live,
+    which is the only place a real trainer belongs.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "ml"))
+    import launcher
+
+    spec = launcher.describe()
+    assert spec["trainer"] == "torch_farm"
+    assert [f["key"] for f in spec["fields"]] == [
+        "agents", "steps", "seed", "weights", "best_weights"]
+    by_type = {f["key"]: f for f in spec["fields"]}
+    assert by_type["agents"]["min"] == 1
+    assert by_type["agents"]["max"] == launcher.MAX_AGENTS
+    # Path fields carry no numeric bounds: the dashboard renders a picker, not
+    # a number input, so absent bounds have to survive as null.
+    for key in ("weights", "best_weights"):
+        assert by_type[key]["type"] == "path"
+        assert by_type[key]["min"] is None and by_type[key]["max"] is None
+    assert [p["name"] for p in spec["presets"]] == [
+        "Quick probe", "Balanced", "Full fleet"]
+
+    # Defaults build a complete argv; --steps 0 is "run until stopped".
+    values, error = launcher.validate({}, ROOT)
+    assert error == "" and values["agents"] == 4 and values["steps"] == 0, (values, error)
+    argv = launcher.build_argv(values, ROOT)
+    assert os.path.isabs(argv[0]) and argv[0].endswith(
+        os.path.join("torch_agents", "torch_farm.py")), argv
+    assert argv[argv.index("--agents") + 1] == "4"
+    assert argv[argv.index("--steps") + 1] == "0"
+    # A resolved checkpoint is absolute, and build_argv must not re-root it.
+    weights = argv[argv.index("--weights") + 1]
+    assert os.path.isabs(weights) and weights.endswith("ml_weights.json"), weights
+    # No --url unless the caller supplies one; then exactly one.
+    assert "--url" not in argv
+    argv = launcher.build_argv(values, ROOT, ws_url="ws://127.0.0.1:8765")
+    assert argv[argv.index("--url") + 1] == "ws://127.0.0.1:8765"
+
+    # Strict refusals: an ignored typo would train with a default the operator
+    # never chose, and the path fields are the ones that write files.
+    for bad, fragment in (
+        ({"agent": 2}, "unknown field"),
+        ({"agents": 0}, "1-32"),
+        ({"agents": launcher.MAX_AGENTS + 1}, "1-32"),
+        ({"agents": True}, "whole number"),
+        ({"agents": "4"}, "whole number"),
+        ({"steps": -1}, "0-"),
+        ({"weights": "../../escape.pt"}, "inside the repo"),
+        ({"weights": "C:/Windows/x.pt"}, "relative to the repo root"),
+        ({"weights": ""}, "non-empty"),
+        ({"weights": 5}, "non-empty"),
+    ):
+        got, err = launcher.validate(bad, ROOT)
+        assert got is None and fragment in err, (bad, err)
+
+    # A label is shown on a LAN dashboard, so it may never carry a host path.
+    label = launcher.label(argv)
+    assert ROOT not in label and "ml_weights.json" in label, label
+
+    # --- the server-side service -------------------------------------------
+    status = srv._train_payload()
+    assert status["running"] is False and status["pid"] is None, status
+    code, body = srv._train_stop()
+    assert code == 409 and not body["ok"], (code, body)
+    # A malformed request is refused before any process is built.
+    code, body = srv._train_start({"agent": 1})
+    assert code == 400 and "unknown field" in body["error"], (code, body)
+    # The read payload gates editing on the peer and hands out no host path.
+    loop = srv._trainers_payload("127.0.0.1")
+    lan = srv._trainers_payload("10.0.0.5")
+    assert loop["editable"] is True and lan["editable"] is False, (loop, lan)
+    for payload in (loop, lan):
+        assert ROOT not in json.dumps(payload), "training payload leaks a host path"
+    assert loop["ws_url"].startswith("ws://") and loop["presets"], loop
+    print("TRAINING_LAUNCH_OK")
+
+
 async def main():
     # --- Leveling curve ---
     assert srv.xp_to_next(1) == 100
@@ -3353,5 +3431,9 @@ async def main():
     # --- Config editor for server_config.json + ml_config.json (#63) ------
     with tempfile.TemporaryDirectory() as folder:
         config_editor_check(folder)
+
+    # --- One-click training launch surface (#64) --------------------------
+    with tempfile.TemporaryDirectory() as folder:
+        training_launch_check(folder)
 
 asyncio.run(main())
