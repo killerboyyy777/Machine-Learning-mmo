@@ -10,7 +10,9 @@ import os
 import queue
 import random
 import signal
+import subprocess
 import sys
+import threading
 import time
 import traceback
 import itertools
@@ -4842,6 +4844,169 @@ def _config_apply(file_id, edits):
                  "restart": config_schema.FILES[file_id]["restart"]}
 
 
+# ---------------------------------------------------------------------------
+# One-click training launches (#64). Read routes describe what can be launched
+# and what is running; the two POST routes start and stop a trainer process.
+# The POST pair is gated exactly like the config write above (loopback peer,
+# local Origin, application/json) because both start code on this box.
+# ---------------------------------------------------------------------------
+_TRAIN_BODY_MAX = 8 * 1024
+
+# The child we spawned, if any. Process state is the only thing that has to
+# survive between requests: the dashboard serves each request in its own
+# thread, so this is a single lock-guarded slot rather than per-connection.
+# Reentrant because the start/stop guards call _train_payload() while already
+# holding the lock, and a plain Lock would deadlock on that second acquiry.
+_train_lock = threading.RLock()
+_train_proc = None
+_train_meta = {}
+
+
+def _train_ws_url():
+    """The game server's own websocket URL, for agents to train against.
+
+    0.0.0.0 is a bind address, not a destination an agent can dial, so a
+    wildcard bind becomes loopback.
+    """
+    host = HOST if HOST not in ("0.0.0.0", "") else "127.0.0.1"
+    return f"ws://{host}:{PORT}"
+
+
+def _train_alive(proc):
+    return proc is not None and proc.poll() is None
+
+
+def _train_payload():
+    """Status of the launched trainer. Never carries an absolute path."""
+    with _train_lock:
+        proc, meta = _train_proc, dict(_train_meta)
+    if meta.get("pid") and not _train_alive(proc):
+        # poll() has reaped it; record the exit once so the panel can show a
+        # finished run instead of spinning on a dead pid.
+        meta["running"] = False
+        meta["returncode"] = proc.returncode
+        with _train_lock:
+            if _train_proc is proc:
+                _train_meta.update(meta)
+    out = {
+        "running": bool(meta.get("running")) and _train_alive(proc),
+        "trainer": meta.get("trainer", ""),
+        "label": meta.get("label", ""),
+        "pid": meta.get("pid") if _train_alive(proc) else None,
+        "started_at": meta.get("started_at"),
+        "elapsed_s": (round(time.time() - meta["started_at"], 1)
+                      if meta.get("started_at") and _train_alive(proc) else 0),
+        "returncode": meta.get("returncode"),
+    }
+    return out
+
+
+def _trainers_payload(peer):
+    """Schema, presets and pickable checkpoints for the Start Training panel."""
+    root = dirname(abspath(__file__))
+    payload = {"editable": bool(_loopback_peer(peer)), "ws_url": _train_ws_url()}
+    try:
+        if join(root, "ml") not in sys.path:
+            sys.path.insert(0, join(root, "ml"))
+        import launcher
+        payload.update(launcher.describe())
+        payload["defaults"] = launcher.defaults()
+        payload["checkpoints"] = launcher.checkpoints(root)
+    except Exception:  # noqa: BLE001 - the panel degrades instead of 500ing
+        payload["error"] = "launcher unavailable"
+    return payload
+
+
+def _train_start(body):
+    """Spawn a trainer. (status, payload)."""
+    global _train_proc, _train_meta
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "body must be a JSON object"}
+    root = dirname(abspath(__file__))
+    try:
+        if join(root, "ml") not in sys.path:
+            sys.path.insert(0, join(root, "ml"))
+        import launcher
+    except ImportError:
+        return 500, {"ok": False, "error": "launcher unavailable"}
+
+    values, error = launcher.validate(body, root)
+    if error:
+        return 400, {"ok": False, "error": error}
+
+    argv = launcher.build_argv(values, root, _train_ws_url())
+    script = argv[0]
+    if not os.path.exists(script):
+        return 500, {"ok": False, "error": "trainer script not found"}
+
+    with _train_lock:
+        if _train_alive(_train_proc):
+            return 409, {"ok": False, "error": "a training run is already going",
+                         "status": _train_payload()}
+        popen_kwargs = {
+            "cwd": root,
+            # Detach the child's stdio from the server: a chatty trainer would
+            # otherwise spam the server log, and under a piped stdout (CI,
+            # systemd) a full pipe buffer would stall the trainer mid-run.
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            # Its own process group, so Stop never signals this server.
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        try:
+            proc = subprocess.Popen([sys.executable] + argv, **popen_kwargs)
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"could not start trainer ({exc})"}
+        _train_proc = proc
+        _train_meta = {
+            "pid": proc.pid,
+            "trainer": launcher.TRAINER,
+            "label": launcher.label(argv),
+            "started_at": time.time(),
+            "running": True,
+            "returncode": None,
+        }
+    return 200, {"ok": True, "message": "training started",
+                 "status": _train_payload()}
+
+
+def _train_stop():
+    """Signal the trainer this server started. (status, payload)."""
+    with _train_lock:
+        proc = _train_proc
+        if not _train_alive(proc):
+            return 409, {"ok": False, "error": "no training run to stop",
+                         "status": _train_payload()}
+        try:
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                proc.terminate()
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"could not signal trainer ({exc})"}
+    # The wait must happen OUTSIDE the lock: it can take up to 15s, and the
+    # dashboard polls /api/train/status every 2s from other handler threads,
+    # which would otherwise queue behind the lock.
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return 500, {"ok": False, "error": "trainer would not stop"}
+    with _train_lock:
+        _train_meta["running"] = False
+        _train_meta["returncode"] = proc.returncode
+    return 200, {"ok": True, "message": "training stopped",
+                 "status": _train_payload()}
+
+
 def start_dashboard():
     import threading
     here = dirname(abspath(__file__))
@@ -4939,24 +5104,42 @@ def start_dashboard():
                     json.dumps(_runs_payload(self.path.partition("?")[2])).encode(),
                     "application/json",
                 )
+            elif path == "/api/trainers":
+                # Start Training panel schema (#64). Read-only, so it stays
+                # LAN-visible like every other GET; `editable` is what tells an
+                # off-box viewer that the buttons will be refused.
+                self._send_json(_trainers_payload(self.client_address[0]))
+            elif path == "/api/train/status":
+                self._send_json(_train_payload())
             elif path == "/api/activity/stream":
                 self._serve_activity_stream()
             else:
                 self.send_error(404)
 
         def do_POST(self):
-            # Config writes (#63). The first POST route in the repo: every
-            # other mutating path goes over the GM WebSocket.
-            if self.path.split("?")[0] != "/api/config":
+            # Config writes (#63) and training launches (#64). The first POST
+            # routes in the repo: every other mutating path goes over the GM
+            # WebSocket.
+            path = self.path.split("?")[0]
+            if path not in ("/api/config", "/api/train/start", "/api/train/stop"):
                 self.send_error(404)
                 return
+            launching = path != "/api/config"
+            # Keep the #63 /api/config error strings byte-for-byte: external
+            # clients match on them. Training gets its own wording.
             peer = self.client_address[0] if self.client_address else ""
             if not _loopback_peer(peer):
-                self._send_json({"ok": False, "error": "config writes are loopback-only"}, 403)
+                self._send_json(
+                    {"ok": False,
+                     "error": ("training launches are loopback-only" if launching
+                               else "config writes are loopback-only")}, 403)
                 return
             origin = self.headers.get("Origin")
             if origin and not _loopback_origin(origin):
-                self._send_json({"ok": False, "error": "cross-origin config write refused"}, 403)
+                self._send_json(
+                    {"ok": False,
+                     "error": ("cross-origin write refused" if launching
+                               else "cross-origin config write refused")}, 403)
                 return
             # application/json is not CORS-safelisted, so a cross-origin page
             # cannot send it without a preflight this server never answers.
@@ -4968,7 +5151,7 @@ def start_dashboard():
                     {"ok": False, "error": "Content-Type must be application/json"}, 415
                 )
                 return
-            raw, error = self._read_body(_CONFIG_BODY_MAX)
+            raw, error = self._read_body(_TRAIN_BODY_MAX if launching else _CONFIG_BODY_MAX)
             if raw is None:
                 self._send_json({"ok": False, "error": error}, 400)
                 return
@@ -4976,6 +5159,17 @@ def start_dashboard():
                 body = json.loads(raw.decode("utf-8", "replace"))
             except ValueError as exc:
                 self._send_json({"ok": False, "error": f"invalid JSON ({exc})"}, 400)
+                return
+            if path == "/api/train/stop":
+                status, result = _train_stop()
+                self._send_json(result, status)
+                return
+            if launching:
+                if not isinstance(body, dict):
+                    self._send_json({"ok": False, "error": "body must be a JSON object"}, 400)
+                    return
+                status, result = _train_start(body)
+                self._send_json(result, status)
                 return
             if not isinstance(body, dict):
                 self._send_json({"ok": False, "error": "body must be a JSON object"}, 400)
