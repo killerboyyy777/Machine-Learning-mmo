@@ -15,6 +15,7 @@ Nothing here spawns anything; the caller owns the process. That keeps this
 module importable and unit-testable without a running server.
 """
 
+import ntpath
 import os
 from os.path import abspath, basename, commonpath, isabs, join, normcase
 
@@ -137,7 +138,11 @@ def resolve_checkpoint(repo_root, path):
     if not isinstance(path, str) or not path.strip():
         return None, "checkpoint path must be a non-empty string"
     text = path.strip()
-    if isabs(text):
+    # os.path.isabs only knows this host's flavour: on POSIX a "C:/..." drive
+    # path reads as relative and would slip through, so test the Windows
+    # flavour too and refuse a drive-relative "C:name". The server may run on
+    # either OS (CI is Linux, operators are usually on Windows).
+    if isabs(text) or ntpath.isabs(text) or (len(text) > 1 and text[1] == ":"):
         return None, "checkpoint path must be relative to the repo root"
     if not _inside(repo_root, text):
         return None, "checkpoint path must stay inside the repo"
