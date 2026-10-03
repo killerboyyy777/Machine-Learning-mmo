@@ -1685,6 +1685,55 @@ async def main():
     unplayer(basker2)
     print("BID_SWEEP_OK")
 
+    # treasury sink #403: inflow banks only up to the reserve, the rest is sunk
+    sink_t0 = srv.tax_treasury
+    sink_sunk0 = srv.tax_sunk_lifetime
+    sink_coll0 = srv.tax_collected_lifetime
+    sink_reserve = srv.TREASURY_RESERVE
+    try:
+        srv.tax_treasury = sink_reserve - 10.0
+        assert srv._treasury_credit(4) == 0.0  # below reserve: banks whole
+        assert srv.tax_treasury == sink_reserve - 6.0
+        assert srv.tax_sunk_lifetime == sink_sunk0
+        assert srv._treasury_credit(6) == 0.0  # tops the reserve up exactly
+        assert srv.tax_treasury == sink_reserve
+        assert srv._treasury_credit(3) == 3.0  # at reserve: fully sunk
+        assert srv.tax_treasury == sink_reserve
+        assert srv.tax_sunk_lifetime == sink_sunk0 + 3.0
+        assert srv.tax_collected_lifetime == sink_coll0 + 13.0  # gross income
+        assert srv._treasury_credit(0) == 0.0 and srv._treasury_credit(-5) == 0.0
+        # a live fill routes its tax through the sink without touching the payout
+        srv.tax_treasury = sink_reserve + 100.0
+        buyer_s = mkplayer("SinkBuyer", 50030, room="market")
+        buyer_s.gold = 200
+        seller_s = mkplayer("SinkSeller", 50031, room="market")
+        seller_s.gold = 0
+        seller_s.inventory.append("healing_herb")
+        await srv.cmd_market_post(seller_s, {"item": herb_name, "price": 10})
+        soid = max(o["id"] for o in srv.market_orders if o["seller"] == "SinkSeller")
+        await srv.cmd_market_buy(buyer_s, {"id": soid})
+        assert srv.tax_treasury == sink_reserve + 100.0  # tax fully sunk
+        assert seller_s.gold == 9  # conservation: tax + payout == price
+        assert srv.market_history[-1]["tax"] == 1
+        unplayer(buyer_s)
+        unplayer(seller_s)
+        # realized rate is published next to the nominal one (#404)
+        hist_keep = list(srv.market_history)
+        try:
+            srv.market_history[:] = [srv.market_history[-1]]
+            assert srv._realized_tax_pct() == 10.0
+            srv.market_history[:] = [{"price": 4, "tax": 1}, {"price": 4, "tax": 1}]
+            assert srv._realized_tax_pct() == 25.0  # the floor, made visible
+            srv.market_history.clear()
+            assert srv._realized_tax_pct() == 0.0
+        finally:
+            srv.market_history[:] = hist_keep
+    finally:
+        srv.tax_treasury = sink_t0
+        srv.tax_sunk_lifetime = sink_sunk0
+        srv.tax_collected_lifetime = sink_coll0
+    print("TREASURY_SINK_OK")
+
     # wash-proof: own ask never matches own bid
     ww = mkplayer("Wash2", 50014, room="market")
     ww.gold = 200
