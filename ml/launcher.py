@@ -9,7 +9,10 @@ caller cannot smuggle a second command past validation.
 Validation is strict on purpose: unknown keys are rejected instead of ignored,
 because an ignored typo would silently train with a default the operator did
 not choose. Checkpoints are the one path-shaped value, so they are resolved
-against the repo root and refused if they land outside it.
+against the repo root and matched against an allowlist of checkpoint
+directories and extensions: an inside-root check alone would let
+`--weights` point at `server_config.json` or `ml_config.json`, which the
+trainer overwrites on save.
 
 Nothing here spawns anything; the caller owns the process. That keeps this
 module importable and unit-testable without a running server.
@@ -17,7 +20,7 @@ module importable and unit-testable without a running server.
 
 import ntpath
 import os
-from os.path import abspath, basename, commonpath, isabs, join, normcase
+from os.path import abspath, basename, commonpath, isabs, join, normcase, normpath
 
 # The trainer this panel drives. Its flags are the ones #64 names: a
 # checkpoint to resume from, a seed, and an agent count. --steps 0 means
@@ -26,10 +29,17 @@ from os.path import abspath, basename, commonpath, isabs, join, normcase
 TRAINER = "torch_farm"
 TRAINER_SCRIPT = ("torch_agents", "torch_farm.py")
 
-# gitignored by convention (.gitignore lists both names), so a checkpoint
-# written by a previous run shows up here without anyone configuring a path.
-DEFAULT_WEIGHTS = join("torch_agents", "ml_weights.json")
-DEFAULT_BEST_WEIGHTS = join("torch_agents", "ml_best.json")
+# Must match torch_farm.py's own fallback names, or a dashboard fleet and a
+# CLI fleet write different files and cannot resume each other by default.
+DEFAULT_WEIGHTS = join("torch_agents", "ml_farm_weights.json")
+DEFAULT_BEST_WEIGHTS = join("torch_agents", "ml_farm_best.json")
+
+# Where trainers write checkpoints, and the only places --weights may name.
+# An allowlist, not merely "inside the repo": --weights is overwritten on
+# save, so pointing it at server_config.json or ml_config.json would clobber
+# live configuration.
+CHECKPOINT_DIRS = ("torch_agents", "ml", "checkpoints")
+_DIRS_TEXT = "torch_agents/, ml/ or checkpoints/"
 
 # Bound the shape of the fleet. A typo like agents=4000 would otherwise open
 # 4000 websockets against the game server from a dashboard click.
@@ -127,13 +137,27 @@ def _inside(repo_root, path):
         return False
 
 
+def _checkpoint_name_ok(name):
+    """True when a filename is a checkpoint, not configuration.
+
+    Trainers write `.pt`/`.pth` tensors and `*weights.json`/`*best.json`
+    state. The `.json` guard matters: config files are `.json` too and share
+    these directories, so `ml_config.json` is not a checkpoint.
+    """
+    lower = name.lower()
+    if lower.endswith((".pt", ".pth")):
+        return True
+    return lower.endswith(("weights.json", "best.json"))
+
+
 def resolve_checkpoint(repo_root, path):
     """(abs_path, error) for a checkpoint path the operator supplied.
 
     Relative paths are taken against the repo root, never against the
     dashboard's working directory, so the same value means the same file
-    however the server was started. Traversal out of the repo is refused:
-    this value names a file the trainer will overwrite.
+    however the server was started. Two refusals apply: the path must stay
+    inside the repo, and it must be a checkpoint (an allowed directory and
+    extension), because the trainer overwrites whatever --weights names.
     """
     if not isinstance(path, str) or not path.strip():
         return None, "checkpoint path must be a non-empty string"
@@ -146,6 +170,13 @@ def resolve_checkpoint(repo_root, path):
         return None, "checkpoint path must be relative to the repo root"
     if not _inside(repo_root, text):
         return None, "checkpoint path must stay inside the repo"
+    # normpath collapses "torch_agents/../server_config.json", so the parts
+    # tested below are the parts that actually get opened.
+    parts = [p for p in normpath(text).replace("\\", "/").split("/") if p and p != "."]
+    if len(parts) != 2 or parts[0] not in CHECKPOINT_DIRS:
+        return None, f"checkpoint path must be a file directly in {_DIRS_TEXT}"
+    if not _checkpoint_name_ok(parts[1]):
+        return None, "checkpoint path must end in .pt, .pth or a weights/best .json"
     return abspath(join(abspath(repo_root), text)), ""
 
 
@@ -192,14 +223,14 @@ def checkpoints(repo_root):
     repo-relative paths so nothing absolute is ever handed to a client.
     """
     found = []
-    for folder in ("torch_agents", "ml", "checkpoints"):
+    for folder in CHECKPOINT_DIRS:
         directory = join(abspath(repo_root), folder)
         try:
             names = sorted(os.listdir(directory))
         except OSError:
             continue
         for name in names:
-            if not name.endswith((".pt", ".pth", ".json")):
+            if not _checkpoint_name_ok(name):
                 continue
             rel = join(folder, name).replace("\\", "/")
             try:

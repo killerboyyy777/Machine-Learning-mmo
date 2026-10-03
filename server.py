@@ -4943,7 +4943,15 @@ def _train_start(body):
         if _train_alive(_train_proc):
             return 409, {"ok": False, "error": "a training run is already going",
                          "status": _train_payload()}
-        popen_kwargs = {"cwd": root}
+        popen_kwargs = {
+            "cwd": root,
+            # Detach the child's stdio from the server: a chatty trainer would
+            # otherwise spam the server log, and under a piped stdout (CI,
+            # systemd) a full pipe buffer would stall the trainer mid-run.
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
         if os.name == "nt":
             # Its own process group, so Stop never signals this server.
             popen_kwargs["creationflags"] = getattr(
@@ -4981,14 +4989,18 @@ def _train_stop():
                 proc.terminate()
         except OSError as exc:
             return 500, {"ok": False, "error": f"could not signal trainer ({exc})"}
+    # The wait must happen OUTSIDE the lock: it can take up to 15s, and the
+    # dashboard polls /api/train/status every 2s from other handler threads,
+    # which would otherwise queue behind the lock.
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                return 500, {"ok": False, "error": "trainer would not stop"}
+            return 500, {"ok": False, "error": "trainer would not stop"}
+    with _train_lock:
         _train_meta["running"] = False
         _train_meta["returncode"] = proc.returncode
     return 200, {"ok": True, "message": "training stopped",
@@ -5113,14 +5125,21 @@ def start_dashboard():
                 self.send_error(404)
                 return
             launching = path != "/api/config"
+            # Keep the #63 /api/config error strings byte-for-byte: external
+            # clients match on them. Training gets its own wording.
             peer = self.client_address[0] if self.client_address else ""
             if not _loopback_peer(peer):
                 self._send_json(
-                    {"ok": False, "error": "this write is loopback-only"}, 403)
+                    {"ok": False,
+                     "error": ("training launches are loopback-only" if launching
+                               else "config writes are loopback-only")}, 403)
                 return
             origin = self.headers.get("Origin")
             if origin and not _loopback_origin(origin):
-                self._send_json({"ok": False, "error": "cross-origin write refused"}, 403)
+                self._send_json(
+                    {"ok": False,
+                     "error": ("cross-origin write refused" if launching
+                               else "cross-origin config write refused")}, 403)
                 return
             # application/json is not CORS-safelisted, so a cross-origin page
             # cannot send it without a preflight this server never answers.

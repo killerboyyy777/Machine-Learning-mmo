@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -397,7 +398,11 @@ def training_launch_check(folder):
     assert argv[argv.index("--steps") + 1] == "0"
     # A resolved checkpoint is absolute, and build_argv must not re-root it.
     weights = argv[argv.index("--weights") + 1]
-    assert os.path.isabs(weights) and weights.endswith("ml_weights.json"), weights
+    assert os.path.isabs(weights) and weights.endswith("ml_farm_weights.json"), weights
+    # The default names match torch_farm.py's own fallback (ml_farm_*), so a
+    # dashboard fleet and a CLI fleet resume each other instead of diverging.
+    assert values["weights"].endswith(os.path.join("torch_agents", "ml_farm_weights.json"))
+    assert values["best_weights"].endswith(os.path.join("torch_agents", "ml_farm_best.json"))
     # No --url unless the caller supplies one; then exactly one.
     assert "--url" not in argv
     argv = launcher.build_argv(values, ROOT, ws_url="ws://127.0.0.1:8765")
@@ -416,13 +421,27 @@ def training_launch_check(folder):
         ({"weights": "C:/Windows/x.pt"}, "relative to the repo root"),
         ({"weights": ""}, "non-empty"),
         ({"weights": 5}, "non-empty"),
+        # An inside-root path is not enough: --weights is overwritten on save,
+        # so it must be a checkpoint (allowed dir + extension), never config.
+        ({"weights": "torch_agents/../server_config.json"}, "directly in"),
+        ({"weights": "server_config.json"}, "directly in"),
+        ({"weights": "torch_agents/ml_config.json"}, "weights/best .json"),
+        ({"weights": "ml/ml_config.json"}, "weights/best .json"),
+        ({"weights": "torch_agents/sub/a.json"}, "directly in"),
+        ({"weights": "torch_agents/x.txt"}, "weights/best .json"),
     ):
         got, err = launcher.validate(bad, ROOT)
         assert got is None and fragment in err, (bad, err)
+    # Checkpoint picks are the allowlist, filtered to real checkpoint names.
+    listed = launcher.checkpoints(ROOT)
+    names = [item["name"] for item in listed]
+    assert "ml_config.json" not in names, names
+    for item in listed:
+        assert launcher._checkpoint_name_ok(item["name"]), item
 
     # A label is shown on a LAN dashboard, so it may never carry a host path.
     label = launcher.label(argv)
-    assert ROOT not in label and "ml_weights.json" in label, label
+    assert ROOT not in label and "ml_farm_weights.json" in label, label
 
     # --- the server-side service -------------------------------------------
     status = srv._train_payload()
@@ -439,6 +458,82 @@ def training_launch_check(folder):
     for payload in (loop, lan):
         assert ROOT not in json.dumps(payload), "training payload leaks a host path"
     assert loop["ws_url"].startswith("ws://") and loop["presets"], loop
+
+    # --- the process lifecycle, against a mocked Popen ----------------------
+    # Real spawn/exit is proven live; here we pin the state machine and the two
+    # safety properties the review measured: the child must not share the
+    # server's stdio, and Stop must not hold _train_lock across the wait (the
+    # dashboard polls status from other handler threads while a stop is in
+    # flight).
+    real_popen = srv.subprocess.Popen
+    seen = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 4242
+            self.returncode = None
+            self.signalled = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            held = {}
+
+            def probe():
+                got = srv._train_lock.acquire(timeout=0.5)
+                held["got"] = got
+                if got:
+                    srv._train_lock.release()
+
+            th = threading.Thread(target=probe)
+            th.start()
+            th.join()
+            assert held.get("got"), "stop held _train_lock across proc.wait"
+            self.returncode = 0
+            return 0
+
+        def send_signal(self, sig):
+            self.signalled = sig
+
+        def terminate(self):
+            self.signalled = "terminate"
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return FakeProc()
+
+    srv.subprocess.Popen = fake_popen
+    try:
+        code, body = srv._train_start({})
+        assert code == 200 and body["ok"] and body["status"]["running"], (code, body)
+        assert body["status"]["pid"] == 4242, body
+        # The child must not inherit the server's stdio.
+        for stream in ("stdin", "stdout", "stderr"):
+            assert seen["kwargs"].get(stream) is srv.subprocess.DEVNULL, stream
+        # A second Start while one runs is a refusal, not a duplicate fleet.
+        code, body = srv._train_start({})
+        assert code == 409 and not body["ok"], (code, body)
+        # Stop returns 200, then a second Stop is a clean 409.
+        code, body = srv._train_stop()
+        assert code == 200 and body["ok"] and body["status"]["running"] is False, (code, body)
+        code, body = srv._train_stop()
+        assert code == 409 and not body["ok"], (code, body)
+        # A crashed run surfaces its exit code instead of looking "running".
+        proc = FakeProc()
+        proc.returncode = 3
+        srv._train_proc = proc
+        srv._train_meta.update({"running": True, "label": "x", "started_at": 0})
+        crashed = srv._train_payload()
+        assert crashed["running"] is False and crashed["returncode"] == 3, crashed
+    finally:
+        srv.subprocess.Popen = real_popen
+        srv._train_proc = None
+        srv._train_meta.clear()
     print("TRAINING_LAUNCH_OK")
 
 

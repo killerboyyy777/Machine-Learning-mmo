@@ -123,6 +123,36 @@ is already there writes zero bytes. That matters because `ml/versioning.py`
 hashes the raw config bytes into the checkpoint `config_hash`, so a
 reformatted-but-equivalent file would invalidate every saved model.
 
+## Starting training in the browser
+
+The dashboard Agents tab has a Start training panel that launches
+`torch_agents/torch_farm.py` without a terminal. You set the agent count,
+step budget (0 means run until you press Stop), seed and checkpoints; pick a
+preset to stage values into the form, then press Start. The panel shows the
+pid, elapsed time and exit code, and Stop signals exactly the process the
+server started.
+
+```text
+GET  /api/trainers      schema, presets, checkpoints, editable (LAN read)
+GET  /api/train/status  running, pid, elapsed, exit code (LAN read)
+POST /api/train/start   {"agents": 4, "steps": 0, "seed": 7}
+POST /api/train/stop    {}
+```
+
+The request carries field values only. The server builds the command line
+from them, refuses unknown keys and out-of-range numbers, and never runs a
+shell. Checkpoints are restricted to `torch_agents/`, `ml/` and
+`checkpoints/` and to `.pt`, `.pth`, `*weights.json` or `*best.json` names,
+because the trainer overwrites whatever `--weights` points at; the defaults
+match `torch_farm.py`'s own, so a dashboard fleet and a CLI fleet resume each
+other. Start and Stop need a loopback browser, the same rule as config
+writes; the reads stay LAN-visible.
+
+The trainer runs as a child process in its own process group, so stopping it
+can never signal the game server. Its stdout is detached, so a chatty trainer
+does not flood the server log. Note that a running trainer is not remembered
+across a server restart: restart the server only after pressing Stop.
+
 ## Docs (wiki)
 
 The README is intentionally short — everything lives in the
