@@ -3,23 +3,6 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
-- One-click training from the dashboard (#64, #177): the Agents tab can now
-  start and stop `torch_agents/torch_farm.py` behind Start/Stop buttons
-  instead of a terminal. New additive HTTP routes: `GET /api/trainers`
-  (field schema, presets, checkpoints), `GET /api/train/status` (running,
-  pid, elapsed, exit code), `POST /api/train/start` and
-  `POST /api/train/stop`. The request carries field values only; the server
-  builds argv, refuses unknown keys and out-of-range numbers, and never runs
-  a shell. Checkpoints are allowlisted to `torch_agents/`, `ml/` and
-  `checkpoints/` and to `.pt`/`.pth`/`*weights.json`/`*best.json` names,
-  because the trainer overwrites the file `--weights` names; the defaults
-  now match `torch_farm.py`'s own (`ml_farm_weights.json`,
-  `ml_farm_best.json`), so dashboard and CLI fleets resume each other.
-  Start/Stop are loopback-only like config writes; the reads stay
-  LAN-visible. The trainer runs as a child process in its own process group
-  with detached stdio, so Stop can never signal the game server and a chatty
-  trainer cannot flood the log. A running trainer is not remembered across a
-  server restart.
 - Treasury sink and measured tax floor (#403, #404): an 8h soak showed the
   treasury ratcheting one way (+37k) because tax and fees were the only
   inflows and nothing spent them fast enough. Every treasury inflow now
