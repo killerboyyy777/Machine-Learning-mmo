@@ -3,6 +3,11 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Training-mode damage dampening (#416a): trainees take a configured
+  fraction of incoming NPC damage via `TRAINING_DAMAGE_FRACTION`
+  (server_config.json economy section, default 1.0 = off). Applies at
+  both player-damage sites (combat retaliation, NPC auto-attack);
+  civilian runs are exactly untouched at the default.
 - One-click training from the dashboard (#64, #177): the Agents tab can now
   start and stop `torch_agents/torch_farm.py` behind Start/Stop buttons
   instead of a terminal. New additive HTTP routes: `GET /api/trainers`
@@ -141,6 +146,7 @@ All notable changes to the text MMO engine are recorded here.
   Cancel or interrupt now closes the run as `failed` instead of leaving it
   `running` forever, `stopped=True`-style extras land in metrics, and a soak's
   final summary is recorded rather than dropped. No game files touched.
+>>>>>>> origin/master
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and

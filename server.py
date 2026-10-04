@@ -77,6 +77,20 @@ DEATH_ITEM_DROP_PCT = 100
 # level-20 worst-case 57/114/170 hours; 10%+ becomes "deletion not
 # punishment" at the high end, so 5% is the locked default.
 XP_LOSS_PCT = 5.0
+# Training-mode damage dampening (#416a): trainees take a configured
+# fraction of incoming NPC damage. Flag-gated and training-side only --
+# the default 1.0 leaves civilian runs exactly untouched. Set below 1.0
+# (via server_config.json or --config) for training runs where the
+# ~14:1 death:kill ratio would otherwise drown every learning signal.
+TRAINING_DAMAGE_FRACTION = 1.0
+
+
+def _training_damage(amount):
+    if TRAINING_DAMAGE_FRACTION >= 1.0:
+        return amount
+    return max(0, round(amount * TRAINING_DAMAGE_FRACTION))
+
+
 ALLY_ATTACK_BONUS_PER_PLAYER = 1
 ALLY_ATTACK_BONUS_CAP = 3
 TEAMWORK_BONUS_PER_EXTRA_CONTRIBUTOR = 0.2
@@ -2370,6 +2384,7 @@ async def cmd_attack(player, msg):
         if npc["attack"] > 0:
             retaliation = random.randint(1, npc["attack"])
             retaliation = max(0, retaliation - _player_damage_reduction(player))
+            retaliation = _training_damage(retaliation)
             player.hp -= retaliation
             await send(player, {"type": "combat", "text": f"{npc['name']} hits you for {retaliation}."})
             if player.hp <= 0:
@@ -5399,6 +5414,7 @@ async def npc_ai_loop():
                 victim = random.choice(targets)
                 dmg = random.randint(1, npc["attack"])
                 dmg = max(0, dmg - _player_damage_reduction(victim))
+                dmg = _training_damage(dmg)
                 victim.hp -= dmg
                 await send(victim, {"type": "combat", "text": f"{npc['name']} attacks you for {dmg}."})
                 await broadcast_room(room_id, {"type": "combat", "text": f"{npc['name']} attacks {victim.name} for {dmg}."}, exclude=victim)
