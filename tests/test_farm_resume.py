@@ -74,6 +74,10 @@ if HAVE_TORCH:
             best_weights=best,
             steps=0,
             save_every=10,
+            rnd_lambda=1.0,
+            rnd_lambda_min=0.1,
+            rnd_decay_steps=100000,
+            rnd_lr=1e-3,
         )
 
     def test_torchfarm_resume():

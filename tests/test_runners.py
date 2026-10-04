@@ -96,7 +96,8 @@ from torch_farm import Runner as TorchRunner
 _farm = types.SimpleNamespace(args=types.SimpleNamespace(name_prefix="T", url="ws://x"),
                                agent=types.SimpleNamespace(intrinsic_accept=1.0,
                                                            intrinsic_progress=2.0,
-                                                           rnd_lambda=0))
+                                                           rnd_lambda=0,
+                                                           _rnd_weight=lambda: 0.0))
 _tr = TorchRunner(0, _farm)
 _info_all = {"quest": {"by_quest": {
     "guard_charm": {"turned_in": True},
