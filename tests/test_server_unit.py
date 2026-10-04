@@ -9,10 +9,533 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server as srv
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def config_editor_check(folder):
+    """#63 editor: schema, the byte-stable writer, and both HTTP helpers.
+
+    Every case copies the real config file into `folder` first: this is the
+    one suite allowed to prove the writer, and a stray write into the repo's
+    own server_config.json would change the config_hash of every checkpoint.
+    """
+    import shutil
+
+    import config_schema
+    import config_write
+
+    def sandbox(name, rel):
+        path = os.path.join(folder, name)
+        shutil.copyfile(os.path.join(ROOT, rel), path)
+        return path
+
+    def read_bytes(path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def read_text(path):
+        with open(path, encoding="utf-8", newline="") as fh:
+            return fh.read()
+
+    # --- schema covers both files, both directions -------------------------
+    for file_id, meta in config_schema.FILES.items():
+        with open(os.path.join(ROOT, meta["path"]), encoding="utf-8") as fh:
+            data = json.load(fh)
+        known = {s for s, _ in config_schema.sections(file_id)}
+        # A live section the schema omits would be invisible in the editor,
+        # and a schema section the file lacks would render a field that
+        # cannot be saved.
+        live = {s for s, v in data.items() if isinstance(v, dict)}
+        assert live == known, f"{file_id}: file sections {live} vs schema {known}"
+        for section, keys in config_schema.sections(file_id):
+            # A key in the file but not in the schema is the case the section
+            # comparison above cannot see: the editor would have no field for
+            # it, so the operator could neither read nor change it.
+            schema_keys = set(keys)
+            for key in data[section]:
+                assert key in schema_keys, (
+                    f"{file_id}: {section}.{key} is in the file but not the schema"
+                )
+            for key in keys:
+                assert key in data[section], f"{file_id}: {section}.{key} missing"
+                spec = config_schema.field_spec(file_id, section, key)
+                # Tooltips and bounds are the issue's ask, so every field
+                # carries all three rather than a lucky subset.
+                assert spec.get("help"), f"{file_id} {section}.{key} has no help"
+                assert spec.get("min") is not None and spec.get("max") is not None, key
+    # The ml defaults are copied into config_schema because the server must
+    # not import ml_env; that copy is only safe while it matches.
+    sys.path.insert(0, os.path.join(ROOT, "ml"))
+    import ml_env
+
+    for key, want in config_schema.ML_DEFAULTS.items():
+        got = getattr(ml_env, key)
+        if isinstance(want, list):
+            want, got = tuple(want), tuple(got)
+        assert got == want, f"ML_DEFAULTS {key}: ml_env {got!r} vs schema {want!r}"
+
+    # --- validate: accept and the refusals the editor surfaces -------------
+    value, error = config_schema.validate("server", "economy", "TAX_RATE", "0.2")
+    assert value == 0.2 and error is None, (value, error)
+    for bad, fragment in (
+        ("2", "outside"),
+        ("", "is empty"),
+        ("x", "number"),
+    ):
+        value, error = config_schema.validate("server", "economy", "TAX_RATE", bad)
+        assert value is None and fragment in error, (bad, value, error)
+    value, error = config_schema.validate("server", "scoring", "ACTION_WINDOW", "2.5")
+    assert value is None and "whole number" in error, error
+    value, error = config_schema.validate("server", "scoring", "NOPE", "1")
+    assert value is None and "unknown key" in error, error
+    value, error = config_schema.validate("ml", "curriculum", "CURRICULUM_THRESHOLDS", "[0,5]")
+    assert value is None and "exactly 4" in error, error
+    value, error = config_schema.validate(
+        "ml", "curriculum", "CURRICULUM_THRESHOLDS", "[0,5,15,30]"
+    )
+    assert value == [0, 5, 15, 30] and error is None, (value, error)
+
+    tax = config_schema.field_spec("server", "economy", "TAX_RATE")
+    cap = config_schema.field_spec("server", "economy", "INVENTORY_CAP")
+    thr = config_schema.field_spec("ml", "curriculum", "CURRICULUM_THRESHOLDS")
+    # 0.10 in the file has to render as 0.1 or every load of the tab would
+    # show a dirty field the operator never touched.
+    assert config_schema.format_value(tax, 0.1) == "0.1"
+    assert config_schema.format_value(tax, 2) == "2.0"
+    assert config_schema.format_value(cap, 40) == "40"
+    assert config_schema.format_value(thr, [0, 5, 15, 30]) == "[0, 5, 15, 30]"
+
+    # --- the writer is byte-stable, which is the whole point ----------------
+    path = sandbox("server_config.json", "server_config.json")
+    before = read_bytes(path)
+    ok, note, changed = config_write.write_edits(
+        path, "server", {"economy": {"TAX_RATE": 0.1, "INVENTORY_CAP": 24}}
+    )
+    assert ok and changed == [] and note == "no changes", (ok, note, changed)
+    # A save that changes nothing must write nothing: config_hash is a hash
+    # of these bytes, so a respelling alone would mark every checkpoint
+    # "config differs".
+    assert read_bytes(path) == before, "no-op save rewrote the file"
+
+    path = sandbox("server_config.json", "server_config.json")
+    ok, note, changed = config_write.write_edits(
+        path, "server", {"scoring": {"ACTION_WINDOW": 25}}
+    )
+    assert ok and changed == ["scoring.ACTION_WINDOW"], (ok, changed)
+    after = read_text(path)
+    assert '"ACTION_WINDOW": 25,' in after, after
+    assert '"TAX_RATE": 0.10,' in after, "unrelated float respelled"
+    assert after.count("\r") == 0, "CRLF crept in"
+    assert json.loads(after)["scoring"]["ACTION_WINDOW"] == 25
+
+    path = sandbox("server_config.json", "server_config.json")
+    ok, note, changed = config_write.write_edits(
+        path, "server", {"scoring": {"DEATH_ITEM_DROP_PCT": None}}
+    )
+    assert ok and changed == ["scoring.DEATH_ITEM_DROP_PCT"], (ok, changed)
+    # Dropping the last entry of a section has to repair the neighbour's
+    # comma; dropping the first one must not.
+    assert "DEATH_ITEM_DROP_PCT" not in json.loads(
+        open(path, encoding="utf-8").read()
+    )["scoring"]
+
+    for edits, fragment in (({"scoring": {"NOPE": 1}}, "unknown key"),):
+        path = sandbox("server_config.json", "server_config.json")
+        digest = read_bytes(path)
+        ok, note, changed = config_write.write_edits(path, "server", edits)
+        assert not ok and fragment in note and changed == [], (ok, note)
+        assert read_bytes(path) == digest
+
+    path = os.path.join(folder, "corrupt.json")
+    with open(path, "w") as fh:
+        fh.write("{ this is not json")
+    digest = read_bytes(path)
+    ok, note, _ = config_write.write_edits(path, "server", {"economy": {"TAX_RATE": 0.3}})
+    assert not ok and "not valid JSON" in note, (ok, note)
+    assert read_bytes(path) == digest
+
+    # --- the loopback gates, one per direction -----------------------------
+    for peer, want in (("127.0.0.1", True), ("::1", True), ("10.0.0.5", False), ("", False)):
+        assert srv._loopback_peer(peer) is want, peer
+    for origin, want in (
+        ("http://127.0.0.1:8766", True),
+        # Origin carries a hostname where remote_address carries an IP
+        # tuple, so the two gates cannot share one allowlist shape.
+        ("http://localhost:8766", True),
+        ("http://evil.example", False),
+        ("http://10.0.0.5:8766", False),
+        ("null", False),
+        ("file://", False),
+    ):
+        assert srv._loopback_origin(origin) is want, origin
+
+    # --- the GET payload ---------------------------------------------------
+    path = sandbox("server_config.json", "server_config.json")
+    real_srv, real_ml = srv.CONFIG_FILE, srv._ML_CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        payload = srv._config_payload()
+        assert payload["editable"] is True and not payload.get("error"), payload.get("error")
+        assert [p["name"] for p in payload["presets"]] == [
+            "Balanced",
+            "Fast Training",
+            "Economy Focus",
+        ], payload["presets"]
+        files = {f["id"]: f for f in payload["files"]}
+        assert set(files) == {"server", "ml"}, set(files)
+        # A host path in the response is an info leak onto a dashboard that
+        # binds 0.0.0.0.
+        for file_id, meta in files.items():
+            assert ROOT not in json.dumps(meta), f"{file_id} leaks a host path"
+        sections = {s["name"]: s for s in files["server"]["sections"]}
+        fields = {f["key"]: f for f in sections["scoring"]["fields"]}
+        window = fields["ACTION_WINDOW"]
+        assert window["value"] == 20 and window["default"] == 20, window
+        assert window["present"] is True and window["text"] == "20"
+        assert window["help"] and window["min"] == 1 and window["max"] == 500, window
+        rate = {f["key"]: f for f in sections["economy"]["fields"]}["TAX_RATE"]
+        assert rate["value"] == 0.1 and rate["text"] == "0.1", rate
+        assert rate["type"] == "float" and rate["min"] == 0.0 and rate["max"] == 1.0, rate
+        ml_sections = {s["name"]: s for s in files["ml"]["sections"]}
+        thresholds = {
+            f["key"]: f for f in ml_sections["curriculum"]["fields"]
+        }["CURRICULUM_THRESHOLDS"]
+        assert thresholds["value"] == [0, 10, 30, 60], thresholds
+        assert thresholds["text"] == "[0, 10, 30, 60]", thresholds
+    finally:
+        srv.CONFIG_FILE, srv._ML_CONFIG_FILE = real_srv, real_ml
+
+    # --- a missing override reports the code default it falls back to ------
+    path = sandbox("server_config.json", "server_config.json")
+    data = json.loads(read_text(path))
+    del data["economy"]["TAX_RATE"]
+    with open(path, "w", newline="") as fh:
+        fh.write(json.dumps(data, indent=2))
+    real_srv = srv.CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        sections = {s["name"]: s for s in srv._config_payload()["files"][0]["sections"]}
+        rate = {f["key"]: f for f in sections["economy"]["fields"]}["TAX_RATE"]
+        assert rate["present"] is False, rate
+        assert rate["value"] == srv.TAX_RATE, (rate["value"], srv.TAX_RATE)
+    finally:
+        srv.CONFIG_FILE = real_srv
+
+    # --- the POST path validates before it writes --------------------------
+    path = sandbox("server_config.json", "server_config.json")
+    real_srv = srv.CONFIG_FILE
+    refusals = (
+        ({"economy.TAX_RATE": "9"}, "outside"),
+        ({"economy.NOPE": "1"}, "unknown key"),
+        ({"economy.TAX_RATE": True}, "must be a number"),
+        ({"economy.TAX_RATE": "x" * 500}, "too long"),
+        ({f"economy.TAX_RATE{i}": "1" for i in range(srv._CONFIG_VALUES_MAX + 1)}, "at most"),
+    )
+    try:
+        srv.CONFIG_FILE = path
+        digest = read_bytes(path)
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "9"})
+        assert status == 400 and not body["ok"] and "outside" in body["error"], body
+        status, body = srv._config_apply("nope", {"economy.TAX_RATE": "0.2"})
+        assert status == 400 and "unknown config file" in body["error"], body
+        status, body = srv._config_apply("server", {})
+        assert status == 400 and "non-empty" in body["error"], body
+        for edits, fragment in refusals:
+            status, body = srv._config_apply("server", edits)
+            assert status == 400 and fragment in body["error"], (fragment, body)
+        assert read_bytes(path) == digest, "a refused save wrote bytes"
+
+        status, body = srv._config_apply(
+            "server", {"economy.TAX_RATE": "0.25", "scoring.ACTION_WINDOW": "30"}
+        )
+        assert status == 200 and body["ok"], (status, body)
+        assert sorted(body["changed"]) == ["economy.TAX_RATE", "scoring.ACTION_WINDOW"]
+        # No live apply: the reply has to tell the operator what to do next.
+        assert "Restart" in body["restart"], body
+        data = json.loads(read_text(path))
+        assert data["economy"]["TAX_RATE"] == 0.25, data["economy"]
+        assert data["scoring"]["ACTION_WINDOW"] == 30, data["scoring"]
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.25"})
+        assert status == 200 and body["changed"] == [], body
+
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": None})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        data = json.loads(read_text(path))
+        assert "TAX_RATE" not in data["economy"], data["economy"]
+
+        # Reset then set again. The override has to be re-addable, or "reset"
+        # is a one-way door: the add path has to comma-terminate the entry that
+        # used to end the section, which it did not.
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.2"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        data = json.loads(read_text(path))
+        assert data["economy"]["TAX_RATE"] == 0.2, data["economy"]
+        assert data["economy"]["MOB_EXTRA_SPAWNS"] == 1, "the new last entry was lost"
+        # A key that was never in the file lands in its section too.
+        del data["economy"]["TAX_RATE"]
+        with open(path, "w", newline="") as fh:
+            fh.write(json.dumps(data, indent=2))
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.2"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        assert json.loads(read_text(path))["economy"]["TAX_RATE"] == 0.2
+    finally:
+        srv.CONFIG_FILE = real_srv
+
+    # --- an empty section can receive its first key ------------------------
+    path = os.path.join(folder, "empty_section.json")
+    with open(path, "w", newline="") as fh:
+        fh.write('{\n  "economy": {\n  },\n  "commissions": {\n'
+                 '    "COMMISSION_TTL_SECONDS": 3600\n  }\n}\n')
+    real_srv = srv.CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.2"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], (status, body)
+        data = json.loads(read_text(path))
+        assert data["economy"] == {"TAX_RATE": 0.2}, data["economy"]
+        assert data["commissions"]["COMMISSION_TTL_SECONDS"] == 3600
+    finally:
+        srv.CONFIG_FILE = real_srv
+
+    # --- a CRLF file keeps CRLF: the config hash covers these bytes --------
+    path = sandbox("crlf.json", "server_config.json")
+    crlf = read_text(path).replace("\n", "\r\n")
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(crlf)
+    assert b"\r\n" in read_bytes(path), "CRLF fixture did not take"
+    real_srv = srv.CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        status, body = srv._config_apply("server", {"economy.TAX_RATE": "0.3"})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], (status, body)
+        raw = read_bytes(path)
+        assert raw.count(b"\r\n") > 40, "CRLF endings were rewritten"
+        # No bare LF survives: a mix would still move the config hash even
+        # though the file parses.
+        assert b"\n" not in raw.replace(b"\r\n", b""), "mixed line endings"
+        assert json.loads(raw.decode())["economy"]["TAX_RATE"] == 0.3
+    finally:
+        srv.CONFIG_FILE = real_srv
+
+    path = sandbox("ml_config.json", "ml/ml_config.json")
+    real_ml = srv._ML_CONFIG_FILE
+    try:
+        srv._ML_CONFIG_FILE = path
+        status, body = srv._config_apply(
+            "ml", {"curriculum.CURRICULUM_THRESHOLDS": "[0, 5, 15, 30]"}
+        )
+        assert status == 200 and body["ok"], (status, body)
+        data = json.loads(read_text(path))
+        assert data["curriculum"]["CURRICULUM_THRESHOLDS"] == [0, 5, 15, 30]
+        assert data["reward_shaping"]["SOCIAL_PER_ALLY"] == 0.05, "other section moved"
+        assert "Restart training" in body["restart"], body
+    finally:
+        srv._ML_CONFIG_FILE = real_ml
+
+    # --- the reason the writer is surgical, stated as an assertion --------
+    path = sandbox("server_config.json", "server_config.json")
+    ml_path = sandbox("ml_config.json", "ml/ml_config.json")
+    real_srv, real_ml = srv.CONFIG_FILE, srv._ML_CONFIG_FILE
+
+    def config_hash():
+        import hashlib
+
+        digest = hashlib.sha256()
+        for target in (path, ml_path):
+            with open(target, "rb") as fh:
+                digest.update(fh.read())
+        return digest.hexdigest()[:16]
+
+    try:
+        srv.CONFIG_FILE, srv._ML_CONFIG_FILE = path, ml_path
+        before = config_hash()
+        srv._config_apply("server", {"economy.TAX_RATE": "0.1"})
+        assert config_hash() == before, "a no-op save moved the config hash"
+        srv._config_apply("server", {"economy.TAX_RATE": "0.3"})
+        assert config_hash() != before, "a real edit left the config hash put"
+    finally:
+        srv.CONFIG_FILE, srv._ML_CONFIG_FILE = real_srv, real_ml
+    print("CONFIG_EDITOR_OK")
+
+
+def training_launch_check(folder):
+    """#64 launcher surface: schema, strict validation, the argv it builds, and
+    the server-side guards. Spawns nothing -- process control is proven live,
+    which is the only place a real trainer belongs.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "ml"))
+    import launcher
+
+    spec = launcher.describe()
+    assert spec["trainer"] == "torch_farm"
+    assert [f["key"] for f in spec["fields"]] == [
+        "agents", "steps", "seed", "weights", "best_weights"]
+    by_type = {f["key"]: f for f in spec["fields"]}
+    assert by_type["agents"]["min"] == 1
+    assert by_type["agents"]["max"] == launcher.MAX_AGENTS
+    # Path fields carry no numeric bounds: the dashboard renders a picker, not
+    # a number input, so absent bounds have to survive as null.
+    for key in ("weights", "best_weights"):
+        assert by_type[key]["type"] == "path"
+        assert by_type[key]["min"] is None and by_type[key]["max"] is None
+    assert [p["name"] for p in spec["presets"]] == [
+        "Quick probe", "Balanced", "Full fleet"]
+
+    # Defaults build a complete argv; --steps 0 is "run until stopped".
+    values, error = launcher.validate({}, ROOT)
+    assert error == "" and values["agents"] == 4 and values["steps"] == 0, (values, error)
+    argv = launcher.build_argv(values, ROOT)
+    assert os.path.isabs(argv[0]) and argv[0].endswith(
+        os.path.join("torch_agents", "torch_farm.py")), argv
+    assert argv[argv.index("--agents") + 1] == "4"
+    assert argv[argv.index("--steps") + 1] == "0"
+    # A resolved checkpoint is absolute, and build_argv must not re-root it.
+    weights = argv[argv.index("--weights") + 1]
+    assert os.path.isabs(weights) and weights.endswith("ml_farm_weights.json"), weights
+    # The default names match torch_farm.py's own fallback (ml_farm_*), so a
+    # dashboard fleet and a CLI fleet resume each other instead of diverging.
+    assert values["weights"].endswith(os.path.join("torch_agents", "ml_farm_weights.json"))
+    assert values["best_weights"].endswith(os.path.join("torch_agents", "ml_farm_best.json"))
+    # No --url unless the caller supplies one; then exactly one.
+    assert "--url" not in argv
+    argv = launcher.build_argv(values, ROOT, ws_url="ws://127.0.0.1:8765")
+    assert argv[argv.index("--url") + 1] == "ws://127.0.0.1:8765"
+
+    # Strict refusals: an ignored typo would train with a default the operator
+    # never chose, and the path fields are the ones that write files.
+    for bad, fragment in (
+        ({"agent": 2}, "unknown field"),
+        ({"agents": 0}, "1-32"),
+        ({"agents": launcher.MAX_AGENTS + 1}, "1-32"),
+        ({"agents": True}, "whole number"),
+        ({"agents": "4"}, "whole number"),
+        ({"steps": -1}, "0-"),
+        ({"weights": "../../escape.pt"}, "inside the repo"),
+        ({"weights": "C:/Windows/x.pt"}, "relative to the repo root"),
+        ({"weights": ""}, "non-empty"),
+        ({"weights": 5}, "non-empty"),
+        # An inside-root path is not enough: --weights is overwritten on save,
+        # so it must be a checkpoint (allowed dir + extension), never config.
+        ({"weights": "torch_agents/../server_config.json"}, "directly in"),
+        ({"weights": "server_config.json"}, "directly in"),
+        ({"weights": "torch_agents/ml_config.json"}, "weights/best .json"),
+        ({"weights": "ml/ml_config.json"}, "weights/best .json"),
+        ({"weights": "torch_agents/sub/a.json"}, "directly in"),
+        ({"weights": "torch_agents/x.txt"}, "weights/best .json"),
+    ):
+        got, err = launcher.validate(bad, ROOT)
+        assert got is None and fragment in err, (bad, err)
+    # Checkpoint picks are the allowlist, filtered to real checkpoint names.
+    listed = launcher.checkpoints(ROOT)
+    names = [item["name"] for item in listed]
+    assert "ml_config.json" not in names, names
+    for item in listed:
+        assert launcher._checkpoint_name_ok(item["name"]), item
+
+    # A label is shown on a LAN dashboard, so it may never carry a host path.
+    label = launcher.label(argv)
+    assert ROOT not in label and "ml_farm_weights.json" in label, label
+
+    # --- the server-side service -------------------------------------------
+    status = srv._train_payload()
+    assert status["running"] is False and status["pid"] is None, status
+    code, body = srv._train_stop()
+    assert code == 409 and not body["ok"], (code, body)
+    # A malformed request is refused before any process is built.
+    code, body = srv._train_start({"agent": 1})
+    assert code == 400 and "unknown field" in body["error"], (code, body)
+    # The read payload gates editing on the peer and hands out no host path.
+    loop = srv._trainers_payload("127.0.0.1")
+    lan = srv._trainers_payload("10.0.0.5")
+    assert loop["editable"] is True and lan["editable"] is False, (loop, lan)
+    for payload in (loop, lan):
+        assert ROOT not in json.dumps(payload), "training payload leaks a host path"
+    assert loop["ws_url"].startswith("ws://") and loop["presets"], loop
+
+    # --- the process lifecycle, against a mocked Popen ----------------------
+    # Real spawn/exit is proven live; here we pin the state machine and the two
+    # safety properties the review measured: the child must not share the
+    # server's stdio, and Stop must not hold _train_lock across the wait (the
+    # dashboard polls status from other handler threads while a stop is in
+    # flight).
+    real_popen = srv.subprocess.Popen
+    seen = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 4242
+            self.returncode = None
+            self.signalled = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            held = {}
+
+            def probe():
+                got = srv._train_lock.acquire(timeout=0.5)
+                held["got"] = got
+                if got:
+                    srv._train_lock.release()
+
+            th = threading.Thread(target=probe)
+            th.start()
+            th.join()
+            assert held.get("got"), "stop held _train_lock across proc.wait"
+            self.returncode = 0
+            return 0
+
+        def send_signal(self, sig):
+            self.signalled = sig
+
+        def terminate(self):
+            self.signalled = "terminate"
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return FakeProc()
+
+    srv.subprocess.Popen = fake_popen
+    try:
+        code, body = srv._train_start({})
+        assert code == 200 and body["ok"] and body["status"]["running"], (code, body)
+        assert body["status"]["pid"] == 4242, body
+        # The child must not inherit the server's stdio.
+        for stream in ("stdin", "stdout", "stderr"):
+            assert seen["kwargs"].get(stream) is srv.subprocess.DEVNULL, stream
+        # A second Start while one runs is a refusal, not a duplicate fleet.
+        code, body = srv._train_start({})
+        assert code == 409 and not body["ok"], (code, body)
+        # Stop returns 200, then a second Stop is a clean 409.
+        code, body = srv._train_stop()
+        assert code == 200 and body["ok"] and body["status"]["running"] is False, (code, body)
+        code, body = srv._train_stop()
+        assert code == 409 and not body["ok"], (code, body)
+        # A crashed run surfaces its exit code instead of looking "running".
+        proc = FakeProc()
+        proc.returncode = 3
+        srv._train_proc = proc
+        srv._train_meta.update({"running": True, "label": "x", "started_at": 0})
+        crashed = srv._train_payload()
+        assert crashed["running"] is False and crashed["returncode"] == 3, crashed
+    finally:
+        srv.subprocess.Popen = real_popen
+        srv._train_proc = None
+        srv._train_meta.clear()
+    print("TRAINING_LAUNCH_OK")
+
 
 async def main():
     # --- Leveling curve ---
@@ -950,6 +1473,7 @@ async def main():
     await srv.cmd_craft(gearhead, {"recipe": "reinforced_leather"})
     assert "reinforced_leather" in gearhead.inventory
     await srv.cmd_equip(gearhead, {"item": "reinforced leather"})
+    assert gearhead.attack == base_atk
     assert srv._player_defense(gearhead) == base_def + srv.ITEM_DEFS["reinforced_leather"]["defense"]
     assert gearhead.armor == "reinforced_leather"
     unplayer(gearhead)
@@ -1035,6 +1559,53 @@ async def main():
     assert sentry["score"] == 100.0 - srv.DEATH_PENALTY
     unplayer(safer)
     print("ITEM_DROP_ZONE_OK")
+
+    # --- #424 wild flag: orthogonal to shelter, implies risk, drops the pack ---
+    wild_room = "glacier_crown"
+    assert srv.ROOMS[wild_room]["wild"] is True
+    assert "risk" not in srv.ROOMS[wild_room], "wild must not need a risk flag"
+    assert srv._room_is_risk(wild_room) is True
+    assert srv._room_is_risk("summit_gatehouse") is True  # indoor AND wild
+    assert srv._room_is_risk("town_square") is False
+    assert srv._room_is_risk("d_1_f1") is False  # dungeon floors stay safe
+
+    wildling = mkplayer("WildDiver", 40021, room=wild_room)
+    wildling.gold = 0
+    wildling.inventory = ["glacier_core", "frost_crystal"]
+    wildling.equipped = "glacier_core"  # equipped slot survives, rest does not
+    wpv = srv.death_preview(wildling)
+    assert wpv["risk_zone"] is True, wpv
+    assert wpv["items_at_risk"] == ["Frost Crystal"], wpv["items_at_risk"]
+    wentry = srv.get_score_entry("WildDiver")
+    wentry["score"] = 100.0
+    wentry["level"] = 1
+    wentry["xp"] = 0.0
+    wentry["xp_to_next"] = srv.xp_to_next(1)
+    await srv.respawn_player(wildling)
+    assert wildling.inventory == ["glacier_core"], wildling.inventory
+    assert srv.room_items[wild_room].count("frost_crystal") == 1
+    unplayer(wildling)
+    srv.room_items[wild_room].remove("frost_crystal")
+    print("WILD_RISK_OK")
+
+    # --- #424 wild-exclusive materials + wild-only high-tier craftables ---
+    wild_rooms = {r for r, v in srv.ROOMS.items() if v.get("wild")}
+    for mat, minval in (("glacier_core", 40), ("abyssal_heart", 40)):
+        assert mat in srv.ITEM_DEFS, mat
+        assert srv.ITEM_DEFS[mat]["value"] >= minval, (mat, srv.ITEM_DEFS[mat])
+        carriers = [n for n, v in srv.WORLD["npcs"].items() if mat in (v.get("loot") or [])]
+        assert carriers, mat
+        for nid in carriers:
+            assert srv.WORLD["npcs"][nid]["room"] in wild_rooms, (mat, nid)
+        # no recipe-free path: the mat exists nowhere else in the world
+        assert not [n for n, v in srv.WORLD["npcs"].items()
+                    if n not in carriers and mat in (v.get("loot") or [])]
+    wild_recipes = {"stormforged_aegis", "abyssal_warden_draught"}
+    for rname in wild_recipes:
+        rec = srv.RECIPES[rname]
+        inputs = set(rec["inputs"])
+        assert inputs & {"glacier_core", "abyssal_heart"}, (rname, inputs)
+    print("WILD_EXCLUSIVE_OK")
 
     # --- Duplicate equipped items in risk zones drop unequipped instances ---
     srv.ROOMS["market"]["risk"] = True
@@ -1242,6 +1813,55 @@ async def main():
     unplayer(bbuyer2)
     unplayer(basker2)
     print("BID_SWEEP_OK")
+
+    # treasury sink #403: inflow banks only up to the reserve, the rest is sunk
+    sink_t0 = srv.tax_treasury
+    sink_sunk0 = srv.tax_sunk_lifetime
+    sink_coll0 = srv.tax_collected_lifetime
+    sink_reserve = srv.TREASURY_RESERVE
+    try:
+        srv.tax_treasury = sink_reserve - 10.0
+        assert srv._treasury_credit(4) == 0.0  # below reserve: banks whole
+        assert srv.tax_treasury == sink_reserve - 6.0
+        assert srv.tax_sunk_lifetime == sink_sunk0
+        assert srv._treasury_credit(6) == 0.0  # tops the reserve up exactly
+        assert srv.tax_treasury == sink_reserve
+        assert srv._treasury_credit(3) == 3.0  # at reserve: fully sunk
+        assert srv.tax_treasury == sink_reserve
+        assert srv.tax_sunk_lifetime == sink_sunk0 + 3.0
+        assert srv.tax_collected_lifetime == sink_coll0 + 13.0  # gross income
+        assert srv._treasury_credit(0) == 0.0 and srv._treasury_credit(-5) == 0.0
+        # a live fill routes its tax through the sink without touching the payout
+        srv.tax_treasury = sink_reserve + 100.0
+        buyer_s = mkplayer("SinkBuyer", 50030, room="market")
+        buyer_s.gold = 200
+        seller_s = mkplayer("SinkSeller", 50031, room="market")
+        seller_s.gold = 0
+        seller_s.inventory.append("healing_herb")
+        await srv.cmd_market_post(seller_s, {"item": herb_name, "price": 10})
+        soid = max(o["id"] for o in srv.market_orders if o["seller"] == "SinkSeller")
+        await srv.cmd_market_buy(buyer_s, {"id": soid})
+        assert srv.tax_treasury == sink_reserve + 100.0  # tax fully sunk
+        assert seller_s.gold == 9  # conservation: tax + payout == price
+        assert srv.market_history[-1]["tax"] == 1
+        unplayer(buyer_s)
+        unplayer(seller_s)
+        # realized rate is published next to the nominal one (#404)
+        hist_keep = list(srv.market_history)
+        try:
+            srv.market_history[:] = [srv.market_history[-1]]
+            assert srv._realized_tax_pct() == 10.0
+            srv.market_history[:] = [{"price": 4, "tax": 1}, {"price": 4, "tax": 1}]
+            assert srv._realized_tax_pct() == 25.0  # the floor, made visible
+            srv.market_history.clear()
+            assert srv._realized_tax_pct() == 0.0
+        finally:
+            srv.market_history[:] = hist_keep
+    finally:
+        srv.tax_treasury = sink_t0
+        srv.tax_sunk_lifetime = sink_sunk0
+        srv.tax_collected_lifetime = sink_coll0
+    print("TREASURY_SINK_OK")
 
     # wash-proof: own ask never matches own bid
     ww = mkplayer("Wash2", 50014, room="market")
@@ -2939,5 +3559,59 @@ async def main():
         assert len(_rooms[_a]["exits"]) == 2, (_frontier, _a)
         assert len(_rooms[_b]["exits"]) == 2, (_frontier, _b)
     print("WILD_CHAIN_OK")
+
+    # #424: the flag is orthogonal to shelter -- the two indoor-B gates are
+    # both indoor and wild, and wild implies risk (item drops on death).
+    _wild = {r for r, v in _rooms.items() if v.get("wild")}
+    assert _wild, "no wild rooms flagged"
+    _both = {r for r in _wild if _rooms[r].get("shelter")}
+    assert _both, "wild must be orthogonal to shelter, not a subset of outdoor"
+    for _frontier, _lab in (("howling_col", "south"), ("sunken_reef", "north")):
+        _a = _rooms[_frontier]["exits"][_lab]
+        _b = _rooms[_a]["exits"][_lab]
+        assert _a in _wild and _b in _wild, (_frontier, _a, _b)
+        assert _rooms[_frontier].get("wild") is True, _frontier
+    for _rid, _r in _rooms.items():
+        if _rid not in _wild:
+            assert "risk" not in _r or not _r.get("risk"), _rid
+    print("WILD_FLAG_OK")
+    # --- Run index for the dashboard Runs tab (#65) ---------------------
+    # The tab has to compare a finished run against a live one, so the index
+    # is read fresh per request and carries rank direction for the verdict.
+    with tempfile.TemporaryDirectory() as folder:
+        runs_root = os.path.join(folder, "runs")
+        srv._runs_payload("", root=runs_root)  # also puts ml/ on sys.path
+        import runlog
+        a = runlog.start_run("dqn", root=runs_root, seed=1)
+        a.record(score=10, td_loss=0.9)
+        b = runlog.start_run("torch_farm", root=runs_root, seed=2)
+        b.record(score=20)
+        b.finish()
+        payload = srv._runs_payload("", root=runs_root)
+        assert {r["run_id"] for r in payload["runs"]} == {a.run_id, b.run_id}, payload
+        assert not payload.get("series"), "sample history shipped without a selection"
+        fields = {f["name"]: f["higher_is_better"] for f in payload["fields"]}
+        assert fields["score"] is True and fields["td_loss"] is False, fields
+        picked = srv._runs_payload("runs=" + a.run_id, root=runs_root)
+        assert list(picked["series"]) == [a.run_id], picked
+        assert len(picked["series"][a.run_id]) == 1
+        # An id from the query string must not become a read outside the index,
+        # and must not be echoed back either: an unsanitized id in the response
+        # is what a dashboard would go on to render.
+        hostile = srv._runs_payload("runs=../../etc", root=runs_root)
+        assert hostile.get("series") in (None, {}), hostile
+        assert "../../etc" not in repr(hostile), hostile
+        # No index at all is an empty tab, never a 500.
+        empty = srv._runs_payload("", root=os.path.join(folder, "absent"))
+        assert empty["runs"] == [] and empty["fields"] == [] and not empty.get("error")
+    print("RUNS_INDEX_OK")
+
+    # --- Config editor for server_config.json + ml_config.json (#63) ------
+    with tempfile.TemporaryDirectory() as folder:
+        config_editor_check(folder)
+
+    # --- One-click training launch surface (#64) --------------------------
+    with tempfile.TemporaryDirectory() as folder:
+        training_launch_check(folder)
 
 asyncio.run(main())

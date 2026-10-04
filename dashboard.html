@@ -138,6 +138,26 @@
   button:hover { border-color: var(--accent); color: var(--accent); }
   .gmform { display: grid; grid-template-columns: 150px 1fr; gap: 8px 12px; align-items: center; }
   .gmform label { color: var(--dim); }
+  /* Config editor (#63): a label/input/reset grid. The reset column is always
+     reserved so a field toggling between "overridden" and "code default"
+     cannot shift the inputs sideways. */
+  .cfgform { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 84px auto;
+             gap: 6px 10px; align-items: center; }
+  .cfgform h3 { grid-column: 1 / -1; margin: 10px 0 0; font-size: var(--fs-sm);
+                color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+  .cfgform .cfgsec { display: contents; }
+  .cfgform label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+  .cfgform input { width: 100%; font-variant-numeric: tabular-nums; }
+  .cfgform input:disabled { opacity: .6; }
+  .cfgvals { font-size: var(--fs-xs); color: var(--dim); }
+  .cfgreset { font-size: var(--fs-xs); padding: 3px 7px; }
+  .cfgmsg { min-height: 1.4em; margin: 8px 0 0; font-size: var(--fs-sm); }
+  .cfgmsg.good { color: var(--good); }
+  .cfgmsg.bad { color: var(--bad); }
+  .cfgmsg.dim, .cfgform .dim { color: var(--dim); }
+  #cfgPresets { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .cfgrow-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+  .cfgrow-actions button { padding: 6px 14px; }
   .gm-pane { display: none; margin-top: 10px; }
   .gm-pane.active { display: grid; }
   .gm-cost { color: var(--warn); font-size: var(--fs-xs); }
@@ -180,6 +200,15 @@
   /* uPlot hover crosshair layers (same absolute-positioning reason). */
   .trend .u-cursor-x, .trend .u-cursor-y { position: absolute; }
   .trend canvas { position: absolute; left: 0; top: 0; display: block; max-width: 100%; }
+  /* Runs tab (#65): run-selection column, and the sorted-column marker the
+     shared sorter has never had (it only hinted via the header title). */
+  .runpick { width: 14px; height: 14px; vertical-align: middle; cursor: pointer; }
+  table[data-sort] th.sorted { color: var(--accent); }
+  table[data-sort] th.sorted::after { content: " \25BC"; font-size: 9px; }
+  table[data-sort] th.sorted.desc::after { content: " \25B2"; font-size: 9px; }
+  .runlist { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--fs-xs); }
+  .runlist .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+                 vertical-align: middle; margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -202,6 +231,7 @@
   <div class="tab" data-tab="quests">Quests</div>
   <div class="tab" data-tab="crafting">Crafting</div>
   <div class="tab" data-tab="config">Config</div>
+  <div class="tab" data-tab="runs">Runs</div>
   <div class="tab" data-tab="gm">GM</div>
 </div>
 
@@ -228,7 +258,7 @@
   <div class="grid">
     <div>
       <div class="panel">
-        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail · solid tile = indoor, dashed = outdoor</span></h2>
+        <h2>World <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">north is up · drag to pan · wheel to zoom · click a room for detail · solid tile = indoor, dashed = outdoor · red wash + W = wild (pack drops on death)</span></h2>
         <div class="world-map"><canvas id="worldMapCanvas" width="1200" height="480" style="width:100%;height:480px;cursor:grab"></canvas></div>
         <div id="roomDrawer" style="display:none"></div>
         <div id="rooms" class="rooms"></div>
@@ -378,6 +408,19 @@
     <h2>Recent agent actions<span class="sortctl">sort<select id="agentActivitySort"><option value="newest">newest first</option><option value="oldest">oldest first</option><option value="player">player A-Z</option><option value="cmd">action A-Z</option></select></span></h2>
     <div id="agentActivity"></div>
   </div>
+  <div class="panel">
+    <h2>Start training <span class="legend" id="trainState">-</span></h2>
+    <p class="empty" id="trainAbout">-</p>
+    <div id="trainPresets"></div>
+    <div class="cfgform" id="trainForm"></div>
+    <datalist id="trainCheckpoints"></datalist>
+    <p id="trainMsg" class="cfgmsg"></p>
+    <div class="cfgrow-actions">
+      <button id="trainStart" type="button">Start training</button>
+      <button id="trainStop" type="button">Stop training</button>
+      <span id="trainStatus" class="dim"></span>
+    </div>
+  </div>
 </div>
 
 <div id="view-quests" class="tabview">
@@ -468,12 +511,55 @@
 
 <div id="view-config" class="tabview">
   <div class="panel">
-    <h2>Config (read-only)</h2>
-    <p class="empty">Values below are read from the live snapshot. Full editing lands with the config editor (#63).</p>
-    <table>
-      <thead><tr><th>key</th><th>value</th></tr></thead>
-      <tbody id="configRows"></tbody>
-    </table>
+    <h2>Config editor <span class="sortctl">file
+      <select id="cfgFile"></select>
+    </span></h2>
+    <p class="empty" id="cfgPath">-</p>
+    <div id="cfgPresets"></div>
+    <div class="cfgform" id="cfgForm"></div>
+    <p id="cfgMsg" class="cfgmsg"></p>
+    <div class="cfgrow-actions">
+      <button id="cfgSave" type="button">Save to file</button>
+      <span id="cfgRestart" class="dim"></span>
+    </div>
+  </div>
+</div>
+
+<div id="view-runs" class="tabview">
+  <div class="panel">
+    <h2>Runs <span class="legend" id="runsCount">-</span>
+      <span class="sortctl">best by<select id="runsMetric"></select></span></h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="runsBest">-</div><div class="l">best run</div></div>
+      <div class="stat"><div class="v" id="runsTotal">-</div><div class="l">runs recorded</div></div>
+      <div class="stat"><div class="v" id="runsSelCount">0</div><div class="l">selected to compare</div></div>
+      <div class="stat"><div class="v" id="runsRunning">-</div><div class="l">running now</div></div>
+    </div>
+    <div class="tscroll"><table data-sort="runsTable">
+      <thead><tr id="runsHead"></tr></thead>
+      <tbody id="runsBody"></tbody>
+    </table></div>
+    <p class="empty" id="noRuns" style="display:none">No runs recorded yet. Start one with
+      <code>python torch_agents/torch_farm.py --seed 7</code> (every trainer takes
+      <code>--seed</code>, <code>--runs-dir</code> and <code>--no-run-record</code>).</p>
+  </div>
+  <div class="panel">
+    <h2>Comparison <span class="legend" id="runsCmpNote">tick runs above to compare them</span>
+      <span class="sortctl">chart<select id="runsCmpMetric"></select></span></h2>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
+        <div class="dim" style="font-size:11px;margin-bottom:4px">latest <b class="trendval" id="runCmpVal">-</b></div>
+        <div class="trend" id="runCmp" style="height:140px"></div>
+        <div class="runlist" id="runCmpLegend"></div>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <div class="tscroll"><table data-sort="runCmpTable">
+          <thead><tr id="runCmpHead"></tr></thead>
+          <tbody id="runCmpBody"></tbody>
+        </table></div>
+        <p class="empty" id="noRunCmp" style="display:none">Nothing selected to compare.</p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -639,6 +725,10 @@ function setHTMLEl(el, key, html) {
 const sortState = {}; // tbodyId -> {col, dir}
 function sortRows(tbodyId, rows, keyFns, defCol, defDir) {
   const st = sortState[tbodyId] || (sortState[tbodyId] = {col: defCol, dir: defDir});
+  // A table whose columns came back fewer (the runs header follows the server's
+  // field list) would otherwise keep a column index that no longer exists,
+  // leaving the rows unsorted while the header still claims a sort.
+  if (st.col >= keyFns.length) { st.col = defCol; st.dir = defDir; }
   const fn = keyFns[st.col];
   const indexed = rows.map((r, i) => [i, r]);
   indexed.sort((a, b) => {
@@ -667,6 +757,11 @@ function bindSortTables() {
   for (const table of document.querySelectorAll("table[data-sort]")) {
     const id = table.dataset.sort;
     table.querySelectorAll("thead th").forEach((th, i) => {
+      // Idempotent: the runs table rebuilds its <th> from the server's field
+      // list, and re-binding would attach a second click handler per poll,
+      // so one click flips the sort twice and reads as no sort at all.
+      if (th.dataset.sortBound) return;
+      th.dataset.sortBound = "1";
       th.title = (th.title ? th.title + " " : "") + "(click to sort)";
       th.addEventListener("click", () => {
         const st = sortState[id] || (sortState[id] = {col: 0, dir: 1});
@@ -869,7 +964,9 @@ function renderWorldMap(rooms) {
   // Tokens are read per render; the smoke harness falls back to dark values.
   const bg = cssVar("--panel2", "#1e252d"), tile = cssVar("--panel", "#171c22"),
         edge = cssVar("--border", "#2a333d"), ink = cssVar("--text", "#d7e0e8"),
-        sub = cssVar("--dim", "#8b98a5"), acc = cssVar("--accent", "#6fc3ff");
+        sub = cssVar("--dim", "#8b98a5"), acc = cssVar("--accent", "#6fc3ff"),
+        wild = cssVar("--bad", "#ff7b72");
+  const WILD_MARK = "W";  // ASCII corner tooth marking a wild tile (#424)
   const {x: ox, y: oy, k} = mapView;
   ctx.clearRect(0, 0, worldW, worldH);
   ctx.fillStyle = bg;
@@ -911,6 +1008,22 @@ function renderWorldMap(rooms) {
     ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
     ctx.fill();
     ctx.stroke();
+    // Wild (#424) is its own axis, orthogonal to indoor/outdoor: the danger
+    // wash + corner tooth ride on top of whatever dash the shelter flag chose,
+    // so an indoor wild gate still reads differently from open wild ground.
+    if (room.wild) {
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = wild;
+      ctx.beginPath();
+      ctx.roundRect(px - w / 2, py - h / 2, w, h, 8);
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = wild;
+      ctx.font = "10px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(WILD_MARK, px - w / 2 + 3, py - h / 2 + 10);
+    }
     // Text only when the drawn tile can hold it (narrow fit-width tiles
     // stay legible instead of overflowing their rooms).
     if (w >= 70) {
@@ -1043,8 +1156,17 @@ const charts = {};
 // mode too). Callers pass keys; a raw hex still works as a fallback.
 function themePalette() {
   return (document.documentElement.dataset.theme === "light")
-    ? {blue: "#0b6bcb", purple: "#6e3ac9", amber: "#8a5a00"}
-    : {blue: "#79c0ff", purple: "#d2a8ff", amber: "#ffb454"};
+    ? {blue: "#0b6bcb", purple: "#6e3ac9", amber: "#8a5a00",
+       series: ["#0b6bcb", "#6e3ac9", "#8a5a00", "#0f7a52", "#a03060", "#4a5568"]}
+    : {blue: "#79c0ff", purple: "#d2a8ff", amber: "#ffb454",
+       series: ["#79c0ff", "#d2a8ff", "#ffb454", "#7ee787", "#ff9ecb", "#c9d1d9"]};
+}
+// One colour per compared run. The series list is longer than the old
+// three-key palette because the Runs tab draws one line per run; past its
+// length colours repeat, which the legend disambiguates by name.
+function seriesColor(i) {
+  const s = themePalette().series;
+  return s[((i % s.length) + s.length) % s.length];
 }
 // Epoch seconds to HH:MM:SS for hover timestamps.
 function fmtTs(ts) {
@@ -1118,6 +1240,88 @@ function trendChart(id, values, colorKey, times) {
   // global refit never squashes taller charts.
   if (w && w !== u._sizedW) {
     try { u.setSize({width: w, height: u._h || 80}); u._sizedW = w; }
+    catch (e) {}
+  }
+}
+// Multi-series comparison chart (Runs tab, #65). trendChart cannot be reused:
+// its setCursor hook reads data[1] only, while a run comparison needs one line
+// per run and a readout naming every one of them. Series are padded with null
+// to a shared x axis so a short run draws as a gap rather than being silently
+// resampled onto another run's timeline.
+function compareChart(id, labels, seriesList, timesList) {
+  const el = document.getElementById(id);
+  if (!el || typeof uPlot === "undefined") return;
+  let u = charts[id];
+  const n = Math.max(0, ...seriesList.map(s => (s || []).length));
+  if (!n) {
+    // No samples yet: drop the instance rather than draw a flatline that
+    // would read as "measured zero". The panel says what to do instead.
+    if (u) { try { u.destroy(); } catch (e) {} delete charts[id]; }
+    return;
+  }
+  const data = [Array.from({length: n}, (_, i) => i)];
+  for (const s of seriesList) {
+    data.push(Array.from({length: n}, (_, j) => (s[j] == null ? null : s[j])));
+  }
+  const dataKey = labels.join("|") + "::" + seriesList.map(s => s.join(",")).join("|");
+  const w = el.clientWidth || 0;
+  if (u && u._dataKey === dataKey && u._w === w) return;
+  if (u && u._nSeries !== seriesList.length) {
+    // Series count is creation-time config in uPlot (one scale and one legend
+    // row each), so a changed selection rebuilds rather than setData.
+    try { u.destroy(); } catch (e) {}
+    delete charts[id];
+    return compareChart(id, labels, seriesList, timesList);
+  }
+  if (!u) {
+    const grid = cssVar("--border", "#2a333d"), font = cssVar("--dim", "#8b98a5");
+    u = charts[id] = new uPlot({
+      width: el.clientWidth || 260,
+      height: 140,
+      scales: {x: {time: false}},
+      series: [{}].concat(labels.map((lab, i) => ({
+        label: lab, stroke: seriesColor(i), width: 1.5,
+      }))),
+      axes: [
+        {show: true, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
+        {show: true, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
+      ],
+      legend: {show: false},
+      cursor: {show: true, x: true, y: false, drag: {x: false, y: false}},
+      hooks: {setCursor: [uu => {
+        const rl = $(id + "Val");
+        if (!rl) return;
+        const idx = uu.cursor ? uu.cursor.idx : null;
+        if (idx == null) { rl.textContent = uu._current ?? "-"; return; }
+        const parts = [];
+        for (let i = 1; i < (uu.data || []).length; i++) {
+          const v = (uu.data[i] || [])[idx];
+          if (v == null) continue;
+          const t = ((uu._times || [])[i - 1] || [])[idx];
+          parts.push(`${labels[i - 1]}: ${v}` + (t ? " @ " + t : ""));
+        }
+        rl.textContent = parts.length ? parts.join("   ") : "-";
+      }]},
+    }, data, el);
+    u._h = 140;
+  } else {
+    u.setData(data);
+  }
+  u._times = timesList || [];
+  u._nSeries = seriesList.length;
+  u._dataKey = dataKey;
+  u._w = w;
+  // Mouse-out has to restore every run's latest value, not just one.
+  const latest = [];
+  labels.forEach((lab, i) => {
+    const s = seriesList[i] || [];
+    for (let j = s.length - 1; j >= 0; j--) {
+      if (s[j] != null) { latest.push(`${lab}: ${s[j]}`); break; }
+    }
+  });
+  u._current = latest.length ? latest.join("   ") : null;
+  if (w && w !== u._sizedW) {
+    try { u.setSize({width: w, height: u._h || 140}); u._sizedW = w; }
     catch (e) {}
   }
 }
@@ -1708,19 +1912,187 @@ function renderCrafting(rooms, market, activity, recipes, craftHistory) {
   for (const [k, v] of Object.entries(flow)) $("flow-" + k).textContent = v;
 }
 
-function renderConfig(s) {
-  // Read-only viewer over snapshot-exposed tunables (ports, tax terms).
-  // Full editing lands with the config editor (#63).
-  const m = s.market || {};
-  const sv = s.server || {};
-  const rows = [
-    ["game websocket port", sv.ws_port ?? "-"],
-    ["GM stream port (loopback-only)", sv.gm_port ?? "-"],
-    ["market tax rate", m.tax_rate ?? "-"],
-    ["market tax minimum", m.tax_min ?? "-"],
-    ["server uptime", (sv.uptime ?? 0) + "s"],
-  ];
-  setHTML("configRows", rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join(""));
+// ---- Config editor (#63) ---------------------------------------------------
+// Schema, current values and presets come from GET /api/config; the file is
+// written by POST /api/config and takes effect on restart (both loaders read
+// these files at startup, and the server's spawn sync is startup-only).
+// `editable` is the server's loopback verdict, not a client guess: off-box
+// viewers get every field with the inputs and save button disabled.
+let cfgData = null;
+let cfgFile = "server";
+let cfgDraft = {};
+let cfgSaving = false;
+let cfgGen = 0;
+
+function cfgFileMeta() {
+  return (cfgData && (cfgData.files || []).find(f => f.id === cfgFile)) || null;
+}
+
+function cfgFieldId(f) {
+  return `cfg-${cfgFile}-${f.section}-${f.key}`;
+}
+
+function cfgSetMsg(text, cls) {
+  const el = $("cfgMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "cfgmsg" + (cls ? " " + cls : "");
+}
+
+function cfgDraftValue(field) {
+  // The draft holds raw strings exactly as typed; null means "drop the
+  // override" and is only ever set by the reset button.
+  const key = `${cfgFile}|${field.section}.${field.key}`;
+  return key in cfgDraft ? cfgDraft[key] : field.text;
+}
+
+function cfgResetButton(field) {
+  if (!field.present) return "";
+  return `<button type="button" class="cfgreset" data-cfgreset="${esc(field.key)}"` +
+    ` title="Remove this override so the code default applies"${cfgSaving ? " disabled" : ""}>reset</button>`;
+}
+
+function cfgFieldRow(field) {
+  const editable = cfgData && cfgData.editable;
+  const id = cfgFieldId(field);
+  const listy = field.type === "list";
+  const attrs = `id="${id}" data-cfgkey="${esc(field.section + "." + field.key)}"` +
+    ` type="${listy ? "text" : "number"}"` +
+    (listy ? "" : ` min="${field.min}" max="${field.max}" step="${field.step}"`) +
+    ` value="${esc(cfgDraftValue(field))}"` +
+    ` title="${esc(field.help)}"` +
+    (editable ? "" : " disabled");
+  return `<div class="cfgrow" data-field="${esc(field.section + "." + field.key)}">` +
+    `<label for="${id}" title="${esc(field.help)}">${esc(field.key)}` +
+    (field.present ? "" : ` <span class="tag">default ${esc(String(field.default))}</span>`) +
+    `</label>` +
+    `<input ${attrs}>` +
+    `<span class="cfgvals">${field.present ? "overridden" : "code default"}</span>` +
+    cfgResetButton(field) +
+    `</div>`;
+}
+
+function renderConfigEditor() {
+  if (!cfgData) return;
+  const meta = cfgFileMeta();
+  setHTML("cfgFile", (cfgData.files || []).map(f =>
+    `<option value="${esc(f.id)}"${f.id === cfgFile ? " selected" : ""}>` +
+    `${esc(f.label)}</option>`).join(""));
+  if (!meta) {
+    setHTML("cfgPath", `<span class="empty">config schema unavailable</span>`);
+    setHTML("cfgForm", "");
+    $("cfgSave").disabled = true;
+    return;
+  }
+  setHTML("cfgPath", meta.error
+    ? `<span class="bad">${esc(meta.path)}: ${esc(meta.error)}</span>`
+    : `${esc(meta.path)} <span class="dim">${esc(meta.restart)}</span>`);
+  setHTML("cfgPresets", (cfgData.presets || []).map((p, i) =>
+    `<button type="button" class="gm-preset" data-cfgpreset="${i}"` +
+    ` title="${esc(p.help)}"${cfgData.editable ? "" : " disabled"}>${esc(p.name)}</button>`
+  ).join(""));
+  setHTML("cfgForm", meta.sections.map(sec =>
+    `<h3>${esc(sec.name)}</h3><div class="cfgsec">` +
+    sec.fields.map(cfgFieldRow).join("") + `</div>`).join(""));
+  $("cfgSave").disabled = !cfgData.editable || cfgSaving;
+  setHTML("cfgRestart", "");
+}
+
+async function loadConfig() {
+  const gen = ++cfgGen;
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (gen !== cfgGen) return;
+    cfgData = data;
+    // Never keep a draft whose file is no longer on screen.
+    cfgDraft = {};
+    renderConfigEditor();
+    if (data.error) cfgSetMsg(data.error, "bad");
+  } catch (e) {
+    if (gen !== cfgGen) return;
+    // Keep the last good schema: one dropped request must not wipe the form
+    // the operator is halfway through editing.
+    cfgSetMsg(`could not load config: ${String(e.message || e)}`, "bad");
+  }
+}
+
+async function saveConfig() {
+  if (!cfgData || !cfgData.editable || cfgSaving) return;
+  const meta = cfgFileMeta();
+  if (!meta) return;
+  const edits = {};
+  for (const [draftKey, value] of Object.entries(cfgDraft)) {
+    // Draft keys carry a "<file>|" prefix so switching files cannot mix
+    // drafts. The wire key is the dotted path alone; sending the prefix
+    // would make every section lookup miss.
+    const key = draftKey.slice(draftKey.indexOf("|") + 1);
+    if (value === null) { edits[key] = null; continue; }
+    const text = String(value);
+    // Compare against the rendered current value, so a field that was
+    // retyped identically is not sent as an edit.
+    const [section, ...rest] = key.split(".");
+    const field = (meta.sections.find(s => s.name === section) || { fields: [] })
+      .fields.find(f => f.key === rest.join("."));
+    if (field && text === field.text) continue;
+    edits[key] = text;
+  }
+  if (!Object.keys(edits).length) {
+    cfgSetMsg("nothing changed", "dim");
+    return;
+  }
+  cfgSaving = true;
+  $("cfgSave").disabled = true;
+  cfgSetMsg("saving...");
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: cfgFile, edits }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || res.status);
+    cfgDraft = {};
+    const n = (body.changed || []).length;
+    cfgSetMsg(n ? `wrote ${n} value${n === 1 ? "" : "s"}` : "no changes",
+      n ? "good" : "dim");
+    // Clear the in-flight flag before reloading: renderConfigEditor disables
+    // every reset button while cfgSaving is set, and the reload is what puts
+    // the freshly written values back on screen.
+    cfgSaving = false;
+    await loadConfig();
+    // renderConfigEditor clears this, so the hint has to land after the reload.
+    setHTML("cfgRestart", n ? (body.restart || "") : "");
+  } catch (e) {
+    cfgSetMsg(`save failed: ${String(e.message || e)}`, "bad");
+  } finally {
+    cfgSaving = false;
+    if (cfgData) $("cfgSave").disabled = !cfgData.editable;
+  }
+}
+
+function applyConfigPreset(index) {
+  const preset = (cfgData && cfgData.presets || [])[index];
+  if (!preset) return;
+  const meta = cfgFileMeta();
+  const values = preset.values[cfgFile] || {};
+  // Stage into the form, never straight to the file: a preset is a reviewable
+  // set of values, and the operator still has to press Save.
+  for (const key of Object.keys(values)) {
+    const [section, ...rest] = key.split(".");
+    const field = meta && (meta.sections.find(s => s.name === section) || { fields: [] })
+      .fields.find(f => f.key === rest.join("."));
+    if (!field) continue;
+    cfgDraft[`${cfgFile}|${key}`] = values[key] === null ? null : cfgFormatDraft(field, values[key]);
+  }
+  renderConfigEditor();
+  cfgSetMsg(`${preset.name} staged - review, then Save.`, "dim");
+}
+
+function cfgFormatDraft(field, value) {
+  if (field.type === "list") return "[" + value.join(", ") + "]";
+  return String(value);
 }
 
 let trackedName = null;
@@ -1766,8 +2138,249 @@ $("recipeSearch").addEventListener("input", () => {
   if (lastState) renderRecipes(lastState.recipes || []);
 });
 
+// ---- Runs tab (#65): the training-run catalog ---------------------------
+// Data comes from /api/runs, not the live snapshot: runs are written by
+// separate trainer processes and outlive any server uptime, so folding them
+// into /api/state would tie the catalog to one server lifetime.
+let runsData = null;      // last good payload; kept across a failed poll
+let runsError = "";
+let runsSel = [];         // run_ids ticked for comparison
+let runsMetric = "score"; // ranking metric for the verdict
+let runsCmpMetric = "score";
+let runsGen = 0;
+let runsPoll = 0;
+
+const numOrNull = v => (typeof v === "number" && isFinite(v) ? v : null);
+const pick = (r, name) => ((r && r.metrics) || {})[name];
+// A sample line is the metric bag itself ({"_ts": ..., "score": ...}), not a
+// manifest, so it cannot go through pick().
+const pickSample = (s, name) => (s ? s[name] : null);
+function fmtNum(v) {
+  if (v == null) return "-";
+  if (Number.isInteger(v)) return String(v);
+  return Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(3);
+}
+function runStatus(v) {
+  const cls = v === "finished" ? " alive" : v === "failed" ? " dead" : "";
+  return `<span class="tag${cls}">${esc(v || "?")}</span>`;
+}
+// One column spec drives the <thead> and the sort keyFns together:
+// sortRows() indexes keyFns by column, so a header and a key list that
+// drifted apart would silently sort by the wrong field. The head is rendered
+// into the static markup before bindSortTables() runs, so the shared sorter
+// binds these tables like any other.
+const RUN_COLS = [
+  {label: "#", key: null},
+  {label: "cmp", key: r => r.run_id, html: r =>
+    `<input class="runpick" type="checkbox" data-run="${esc(r.run_id)}"` +
+    `${runsSel.includes(r.run_id) ? " checked" : ""}>`},
+  {label: "run", key: r => r.run_id},
+  {label: "kind", key: r => r.kind},
+  {label: "status", key: r => r.status, html: r => runStatus(r.status)},
+  {label: "seed", key: r => numOrNull(r.seed), fmt: v => (v == null ? "-" : String(v))},
+  {label: "config", key: r => r.config_hash, fmt: v => (v ? String(v).slice(0, 8) : "-")},
+  {label: "git", key: r => r.git_sha, fmt: v => (v ? String(v).slice(0, 7) : "-")},
+  {label: "age", key: r => r.started, fmt: v => fmtAge(v)},
+];
+// Per-trainer metric columns (#65 send-back): a fixed score/steps/score_hr
+// list printed "-" for every botfarm and soak run, because those trainers
+// never write "score" at all. The server sends each kind's own column list,
+// so a run shows the numbers its own trainer recorded and the other trainers'
+// columns stay blank. Rebuilt only when the kind set actually changes, so a
+// 5s poll does not rewrite a header nobody is looking at.
+let runCols = RUN_COLS;
+let runColsSig = "";
+function runTableCols(kindFields) {
+  const seen = [];
+  for (const list of Object.values(kindFields || {})) {
+    for (const f of list) if (!seen.includes(f)) seen.push(f);
+  }
+  return RUN_COLS.concat(seen.map(f => ({
+    label: f, key: r => numOrNull(pick(r, f)), fmt: fmtNum,
+  })));
+}
+// Every metric the trainers actually record, so a comparison is one glance
+// rather than one column per run. A metric outside this list still shows in
+// the chart via the metric picker.
+const CMP_FIELDS = ["score", "best_score", "fitness", "score_hr", "episodes",
+                    "steps", "total_steps", "avg_reward", "td_loss", "rnd_loss",
+                    "mean_reward", "alive", "duration", "epsilon", "total_reward"];
+const RUN_CMP_COLS = [
+  {label: "#", key: null},
+  {label: "run", key: r => r.run_id},
+  {label: "kind", key: r => r.kind},
+  {label: "seed", key: r => numOrNull(r.seed), fmt: v => (v == null ? "-" : String(v))},
+  {label: "config", key: r => r.config_hash, fmt: v => (v ? String(v).slice(0, 8) : "-")},
+].concat(CMP_FIELDS.map(f => ({
+  label: f, key: r => numOrNull(pick(r, f)), fmt: fmtNum,
+})));
+
+function specHead(cols) {
+  return cols.map(c => `<th>${esc(c.label)}</th>`).join("");
+}
+function specRow(cols, row, i) {
+  return "<tr>" + cols.map((c, ci) => {
+    if (ci === 0) return `<td>${i + 1}</td>`;
+    const v = c.key ? c.key(row) : null;
+    const body = c.html ? c.html(row)
+      : esc(c.fmt ? c.fmt(v) : (v == null ? "-" : String(v)));
+    return `<td>${body}</td>`;
+  }).join("") + "</tr>";
+}
+// "Which is best", in words a non-coder can act on. The ranking metric is
+// explicit (a picker, not a hardcoded assumption that score is what matters)
+// and the direction comes from the server, so a loss comparison reads as
+// "lowest wins" instead of silently crowning the worst run.
+// Plain text, no esc(): this lands in textContent, where esc() would render
+// its entities literally -- "a &amp; b" instead of "a & b".
+function bestRunNote(runs, field, higher) {
+  const scored = runs.filter(r => numOrNull(pick(r, field)) != null);
+  if (!scored.length) return `no run recorded a ${field} value yet`;
+  const rank = higher
+    ? scored.slice().sort((a, b) => pick(b, field) - pick(a, field))
+    : scored.slice().sort((a, b) => pick(a, field) - pick(b, field));
+  const top = rank[0], val = pick(top, field);
+  const dir = higher ? "highest" : "lowest";
+  if (rank.length === 1) {
+    return `${top.run_id} is the only run with a ${field} (${fmtNum(val)})`;
+  }
+  const next = pick(rank[1], field);
+  const diff = Math.abs(val - next);
+  if (!diff) {
+    // "0 clear" reads like a rounding bug; say what actually happened.
+    const others = rank.length - 1;
+    return `${top.run_id} ties ${others} other run${others === 1 ? "" : "s"} ` +
+           `on ${field} at ${fmtNum(val)}`;
+  }
+  return `${top.run_id} wins on ${field}: ${fmtNum(val)} vs ${fmtNum(next)} ` +
+         `(${dir} of ${rank.length} runs, ${fmtNum(diff)} clear)`;
+}
+function renderRuns(s) {
+  const runs = (runsData && runsData.runs) || [];
+  const fields = (runsData && runsData.fields) || [];
+  const running = runs.filter(r => r.status === "running").length;
+  setHTML("runsCount", runsError
+    ? `run log: ${runsError}`
+    // textContent, not innerHTML, so no escaping here. The payload carries only
+  // the directory name: this renders over HTTP to anyone who can reach the
+  // dashboard, and an absolute path is a machine detail it has no use for.
+  : `${runs.length} run${runs.length === 1 ? "" : "s"} indexed` +
+      (runsData && runsData.root_name ? ` in ${runsData.root_name}` : ""));
+  $("runsTotal").textContent = runs.length;
+  $("runsRunning").textContent = running;
+  $("runsSelCount").textContent = runsSel.length;
+  $("noRuns").style.display = runs.length ? "none" : "block";
+
+  // Metric pickers follow the server's field list, so a metric a future
+  // trainer starts writing is selectable without a dashboard change.
+  const dirFor = f => (fields.find(x => x.name === f) || {}).higher_is_better;
+  const opts = f => fields.map(x =>
+    `<option value="${esc(x.name)}"${x.name === f ? " selected" : ""}>` +
+    `${esc(x.name)}${x.higher_is_better ? "" : " (lower is better)"}</option>`).join("");
+  // A metric the server stopped offering (pruned runs, a renamed field) would
+  // leave a picker on a value no run has: the verdict then reads "no run
+  // recorded a score value yet" about a metric the user never chose.
+  const snap = f => (fields.some(x => x.name === f) ? f : (fields[0] || {}).name || f);
+  runsMetric = snap(runsMetric);
+  runsCmpMetric = snap(runsCmpMetric);
+  setHTML("runsMetric", opts(runsMetric));
+  setHTML("runsCmpMetric", opts(runsCmpMetric));
+
+  const pool = runsSel.length ? runs.filter(r => runsSel.includes(r.run_id)) : runs;
+  $("runsBest").textContent = pool.length
+    ? bestRunNote(pool, runsMetric, dirFor(runsMetric) !== false)
+    : "-";
+
+  const sig = JSON.stringify((runsData && runsData.kind_fields) || {});
+  if (sig !== runColsSig) {
+    runColsSig = sig;
+    runCols = runTableCols(runsData && runsData.kind_fields);
+    setHTML("runsHead", specHead(runCols));
+    // Fresh <th> elements need fresh handlers; the guard on the binder keeps
+    // the untouched columns from collecting a listener per poll.
+    bindSortTables();
+  }
+  // Keyed by data-sort, not the tbody id: bindSortTables() writes the state
+  // under the table's data-sort name, so a different key would leave the header
+  // arrow on a column the rows are not actually sorted by.
+  setHTML("runsBody", sortRows("runsTable", runs, runCols.map(c => c.key), 2, -1)
+    .map((r, i) => specRow(runCols, r, i)).join(""));
+  markSorted("runsHead", "runsTable");
+
+  const sel = runs.filter(r => runsSel.includes(r.run_id));
+  $("noRunCmp").style.display = sel.length ? "none" : "block";
+  $("runsCmpNote").textContent = sel.length
+    ? `${sel.length} selected, newest first`
+    : "tick runs above to compare them";
+  setHTML("runCmpBody", sortRows("runCmpTable", sel, RUN_CMP_COLS.map(c => c.key), 1, -1)
+    .map((r, i) => specRow(RUN_CMP_COLS, r, i)).join(""));
+  markSorted("runCmpHead", "runCmpTable");
+
+  const series = ((runsData && runsData.series) || {});
+  const labels = [], lines = [], times = [];
+  for (const r of sel) {
+    const samples = series[r.run_id] || [];
+    const vals = samples.map(x => numOrNull(pickSample(x, runsCmpMetric)));
+    if (!vals.some(v => v != null)) continue;
+    labels.push(r.run_id);
+    lines.push(vals);
+    times.push(samples.map(x => fmtTs(x._ts)));
+  }
+  compareChart("runCmp", labels, lines, times);
+  setHTML("runCmpLegend", labels.map((lab, i) =>
+    `<span><i class="sw" style="background:${seriesColor(i)}"></i>${esc(lab)}</span>`).join(""));
+  setTrendVal("runCmp", charts["runCmp"] ? charts["runCmp"]._current : null);
+}
+// The shared sorter flips direction but never said which column it was on,
+// and these headers are rebuilt from specHead, so the marker has to be
+// reapplied or the arrow vanishes on the next repaint.
+function markSorted(headId, tableId) {
+  const st = sortState[tableId];
+  const cells = $(headId).children;
+  for (let i = 0; i < cells.length; i++) {
+    cells[i].classList.toggle("sorted", !!st && st.col === i);
+    cells[i].classList.toggle("desc", !!st && st.col === i && st.dir === -1);
+  }
+}
+async function loadRuns() {
+  const gen = ++runsGen;
+  try {
+    const q = runsSel.length ? "?runs=" + runsSel.join(",") : "";
+    const res = await fetch("/api/runs" + q);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (gen !== runsGen) return;
+    runsData = data;
+    runsError = data.error || "";
+    // A run can disappear from the index between polls (manual prune).
+    runsSel = runsSel.filter(id => (data.runs || []).some(r => r.run_id === id));
+    if (activeTab === "runs" && lastState) renderAll(lastState);
+  } catch (e) {
+    if (gen !== runsGen) return;
+    // Keep the last good payload: one dropped poll should not blank a table
+    // the owner is reading a verdict off.
+    runsError = String(e.message || e);
+    if (activeTab === "runs" && lastState) renderAll(lastState);
+  }
+}
+function scheduleRunsPoll() {
+  if (runsPoll) { clearTimeout(runsPoll); runsPoll = 0; }
+  if (activeTab !== "runs") return;
+  runsPoll = setTimeout(async () => {
+    await loadRuns();
+    scheduleRunsPoll();
+  }, 5000);
+}
+
 // Sort controls (owner sort rule): table headers bind via data-sort;
 // div-list selects re-render the active tab on change.
+// The runs tables derive their <th> from RUN_COLS, so the headers must be in
+// the DOM before bindSortTables() walks them -- binding against an empty
+// header row leaves the table permanently unsortable.
+// Identity columns only; renderRuns() rebuilds the head from the server's
+// per-kind field list once it arrives.
+setHTML("runsHead", specHead(RUN_COLS));
+setHTML("runCmpHead", specHead(RUN_CMP_COLS));
 bindSortTables();
 for (const id of ["questFeedSort", "agentActivitySort", "activitySort", "dungeonSort", "steamRange"]) {
   $(id)?.addEventListener("change", () => {
@@ -1778,6 +2391,41 @@ $("steamItem")?.addEventListener("change", e => {
   steamItem = e.target.value || null;
   if (lastState) renderSteam(lastState.market || {});
 });
+// Must match runlog.MAX_RUN_IDS: the cap is enforced server-side too, and a
+// client that allowed more would show a checked box the payload has no series
+// for.
+const MAX_RUN_IDS = 24;
+// Delegated, because renderRuns rewrites #runsBody on every poll: a per-row
+// listener would be thrown away each time and stack up as it re-attached.
+$("runsBody").addEventListener("change", e => {
+  const id = e.target.dataset.run;
+  if (!id) return;
+  const i = runsSel.indexOf(id);
+  if (e.target.checked && i < 0) {
+    // The server caps a request at MAX_RUN_IDS; ticking past it would send a
+    // query the server silently truncates, so the visible selection and the
+    // compared series would disagree.
+    if (runsSel.length >= MAX_RUN_IDS) {
+      e.target.checked = false;
+      $("runsSelCount").textContent = `${runsSel.length} (max ${MAX_RUN_IDS})`;
+      return;
+    }
+    runsSel.push(id);
+  } else if (!e.target.checked && i >= 0) runsSel.splice(i, 1);
+  // Re-poll rather than re-render: the chart series only arrive with the
+  // payload, so a local redraw would show a selection the chart has no data
+  // for yet.
+loadRuns();
+  scheduleRunsPoll();
+});
+
+for (const id of ["runsMetric", "runsCmpMetric"]) {
+  $(id)?.addEventListener("change", e => {
+    if (id === "runsMetric") runsMetric = e.target.value;
+    else runsCmpMetric = e.target.value;
+    if (lastState) renderRuns(lastState);
+  });
+}
 
 let activeTab = "overview";
 
@@ -1858,7 +2506,10 @@ const TAB_SECTIONS = {
     ["commission history", s => renderCommHistory(s.commission_history || [])],
   ],
   crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [], s.craft_history || [])]],
-  config: [["config", s => renderConfig(s)]],
+  // The editor has its own endpoint and its own state (an in-progress draft
+  // must survive a snapshot poll), so it renders on tab entry, not per tick.
+  config: [],
+  runs: [["runs", s => renderRuns(s)]],
   gm: [
     ["gm catalog", s => populateDatalists(s.catalog || {})],
     ["treasury", s => renderTreasury(s.market || {})],
@@ -1927,6 +2578,181 @@ function populateDatalists(cat) {
   }
 }
 
+// ---- Start training (#64, control plane for #177) ------------------------
+// The panel posts field VALUES to /api/train/start; the server turns them into
+// argv. Reads ride the LAN like every other GET, but start/stop answer only a
+// loopback peer, so `editable:false` disables the buttons off-box.
+let trainData = null, trainStatusData = null, trainBusy = false, trainRunning = false;
+let trainGen = 0, trainPoll = 0;
+
+function trainMsg(text, cls) {
+  const el = $("trainMsg");
+  el.textContent = text || "";
+  el.className = "cfgmsg" + (cls ? " " + cls : "");
+}
+
+function trainFieldRow(f) {
+  const editable = !!(trainData && trainData.editable);
+  const id = "train-" + f.key;
+  const isPath = f.type === "path";
+  const attrs = `id="${id}" data-trainkey="${esc(f.key)}"` +
+    ` type="${isPath ? "text" : "number"}"` +
+    (isPath ? ` list="trainCheckpoints"`
+            : ` min="${f.min}" max="${f.max}" step="1"`) +
+    ` value="${esc(f.default)}" title="${esc(f.help)}"` +
+    (editable ? "" : " disabled");
+  return `<div class="cfgrow" data-field="${esc(f.key)}">` +
+    `<label for="${id}" title="${esc(f.help)}">${esc(f.key)}</label>` +
+    `<input ${attrs}>` +
+    `<span class="cfgvals">${esc(f.type)}</span></div>`;
+}
+
+function renderTrainForm() {
+  if (!trainData) return;
+  $("trainAbout").textContent = trainData.error ? trainData.error
+    : `Launches ${trainData.trainer} against ${trainData.ws_url}. ` +
+      (trainData.editable ? "Only field values cross; flags are built server-side."
+                          : "Read-only here: start and stop need a loopback browser.");
+  setHTML("trainCheckpoints", (trainData.checkpoints || [])
+    .map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join(""));
+  setHTML("trainPresets", (trainData.presets || []).map((p, i) =>
+    `<button type="button" class="gm-preset" data-trainpreset="${i}"` +
+    ` title="${esc(p.help)}"${trainData.editable ? "" : " disabled"}>` +
+    `${esc(p.name)}</button>`).join(""));
+  setHTML("trainForm", (trainData.fields || []).map(trainFieldRow).join(""));
+  renderTrainStatus();
+}
+
+function renderTrainStatus() {
+  const s = trainStatusData || {};
+  trainRunning = !!s.running;
+  const editable = !!(trainData && trainData.editable);
+  $("trainStart").disabled = !editable || trainBusy || trainRunning;
+  $("trainStop").disabled = !editable || trainBusy || !trainRunning;
+  const state = $("trainState");
+  if (trainRunning) {
+    state.textContent = "running";
+    state.style.color = "var(--good)";
+    const mins = Math.floor((s.elapsed_s || 0) / 60);
+    $("trainStatus").textContent =
+      `pid ${s.pid} - ${s.label || ""} - ${s.elapsed_s == null ? "?" : mins + "m"}`;
+  } else if (typeof s.returncode === "number") {
+    state.textContent = s.returncode === 0 ? "stopped" : "exited " + s.returncode;
+    state.style.color = s.returncode === 0 ? "" : "var(--bad)";
+    $("trainStatus").textContent = s.label || "";
+  } else {
+    state.textContent = "idle";
+    state.style.color = "";
+    $("trainStatus").textContent = "no run yet";
+  }
+}
+
+async function loadTrainers() {
+  const gen = ++trainGen;
+  try {
+    const res = await fetch("/api/trainers");
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (gen !== trainGen) return;
+    trainData = data;
+    renderTrainForm();
+  } catch (e) {
+    if (gen !== trainGen) return;
+    trainMsg(`could not load training options: ${String(e.message || e)}`, "bad");
+  }
+}
+
+function trainValues() {
+  const out = {};
+  for (const f of (trainData && trainData.fields) || []) {
+    const el = $("train-" + f.key);
+    if (!el) continue;
+    out[f.key] = f.type === "path" ? el.value : Number(el.value);
+  }
+  return out;
+}
+
+function applyTrainPreset(i) {
+  const preset = trainData && (trainData.presets || [])[i];
+  if (!preset) return;
+  for (const key of Object.keys(preset.values || {})) {
+    const el = $("train-" + key);
+    if (el) el.value = preset.values[key];
+  }
+  // Stages only. A preset that launched on click would be a foot-gun.
+  trainMsg(`${preset.name} staged - review, then Start.`, "dim");
+}
+
+async function pollTrainOnce() {
+  try {
+    const res = await fetch("/api/train/status");
+    if (res.ok) trainStatusData = await res.json();
+  } catch { /* keep the last readout; the next poll retries */ }
+  renderTrainStatus();
+}
+
+async function startTraining() {
+  if (trainBusy || trainRunning) return;
+  trainBusy = true;
+  renderTrainStatus();
+  trainMsg("starting...");
+  try {
+    const res = await fetch("/api/train/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(trainValues()),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      trainMsg(data.error || `start failed (${res.status})`, "bad");
+    } else {
+      trainMsg("");
+    }
+  } catch (e) {
+    trainMsg(`start failed: ${String(e.message || e)}`, "bad");
+  } finally {
+    trainBusy = false;
+    await pollTrainOnce();
+  }
+}
+
+async function stopTraining() {
+  if (trainBusy || !trainRunning) return;
+  trainBusy = true;
+  renderTrainStatus();
+  try {
+    const res = await fetch("/api/train/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) trainMsg(data.error || `stop failed (${res.status})`, "bad");
+  } catch (e) {
+    trainMsg(`stop failed: ${String(e.message || e)}`, "bad");
+  } finally {
+    trainBusy = false;
+    await pollTrainOnce();
+  }
+}
+
+function scheduleTrainPoll() {
+  if (trainPoll) { clearTimeout(trainPoll); trainPoll = 0; }
+  if (activeTab !== "agents") return;
+  pollTrainOnce();
+  trainPoll = setTimeout(scheduleTrainPoll, trainRunning ? 2000 : 5000);
+}
+
+document.addEventListener("input", e => {
+  if (e.target && e.target.dataset && e.target.dataset.trainkey) trainMsg("");
+});
+document.addEventListener("click", e => {
+  const preset = e.target.closest("[data-trainpreset]");
+  if (preset) applyTrainPreset(Number(preset.dataset.trainpreset));
+});
+$("trainStart")?.addEventListener("click", startTraining);
+$("trainStop")?.addEventListener("click", stopTraining);
+
 // ---- Tab switching -------------------------------------------------------
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
@@ -1935,6 +2761,19 @@ for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.add("active");
     activeTab = tab.dataset.tab;
     $("view-" + activeTab).classList.add("active");
+    if (activeTab === "runs") {
+      // The catalog lives behind its own endpoint and outlives the snapshot,
+      // so the tab pays for a fetch only while it is actually on screen.
+      loadRuns();
+      scheduleRunsPoll();
+    }
+    if (activeTab === "config") loadConfig();
+    if (activeTab === "agents") {
+      // Training options live behind their own endpoint, so the tab pays for
+      // the fetch only while it is on screen (same pattern as runs/config).
+      if (!trainData) loadTrainers();
+      scheduleTrainPoll();
+    }
     if (lastState) renderAll(lastState);
     // The new tab's panels have real widths now: refit any chart that was
     // sized while hidden (or while the window was a different size).
@@ -2107,6 +2946,42 @@ $("gm-send-kick").addEventListener("click", () => {
   if (reason) payload.reason = reason.slice(0, 120);
   gmSend(payload);
 });
+
+// Config editor listeners (#63). Delegated on document, like the GM presets:
+// the field rows are re-rendered on every load, so per-row binding would stack
+// up duplicate handlers on each fetch.
+document.addEventListener("input", e => {
+  const input = e.target;
+  const key = input && input.dataset && input.dataset.cfgkey;
+  if (!key) return;
+  cfgDraft[`${cfgFile}|${key}`] = input.value;
+});
+document.addEventListener("click", e => {
+  const preset = e.target.closest("[data-cfgpreset]");
+  if (preset) {
+    applyConfigPreset(Number(preset.dataset.cfgpreset));
+    return;
+  }
+  const reset = e.target.closest("[data-cfgreset]");
+  if (reset) {
+    const row = reset.closest("[data-field]");
+    if (!row) return;
+    // null is the wire value for "drop the override"; the input goes blank so
+    // the reset is visible in the form before the save.
+    cfgDraft[`${cfgFile}|${row.dataset.field}`] = null;
+    const input = row.querySelector("input");
+    if (input) input.value = "";
+    reset.disabled = true;
+    cfgSetMsg("override removed - press Save to write", "dim");
+  }
+});
+$("cfgFile")?.addEventListener("change", () => {
+  cfgFile = $("cfgFile").value;
+  cfgDraft = {};
+  cfgSetMsg("");
+  renderConfigEditor();
+});
+$("cfgSave")?.addEventListener("click", saveConfig);
 
 // Preset buttons (gold amounts, buff shortcuts)
 document.addEventListener("click", e => {

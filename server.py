@@ -10,7 +10,9 @@ import os
 import queue
 import random
 import signal
+import subprocess
 import sys
+import threading
 import time
 import traceback
 import itertools
@@ -154,7 +156,20 @@ DUNGEON_CLEAR_BASE_XP = 25
 DUNGEON_CLEAR_XP_PER_FLOOR = 20
 
 TAX_RATE = 0.10
+# The 1g floor is load-bearing, not rounding slack: a measured 2h window had a
+# median trade price of 4g, so 10% would round to 0 on ~87% of fills and the
+# floor was the tax on 99.4% of them (21.9% realized vs 10% nominal). It stays
+# because it is the whole of treasury income at this price scale; the realized
+# rate is published next to the nominal one (market.tax_effective_pct) instead
+# of pretending 10% is what the market pays.
 TAX_MINIMUM = 1
+# Treasury sink (#403). The soak ratcheted one way (+37k over 8h) because tax
+# and fees were the only inflows and nothing spent them fast enough. The
+# treasury is a budget with a working reserve, not a vault: every coin above
+# the reserve is removed from circulation, so the balance converges to the
+# reserve instead of climbing. Guild standing bounties spend the reserve, which
+# is the outflow the reserve exists to fund.
+TREASURY_RESERVE = 500.0
 
 # Player-market stall slots: each seller may hold this many open orders.
 # Extra slots are bought with `market_expand` for gold (fee -> treasury):
@@ -753,13 +768,19 @@ def gather_nodes_in_room(room_id):
 
 
 def _room_is_risk(room_id):
-    """True when a surface room is a #157 risk zone (item drops on death).
+    """True when a surface room risks carried items on death.
 
-    Dungeon floors are not #157 zones; they keep the gold-only death rule.
-    Safe-vs-risk is decided by the room's "risk" flag alone -- the Wild
-    does not exist yet (#336), so no wild-set geography is consulted."""
+    Two independent flags feed it: "risk" (#157 risk zones) and "wild" (#424).
+    Wild implies risk automatically, so a wild tile drops your pack however
+    sheltered it looks -- the two flags are orthogonal and a room may be both
+    (the indoor-B gates inside the wild spans are shelter AND wild).
+
+    Dungeon floors are in neither set; they keep the gold-only death rule.
+    """
     room = ROOMS.get(room_id)
-    return bool(room and room.get("risk"))
+    if not room:
+        return False
+    return bool(room.get("risk") or room.get("wild"))
 
 
 # ---------------------------------------------------------------------------
@@ -1339,6 +1360,7 @@ MARKET_HISTORY_SIZE = 50
 market_history = []
 tax_treasury = float(os.environ.get("TEXTMMO_GM_SEED", 0) or 0)
 tax_collected_lifetime = 0.0
+tax_sunk_lifetime = 0.0  # gross inflow removed by the reserve sink (#403)
 
 # Standing-bid (buy order) fees (#158): broker fee on bid creation, relist
 # fee on bid modify, both as a percent of the (new) bid value, sunk to the
@@ -1575,6 +1597,8 @@ def dungeon_room_view(room_id, dungeon):
         "is_dungeon": True,
         "dungeon_floor": floor_no,
         "party_size": _party_size_in_room(room_id),
+        "shelter": True,
+        "wild": False,
     }
 
 
@@ -1596,6 +1620,9 @@ def room_view(room_id):
         "is_dungeon": False,
         "dungeon_floor": 0,
         "party_size": _party_size_in_room(room_id),
+        # Wild/indoor are separate axes (#424): a tile can be both.
+        "shelter": bool(room.get("shelter", False)),
+        "wild": bool(room.get("wild", False)),
         "gatherables": [
             {
                 "id": n["id"],
@@ -1819,6 +1846,28 @@ def respawn_npc(npc):
         f = d.floors.get(floor_no)
         if f and f.cleared:
             f.cleared = False
+
+
+def _treasury_credit(amount):
+    """Bank one treasury inflow, sinking whatever the reserve does not need.
+
+    Every inflow funnels through here (trade tax, stall-slot and broker fees,
+    commission forfeits and collusion remainders) so the reserve sink cannot be
+    bypassed by a new revenue path. Gross income still counts toward
+    tax_collected_lifetime; only the amount the reserve can absorb is banked.
+    Returns the sunk amount.
+    """
+    global tax_treasury, tax_collected_lifetime, tax_sunk_lifetime
+    if amount <= 0:
+        return 0.0
+    tax_collected_lifetime = round(tax_collected_lifetime + amount, 2)
+    banked = min(amount, max(0.0, TREASURY_RESERVE - tax_treasury))
+    sunk = round(amount - banked, 2)
+    if banked:
+        tax_treasury = round(tax_treasury + banked, 2)
+    if sunk:
+        tax_sunk_lifetime = round(tax_sunk_lifetime + sunk, 2)
+    return sunk
 
 
 async def credit_gold(name, amount):
@@ -2758,7 +2807,7 @@ async def cmd_commission_list(player, msg):
 
 
 async def cmd_commission_fill(player, msg):
-    global tax_treasury, tax_collected_lifetime, comm_feed_seq
+    global comm_feed_seq
     if player.room != GUILD_ROOM:
         await send(player, {"type": "error", "text": "Commissions are filled at the Adventurers Guild hall (south of Artisan Row)."})
 
@@ -2866,8 +2915,7 @@ async def cmd_commission_fill(player, msg):
     remainder = max(0, escrow - eff_gold)
     commission["escrow"] = 0
     if remainder:
-        tax_treasury += remainder
-        tax_collected_lifetime += remainder
+        _treasury_credit(remainder)
     commission["status"] = "completed"
     # Terminal rows keep no live counters: progress served its display
     # purpose, and stale counts would over-read on any later view.
@@ -2905,7 +2953,7 @@ async def cmd_commission_fill(player, msg):
 
 
 async def cmd_commission_cancel(player, msg):
-    global tax_treasury, tax_collected_lifetime, comm_feed_seq
+    global comm_feed_seq
     cid_raw = msg.get("commission_id", msg.get("id", ""))
     try:
         cid = int(str(cid_raw).strip())
@@ -2966,8 +3014,7 @@ async def cmd_commission_cancel(player, msg):
         del comm_feed[0]
     commission["escrow"] = 0
     if forfeit:
-        tax_treasury += forfeit
-        tax_collected_lifetime += forfeit
+        _treasury_credit(forfeit)
     await credit_gold(commission["poster"], refund)
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"Commission #{cid} cancelled. Half the escrow ({refund}g) returned; {forfeit}g forfeited to the treasury."})
@@ -3162,6 +3209,24 @@ def _refresh_quests():
     QUESTS["tonic"].update({
         "reward_xp": QUEST_TONIC_XP, "reward_gold": QUEST_TONIC_GOLD,
         "reward_points": QUEST_TONIC_POINTS})
+
+
+# The code defaults, snapshotted before the single config pass below
+# overwrites them. The editor has to show what a key falls back to when it is
+# absent from the file, and after _apply_config() the globals hold the file's
+# values instead.
+CONFIG_DEFAULTS = {}
+try:
+    import config_schema as _config_schema_for_defaults
+
+    for _file_id in ("server", "ml"):
+        for _section, _keys in _config_schema_for_defaults.sections(_file_id):
+            for _key in _keys:
+                _value = globals().get(_key)
+                if isinstance(_value, (int, float)) and not isinstance(_value, bool):
+                    CONFIG_DEFAULTS[_key] = _value
+except ImportError:
+    pass
 
 
 # Single config pass, HERE at module bottom: every overridable global
@@ -3481,6 +3546,19 @@ async def cmd_market_list(player, msg):
     })
 
 
+def _realized_tax_pct():
+    """Realized tax as a percent of price over the rolling fill window.
+
+    The nominal TAX_RATE is unreachable at a 4g median price (see the
+    TAX_MINIMUM comment), so the honest number is the measured one.
+    """
+    gross = sum(float(h.get("price", 0) or 0) for h in market_history)
+    if gross <= 0:
+        return 0.0
+    paid = sum(float(h.get("tax", 0) or 0) for h in market_history)
+    return round(100.0 * paid / gross, 2)
+
+
 async def _sweep_crossed_orders(iid):
     while True:
         best_bid = None
@@ -3629,7 +3707,6 @@ async def cmd_market_cancel(player, msg):
 
 async def cmd_market_expand(player, msg):
     """Buy +1 market stall slot. Fee goes to the GM treasury (gold sink)."""
-    global tax_treasury, tax_collected_lifetime
     entry = get_score_entry(player.name)
     slots = entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
     price = market_slot_price(slots)
@@ -3637,8 +3714,7 @@ async def cmd_market_expand(player, msg):
         await send(player, {"type": "error", "text": f"Next market slot costs {price} gold (you have {player.gold})."})
         return
     player.gold -= price
-    tax_treasury += price
-    tax_collected_lifetime += price
+    _treasury_credit(price)
     entry["market_slots"] = slots + 1
     mark_scores_dirty()
     await send(player, {"type": "message", "text": f"Market stall expanded to {slots + 1} slots for {price} gold (next: {market_slot_price(slots + 1)} gold)."})
@@ -3652,7 +3728,6 @@ async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
     (buyers pay now, bid escrow was prepaid); this handles tax, seller
     payout, buyer delivery (item_bank when the buyer is offline or pack-full),
     history, and both sides' trade score."""
-    global tax_treasury, tax_collected_lifetime
     # Commercial rounding, documented (#195.8): half away from zero, not
     # Python's banker's half-even (round(2.5) == 2 surprises sellers), and
     # the tax never eats the whole price -- 1g trades used to pay the
@@ -3662,8 +3737,7 @@ async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
     else:
         tax = 0
     seller_payout = price - tax
-    tax_treasury += tax
-    tax_collected_lifetime += tax
+    _treasury_credit(tax)
     buyer_entry = get_score_entry(buyer_name)
     seller_entry = get_score_entry(seller_name)
     buyer_entry["trades_completed"] = buyer_entry.get("trades_completed", 0) + 1
@@ -3747,7 +3821,6 @@ async def cmd_market_buy(player, msg):
 
 
 async def cmd_market_buy_order(player, msg):
-    global tax_treasury, tax_collected_lifetime
     if player.room != "market":
         await send(player, {"type": "error", "text": "Bids are managed from the market room."})
         return
@@ -3773,8 +3846,7 @@ async def cmd_market_buy_order(player, msg):
         await send(player, {"type": "error", "text": f"You need {price + fee} gold (bid {price} + broker fee {fee})."})
         return
     player.gold -= price + fee
-    tax_treasury = round(tax_treasury + fee, 2)
-    tax_collected_lifetime = round(tax_collected_lifetime + fee, 2)
+    _treasury_credit(fee)
     oid = next(_id_counter)
     bid = {"id": oid, "buyer": player.name, "item": iid, "price": price, "ts": time.time()}
     market_bids.append(bid)
@@ -3805,7 +3877,6 @@ async def cmd_market_buy_order(player, msg):
 
 
 async def cmd_market_buy_modify(player, msg):
-    global tax_treasury, tax_collected_lifetime
     if player.room != "market":
         await send(player, {"type": "error", "text": "Bids are managed from the market room."})
         return
@@ -3835,8 +3906,7 @@ async def cmd_market_buy_modify(player, msg):
         await send(player, {"type": "error", "text": f"You need {new_price + fee} gold (bid {new_price} + relist fee {fee})."})
         return
     player.gold -= new_price + fee
-    tax_treasury = round(tax_treasury + fee, 2)
-    tax_collected_lifetime = round(tax_collected_lifetime + fee, 2)
+    _treasury_credit(fee)
     bid["price"] = new_price
     mark_scores_dirty()
     # Modify keeps id and queue position; sweep once like a new bid.
@@ -4424,6 +4494,7 @@ def world_snapshot():
     for rid, r in ROOMS.items():
         rooms.append({
             "id": rid, "name": r["name"], "shelter": bool(r.get("shelter", False)),
+            "wild": bool(r.get("wild", False)),
             "exits": [{"dir": d, "to": t, "to_name": ROOMS.get(t, {}).get("name", t)} for d, t in r.get("exits", {}).items()],
             "players": [{"name": p.name, "level": get_score_entry(p.name)["level"]} for p in players_in_room(rid)],
             "npcs": [{"name": n["name"], "alive": n["alive"], "hp": n["hp"], "max_hp": n["max_hp"]} for n in npcs.values() if n["room"] == rid],
@@ -4478,7 +4549,9 @@ def world_snapshot():
         "rooms": rooms, "players": online_players, "scores": scores,
         "activity": list(command_log),
         "market": {"treasury": round(tax_treasury, 2), "collected_lifetime": round(tax_collected_lifetime, 2),
-                   "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM, "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
+                   "sunk_lifetime": round(tax_sunk_lifetime, 2), "reserve": TREASURY_RESERVE,
+                   "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
+                   "tax_effective_pct": _realized_tax_pct(), "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
                    "orders": [{"id": o["id"], "seller": o["seller"], "item": ITEM_DEFS.get(o["item"], {}).get("name", o["item"]),
                                "price": o["price"], "ts": o.get("ts", 0)} for o in market_orders],
                    "bids": [{"id": b["id"], "buyer": b["buyer"], "item": ITEM_DEFS.get(b["item"], {}).get("name", b["item"]),
@@ -4549,6 +4622,406 @@ def _memory_mb():
         return None
 
 
+def _runs_payload(query, root=None):
+    """Run index for the dashboard Runs tab (#65).
+
+    Read fresh on every request (no cache): the runs directory is written by
+    independent trainer processes, so a cached copy would show a stale
+    "which run is best".  The ml/ module is flat-imported like the trainers
+    do it, and every failure degrades to an empty index rather than taking
+    the dashboard down with it.
+    """
+    try:
+        if join(dirname(abspath(__file__)), "ml") not in sys.path:
+            sys.path.insert(0, join(dirname(abspath(__file__)), "ml"))
+        import runlog
+        return runlog.runs_payload(
+            root=root, ids=runlog.parse_run_ids(query) or None
+        )
+    except Exception:  # noqa: BLE001 - the dashboard gets an empty index instead
+        return {
+            "root_name": "",
+            "runs": [],
+            "fields": [],
+            "kind_fields": {},
+            "error": "run log unavailable",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Config editor (#63). Two operator-editable files, one endpoint pair:
+# GET returns the editable schema + current values, POST writes a batch of
+# edits. Writes are refused off-box (see the loopback gate in do_POST).
+# ---------------------------------------------------------------------------
+_ML_CONFIG_FILE = join(dirname(abspath(__file__)), "ml", "ml_config.json")
+_CONFIG_BODY_MAX = 64 * 1024
+_CONFIG_VALUES_MAX = 200
+_CONFIG_TEXT_MAX = 200
+
+
+def _config_path(file_id):
+    """Resolve at call time, not import time.
+
+    CONFIG_FILE is reassigned by --config (server.py ~L5121), and the editor
+    must write the file this process is actually reading, not the default
+    location.
+    """
+    if file_id == "server":
+        return CONFIG_FILE
+    return _ML_CONFIG_FILE
+
+
+def _loopback_peer(host):
+    """Loopback-only allowlist, same one the GM stream uses.
+
+    The dashboard binds 0.0.0.0 with no auth, so an off-box viewer can read
+    the config and must not be able to write it.
+
+    127.0.0.0/8 rather than just 127.0.0.1: the whole /8 is loopback by
+    definition, and an IPv4-mapped peer (::ffff:127.0.0.1) arrives as that
+    string on a dual-stack socket. Both are this machine, so refusing them
+    would only cost the operator their own dashboard.
+    """
+    text = str(host).removeprefix("::ffff:")
+    if text == "localhost":
+        return True
+    if ":" in text:
+        return text in ("::1", "0:0:0:0:0:0:0:1")
+    return text.startswith("127.") and text.count(".") == 3
+
+
+def _loopback_origin(origin):
+    """True when a browser Origin names this machine's own dashboard.
+
+    A cross-origin page POSTing to the dashboard sends its own Origin and
+    cannot forge it, so refusing everything else is what stops a page the
+    operator happens to be browsing from rewriting their config.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    # The GM gate matches IPs only because remote_address is an IP tuple. An
+    # Origin carries a hostname, so "localhost" has to be accepted here or the
+    # operator's own dashboard refuses its own writes in the common case.
+    local = host == "localhost" or _loopback_peer(host)
+    return parts.scheme in ("http", "https") and local
+
+
+def _config_read(path):
+    """(data, error). A file that does not parse is reported, not rewritten."""
+    try:
+        with open(path, encoding="utf-8", newline="") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None, "file not found"
+    except OSError as exc:
+        return None, f"unreadable ({exc.strerror or exc})"
+    if not text.strip():
+        return None, "file is empty"
+    try:
+        return json.loads(text), ""
+    except ValueError as exc:
+        return None, f"invalid JSON ({exc})"
+
+
+def _config_payload():
+    """Editor schema + current values for every field of both config files.
+
+    Read fresh per request: the files are edited outside the server too, and a
+    cached copy would let the operator save a value they cannot see.
+    """
+    try:
+        import config_schema
+    except ImportError as exc:
+        return {"editable": False, "files": [], "presets": [],
+                "error": f"config editor unavailable ({exc})"}
+
+    files = []
+    for file_id in ("server", "ml"):
+        meta = config_schema.FILES[file_id]
+        data, error = _config_read(_config_path(file_id))
+        sections = []
+        for section, keys in config_schema.sections(file_id):
+            body = data.get(section) if isinstance(data, dict) else None
+            body = body if isinstance(body, dict) else {}
+            fields = []
+            for key in keys:
+                spec = config_schema.field_spec(file_id, section, key)
+                default = _config_default(file_id, key)
+                present = key in body
+                value = body.get(key, default)
+                fields.append({
+                    "key": key,
+                    "section": section,
+                    "type": spec["type"],
+                    "min": spec.get("min"),
+                    "max": spec.get("max"),
+                    "step": spec.get("step"),
+                    "count": spec.get("count"),
+                    "help": spec["help"],
+                    "default": default,
+                    "value": value,
+                    "text": (config_schema.format_value(spec, value)
+                             if value is not None else ""),
+                    "present": present,
+                })
+            sections.append({"name": section, "fields": fields})
+        files.append({
+            "id": file_id,
+            "label": meta["label"],
+            # repo-relative only: an absolute path would publish the operator's
+            # home directory to every off-box viewer of the dashboard.
+            "path": meta["path"],
+            "restart": meta["restart"],
+            "error": error,
+            "sections": sections,
+        })
+    return {
+        "editable": True,
+        "files": files,
+        "presets": [{"name": p["name"], "help": p["help"], "values": p["values"]}
+                    for p in config_schema.PRESETS],
+    }
+
+
+def _config_default(file_id, key):
+    """The code default a missing key falls back to, or None if unknowable.
+
+    Read from CONFIG_DEFAULTS, not from the globals: _apply_config() overwrites
+    those with the file's values, so globals() would report the file's own
+    value back as the default for every overridden key.
+    """
+    if file_id == "server":
+        return CONFIG_DEFAULTS.get(key)
+    try:
+        import config_schema
+    except ImportError:
+        return None
+    return config_schema.ML_DEFAULTS.get(key)
+
+
+def _config_apply(file_id, edits):
+    """Validate a batch of {section: {key: raw-or-None}} and write it.
+
+    Returns (status, body). Validation happens before the writer is called, so
+    a bad batch never reaches the file.
+    """
+    try:
+        import config_schema
+        import config_write
+    except ImportError as exc:
+        return 503, {"ok": False, "error": f"config editor unavailable ({exc})"}
+    if file_id not in config_schema.FILES:
+        return 400, {"ok": False, "error": f"unknown config file {file_id!r}"}
+    if not isinstance(edits, dict) or not edits:
+        return 400, {"ok": False, "error": "edits must be a non-empty object"}
+    if len(edits) > _CONFIG_VALUES_MAX:
+        return 400, {"ok": False, "error": f"at most {_CONFIG_VALUES_MAX} values per save"}
+
+    resolved = {}
+    errors = []
+    for dotted, raw in edits.items():
+        section, _, key = str(dotted).partition(".")
+        if config_schema.field_spec(file_id, section, key) is None:
+            errors.append(f"unknown key {dotted}")
+            continue
+        if raw is None:
+            # Null means "drop the override", so the code default applies.
+            resolved.setdefault(section, {})[key] = None
+            continue
+        if not isinstance(raw, (str, int, float)) or isinstance(raw, bool):
+            errors.append(f"{key} must be a number")
+            continue
+        text = str(raw)
+        if len(text) > _CONFIG_TEXT_MAX:
+            errors.append(f"{key} value is too long")
+            continue
+        value, error = config_schema.validate(file_id, section, key, text)
+        if error:
+            errors.append(error)
+            continue
+        resolved.setdefault(section, {})[key] = value
+    if errors:
+        return 400, {"ok": False, "error": "; ".join(errors[:5])}
+
+    path = _config_path(file_id)
+    ok, message, changed = config_write.write_edits(path, file_id, resolved)
+    if not ok:
+        return 500, {"ok": False, "error": message}
+    # No live apply, deliberately: both files say "restart after changes",
+    # ml_env reads ml_config.json at import only, and _sync_extra_spawns() is
+    # documented startup-only (it drops live extra instances).
+    return 200, {"ok": True, "message": message, "changed": changed,
+                 "restart": config_schema.FILES[file_id]["restart"]}
+
+
+# ---------------------------------------------------------------------------
+# One-click training launches (#64). Read routes describe what can be launched
+# and what is running; the two POST routes start and stop a trainer process.
+# The POST pair is gated exactly like the config write above (loopback peer,
+# local Origin, application/json) because both start code on this box.
+# ---------------------------------------------------------------------------
+_TRAIN_BODY_MAX = 8 * 1024
+
+# The child we spawned, if any. Process state is the only thing that has to
+# survive between requests: the dashboard serves each request in its own
+# thread, so this is a single lock-guarded slot rather than per-connection.
+# Reentrant because the start/stop guards call _train_payload() while already
+# holding the lock, and a plain Lock would deadlock on that second acquiry.
+_train_lock = threading.RLock()
+_train_proc = None
+_train_meta = {}
+
+
+def _train_ws_url():
+    """The game server's own websocket URL, for agents to train against.
+
+    0.0.0.0 is a bind address, not a destination an agent can dial, so a
+    wildcard bind becomes loopback.
+    """
+    host = HOST if HOST not in ("0.0.0.0", "") else "127.0.0.1"
+    return f"ws://{host}:{PORT}"
+
+
+def _train_alive(proc):
+    return proc is not None and proc.poll() is None
+
+
+def _train_payload():
+    """Status of the launched trainer. Never carries an absolute path."""
+    with _train_lock:
+        proc, meta = _train_proc, dict(_train_meta)
+    if meta.get("pid") and not _train_alive(proc):
+        # poll() has reaped it; record the exit once so the panel can show a
+        # finished run instead of spinning on a dead pid.
+        meta["running"] = False
+        meta["returncode"] = proc.returncode
+        with _train_lock:
+            if _train_proc is proc:
+                _train_meta.update(meta)
+    out = {
+        "running": bool(meta.get("running")) and _train_alive(proc),
+        "trainer": meta.get("trainer", ""),
+        "label": meta.get("label", ""),
+        "pid": meta.get("pid") if _train_alive(proc) else None,
+        "started_at": meta.get("started_at"),
+        "elapsed_s": (round(time.time() - meta["started_at"], 1)
+                      if meta.get("started_at") and _train_alive(proc) else 0),
+        "returncode": meta.get("returncode"),
+    }
+    return out
+
+
+def _trainers_payload(peer):
+    """Schema, presets and pickable checkpoints for the Start Training panel."""
+    root = dirname(abspath(__file__))
+    payload = {"editable": bool(_loopback_peer(peer)), "ws_url": _train_ws_url()}
+    try:
+        if join(root, "ml") not in sys.path:
+            sys.path.insert(0, join(root, "ml"))
+        import launcher
+        payload.update(launcher.describe())
+        payload["defaults"] = launcher.defaults()
+        payload["checkpoints"] = launcher.checkpoints(root)
+    except Exception:  # noqa: BLE001 - the panel degrades instead of 500ing
+        payload["error"] = "launcher unavailable"
+    return payload
+
+
+def _train_start(body):
+    """Spawn a trainer. (status, payload)."""
+    global _train_proc, _train_meta
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "body must be a JSON object"}
+    root = dirname(abspath(__file__))
+    try:
+        if join(root, "ml") not in sys.path:
+            sys.path.insert(0, join(root, "ml"))
+        import launcher
+    except ImportError:
+        return 500, {"ok": False, "error": "launcher unavailable"}
+
+    values, error = launcher.validate(body, root)
+    if error:
+        return 400, {"ok": False, "error": error}
+
+    argv = launcher.build_argv(values, root, _train_ws_url())
+    script = argv[0]
+    if not os.path.exists(script):
+        return 500, {"ok": False, "error": "trainer script not found"}
+
+    with _train_lock:
+        if _train_alive(_train_proc):
+            return 409, {"ok": False, "error": "a training run is already going",
+                         "status": _train_payload()}
+        popen_kwargs = {
+            "cwd": root,
+            # Detach the child's stdio from the server: a chatty trainer would
+            # otherwise spam the server log, and under a piped stdout (CI,
+            # systemd) a full pipe buffer would stall the trainer mid-run.
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            # Its own process group, so Stop never signals this server.
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        try:
+            proc = subprocess.Popen([sys.executable] + argv, **popen_kwargs)
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"could not start trainer ({exc})"}
+        _train_proc = proc
+        _train_meta = {
+            "pid": proc.pid,
+            "trainer": launcher.TRAINER,
+            "label": launcher.label(argv),
+            "started_at": time.time(),
+            "running": True,
+            "returncode": None,
+        }
+    return 200, {"ok": True, "message": "training started",
+                 "status": _train_payload()}
+
+
+def _train_stop():
+    """Signal the trainer this server started. (status, payload)."""
+    with _train_lock:
+        proc = _train_proc
+        if not _train_alive(proc):
+            return 409, {"ok": False, "error": "no training run to stop",
+                         "status": _train_payload()}
+        try:
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                proc.terminate()
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"could not signal trainer ({exc})"}
+    # The wait must happen OUTSIDE the lock: it can take up to 15s, and the
+    # dashboard polls /api/train/status every 2s from other handler threads,
+    # which would otherwise queue behind the lock.
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return 500, {"ok": False, "error": "trainer would not stop"}
+    with _train_lock:
+        _train_meta["running"] = False
+        _train_meta["returncode"] = proc.returncode
+    return 200, {"ok": True, "message": "training stopped",
+                 "status": _train_payload()}
+
+
 def start_dashboard():
     import threading
     here = dirname(abspath(__file__))
@@ -4566,13 +5039,35 @@ def start_dashboard():
             if VERBOSE:
                 print(f"[http] {self.address_string()}: {fmt % args}")
 
-        def _send(self, body, content_type):
-            self.send_response(200)
+        def _send(self, body, content_type, status=200):
+            self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_json(self, obj, status=200):
+            self._send(json.dumps(obj).encode(), "application/json", status)
+
+        def _read_body(self, cap):
+            """(raw, error) for a POST body, read under a hard cap.
+
+            Content-Length decides before a byte is read, so an enormous
+            declared length costs nothing; refusing an oversized body closes
+            the connection because the unread bytes would otherwise be parsed
+            as the next keep-alive request.
+            """
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return None, "bad Content-Length"
+            if length <= 0:
+                return None, "empty body"
+            if length > cap:
+                self.close_connection = True
+                return None, "body too large"
+            return self.rfile.read(length), ""
 
         def do_GET(self):
             path = self.path.split("?")[0]
@@ -4607,10 +5102,95 @@ def start_dashboard():
             elif path == "/uplot.min.js" and os.path.exists(uplot_path):
                 with open(uplot_path, "rb") as f:
                     self._send(f.read(), "application/javascript")
+            elif path == "/api/config":
+                # Editor schema + current values (#63). `editable` is decided
+                # per request, not here: the dashboard binds 0.0.0.0, so an
+                # off-box viewer gets the same fields with writes disabled.
+                payload = _config_payload()
+                peer = self.client_address[0] if self.client_address else ""
+                payload["editable"] = bool(payload.get("editable")) and _loopback_peer(peer)
+                self._send_json(payload)
+            elif path == "/api/runs":
+                # Run index + per-run sample history for the Runs tab (#65).
+                # No path parameter: the reader scans a fixed directory and
+                # runlog.valid_run_id() rejects anything that is not an id it
+                # minted, so a query string can never escape the index.
+                self._send(
+                    json.dumps(_runs_payload(self.path.partition("?")[2])).encode(),
+                    "application/json",
+                )
+            elif path == "/api/trainers":
+                # Start Training panel schema (#64). Read-only, so it stays
+                # LAN-visible like every other GET; `editable` is what tells an
+                # off-box viewer that the buttons will be refused.
+                self._send_json(_trainers_payload(self.client_address[0]))
+            elif path == "/api/train/status":
+                self._send_json(_train_payload())
             elif path == "/api/activity/stream":
                 self._serve_activity_stream()
             else:
                 self.send_error(404)
+
+        def do_POST(self):
+            # Config writes (#63) and training launches (#64). The first POST
+            # routes in the repo: every other mutating path goes over the GM
+            # WebSocket.
+            path = self.path.split("?")[0]
+            if path not in ("/api/config", "/api/train/start", "/api/train/stop"):
+                self.send_error(404)
+                return
+            launching = path != "/api/config"
+            # Keep the #63 /api/config error strings byte-for-byte: external
+            # clients match on them. Training gets its own wording.
+            peer = self.client_address[0] if self.client_address else ""
+            if not _loopback_peer(peer):
+                self._send_json(
+                    {"ok": False,
+                     "error": ("training launches are loopback-only" if launching
+                               else "config writes are loopback-only")}, 403)
+                return
+            origin = self.headers.get("Origin")
+            if origin and not _loopback_origin(origin):
+                self._send_json(
+                    {"ok": False,
+                     "error": ("cross-origin write refused" if launching
+                               else "cross-origin config write refused")}, 403)
+                return
+            # application/json is not CORS-safelisted, so a cross-origin page
+            # cannot send it without a preflight this server never answers.
+            # That is what closes the no-cors text/plain POST, which Origin
+            # alone does not stop.
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._send_json(
+                    {"ok": False, "error": "Content-Type must be application/json"}, 415
+                )
+                return
+            raw, error = self._read_body(_TRAIN_BODY_MAX if launching else _CONFIG_BODY_MAX)
+            if raw is None:
+                self._send_json({"ok": False, "error": error}, 400)
+                return
+            try:
+                body = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": f"invalid JSON ({exc})"}, 400)
+                return
+            if path == "/api/train/stop":
+                status, result = _train_stop()
+                self._send_json(result, status)
+                return
+            if launching:
+                if not isinstance(body, dict):
+                    self._send_json({"ok": False, "error": "body must be a JSON object"}, 400)
+                    return
+                status, result = _train_start(body)
+                self._send_json(result, status)
+                return
+            if not isinstance(body, dict):
+                self._send_json({"ok": False, "error": "body must be a JSON object"}, 400)
+                return
+            status, result = _config_apply(body.get("file"), body.get("edits"))
+            self._send_json(result, status)
 
         def _serve_activity_stream(self):
             """Server-sent activity events (split-lane dashboard live feel).

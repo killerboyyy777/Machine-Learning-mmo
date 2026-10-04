@@ -211,6 +211,79 @@ def test_event_parsing_maren_combat_inventory():
     print("EVENT_PARSE_OK")
 
 
+def test_death_accounting_reaches_reward_signals():
+    # The death payload carries gold_lost/gold_dropped/xp_lost and the env
+    # used to read none of them, so a reward formula had no way to express
+    # "died expensively" (the death penalty is a negative score_delta, and
+    # the death event itself does not move the gold stat -- the server
+    # follows it with a separate stats snapshot).
+    from ml.reward_dsl import SIGNALS
+
+    e = TextMMOEnv("DeathSig", reward_formula="gold_lost + gold_dropped")
+    e._apply_event(
+        {
+            "type": "death",
+            "gold_lost": 12.0,
+            "gold_dropped": 8.0,
+            "xp_lost": 5.0,
+            "level": 3,
+            "text": "You die!",
+        }
+    )
+    sig = e._reward_signals(0.0, 0.0, 0, 0.0, 0.0, *_pendings(e))
+    assert sig["deaths"] == 1.0, sig
+    assert sig["deaths_total"] == 1.0, sig
+    assert (sig["gold_lost"], sig["gold_dropped"], sig["xp_lost"]) == (12.0, 8.0, 5.0)
+    assert set(sig) == set(SIGNALS), sorted(set(SIGNALS) ^ set(sig))
+    # the accounting is per-step, and drains after the step reads it
+    assert e._compute_reward(0.0, 0.0, 0, 0.0, 0.0, 1, sig) == 20.0
+    e._pending_deaths = e._pending_gold_lost = e._pending_gold_dropped = 0.0
+    e._pending_xp_lost = 0
+    e._steps_since_death = 5  # arbitrary
+    after = e._reward_signals(0.0, 0.0, 0, 0.0, 0.0, *_pendings(e))
+    assert after["deaths"] == 0.0 and after["gold_lost"] == 0.0, after
+    assert after["deaths_total"] == 1.0, "cumulative count must survive the drain"
+    # a death with no accounting fields still counts, and does not crash
+    e._apply_event({"type": "death"})
+    assert e._pending_deaths == 1.0, e._pending_deaths
+    print("DEATH_SIGNALS_OK")
+
+
+def _pendings(e):
+    return (
+        e._pending_deaths,
+        e._pending_gold_lost,
+        e._pending_gold_dropped,
+        e._pending_xp_lost,
+        e._steps_since_death,
+    )
+
+
+def test_wild_indoor_flags_observed():
+    e = TextMMOEnv("WildObs")
+    base = {"type": "room", "exits": {}, "npcs": [], "items": [],
+            "gold": 0, "players": [], "is_dungeon": False, "dungeon_floor": 0,
+            "party_size": 1, "gatherables": []}
+    e._apply_event(dict(base, id="town_square", shelter=False, wild=False))
+    assert e._state["wild"] is False and e._state["shelter"] is False
+    # an indoor wild gate: both axes true at once (orthogonal flags)
+    e._apply_event(dict(base, id="summit_gatehouse", shelter=True, wild=True))
+    assert e._state["wild"] is True and e._state["shelter"] is True
+    obs = e._build_obs()
+    assert obs["wild_flag"] == 1.0 and obs["indoor_flag"] == 1.0
+    e._apply_event(dict(base, id="howling_col", shelter=False, wild=True))
+    obs = e._build_obs()
+    assert obs["wild_flag"] == 1.0 and obs["indoor_flag"] == 0.0
+    # a server predating the flag still parses (additive wire change)
+    e._apply_event(dict(base, id="market"))
+    obs = e._build_obs()
+    assert obs["wild_flag"] == 0.0 and obs["indoor_flag"] == 0.0
+    flat = flatten_obs(obs)
+    assert len(flat) == OBS_SIZE, (len(flat), OBS_SIZE)
+    assert flat[-2:] == [0.0, 0.0], flat[-2:]
+    print("WILD_OBS_OK")
+
+
 def test_maren_obs_features():
     e = TextMMOEnv("ParseObs")
     e._state["quest_remedy_active"] = True
@@ -340,6 +413,8 @@ test_gate_matrix()
 test_maren_mirror_and_stages()
 test_quest_transitions_all_four()
 test_event_parsing_maren_combat_inventory()
+test_death_accounting_reaches_reward_signals()
+test_wild_indoor_flags_observed()
 test_maren_obs_features()
 test_presence_obs_flags()
 test_equip_mask_excludes_worn_weapon()
