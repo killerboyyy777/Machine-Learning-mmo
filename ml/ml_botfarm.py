@@ -49,18 +49,20 @@ try:
     from .runlog import seed_everything, start_run
     # Scripted baselines live in ml/plugins now; imported here so the
     # farm CLI, --scripted roles, and existing import sites keep working.
-    from .plugins.scripted import (
-        SCRIPTED_POLICIES,
-        SCRIPTED_NAMES,
+    from .plugins.scripted import (  # noqa: F401
+        SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
+        GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
+        CommissionerPolicy,
     )
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
     from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
     from ml_client import LinearQAgent
     from runlog import seed_everything, start_run
-    from plugins.scripted import (
-        SCRIPTED_POLICIES,
-        SCRIPTED_NAMES,
+    from plugins.scripted import (  # noqa: F401
+        SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
+        GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
+        CommissionerPolicy,
     )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
