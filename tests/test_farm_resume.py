@@ -78,6 +78,9 @@ if HAVE_TORCH:
             rnd_lambda_min=0.1,
             rnd_decay_steps=100000,
             rnd_lr=1e-3,
+            spawn_spread=False,
+            td_norm=True,
+            td_clip=5.0,
         )
 
     def test_torchfarm_resume():

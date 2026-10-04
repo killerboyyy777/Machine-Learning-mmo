@@ -93,11 +93,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "torch_agents"))
 from torch_farm import Runner as TorchRunner
 
-_farm = types.SimpleNamespace(args=types.SimpleNamespace(name_prefix="T", url="ws://x"),
-                               agent=types.SimpleNamespace(intrinsic_accept=1.0,
-                                                           intrinsic_progress=2.0,
-                                                           rnd_lambda=0,
-                                                           _rnd_weight=lambda: 0.0))
+_farm = types.SimpleNamespace(
+    args=types.SimpleNamespace(
+        name_prefix="T", url="ws://x", spawn_spread=False, reward_formula=None
+    ),
+    agent=types.SimpleNamespace(
+        intrinsic_accept=1.0, intrinsic_progress=2.0, rnd_lambda=0,
+        _rnd_weight=lambda: 0.0,
+    ),
+    spawn_rooms=[],
+    spawn_room_for=lambda index: None,
+)
 _tr = TorchRunner(0, _farm)
 _info_all = {"quest": {"by_quest": {
     "guard_charm": {"turned_in": True},

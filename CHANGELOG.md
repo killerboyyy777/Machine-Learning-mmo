@@ -10,6 +10,214 @@ All notable changes to the text MMO engine are recorded here.
   weight from `t_step` (checkpoint-resumed), so curiosity pays most
   while the world is novel and fades to a floor as it becomes
   familiar. Single-agent entry point gains the same knobs.
+- Training-mode damage dampening (#416a): trainees take a configured
+  fraction of incoming NPC damage via `TRAINING_DAMAGE_FRACTION`
+  (server_config.json economy section, default 1.0 = off). Applies at
+  both player-damage sites (combat retaliation, NPC auto-attack);
+  civilian runs are exactly untouched at the default.
+- One-click training from the dashboard (#64, #177): the Agents tab can now
+  start and stop `torch_agents/torch_farm.py` behind Start/Stop buttons
+  instead of a terminal. New additive HTTP routes: `GET /api/trainers`
+  (field schema, presets, checkpoints), `GET /api/train/status` (running,
+  pid, elapsed, exit code), `POST /api/train/start` and
+  `POST /api/train/stop`. The request carries field values only; the server
+  builds argv, refuses unknown keys and out-of-range numbers, and never runs
+  a shell. Checkpoints are allowlisted to `torch_agents/`, `ml/` and
+  `checkpoints/` and to `.pt`/`.pth`/`*weights.json`/`*best.json` names,
+  because the trainer overwrites the file `--weights` names; the defaults
+  now match `torch_farm.py`'s own (`ml_farm_weights.json`,
+  `ml_farm_best.json`), so dashboard and CLI fleets resume each other.
+  Start/Stop are loopback-only like config writes; the reads stay
+  LAN-visible. The trainer runs as a child process in its own process group
+  with detached stdio, so Stop can never signal the game server and a chatty
+  trainer cannot flood the log. A running trainer is not remembered across a
+  server restart.
+- Treasury sink and measured tax floor (#403, #404): an 8h soak showed the
+  treasury ratcheting one way (+37k) because tax and fees were the only
+  inflows and nothing spent them fast enough. Every treasury inflow now
+  funnels through `_treasury_credit`, which banks gold only up to
+  `TREASURY_RESERVE` (default 500, config key) and removes the remainder
+  from circulation, so the balance converges to a working reserve instead
+  of climbing. Guild standing bounties spend that reserve. Gross income is
+  unchanged in `collected_lifetime`; the removed amount is reported as
+  `market.sunk_lifetime` and the reserve as `market.reserve`.
+- Tax floor documented, not lowered (#404): a measured 2h window had a
+  median trade price of 4g, so the 1g floor was the tax on 99.4% of fills
+  (21.9% realized against a 10% nominal). The floor stays because at this
+  price scale it is the whole of treasury income -- zeroing it would make
+  the nominal 10% equally fictional in the other direction -- so the
+  honest fix is to publish the measured rate beside the nominal one as
+  `market.tax_effective_pct` (rolling window) rather than to leave the
+  snapshot advertising 10%.
+- Custom reward DSL (#68): reward is now a formula, not a fixed mode.
+  `reward_formula="0.5*xp_delta + 1.2*profit - 0.1*deaths"` on `TextMMOEnv`
+  (or `--reward-formula` on the torch farm, or `env_reward_formula=` in a
+  conductor slot) replaces the `reward_mode` computation outright. The
+  expression language is a hand-written tokenizer + recursive-descent
+  parser (`ml/reward_dsl.py`) over 19 named signals and 7 functions; no
+  `eval`/`exec`, no new dependency, and unknown signal names fail at
+  construction with a "did you mean" hint. Division by zero pays 0.0 and
+  increments a visible counter rather than ending a run. Researchers who
+  need real Python can override the new `AgentPlugin.reward(signals)`
+  hook, which takes precedence over a formula and may abstain by
+  returning None. Both surfaces fail soft: a raising hook or a non-finite
+  result falls back to the `reward_mode` reward and counts the failure in
+  `info["custom_reward_errors"]`, so an overnight run cannot be lost to a
+  bad formula. Step info gains `reward_signals` only on custom-reward
+  runs, so default runs are byte-identical. Death events now retain the
+  server's `gold_lost`/`gold_dropped`/`xp_lost` accounting the env
+  previously discarded, which is what makes `gold_lost` nameable.
+- Reward DSL fixes (#68 review round 1): a plugin's `AgentPlugin.reward`
+  hook now actually reaches a live agent. The supervisor attaches it by
+  assigning `env.reward_fn`, but the env stored a private
+  `_reward_fn` and froze its "has a custom reward" flag at
+  construction, so on a real `TextMMOEnv` the hook was silently dead and
+  every run paid the mode reward instead. `formation` is a pulse rather
+  than a level again: a formula naming it advances the same cooldown
+  cursor score mode uses, instead of paying on every grouped step. A
+  formula that raises mid-step (`floor(1e308*1e308)` is an
+  `OverflowError`, `ceil(nan)` a `ValueError`) now falls back to the
+  mode reward and counts the failure like any other, instead of
+  escaping `step()` and killing the run. A numeric-looking
+  `env_reward_formula=42` stays the string `"42"` instead of being
+  coerced to an int that the parser rejected, which used to kill the
+  agent at startup.
+- Wild interiors (#424): a `wild` room flag, orthogonal to `shelter`, on the
+  two spans that begin at the #423 indoor-B gates (north: summit gatehouse,
+  howling tunnel, howling col, glacier crown, windcarved crag; south: tideline
+  lighthouse, sunken tunnel, sunken reef, drowned grotto, saltspray bluff).
+  Four of the ten are both indoor and wild, so a tile can be sheltered and
+  still wild. `wild` implies risk on its own: `_room_is_risk()` now returns
+  true for `risk` OR `wild`, so dying in the wild scatters the unequipped
+  pack at floor value through the existing #157 death path. No exit changed,
+  so paths, quests and bot routes are untouched; the two 2-exit gates are the
+  only new traffic choke and nothing gates on it. Agents observe the terrain:
+  room payloads and the dashboard snapshot carry `shelter` and `wild`, and
+  the observation gains two trailing scalars (`wild_flag`, `indoor_flag`,
+  appended last per the never-shift rule). The reward for the risk is two
+  wild-exclusive materials -- Glacier Core (42) and Abyssal Heart (45),
+  dropped only by wild mobs -- feeding two high-tier wild-only craftables,
+  Stormforged Aegis and Abyssal Warden Draught. Priced above the measured
+  ~1.8g/kill death drain, and one mat already outruns the 0.1x floor-value
+  penalty on itself. Dashboard wild tiles get a red wash plus an ASCII
+  corner tooth, layered on top of the indoor/outdoor dash.
+- Browser config editor (#63): the dashboard Config tab now edits
+  `server_config.json` and `ml/ml_config.json` in place, so tuning a value no
+  longer means hand-editing JSON. `config_schema.py` declares all 65 server
+  tunables across six sections plus the 6 ML ones, each with its type, bounds,
+  step and help text, and marks every key as either an override in the file or
+  a code default. The panel shows both, and a reset button drops an override
+  (the key leaves the file) rather than pinning a copy of the default. Three
+  presets -- Balanced, Fast Training, Economy Focus -- stage values into the
+  form for review; a preset never writes. `GET /api/config` is read-only and
+  `no-store`; `POST /api/config` takes `{"file", "edits"}` with a null value
+  meaning "drop this override". Writes are gated twice, on a loopback peer
+  *and* a local `Origin`, so reached from another machine the editor reports
+  `editable: false` and refuses to save. Validation happens before any write:
+  unknown keys, out-of-range values, wrong types, oversized bodies, non-object
+  JSON and unknown files all come back 400 with the file byte-identical, and a
+  refused save never half-applies. Writes are surgical, rewriting only the
+  changed lines and keeping LF endings, because `ml/versioning.py` hashes raw
+  config bytes into `config_hash` -- a reformatted-but-equivalent file would
+  invalidate every saved checkpoint. A save whose parsed value already matches
+  writes zero bytes, so `0.1` against `0.10` is a no-op. New values are staged
+  to a temp file, re-parsed and verified, then `os.replace`d in, so a crash
+  cannot leave half a config behind. Deliberately no live apply: both loaders
+  read config at startup (`_sync_extra_spawns()` is startup-only), so the reply
+  and the panel both say to restart rather than pretending a value took
+  effect. Deliberately no automatic backups, to match every other writer in the
+  repo; git is the undo. Body reads and value counts are bounded, no absolute
+  path is ever returned to a client, and an unknown `POST` path is still a 404
+  rather than a silent write. No game files touched.
+- Run tracking and comparison (#65): every trainer now writes a run record
+  under `runs/<run_id>/` -- `run.json` (kind, label, seed, hyper-parameters,
+  git sha, config hash, status) plus an append-only `metrics.jsonl` series.
+  `ml/runlog.py` is stdlib-only and shared by all five trainers, which gain
+  `--seed`, `--runs-dir` and `--no-run-record`; seeding happens before any
+  network or bot is built and `--seed` works without recording. Steps are
+  reported per run with the lifetime `total_steps` beside them, since both
+  `--steps` counters resume. New `GET /api/runs` reads the index fresh per
+  request (trainers are separate processes, so the catalog must outlive one
+  server lifetime) and returns rank direction per field, so the dashboard
+  verdict says "lowest wins" for a loss instead of crowning the worst run.
+  The Runs tab lists every run and the comparison panel overlays up to 24 on
+  one chart; the column set follows the run kinds present rather than a fixed
+  list, so botfarm `fitness` and soak `mean_reward` are readable instead of
+  rendering as "-". Query handling is hardened: every `runs=` parameter is
+  honored (not just the last), values are URL-decoded, ids are validated and
+  deduped and capped at 24, and a flood of ids costs one bounded file open
+  per requested run. The response carries the runs directory name only --
+  absolute paths are no longer exposed to clients. Torn final JSONL lines are
+  tolerated, manifest writes are atomic (tmp + `os.replace`), and run-id
+  creation claims the directory so two same-second runs cannot share one.
+  Cancel or interrupt now closes the run as `failed` instead of leaving it
+  `running` forever, `stopped=True`-style extras land in metrics, and a soak's
+  final summary is recorded rather than dropped. No game files touched.
+- Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
+  normalized and clipped. `learn()` regresses `q` toward its own detached
+  value plus `(td_target - q)` standardized across the minibatch and
+  clamped to `td_clip` (default 5), so a death penalty 100x larger no
+  longer produces a proportionally larger update. The residual is
+  normalized rather than the target itself, which keeps the Bellman
+  backup and the absolute value scale intact. On by default;
+  `--no-td-norm` restores the old fit. `learn()` reports `adv_scale` and
+  `adv_clip_frac`, and the run log prints them, so a pilot can tell
+  conditioning from a dead signal. Batch statistics use the population
+  std with an explicit guard: the unbiased estimator returns NaN for a
+  one-sample minibatch, which would put NaN in the weights from a single
+  short batch, and a zero-variance batch falls back to the clipped raw
+  residual instead of dividing by ~0 and discarding the common-mode
+  shift. `td_clip` is rejected when non-positive, and the conditioning
+  is recorded in the checkpoint so a resume that switches it says so in
+  the log. No game files touched.
+  Scope, stated plainly: scale invariance is a property of the loss the
+  optimizer receives. It conditions the update magnitude and preserves
+  the within-batch ordering of advantages; it does not promise faster
+  learning, a better policy, or a moved pilot needle. Only a pilot run
+  can say which.
+- Wild interior chains (#423): both frontier paths now cross two chained
+  indoor rooms. `storm_summit -> summit_gatehouse -> howling_tunnel ->
+  howling_col` and `tide_pools -> tideline_lighthouse -> sunken_tunnel ->
+  sunken_reef`. Each new room has exactly two exits, `shelter: true`, and
+  reciprocating opposite labels, so the #324 one-outdoor-exit law holds.
+  43 rooms total; frontier rooms unchanged.
+- Wild expansion (#336): two new outdoor-only regions as pure map
+  extension (39 rooms total, no existing exit/quest/NPC touched). North
+  of storm_summit: howling_col, glacier_crown, windcarved_crag.
+  South of tide_pools: sunken_reef, drowned_grotto, saltspray_bluff.
+  Six new mobs (hp 75-105, atk 10-13, idle) drop loot priced above the
+  death tax (20-62 gold per kill incl. coin), plus one gather node per
+  region (frost crystal, salt crystal). All new edges reciprocate, so
+  the topology law holds unchanged.
+- Training health (#418, #417): a failed `reset()` no longer kills a
+  trainee in silence. `ml_env.reset_with_retry` retries with capped
+  exponential backoff, logs every attempt, and stops on farm shutdown;
+  the torch farm and `dqn_agent.train` both use it at start, after
+  episode end, and after a dropped connection mid-step, so
+  Torch12-15-style wedges become visible lines instead of absent
+  rows. Runner crashes are caught and reported in the farm summary
+  rather than aborting the whole run.
+- Spawn spread (#417): the torch farm assigns each runner a stable
+  starting room (`--spawn-spread`, on by default) drawn from rooms that
+  hold no hostile NPC and are walkable from town_square, walking there
+  over real exits after login. The pool routes over directed edges only,
+  so the one-way shafts from #415 are not treated as two-way. This is
+  where the exploration signal comes from: RND curiosity already pays
+  for unfamiliar states, and the spread is what puts a character in
+  front of unfamiliar ones. No second novelty payment rides on top.
+- Review fixes on the above: a clean stop is no longer reported as a
+  crash (Ctrl-C during a retry, or the step limit, previously printed
+  `CRASHED CancelledError` and deflated `runners_alive`); retry jitter
+  counts against the backoff cap instead of adding past it; and a send
+  on the socket a failed reconnect left behind raises ConnectionError
+  rather than an AttributeError that read like a bug in the caller.
+  `TextMMOEnv.step` now absorbs the whole connection-error tuple, so a
+  refused write ends the episode instead of propagating into the
+  trainer.
+- The room-discovery bonus and its per-character ledger are gone
+  (#417, owner call): exploration is paid once, by RND. `--explore-bonus`
+  is rejected rather than left as a silent no-op, and checkpoints that
+  carry a `discovered_rooms` key still load with the field ignored.
 - Map rewire (#324): every indoor room now has exactly one direct
   outdoor exit (old_shop drops its harbor link; forge, burial
   chamber, bone pit and deep catacombs gain one each). Harbor stays

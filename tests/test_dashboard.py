@@ -28,11 +28,9 @@ assert '<script src="/uplot.min.js">' in html, "uplot script tag missing"
 # Design tokens: spacing/type scales + font + radius on top of legacy vars.
 for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
     assert tok in html, f"token {tok} missing"
-# Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are
-# functional; only Config still points at its follow-up (#63).
+# Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are functional.
 assert "revamp 2/4 (#206)" not in html, "market/dungeon/gm still placeholder"
 assert "revamp 3/4 (#209)" not in html, "agents/quests/crafting still placeholder"
-assert "(#63)" in html, "config editor pointer missing"
 for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
              "gm-action", "gm-players", "gm-rooms",
@@ -40,7 +38,8 @@ for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
              "q-active", "q-turnins", "questCatalog",
              "matSupply", "noSupply", "matOrders", "noMatOrders",
              "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
-             "configRows", "themeToggle"):
+             "cfgFile", "cfgForm", "cfgPresets", "cfgSave", "cfgMsg",
+             "cfgPath", "cfgRestart", "themeToggle"):
     assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Players tab split out of World (more tabs, less content each).
 assert '<div class="tab" data-tab="players">Players</div>' in html
@@ -83,11 +82,17 @@ assert "TILE_W + TILE_GAP" not in html, "map still grows+scrolls"
 assert html.index("Recent flow") < html.index("Recipe browser")
 # Indoor/outdoor legend + full shelter coverage in world.json.
 assert "solid tile = indoor, dashed = outdoor" in html
+# #424 wild rendering: its own axis on top of indoor/outdoor, ASCII corner
+# tooth (no emoji anywhere in this file), plus the legend entry.
+for tok in ("red wash + W = wild", 'WILD_MARK = "W"', "if (room.wild)",
+            'wild = cssVar("--bad"'):
+    assert tok in html, f"wild render token {tok} missing"
+assert chr(0x25B2) not in html, "non-ASCII wild marker in dashboard"
 # Spawn-border fix: outdoor-home tile carries accent AND dash.
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
 import json as _json, os as _os
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
-assert len(_world["rooms"]) == 33  # 32 map rooms + guild_hall
+assert len(_world["rooms"]) == 43  # 32 map rooms + guild_hall + 6 wilds (#336) + 4 wild-interior chain rooms (#423)
 assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
 # Settled-price panel renamed to plain words.
 assert "Price per completed sale" in html
@@ -284,5 +289,169 @@ for tok in ('"craft_history": list(craft_feed)', '"commission_history": list(com
             "craft_feed_seq", "comm_feed_seq"):
     assert tok in _srv, f"server: history token {tok} missing"
 print("HISTORY_TABLES_OK")
+
+# --- Runs tab (#65): compare a finished run against the one still going ---
+assert '<div class="tab" data-tab="runs">Runs</div>' in html
+assert '<div id="view-runs" class="tabview">' in html
+for tid in ("runsTable", "runCmpTable"):
+    assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
+for wid in ("runsCount", "runsMetric", "runsBest", "runsTotal", "runsSelCount",
+            "runsRunning", "runsHead", "runsBody", "noRuns", "runsCmpNote",
+            "runsCmpMetric", "runCmpVal", "runCmp", "runCmpLegend",
+            "runCmpHead", "runCmpBody", "noRunCmp"):
+    assert f'id="{wid}"' in html, f"missing runs widget {wid}"
+assert 'runs: [["runs", s => renderRuns(s)]]' in html, "runs tab has no section"
+for fn in ("renderRuns", "loadRuns", "scheduleRunsPoll", "compareChart",
+           "markSorted", "specHead", "specRow", "bestRunNote"):
+    assert f"function {fn}" in html, f"{fn} missing"
+assert 'fetch("/api/runs"' in html, "runs tab does not read /api/runs"
+for tok in ("def _runs_payload", '"/api/runs"', "runlog.runs_payload"):
+    assert tok in _srv, f"server: runs token {tok} missing"
+# One column spec drives the header AND the sort keys: a header/key list that
+# drifted apart would sort by the wrong field with no error. The runs table
+# sorts by runCols (identity + per-kind metrics), not the identity-only base.
+assert "runCols.map(c => c.key)" in html and "RUN_CMP_COLS.map(c => c.key)" in html
+assert 'sortRows("runsTable"' in html and 'sortRows("runCmpTable"' in html, \
+    "runs tables sort on a key bindSortTables never writes"
+# The static pre-render must be the first bindSortTables() call, or the initial
+# header walk sees an empty row and the table is never sortable.
+assert re.search(r'specHead\(RUN_COLS\)\);\s*\nsetHTML\("runCmpHead".*?\nbindSortTables\(\);',
+                 html, re.DOTALL), "runs headers built after the sorter binds"
+# The client cap is a duplicate of runlog.MAX_RUN_IDS on purpose (the page
+# cannot import it), so it is asserted against the server value instead of a
+# second hardcoded literal.
+with open(os.path.join(ROOT, "ml", "runlog.py"), encoding="utf-8") as _rl_fh:
+    RL_MAX_RUN_IDS = int(
+        re.search(r"^MAX_RUN_IDS = (\d+)", _rl_fh.read(), re.MULTILINE).group(1)
+    )
+
+
+def _runs_section(h, marker):
+    """Body of the runlog/dashboard function whose name starts with marker."""
+    m = re.search(r"function " + marker + r"\w*\([^)]*\) \{(.*?)\n\}", h, re.DOTALL)
+    assert m, f"{marker} not found"
+    return m.group(1)
+
+
+# Per-trainer columns: a fixed score/steps/score_hr list read "-" for every
+# botfarm and soak run, and the header could not be rebuilt per kind.
+assert "runTableCols" in html and "kind_fields" in html
+assert "runsData.root_name" in html and "runsData.root " not in html, \
+    "runs payload path leak"
+# A second poll must not attach a second click handler to a rebuilt <th>.
+assert "dataset.sortBound" in html
+# The server caps a request at MAX_RUN_IDS; a client that allowed more would
+# show a checked box the payload has no series for.
+assert "MAX_RUN_IDS" in html and f"MAX_RUN_IDS = {RL_MAX_RUN_IDS}" in html
+# bestRunNote lands in textContent, so esc() would print its entities.
+assert not re.search(r"esc\(", _runs_section(html, "bestRunNote")), \
+    "bestRunNote escapes into textContent"
+# The verdict ranks on a metric the owner picks, with direction from the
+# server -- never a hardcoded assumption that score is what matters.
+assert 'runsMetric = "score"' in html and "higher_is_better" in html
+assert "dirFor(runsMetric) !== false" in html
+# Selection is delegated: renderRuns rewrites the tbody on every poll, so a
+# per-row listener would be re-attached (and stack) each time.
+rr2 = re.search(r"function renderRuns\(s\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert rr2, "renderRuns not found"
+assert "addEventListener" not in rr2.group(1), "renderRuns rebinds listeners"
+assert '$("runsBody").addEventListener("change"' in html
+# The catalog outlives the snapshot, so it polls only while its tab is up.
+sp = re.search(r"function scheduleRunsPoll\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert sp and 'if (activeTab !== "runs") return;' in sp.group(1), "runs polls off-tab"
+assert re.search(r'activeTab === "runs"\) \{\s*(?://[^\n]*\n\s*)*loadRuns\(\);', html), \
+    "switching to Runs does not load"
+# One dropped poll keeps the last good payload instead of blanking the table.
+assert "runsError = String(e.message || e)" in html and "let runsData = null" in html
+# Multi-series chart reuses the themed palette instead of hardcoding colors.
+assert "seriesColor(i)" in html and "series:" in html
+print("RUNS_TAB_OK")
+
+# --- config editor (#63) --------------------------------------------------
+# The read-only viewer is gone: the tab now edits both config files.
+assert "Config (read-only)" not in html, "read-only config viewer still present"
+assert "Full editing lands with the config editor" not in html
+assert 'fetch("/api/config"' in html, "config tab does not read /api/config"
+assert "cfgForm" in html and "cfgSave" in html and "cfgFile" in html
+# The editor's draft must survive a snapshot poll, so it is not wired into the
+# per-tick section table; it loads on tab entry instead.
+ts = re.search(r"const TAB_SECTIONS = \{(.*?)\n\};", html, re.DOTALL)
+assert ts, "TAB_SECTIONS not found"
+assert "config: []" in ts.group(1), "config still renders per tick"
+assert re.search(r'activeTab === "config"\) loadConfig\(\);', html), \
+    "switching to Config does not load"
+# Writes go through POST; a GET-only dashboard could never save.
+assert 'method: "POST"' in html and "Content-Type\": \"application/json\"" in html
+# The server's loopback verdict gates the form: off-box viewers get every field
+# with the inputs disabled rather than a form that fails on submit.
+ce = _runs_section(html, "renderConfigEditor")
+assert "cfgData.editable" in ce, "editor ignores the server's editable verdict"
+assert "disabled" in ce, "editor never disables inputs"
+# Delegated, like every other re-rendered surface: per-row binding would stack
+# duplicate handlers on every load.
+cf = re.search(r"function renderConfigEditor\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert cf and "addEventListener" not in cf.group(1), "editor rebinds listeners"
+assert "data-cfgkey" in html and "data-cfgreset" in html and "data-cfgpreset" in html
+assert 'document.addEventListener("input"' in html
+# Presets stage into the form; nothing is written until Save.
+ap = _runs_section(html, "applyConfigPreset")
+assert "cfgDraft[" in ap and "saveConfig" not in ap, "preset writes instead of staging"
+sv = re.search(r"async function saveConfig\(\) \{(.*?)\n\}\n", html, re.DOTALL)
+assert sv and "cfgData.editable" in sv.group(1), "save ignores the editable verdict"
+# Tooltips: every field carries its help text, from the server schema.
+assert 'title="${esc(field.help)}"' in html
+# Restart, not live-apply: both loaders read these files at startup.
+assert "restart" in html.lower() and "Restart" in html
+print("CONFIG_EDITOR_OK")
+
+# --- one-click training (#64, control plane for #177) ---------------------
+# The Start Training panel lives in the Agents tab; it posts field VALUES and
+# the server builds argv, so the page never assembles a command line.
+for wid in ("trainState", "trainAbout", "trainPresets", "trainForm",
+            "trainCheckpoints", "trainMsg", "trainStart", "trainStop",
+            "trainStatus"):
+    assert f'id="{wid}"' in html, f"missing training widget {wid}"
+# Four endpoints: two LAN reads, two loopback writes.
+for tok in ('fetch("/api/trainers"', 'fetch("/api/train/status"',
+            'fetch("/api/train/start"', 'fetch("/api/train/stop"'):
+    assert tok in html, f"training endpoint {tok} unused"
+assert 'method: "POST"' in html and "JSON.stringify(trainValues())" in html
+# The server's editable verdict gates the buttons, like the config editor:
+# off-box viewers see the form but cannot launch.
+tr = _runs_section(html, "renderTrainStatus")
+assert "trainData.editable" in tr and ".disabled" in tr, \
+    "training ignores the editable verdict"
+rf = _runs_section(html, "renderTrainForm")
+assert "trainData.editable" in rf and "disabled" in rf, \
+    "training presets ignore the editable verdict"
+# Presets stage values into the form; nothing launches until Start is pressed.
+ap = _runs_section(html, "applyTrainPreset")
+assert "el.value" in ap and 'fetch("/api/train/start"' not in ap, \
+    "training preset launches instead of staging"
+# Delegated listeners, like every other re-rendered surface: per-row binding
+# would stack a handler on every status poll.
+for fn in ("renderTrainForm", "renderTrainStatus"):
+    fb = re.search(rf"function {fn}\(.*?\) \{{(.*?)\n\}}", html, re.DOTALL)
+    assert fb and "addEventListener" not in fb.group(1), f"{fn} rebinds listeners"
+assert 'document.addEventListener("click"' in html and "data-trainpreset" in html
+# The options fetch is lazy and the status poll stops off-tab.
+assert re.search(
+    r'activeTab === "agents"\) \{\s*(?://[^\n]*\n\s*)*if \(!trainData\) loadTrainers\(\);',
+    html), "switching to Agents does not load training options"
+sp = re.search(r"function scheduleTrainPoll\(\) \{(.*?)\n\}", html, re.DOTALL)
+assert sp and 'if (activeTab !== "agents") return;' in sp.group(1), \
+    "training polls off-tab"
+# Server side: start/stop ride the same loopback + content-type gate.
+for tok in ('"/api/train/start"', '"/api/train/stop"', '"/api/train/status"',
+            '"/api/trainers"', "_train_start", "_train_stop",
+            "_trainers_payload", "_train_payload", "launching = path"):
+    assert tok in _srv, f"server: training token {tok} missing"
+# (status, payload) is the helper convention; _send_json takes (payload,
+# status). Unpacking with * flipped the two and every reply 500'd at
+# send_response(dict). Live-proof caught it, so pin the unpack here too.
+assert "_send_json(*_train" not in _srv, "training reply must not splat (status, payload)"
+for tok in ("status, result = _train_start", "status, result = _train_stop"):
+    assert tok in _srv, f"server: training dispatch {tok!r} missing"
+print("TRAINING_PANEL_OK")
 
 print("ALL_DASHBOARD_OK")

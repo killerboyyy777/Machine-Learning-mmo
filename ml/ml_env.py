@@ -101,6 +101,13 @@ Two ways to use this:
     philosophy (no permanent solution, always more to learn) better than
     artificial episode boundaries. Pick whichever your training setup wants.
 
+Spawn spreading (#417): the server always places a character in START_ROOM,
+on login and again after every death, so a farm of N trainers shares one
+starting observation and one respawn point. `spawn_room=` walks the exits
+to a chosen room instead (pool: safe_spread_rooms). Where the exploration
+signal comes from is a trainer decision: this env pays no novelty by
+design (RND curiosity lives in the agent).
+
 Usage (see the __main__ block at the bottom for a full random-agent demo):
 
     import asyncio
@@ -121,6 +128,7 @@ Usage (see the __main__ block at the bottom for a full random-agent demo):
 
 import asyncio
 import json
+import math
 import os
 import random
 import re
@@ -132,6 +140,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import websockets
 import server as srv
+
+# Absolute, not relative: this module is imported both as ml.ml_env and as a
+# bare ml_env (tests add ml/ to sys.path), and only the repo root is
+# guaranteed to be on the path either way.
+from ml.reward_dsl import RewardFormulaError, compile_formula
 
 DEFAULT_URL = "ws://localhost:8765"
 
@@ -263,6 +276,15 @@ DIFFICULTY_K = getattr(srv, "DIFFICULTY_K", 50.0)
 def diminish_factor(score):
     """Server's difficulty multiplier at a given total score."""
     return DIFFICULTY_K / (DIFFICULTY_K + max(0.0, score))
+
+
+def _as_float(value):
+    """Event payloads are optional and untyped; a reward signal must be a
+    float or the formula walk dies mid-episode."""
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # Group-play shaping (reward only -- no behavior is scripted, so agents must
@@ -626,6 +648,120 @@ def pack_units(state):
 def pack_full(state):
     cap = state.get("pack_max") or INVENTORY_CAP
     return pack_units(state) >= cap
+
+
+# --- Trainer-side spawn plumbing (#417) --------------------------------------
+# Spawn spreading is a trainer concern: the env pays no novelty by contract
+# (Novelty is always 0.0 in the reward vector -- trainers supply it), so the
+# primitives live here, torch-free, for both torch_agents trainers to share.
+#
+# The server has no teleport and always places a character in START_ROOM, on
+# login and again on every death. A farm of N trainers therefore shares one
+# starting observation and one respawn point, and 16 agents observing the
+# same room is exactly what the learning pilot measured. Spreading is done
+# by walking the exits, not by moving world.json (the world lane owns it).
+
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 60.0
+# Same tuple the legacy supervisor already retries on. websockets raises
+# ConnectionClosed from a dead socket mid-step; OSError covers a refused
+# connect on Windows; asyncio.TimeoutError covers the connect/close waits.
+CONNECTION_ERRORS = (
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+    websockets.ConnectionClosed,
+)
+
+
+def reachable_path(rooms, start, goal):
+    """Shortest direction sequence walking `start` -> `goal` over a
+    {room_id: {"exits": {dir: room}}} map, or None when unreachable.
+
+    Directed edges only, on purpose: world.json carries one-way exits (the
+    four escape shafts from #415), so a BFS that invented the reverse edge
+    would hand trainers paths that do not exist.
+    """
+    if start == goal:
+        return []
+    if start not in rooms or goal not in rooms:
+        return None
+    seen = {start}
+    queue = [(start, [])]
+    while queue:
+        room, path = queue.pop(0)
+        for direction, dest in (rooms[room].get("exits") or {}).items():
+            if dest in seen or dest not in rooms:
+                continue
+            walked = path + [direction]
+            if dest == goal:
+                return walked
+            seen.add(dest)
+            queue.append((dest, walked))
+    return None
+
+
+def safe_spread_rooms(start=None):
+    """Surface rooms a trainer may park a character in to break spatial
+    collapse: walkable from the spawn room, not inside a dungeon, and with
+    no hostile npc resident (a trainee dropped into a rat room starts the
+    episode already dying). Indoor rooms are fine -- the criterion is
+    safety, not weather. Sorted for stable per-index assignment.
+    """
+    start = start or srv.START_ROOM
+    hostile_rooms = {
+        v.get("room") for v in srv.WORLD["npcs"].values() if v.get("hostile")
+    }
+    return sorted(
+        room_id
+        for room_id in srv.ROOMS
+        if room_id not in hostile_rooms
+        and not srv.dungeon_for_room(room_id)
+        and reachable_path(srv.ROOMS, start, room_id) is not None
+    )
+
+
+async def reset_with_retry(
+    env,
+    name="",
+    on_retry=None,
+    backoff_base=RETRY_BASE_DELAY,
+    backoff_max=RETRY_MAX_DELAY,
+    jitter=0.0,
+    should_stop=None,
+    sleep=asyncio.sleep,
+):
+    """`await env.reset()` with logged, capped exponential retry.
+
+    A connection error out of reset() used to kill a torch runner task with
+    no trace at all: asyncio.gather reported only the first failure, the
+    summary printed only the runners that finished, and nothing was logged
+    per runner -- so 4 of 16 pilot trainees could vanish mid-run with zero
+    evidence (#418). Every failed attempt is now reported, and errors that
+    are not connection problems still propagate immediately.
+    """
+    attempt = 0
+    while True:
+        try:
+            return await env.reset()
+        except CONNECTION_ERRORS as error:
+            attempt += 1
+            # Jitter goes inside the cap: a fleet stagger that can push past
+            # backoff_max is not a capped backoff.
+            delay = min(backoff_max, backoff_base * (2 ** (attempt - 1)) + jitter)
+            if on_retry is not None:
+                on_retry(attempt, delay, error)
+            else:
+                print(
+                    f"[{name or 'agent'}] reset failed (attempt {attempt}): "
+                    f"{error}; retrying in {delay:.1f}s",
+                    flush=True,
+                )
+            if should_stop is not None and should_stop():
+                raise
+            await sleep(delay)
+
+
 ACTIONS = (
     [f"move_{d}" for d in DIRECTIONS]
     + ["attack", "take", "rest", "look",
@@ -704,6 +840,9 @@ def flatten_obs(obs):
         + [obs["buff_attack"], obs["buff_dr"]]
         + [obs["ammo_best_norm"], obs["defense_norm"]]
         + [obs.get("adaptive_score", 0.0)]  # descent-readiness hint (#335), appended last
+        # Terrain flags (#424) appended last, same never-shift rule; .get so a
+        # hand-built obs dict (tests) predating the flag still flattens.
+        + [obs.get("wild_flag", 0.0), obs.get("indoor_flag", 0.0)]
     )
 
 
@@ -723,6 +862,7 @@ OBS_SIZE = (
     + 2                                    # buff block (attack active, damage-reduction active)
     + 2                                    # gear block (best ammo bonus, worn defense)
     + 1                                    # adaptive descent-readiness hint (#335)
+    + 2                                    # terrain flags (#424): wild, indoor
 )
 
 
@@ -736,18 +876,39 @@ class TextMMOEnv:
     def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
                  reward_mode="score", curriculum_stage=3, curriculum_auto=False,
                  connect_timeout=10.0, close_timeout=5.0, connect_retries=3,
-                 goal=None):
+                 goal=None, spawn_room=None, reward_formula=None,
+                 reward_fn=None):
         if reward_mode not in REWARD_MODES:
             raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
         if curriculum_stage not in (0, 1, 2, 3):
             raise ValueError(f"curriculum_stage must be 0-3, got {curriculum_stage!r}")
+        if spawn_room is not None and spawn_room not in srv.ROOMS:
+            raise ValueError(f"spawn_room {spawn_room!r} is not a room in world.json")
         self.name = name
         self.url = url
         self.step_delay = step_delay
         self.max_steps = max_steps
         self.reward_mode = reward_mode
+        # Custom reward (#68). A formula (or a plugin's reward hook) replaces
+        # the mode computation outright, social/formation shaping included,
+        # so both are exposed as signals instead of being applied silently.
+        # Compiled here, not lazily: a typo should stop the run at startup,
+        # not once per step for the next six hours.
+        self._formula = compile_formula(reward_formula) if reward_formula else None
+        self._reward_fn = reward_fn
+        self._has_custom_reward = self._formula is not None or reward_fn is not None
+        self.custom_reward_errors = 0
+        if reward_formula and reward_mode != "score":
+            print(
+                f"Warning: {name}: reward_formula is set, so reward_mode="
+                f"{reward_mode!r} is ignored (the formula replaces it)",
+                flush=True,
+            )
         self.curriculum_stage = curriculum_stage
         self.curriculum_auto = curriculum_auto
+        # Optional spread target walked after login (#417). None = the
+        # server's own placement (START_ROOM), today's behavior unchanged.
+        self.spawn_room = spawn_room
         # reset() timeouts: a half-dead socket's close handshake (or a
         # stalled listener's accept) must never wedge an agent task
         # forever -- supervisor tasks have no other way out of reset().
@@ -763,7 +924,7 @@ class TextMMOEnv:
         self._state = {
             "room_id": None, "exits": [], "npc_names": [], "item_names": [],
             "player_names": [], "is_dungeon": False, "dungeon_floor": 0,
-            "party_size": 1,
+            "party_size": 1, "shelter": False, "wild": False,
             "hp": 0, "max_hp": 1, "gold": 0, "score": 0.0, "variety": 1.0,
             "level": 1, "xp": 0.0, "xp_to_next": 100.0,
             "equipped": None, "armor": None, "offhand": None, "defense": 0,
@@ -796,11 +957,22 @@ class TextMMOEnv:
         self._pending_reward = 0.0
         self._pending_xp = 0.0  # accumulated "xp" event gains (for "xp" mode)
         self._pending_levels = 0  # accumulated "level_up" events (for "xp" mode)
+        # Per-step death economics (#68). The server already sends the whole
+        # accounting on the death event; the env read only the counter, so a
+        # formula had no way to ask what a death cost.
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        self._steps_since_death = 0
         self._step_count = 0
         self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
         self._mask_cache = None  # refreshed by every _build_obs()
         self._inv_type_cache = {}  # ditto: item-type -> first display name
         self._flip_table = []  # ditto: per-holding value/margin rows
+        # Rooms traversed by the last reset()'s spawn walk, so a trainer can
+        # tell setup apart from wherever the character wanders next (#417).
+        self.walked_rooms: list[str] = []
 
     async def _reader(self):
         try:
@@ -827,6 +999,8 @@ class TextMMOEnv:
             self._state["is_dungeon"] = event.get("is_dungeon", False)
             self._state["dungeon_floor"] = event.get("dungeon_floor") or 0
             self._state["party_size"] = event.get("party_size", 1)
+            self._state["shelter"] = bool(event.get("shelter", False))
+            self._state["wild"] = bool(event.get("wild", False))
             self._state["other_players"] = max(0, len(event["players"]) - 1)
         elif t == "stats":
             self._state["hp"] = event["hp"]
@@ -923,10 +1097,20 @@ class TextMMOEnv:
         elif t == "death":
             self._state["hp"] = self._state["max_hp"]
             self._state["deaths"] = self._state.get("deaths", 0) + 1
+            self._pending_deaths += 1
+            self._steps_since_death = 0
+            self._pending_gold_lost += _as_float(event.get("gold_lost"))
+            self._pending_gold_dropped += _as_float(event.get("gold_dropped"))
+            self._pending_xp_lost += _as_float(event.get("xp_lost"))
         elif t == "error":
             pass
 
     async def _send(self, cmd, **kwargs):
+        if self.ws is None:
+            # A failed reconnect leaves no socket behind. Raise the error the
+            # trainers already retry on rather than an AttributeError from
+            # the send itself, which reads like a bug in the caller.
+            raise ConnectionError(f"{self.name}: no open socket for '{cmd}'")
         await self.ws.send(json.dumps({"cmd": cmd, **kwargs}))
 
     async def _close_ws(self):
@@ -942,6 +1126,31 @@ class TextMMOEnv:
             await asyncio.wait_for(ws.close(), self.close_timeout)
         except Exception:
             pass
+
+    async def _walk_to(self, room):
+        """Walk the exits from the current room to `room` after login.
+
+        Best effort by design: returns False (having walked as far as the
+        map allows) rather than raising, so an unreachable or blocked
+        spawn_room degrades to the server's placement instead of losing the
+        episode. A dead socket propagates, so the caller's reset retry
+        reconnects and tries the walk again.
+        """
+        walked = []
+        here = self._state.get("room_id")
+        if here:
+            walked.append(here)
+        path = reachable_path(srv.ROOMS, here, room)
+        if path is None:
+            self.walked_rooms = walked
+            return False
+        for direction in path:
+            await self._send(cmd="move", dir=direction)
+            await asyncio.sleep(self.step_delay)
+            if self._state.get("room_id"):
+                walked.append(self._state["room_id"])
+        self.walked_rooms = walked
+        return self._state.get("room_id") == room
 
     async def reset(self):
         await self._close_ws()
@@ -969,7 +1178,25 @@ class TextMMOEnv:
         self._pending_reward = 0.0
         self._pending_xp = 0.0
         self._pending_levels = 0
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        self._steps_since_death = 0
         self._step_count = 0
+        self.walked_rooms = []
+        if (
+            self.spawn_room
+            and self._state.get("room_id") != self.spawn_room
+            and not await self._walk_to(self.spawn_room)
+        ):
+            # Not fatal, but never silent: a spread that quietly did nothing
+            # is the #417 failure mode in miniature.
+            print(
+                f"[{self.name}] spawn_room {self.spawn_room} not reached "
+                f"(from {self._state.get('room_id')}); staying put",
+                flush=True,
+            )
         return self._build_obs()
 
     async def step(self, action_idx):
@@ -986,10 +1213,11 @@ class TextMMOEnv:
         if cmd:
             try:
                 await self._send(**cmd)
-            except websockets.ConnectionClosed:
+            except CONNECTION_ERRORS:
                 # Either side can end the connection (server restart/kick,
                 # clean handshake, dropped socket). End the episode instead
-                # of crashing the whole farm process.
+                # of crashing the whole farm process -- a trainer's
+                # reset_with_retry picks it up from the done branch.
                 episode_done = True
         await asyncio.sleep(self.step_delay)
 
@@ -998,12 +1226,28 @@ class TextMMOEnv:
         score_gain = self._pending_reward
         gold_delta = self._state["gold"] - gold_before
         inv_delta = inventory_value(self._state["inv_names"]) - inv_value_before
+        signals = None
+        if self._has_custom_reward:
+            # Read before the bump, so a step carrying a death reports 0.
+            steps_since_death = self._steps_since_death
+            signals = self._reward_signals(
+                score_gain, xp_gained, levels_gained, gold_delta, inv_delta,
+                deaths=self._pending_deaths,
+                gold_lost=self._pending_gold_lost,
+                gold_dropped=self._pending_gold_dropped,
+                xp_lost=self._pending_xp_lost,
+                steps_since_death=steps_since_death)
         reward = self._compute_reward(
             self._pending_reward, xp_gained, levels_gained,
-            gold_delta, inv_delta, party_before)
+            gold_delta, inv_delta, party_before, signals)
         self._pending_reward = 0.0
         self._pending_xp = 0.0
         self._pending_levels = 0
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        self._steps_since_death += 1
         self._step_count += 1
         self._maybe_advance_curriculum()
         if episode_done:
@@ -1122,6 +1366,15 @@ class TextMMOEnv:
         done = episode_done or (self.max_steps is not None and self._step_count >= self.max_steps)
         info.update(self._version_info())
         info["action_mask"] = 1 if cmd is not None else 0
+        if signals is not None:
+            # Only present on a custom-reward run, so the default step info
+            # stays exactly what it was. A formula author needs to see what
+            # the formula actually read, and a trainer needs to see which
+            # signals are live when a reward looks wrong.
+            info["reward_signals"] = signals
+            info["custom_reward_errors"] = self.custom_reward_errors
+            info["zero_divisions"] = (
+                self._formula.zero_divisions if self._formula else 0)
         return next_obs, reward, done, info
 
     def _version_info(self):
@@ -1132,7 +1385,7 @@ class TextMMOEnv:
                 "version_match": server in (None, PROTOCOL_VERSION)}
 
     def _compute_reward(self, score_gain, xp_gain, levels, gold_delta,
-                          inv_delta, party_before):
+                        inv_delta, party_before, signals=None):
         """Step reward for the configured `reward_mode`, from accumulated
         event pendings and state diffs (pure function of its arguments plus
         the social/formation state -- no I/O, unit-testable).
@@ -1141,7 +1394,22 @@ class TextMMOEnv:
           score, and social terms by design (pure combat/quest agent).
         - "econ": gold flow plus ECON_INV_LAMBDA times carried-value flow.
           Ignores XP and score by design (pure market/craft/loot agent).
-        - "score" (default): server score gain plus group-play shaping."""
+        - "score" (default): server score gain plus group-play shaping.
+
+        A custom formula or plugin reward hook (#68) replaces all of that
+        outright; see _resolve_custom_reward.
+        """
+        if self._has_custom_reward:
+            return self._resolve_custom_reward(
+                signals, score_gain, xp_gain, levels, gold_delta, inv_delta,
+                party_before)
+        return self._mode_reward(
+            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+
+    def _mode_reward(self, score_gain, xp_gain, levels, gold_delta,
+                     inv_delta, party_before):
+        """The reward_mode computation on its own, so the custom-reward
+        fallback below can reach it without re-entering the dispatch."""
         if self.reward_mode == "xp":
             return xp_gain + XP_LEVEL_BONUS * levels
         if self.reward_mode == "econ":
@@ -1164,6 +1432,142 @@ class TextMMOEnv:
                 reward += FORMATION_BONUS * diminish_factor(self._state.get("score", 0.0))
                 self._last_formation_step = self._step_count
         return reward
+
+    def _reward_signals(self, score_gain, xp_gain, levels, gold_delta,
+                        inv_delta, deaths, gold_lost, gold_dropped, xp_lost,
+                        steps_since_death):
+        """The per-step signal dict a custom reward sees (#68).
+
+        `social` and `formation` are the exact terms the "score" mode would
+        have paid, computed here so a formula can opt back into them rather
+        than silently losing group-play shaping. Computing does not consume
+        the formation cooldown; see _consume_formation_pulse.
+        """
+        state = self._state
+        social = 0.0
+        if state.get("other_players", 0) > 0 and state.get("party_size", 1) > 1:
+            allies = state.get("party_size", 1) - 1
+            social = SOCIAL_PER_ALLY * allies * diminish_factor(state.get("score", 0.0))
+        formation = 0.0
+        if (state.get("party_size", 1) > 1
+                and self._step_count - self._last_formation_step
+                >= FORMATION_COOLDOWN_STEPS):
+            formation = FORMATION_BONUS * diminish_factor(state.get("score", 0.0))
+        max_hp = state.get("max_hp") or 0.0
+        return {
+            "score_delta": float(score_gain),
+            "xp_delta": float(xp_gain),
+            "level_delta": float(levels),
+            "gold_delta": float(gold_delta),
+            "inv_delta": float(inv_delta),
+            "profit": float(gold_delta) + float(inv_delta),
+            "deaths": float(deaths),
+            "deaths_total": float(state.get("deaths", 0)),
+            "gold_lost": float(gold_lost),
+            "gold_dropped": float(gold_dropped),
+            "xp_lost": float(xp_lost),
+            "level": float(state.get("level", 1)),
+            "hp_frac": float(state.get("hp", 0)) / max_hp if max_hp else 0.0,
+            "party_size": float(state.get("party_size", 1)),
+            "social": social,
+            "formation": formation,
+            "novelty": 0.0,
+            "steps": float(self._step_count),
+            "steps_since_death": float(steps_since_death),
+        }
+
+    def _resolve_custom_reward(self, signals, score_gain, xp_gain, levels,
+                               gold_delta, inv_delta, party_before):
+        """Resolve a custom reward (#68): plugin hook, then formula, then the
+        mode reward.
+
+        The fallback is the point. This runs inside step(), so a raising
+        research hook or a non-finite formula would end an overnight run
+        that has already invested hours; the step instead keeps the reward
+        the mode would have given, and the failure is counted rather than
+        swallowed.
+        """
+        value = self._call_reward_hook(signals)
+        from_formula = False
+        if value is None and self._formula is not None:
+            value = self._evaluate_formula(signals)
+            from_formula = value is not None
+        if value is not None:
+            if math.isfinite(value):
+                if from_formula:
+                    self._consume_formation_pulse(signals)
+                return value
+            self._note_custom_reward_error(
+                f"custom reward produced a non-finite value ({value!r})")
+        return self._mode_reward(
+            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+
+    def _consume_formation_pulse(self, signals):
+        """Move the formation cursor once a formula has been paid for it.
+
+        `formation` is a pulse, not a level: score mode advances
+        _last_formation_step when it pays (#68 review), so a formula naming
+        `formation` has to advance it too or the term pays on every grouped
+        step and the cooldown means nothing. Only a formula moves it -- the
+        hook path is opaque, and there the hook's own return value, not the
+        signal, is the reward.
+        """
+        if (self._formula is not None
+                and "formation" in self._formula.signals_used
+                and signals.get("formation")):
+            self._last_formation_step = self._step_count
+
+    # The supervisor attaches a plugin's reward hook by plain assignment
+    # (supervisor.py env.reward_fn = reward_hook), so this public name has to
+    # be the one that reaches _reward_fn AND the _has_custom_reward gate.
+    # Post-construction assignment is the point: the env is built first, the
+    # slot's hook is only known once the plugin is built.
+    @property
+    def reward_fn(self):
+        return self._reward_fn
+
+    @reward_fn.setter
+    def reward_fn(self, fn):
+        self._reward_fn = fn
+        self._has_custom_reward = self._formula is not None or fn is not None
+
+    def _call_reward_hook(self, signals):
+        """None means "no opinion", which is what the default plugin hook
+        returns -- an exception here is a real failure, a None is not."""
+        if self._reward_fn is None:
+            return None
+        try:
+            raw = self._reward_fn(signals)
+            return None if raw is None else float(raw)
+        except Exception as e:  # noqa: BLE001 - a research hook must not end the run
+            self._note_custom_reward_error(
+                f"reward hook raised {type(e).__name__}: {e}")
+            return None
+
+    def _evaluate_formula(self, signals):
+        if self._formula is None:
+            return None
+        try:
+            return float(self._formula.evaluate(signals))
+        except RewardFormulaError as e:
+            self._note_custom_reward_error(str(e))
+            return None
+        except Exception as e:  # noqa: BLE001 - a formula must not end the run
+            # floor(1e308*1e308) raises OverflowError and ceil(nan) raises
+            # ValueError inside FUNCTIONS, below any RewardFormulaError. This
+            # is the same contract _call_reward_hook honors: an overnight run
+            # keeps training on the mode reward instead of dying on step one.
+            self._note_custom_reward_error(
+                f"reward formula raised {type(e).__name__}: {e}")
+            return None
+
+    def _note_custom_reward_error(self, message):
+        self.custom_reward_errors += 1
+        # Once is enough to be diagnosed; a per-step wall of the same line
+        # would bury the training log it is corrupting.
+        if self.custom_reward_errors == 1:
+            print(f"Warning: {self.name}: custom reward fell back to "
+                  f"reward_mode={self.reward_mode!r}: {message}", flush=True)
 
     def _own_orders(self):
         """Our standing sell orders with exact after-tax net, from the latest
@@ -1888,6 +2292,9 @@ class TextMMOEnv:
             "ammo_best_norm": ammo_best_norm,
             "defense_norm": defense_norm,
             "adaptive_score": adaptive_norm,
+            # Wild/indoor terrain flags (#424), orthogonal axes.
+            "wild_flag": 1.0 if s.get("wild") else 0.0,
+            "indoor_flag": 1.0 if s.get("shelter") else 0.0,
             # Not part of flatten_obs() -- handy for debugging/logging only:
             "room_id": s["room_id"],
             "score_raw": s["score"],

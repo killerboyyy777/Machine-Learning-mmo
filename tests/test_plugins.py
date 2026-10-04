@@ -318,4 +318,235 @@ def _bughunt_377():
 _bughunt_377()
 print("BUGHUNT_377_OK")
 
+
+# =====================================================================
+# #68: the researcher-injected-Python half of the reward DSL. A plugin
+# supplies reward(signals); the conductor carries it to the supervisor,
+# which hands it to the env.
+# =====================================================================
+
+
+def _reward_dsl_68():
+    import asyncio
+
+    from ml.conductor.conductor import _materialize_slot
+    from ml.conductor.registry import Registry
+    from ml.conductor.supervisor import Supervisor
+    from ml.plugins import AgentPlugin, parse_slot, register
+
+    # --- the base default abstains, so no existing plugin changes reward ---
+    assert AgentPlugin().reward({}) is None
+    from ml.plugins import get
+
+    discover()
+    for name in sorted(REGISTRY):
+        # Unbound, on purpose: this checks the inherited default on the
+        # class, and constructing the torch plugin would need torch, which
+        # the offline CI job does not install.
+        assert get(name).reward(None, {"score_delta": 1.0}) is None, name
+    print("REWARD_HOOK_DEFAULT_OK")
+
+    # --- a plugin that overrides reward() ---
+    _Rew_calls = []
+
+    @register
+    class _Rew(AgentPlugin):
+        name = "rewtest"
+        agent_type = "custom"
+
+        def act(self, obs, agent_id, mask=None):
+            return 0
+
+        def reward(self, signals):
+            _Rew_calls.append(dict(signals))
+            return 0.5 * signals["xp_delta"] + 1.2 * signals["profit"]
+
+    slot = _materialize_slot(parse_slot("rewtest"), "ws://x:1")
+    assert callable(slot["reward_hook"]), slot.keys()
+    assert callable(slot["learn_hook"])  # unchanged alongside it
+
+    # raw runner slots have no plugin, so no reward hook
+    raw = _materialize_slot(
+        {"env_factory": lambda a: None, "policy_fn": lambda *a: 0}, "ws://x:1")
+    assert raw["reward_hook"] is None, raw["reward_hook"]
+    print("REWARD_HOOK_SLOT_OK")
+
+    # --- the supervisor hands the hook to the env before step 1 ---
+    class _RE:
+        """Duck env: reward_fn must land as a plain attribute, since a
+        slot can pair any plugin with any env."""
+
+        def __init__(self):
+            self.goal = None
+            self.reward_fn = None
+            self.rewarded = []
+
+        async def reset(self):
+            await asyncio.sleep(0)  # yield like a real (network) env
+            return {"x": 0.0}
+
+        async def step(self, action):
+            await asyncio.sleep(0)
+            r = self.reward_fn({"xp_delta": 1.0, "profit": 2.0})
+            self.rewarded.append(r)
+            return {"x": 1.0}, r, True, {}
+
+        def valid_action_mask(self):
+            return [1]
+
+    async def _run(tmpdir):
+        env = _RE()
+        reg = Registry(os.path.join(tmpdir, "sup"), max_agents=5)
+        reg.register("r1", "custom")
+        sup = Supervisor(reg)
+        ok = await sup.start_agent(
+            "r1", lambda aid: env, lambda o, a: 0, max_steps=1,
+            reward_hook=slot["reward_hook"])
+        assert ok, "start_agent refused the agent"
+        assert env.reward_fn is not None, "hook never reached the env"
+        # the hook is stored for PBT restart, which must not lose it
+        assert sup._specs["r1"][6] is not None
+        await asyncio.sleep(0.2)
+        await sup.stop_all()
+        return env
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        env = asyncio.run(_run(tmpdir))
+    assert env.rewarded and abs(env.rewarded[0] - (0.5 * 1.0 + 1.2 * 2.0)) < 1e-9, env.rewarded
+    assert _Rew_calls, "plugin reward() was never called"
+    assert "xp_delta" in _Rew_calls[0]
+    del REGISTRY["rewtest"]
+    print("REWARD_HOOK_SUPERVISOR_OK")
+
+    # --- a PBT restart re-attaches the hook ---
+    async def _restart(tmpdir):
+        reg = Registry(os.path.join(tmpdir, "re"), max_agents=5)
+        reg.register("r2", "custom")
+        sup = Supervisor(reg)
+        env2 = _RE()
+        envs = iter([_RE(), env2])
+        await sup.start_agent("r2", lambda aid: next(envs), lambda o, a: 0,
+                              max_steps=1,
+                              reward_hook=slot["reward_hook"])
+        assert await sup.restart_agent("r2") is True
+        assert env2.reward_fn is not None, "restart lost the reward hook"
+        await sup._shutdown(sup._tasks["r2"])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        asyncio.run(_restart(tmpdir))
+    print("REWARD_HOOK_RESTART_OK")
+
+    # --- slot spec carries a formula with commas intact (#68) ---
+    s = parse_slot(
+        "torch:env_reward_formula=clamp(0.5*xp_delta, 0, 2) - 0.1*deaths,"
+        "epsilon=0.1")
+    assert s["env"]["reward_formula"] == "clamp(0.5*xp_delta, 0, 2) - 0.1*deaths", s
+    assert s["config"] == {"epsilon": 0.1}, s
+    # and the comma split still separates plain params
+    s2 = parse_slot("linear:checkpoint=a.pt,epsilon=0.2,env_max_steps=5")
+    assert s2["config"] == {"checkpoint": "a.pt", "epsilon": 0.2}, s2
+    assert s2["env"] == {"max_steps": 5}, s2
+    # unbalanced parens are not a slot-syntax error: the text passes
+    # through whole and the formula parser reports it properly, with a
+    # character position
+    _unb = parse_slot("torch:env_reward_formula=clamp(0.5*xp_delta, 0, 2")
+    assert _unb["env"]["reward_formula"] == "clamp(0.5*xp_delta, 0, 2", _unb
+    from ml.ml_env import TextMMOEnv
+
+    try:
+        TextMMOEnv("Unb", reward_formula=_unb["env"]["reward_formula"])
+        raise SystemExit("FAIL: unbalanced formula accepted at construction")
+    except ValueError as e:
+        assert "clamp" in str(e), e
+    # --- on a REAL TextMMOEnv the same assignment must reach _reward_fn
+    # AND flip _has_custom_reward (#68 send-back P0). The duck _RE above
+    # stores the attribute itself, so it cannot catch a hook that is dead
+    # on the env the farm actually runs.
+    from ml.conductor.runners import make_env_factory
+
+    _MADE = []
+
+    def _dead_env(aid):
+        # Nothing listens here: this test only needs a real TextMMOEnv, and
+        # the assertions run before any await, so no socket is opened.
+        env = make_env_factory(url="ws://127.0.0.1:1", connect_timeout=0.05,
+                               close_timeout=0.05,
+                               connect_retries=0)(aid)
+        _MADE.append(env)
+        return env
+
+    async def _real(tmpdir):
+        real = _dead_env("real-hook")
+        assert real._has_custom_reward is False, "a bare env is already custom"
+        reg = Registry(os.path.join(tmpdir, "rl"), max_agents=5)
+        reg.register("r3", "custom")
+        sup = Supervisor(reg)
+        ok = await sup.start_agent("r3", lambda aid: real, lambda o, a: 0,
+                                   max_steps=1,
+                                   reward_hook=slot["reward_hook"])
+        assert ok, "start_agent refused the agent"
+        # No await between here and the asserts: the task body has not run.
+        assert real._reward_fn is slot["reward_hook"], "hook missed the real env"
+        assert real._has_custom_reward is True, (
+            "the real env would have paid the mode reward instead")
+        sig = real._reward_signals(
+            score_gain=5.0, xp_gain=1.0, levels=0, gold_delta=0.0,
+            inv_delta=0.0, deaths=0, gold_lost=0.0, gold_dropped=0.0,
+            xp_lost=0.0, steps_since_death=0)
+        assert sig["xp_delta"] == 1.0 and "profit" in sig, sig
+        r = real._compute_reward(score_gain=5.0, xp_gain=1.0, levels=0,
+                                 gold_delta=0.0, inv_delta=0.0, party_before=1,
+                                 signals=sig)
+        assert abs(r - 0.5) < 1e-9, (r, "hook value was not delivered")
+        assert _Rew_calls and _Rew_calls[-1]["xp_delta"] == 1.0
+        assert real.custom_reward_errors == 0, real.custom_reward_errors
+        await sup._shutdown(sup._tasks["r3"])
+        return sup
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        asyncio.run(_real(tmpdir))
+
+    # --- and a PBT restart re-attaches it to a real env ---
+    async def _real_restart(tmpdir):
+        reg = Registry(os.path.join(tmpdir, "rr"), max_agents=5)
+        reg.register("r4", "custom")
+        sup = Supervisor(reg)
+        _MADE.clear()
+        envs = iter([_dead_env("first"), _dead_env("second")])
+        await sup.start_agent("r4", lambda aid: next(envs), lambda o, a: 0,
+                              max_steps=1, reward_hook=slot["reward_hook"])
+        assert await sup.restart_agent("r4") is True
+        second = _MADE[-1]
+        assert second._reward_fn is slot["reward_hook"], (
+            "restart lost the hook on a real env")
+        assert second._has_custom_reward is True
+        await sup._shutdown(sup._tasks["r4"])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        asyncio.run(_real_restart(tmpdir))
+    print("REWARD_HOOK_REAL_ENV_OK")
+
+    # --- text-valued slot keys stay text (#68 send-back): a numeric
+    # formula is degenerate, but it must not be typed into an int that
+    # compile_formula rejects, which killed the agent at startup.
+    _num = parse_slot("linear:env_reward_formula=42,env_max_steps=7,"
+                      "env_step_delay=0.25")
+    assert _num["env"] == {"reward_formula": "42", "max_steps": 7,
+                           "step_delay": 0.25}, _num["env"]
+    assert isinstance(_num["env"]["max_steps"], int)
+    assert isinstance(_num["env"]["step_delay"], float)
+    assert parse_slot("gather:env_url=1.5")["env"]["url"] == "1.5"
+    # non-text keys are still coerced, so plugin config is unaffected
+    _cfg = parse_slot("linear:checkpoint=a.pt,epsilon=0.2,flag=true")
+    assert _cfg["config"] == {"checkpoint": "a.pt", "epsilon": 0.2,
+                              "flag": True}, _cfg["config"]
+    TextMMOEnv("SlotNum", reward_formula=_num["env"]["reward_formula"])
+    print("SLOT_TEXT_VALUES_OK")
+
+    print("SLOT_FORMULA_COMMA_OK")
+
+
+_reward_dsl_68()
+print("REWARD_DSL_68_OK")
+
 print("ALL_PLUGINS_OK")

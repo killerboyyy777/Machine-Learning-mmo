@@ -126,6 +126,9 @@ if HAVE_TORCH:
         _a.rnd_lambda_min = 0.1
         _a.rnd_decay_steps = 100000
         _a.rnd_lr = 1e-3
+        _a.spawn_spread = False
+        _a.td_norm = True
+        _a.td_clip = 5.0
         return _a
 
     # sidecar round-trip + corrupt cases (null/list/string) fall back
@@ -157,7 +160,10 @@ if HAVE_TORCH:
         })
     tagent.t_step = 64
     losses = tagent.learn()
-    assert set(losses) == {"td", "gold", "loot", "market", "quest", "rnd"}, losses
+    assert set(losses) == {
+        "td", "gold", "loot", "market", "quest", "rnd",
+        "adv_scale", "adv_clip_frac",
+    }, losses
     assert all(isinstance(v, float) for v in losses.values()), losses
     tpath = os.path.join(tmpdir, "torch.pt")
     tagent.save_weights(tpath)
@@ -208,6 +214,10 @@ if HAVE_TORCH:
             "quest_reward": 100.0, "quest_intrinsic": 0.0, "rnd_bonus": 0.0,
         })
     dagent.t_step = 16
+    # Isolate the target arithmetic from #416b's advantage conditioning:
+    # with normalization off and gamma=0 the fit target is the raw TD target,
+    # which for reward=1.0 must be exactly 1.0 -- no quest_reward.
+    dagent.td_norm = False
     _seen = {}
     _real_smooth = _torch.nn.functional.smooth_l1_loss
 
@@ -222,6 +232,37 @@ if HAVE_TORCH:
     # ... while the nonzero quest_reward still supervises the aux quest
     # head (quest shapes representation only, post-#378).
     assert dlosses["quest"] > 0.0, dlosses
+
+    # #378 still holds with #416b on: the normalized fit stays anchored to
+    # q, so a 100-point quest bonus cannot leak into the TD signal either.
+    dagent2 = TorchDQNAgent(replay_size=16, batch_size=8)
+    dagent2.gamma = 0.0
+    dagent2.intrinsic_lambda = 0.0
+    dagent2.rnd_lambda = 0.0
+    dagent2.td_norm = True
+    for _ in range(16):
+        dagent2.store({
+            "state": [0.1] * OBS_SIZE,
+            "action": 0,
+            "reward": 1.0,
+            "next_state": [0.1] * OBS_SIZE,
+            "done": False,
+            "gold_delta": 0.0, "loot_delta": 0.0, "market_pnl": 0.0,
+            "quest_reward": 100.0, "quest_intrinsic": 0.0, "rnd_bonus": 0.0,
+        })
+    dagent2.t_step = 16
+    _seen2 = {}
+
+    def _spy2(inp, tgt, *a, **k):
+        _seen2["tgt"] = tgt.detach().clone()
+        return _real_smooth(inp, tgt, *a, **k)
+
+    with _patch.object(_torch.nn.functional, "smooth_l1_loss", _spy2):
+        _l2 = dagent2.learn()
+    assert _seen2, "normalized td loss never computed"
+    assert _seen2["tgt"].abs().max() < 5.0 + 1e-3, (
+        f"normalized fit must stay inside the clip: {_seen2['tgt']}"
+    )
     print("TD_DEDUP_OK")
 
 print("ALL_TRAINING_LOOPS_OK")

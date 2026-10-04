@@ -159,6 +159,145 @@ def open_guild_escrow():
     )
 
 
+def config_editor_http_check():
+    # ---- Config editor over HTTP (#63): the gates the unit suite cannot reach
+    import urllib.error
+    import urllib.request
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    CFG_PATHS = [
+        os.path.join(ROOT, "server_config.json"),
+        os.path.join(ROOT, "ml", "ml_config.json"),
+    ]
+
+    def cfg_blob(path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    ORIGINALS = [cfg_blob(p) for p in CFG_PATHS]
+
+    def cfg_read(idx=0):
+        with open(CFG_PATHS[idx], encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def cfg_restore():
+        for path, blob in zip(CFG_PATHS, ORIGINALS):
+            with open(path, "wb") as fh:
+                fh.write(blob)
+
+    def cfg_post(payload, ctype="application/json", origin=None, raw=None):
+        data = raw if raw is not None else json.dumps(payload).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{HTTP_PORT}/api/config", data=data, method="POST"
+        )
+        if ctype is not None:
+            req.add_header("Content-Type", ctype)
+        if origin is not None:
+            req.add_header("Origin", origin)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as res:
+                return res.status, json.loads(res.read().decode())
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode()
+            try:
+                return exc.code, json.loads(text)
+            except ValueError:
+                return exc.code, {"error": text[:60]}
+
+    def cfg_get():
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{HTTP_PORT}/api/config", timeout=5
+        ) as res:
+            return json.loads(res.read().decode())
+
+    try:
+        # Reset then set again: dropping an override has to stay reversible.
+        status, body = cfg_post({"file": "server", "edits": {"economy.TAX_RATE": None}})
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        status, body = cfg_post(
+            {"file": "server", "edits": {"economy.TAX_RATE": "0.2"}}
+        )
+        assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
+        assert cfg_read()["economy"]["TAX_RATE"] == 0.2, cfg_read()["economy"]
+
+        # An override must report the code default, not its own file value.
+        fields = {
+            f["key"]: f
+            for s in cfg_get()["files"][0]["sections"]
+            if s["name"] == "economy"
+            for f in s["fields"]
+        }
+        assert fields["TAX_RATE"]["value"] == 0.2, fields["TAX_RATE"]
+        assert (
+            fields["TAX_RATE"]["default"] == 0.1
+        ), f"default followed the file value: {fields['TAX_RATE']}"
+        assert fields["TAX_RATE"]["present"] is True, fields["TAX_RATE"]
+
+        # Origin still gates, and a loopback Origin is not refused.
+        status, body = cfg_post(
+            {"file": "server", "edits": {"economy.TAX_RATE": "0.2"}},
+            origin="http://192.168.1.4:8766",
+        )
+        assert status == 403 and body["ok"] is False, (status, body)
+        status, body = cfg_post(
+            {"file": "server", "edits": {"economy.TAX_RATE": "0.2"}},
+            origin=f"http://127.0.0.1:{HTTP_PORT}",
+        )
+        assert status == 200, (status, body)
+
+        # Content-Type gate: a missing or simple type cannot slip a write past
+        # Origin, which a browser omits on some same-origin paths.
+        untouched = cfg_blob(CFG_PATHS[0])
+        for bad in ("text/plain", "application/x-www-form-urlencoded", None):
+            status, body = cfg_post(
+                {"file": "server", "edits": {"economy.TAX_RATE": "0.9"}}, ctype=bad
+            )
+            assert status == 415 and body["ok"] is False, (bad, status, body)
+            assert "application/json" in body["error"], body
+        assert cfg_blob(CFG_PATHS[0]) == untouched, "a refused type wrote bytes"
+        status, body = cfg_post(
+            {"file": "server", "edits": {"economy.TAX_RATE": "0.2"}},
+            ctype="application/json; charset=utf-8",
+        )
+        assert status == 200, (status, body)
+
+        # Body shapes that are not an edit object.
+        for payload, fragment in (
+            (
+                {"file": None, "edits": {"economy.TAX_RATE": "0.2"}},
+                "unknown config file",
+            ),
+            ({"file": 7, "edits": {"economy.TAX_RATE": "0.2"}}, "unknown config file"),
+            ({"file": "server", "edits": [1, 2]}, "non-empty object"),
+            ({"file": "server", "edits": "economy.TAX_RATE=0.2"}, "non-empty object"),
+            ({"file": "server", "edits": {}}, "edits must be a non-empty object"),
+            ({"edits": {"economy.TAX_RATE": "0.2"}}, "unknown config file"),
+        ):
+            status, body = cfg_post(payload)
+            assert status == 400 and fragment in body["error"], (payload, status, body)
+        status, body = cfg_post(None, raw=b"[1,2]")
+        assert status == 400 and "JSON object" in body["error"], (status, body)
+
+        # Exponent notation is a number JSON accepts, so the list parser
+        # must not reject it by looking for a decimal point.
+        status, body = cfg_post(
+            {
+                "file": "ml",
+                "edits": {"curriculum.CURRICULUM_THRESHOLDS": "[0, 5, 1e2, 1.5e3]"},
+            }
+        )
+        assert status == 200 and body["ok"], body
+        assert cfg_read(1)["curriculum"]["CURRICULUM_THRESHOLDS"] == [0, 5, 100, 1500]
+        print("CONFIG_EDITOR_HTTP_OK")
+    finally:
+        cfg_restore()
+    assert cfg_blob(CFG_PATHS[0]) == ORIGINALS[0], "config not restored"
+    assert cfg_blob(CFG_PATHS[1]) == ORIGINALS[1], "ml config not restored"
+
+    # A thread, not a bare call: these are blocking sockets and file
+    # reads inside an async main().
+
+
 async def main():
     A = await websockets.connect(URI)
     B = await websockets.connect(URI)
@@ -366,6 +505,8 @@ async def main():
     assert pl["LiveA"]["level"] == 1
     assert any(b["name"].startswith("Elite") for b in state["bosses"]), state["bosses"]
     print("DASHBOARD_SNAPSHOT_OK")
+
+    await asyncio.to_thread(config_editor_http_check)
 
     print("LIVE_ALL_OK")
     await GM.close()
