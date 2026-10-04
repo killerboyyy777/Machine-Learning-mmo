@@ -3,6 +3,13 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- RND curiosity revival: the torch farm now wires RND weight +
+  schedule into its defaults (`--rnd-lambda` 1.0 start present from
+  step 0, `--rnd-lambda-min` 0.1 floor, `--rnd-decay-steps` 100000
+  linear horizon, `--rnd-lr` 1e-3). The agent learns the effective
+  weight from `t_step` (checkpoint-resumed), so curiosity pays most
+  while the world is novel and fades to a floor as it becomes
+  familiar. Single-agent entry point gains the same knobs.
 - Training-mode damage dampening (#416a): trainees take a configured
   fraction of incoming NPC damage via `TRAINING_DAMAGE_FRACTION`
   (server_config.json economy section, default 1.0 = off). Applies at
@@ -146,7 +153,6 @@ All notable changes to the text MMO engine are recorded here.
   Cancel or interrupt now closes the run as `failed` instead of leaving it
   `running` forever, `stopped=True`-style extras land in metrics, and a soak's
   final summary is recorded rather than dropped. No game files touched.
->>>>>>> origin/master
 - Pilot optimizer hygiene (#416b): the TD fit is now per-batch advantage
   normalized and clipped. `learn()` regresses `q` toward its own detached
   value plus `(td_target - q)` standardized across the minibatch and
