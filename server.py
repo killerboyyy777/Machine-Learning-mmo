@@ -86,7 +86,7 @@ TRAINING_DAMAGE_FRACTION = 1.0
 def _training_damage(amount):
     if TRAINING_DAMAGE_FRACTION >= 1.0:
         return amount
-    return max(0, int(round(amount * TRAINING_DAMAGE_FRACTION)))
+    return max(0, round(amount * TRAINING_DAMAGE_FRACTION))
 
 
 ALLY_ATTACK_BONUS_PER_PLAYER = 1
