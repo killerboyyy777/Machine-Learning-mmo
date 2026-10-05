@@ -1319,6 +1319,8 @@ function compareChart(id, labels, seriesList, xsList, axisMode) {
       scales: {x: {time: mode === "time"}},
       series: [{}].concat(labels.map((lab, i) => ({
         label: lab, stroke: seriesColor(i), width: 1.5,
+        points: { show: true },
+        spanGaps: false,
       }))),
       axes: [
         {show: true, stroke: font, grid: {stroke: border}, font: "10px monospace",
