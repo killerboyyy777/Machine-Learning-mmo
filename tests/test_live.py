@@ -116,6 +116,7 @@ async def enter_dungeon_floor(ws, floor=1, attempts=6, timeout=5.0):
     assert. Poll room events until the floor settles, re-syncing with
     `look` when the buffer runs dry (settled-state polling, no blind
     sleep retries)."""
+    await drain(ws, 0.3)
     await send(ws, {"cmd": "move", "dir": "enter"})
     for _ in range(attempts):
         room = await recv(ws, want_type="room", timeout=timeout)

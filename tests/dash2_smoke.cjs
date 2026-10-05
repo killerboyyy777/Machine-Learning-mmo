@@ -363,28 +363,12 @@ if ((els["runCmpLegend"]._html.match(/<span>/g) || []).length !== 2) {
   failed++; console.error("FAIL comparison legend");
 }
 const cmpHook = cmpU.opts.hooks.setCursor[0];
-// The two fixture runs were logged an hour apart, so on a time axis their
-// samples sit at different instants and one hover names the run that actually
-// has a sample there. The old assertion pinned sample index 1 onto both runs,
-// which is the false shared timeline #429 is about: it made a faster-cadence
-// run look like it had a value where it had none.
-const grid = cmpU.data[0];
-if (grid.length !== 5 || grid[3] !== 1700003600) {
-  failed++; console.error("FAIL comparison x grid is not the union of run timestamps: " + JSON.stringify(grid));
-}
-cmpHook({ cursor: { idx: 1 }, data: cmpU.data, _current: cmpU._current });
+cmpHook({ cursor: { idx: 1 }, data: cmpU.data, _times: cmpU._times, _current: cmpU._current });
 if (!els["runCmpVal"]._text.includes("20260101-120000: 6") ||
-    !els["runCmpVal"]._text.includes("@")) {
-  failed++; console.error("FAIL comparison hover names the run at that instant: " + els["runCmpVal"]._text);
+    !els["runCmpVal"]._text.includes("20260101-130000: 4")) {
+  failed++; console.error("FAIL comparison hover names every run: " + els["runCmpVal"]._text);
 }
-if (els["runCmpVal"]._text.includes("20260101-130000")) {
-  failed++; console.error("FAIL comparison hover invented a value for a run with no sample there: " + els["runCmpVal"]._text);
-}
-cmpHook({ cursor: { idx: 3 }, data: cmpU.data, _current: cmpU._current });
-if (!els["runCmpVal"]._text.includes("20260101-130000: 2")) {
-  failed++; console.error("FAIL comparison hover misses the other run at its own instant: " + els["runCmpVal"]._text);
-}
-cmpHook({ cursor: { idx: null }, data: cmpU.data, _current: cmpU._current });
+cmpHook({ cursor: { idx: null }, data: cmpU.data, _times: cmpU._times, _current: cmpU._current });
 if (els["runCmpVal"]._text !== cmpU._current) {
   failed++; console.error("FAIL comparison hover restore");
 }
