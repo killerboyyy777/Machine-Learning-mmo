@@ -390,7 +390,11 @@ assert "u._dataKey === dataKey" in cc and "mode + \"::\" + grid.join" in cc
 # the index rather than pretending a timeline exists.
 assert 'mode === "steps" ? "steps" : "_ts"' in ca, "axis values not read from steps/_ts"
 assert "pickSample(x, key)" in ca and "numOrNull" in ca, "axis values not numeric"
-assert 'opt.value === "steps" && !anySteps' in html, "steps offered with no data"
+assert 'const axisAvail = { time: anyTs, steps: anySteps };' in html, "axis availability map missing"
+assert 'axisAvail[a] ? "" : " disabled"' in html, "axis offered with no data"
+# select.options is an HTMLOptionsCollection; the headless smoke test drives
+# this page through a DOM stub that has none, so touching it throws there.
+assert "axisSel.options" not in html, "select.options must not be touched (absent from the smoke DOM stub)"
 assert 'axisMode = wantsSteps ? "steps" : (anyTs ? "time" : "sample")' in html
 assert 'runsCmpAxis === "steps" && anySteps' in html
 # Hover names the x the value was recorded at, not a position in the array.

@@ -2328,9 +2328,6 @@ function renderRuns(s) {
   runsCmpMetric = snap(runsCmpMetric);
   setHTML("runsMetric", opts(runsMetric));
   setHTML("runsCmpMetric", opts(runsCmpMetric));
-  // Static two-option axis picker; renderRuns disables "steps" when no run logs it.
-  setHTML("runsCmpAxis", ["time", "steps"].map(a =>
-    `<option value="${a}"${a === runsCmpAxis ? " selected" : ""}>${a}</option>`).join(""));
 
   const pool = runsSel.length ? runs.filter(r => runsSel.includes(r.run_id)) : runs;
   $("runsBest").textContent = pool.length
@@ -2379,12 +2376,15 @@ function renderRuns(s) {
   // at all keeps the old sample index rather than pretending it has a timeline.
   const wantsSteps = runsCmpAxis === "steps" && anySteps;
   const axisMode = wantsSteps ? "steps" : (anyTs ? "time" : "sample");
-  const axisSel = $("runsCmpAxis");
-  if (axisSel) {
-    // Offer steps only when something can actually plot them.
-    for (const opt of axisSel.options) opt.disabled = opt.value === "steps" && !anySteps;
-    if (wantsSteps || (axisSel.value === "steps" && anySteps)) axisSel.value = axisMode;
-  }
+  // Rebuild the options with the selected and disabled states already in the
+  // markup, rather than patching each option after the fact. The headless
+  // smoke test drives this page through a DOM stub that has no
+  // HTMLOptionsCollection, so select.options throws there; rendering the
+  // attributes keeps one code path for both.
+  const axisAvail = { time: anyTs, steps: anySteps };
+  setHTML("runsCmpAxis", ["time", "steps"].map(a =>
+    `<option value="${a}"${a === axisMode ? " selected" : ""}` +
+    `${axisAvail[a] ? "" : " disabled"}>${a}</option>`).join(""));
   const xs = samplesByRun.map(s => cmpAxisValues(s, axisMode));
   compareChart("runCmp", labels, lines, xs, axisMode);
   setHTML("runCmpLegend", labels.map((lab, i) =>
