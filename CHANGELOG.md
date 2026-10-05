@@ -1149,4 +1149,4 @@ All notable changes to the text MMO engine are recorded here.
 - `client.py`, `bot_example.py`, `world.json`.
 - ML environment (`ml_env.py`) with fixed-size observations and discrete
   action space.
-- Online Q-learning agent (`ml_client.py`), multi-bot farm (`ml_botfarm.py`).
+- Online Q-learning agent (`ml_client.py`), multi-bot farm (`ml_botfarm.py`).- Dashboard: Run comparison chart now uses honest time/steps x-axis with union of sample times (no resampling/interpolation), preserves gaps, shows points and keeps gaps visible (#429/#445).
