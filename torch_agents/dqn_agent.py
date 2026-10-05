@@ -212,7 +212,9 @@ class TorchDQNAgent:
         intrinsic_lambda: float = 1.0,  # weight for quest exploration bonus
         intrinsic_accept: float = 1.0,  # bonus on quest accept (per cycle)
         intrinsic_progress: float = 2.0,  # bonus on charm craft / delver ready
-        rnd_lambda: float = 0.1,  # weight for RND curiosity bonus
+        rnd_lambda: float = 0.1,  # RND curiosity start weight (0 disables)
+        rnd_lambda_min: float = 0.1,  # RND curiosity floor after decay
+        rnd_decay_steps: int = 100000,  # linear start->floor horizon (t_step)
         rnd_hidden: int = 128,  # RND embedding width
         rnd_dim: int = 32,  # RND embedding size
         rnd_lr: float = 1e-3,  # RND predictor learning rate
@@ -258,6 +260,8 @@ class TorchDQNAgent:
         # that complements the quest-gated bonus above. Normalized by a
         # running error std so the scale stays stable through training.
         self.rnd_lambda = rnd_lambda
+        self.rnd_lambda_min = rnd_lambda_min
+        self.rnd_decay_steps = rnd_decay_steps
         self.rnd_ema = rnd_ema
         self.rnd_target = RNDNet(OBS_SIZE, hidden=rnd_hidden, out_dim=rnd_dim).to(
             self.device
@@ -339,6 +343,14 @@ class TorchDQNAgent:
         return int(best)
 
     # ---- RND curiosity ------------------------------------------------------
+
+    def _rnd_weight(self) -> float:
+        """Effective curiosity weight: linear start->floor over
+        rnd_decay_steps by t_step (mirrors _epsilon). Zero start disables."""
+        if self.rnd_lambda <= 0:
+            return 0.0
+        progress = min(1.0, self.t_step / max(1, self.rnd_decay_steps))
+        return self.rnd_lambda + (self.rnd_lambda_min - self.rnd_lambda) * progress
 
     def _rnd_error(self, x: torch.Tensor) -> torch.Tensor:
         """Per-row mean-squared prediction error (no grad)."""
@@ -485,7 +497,7 @@ class TorchDQNAgent:
         shaped = (
             rewards
             + self.intrinsic_lambda * intrinsic_targets
-            + self.rnd_lambda * rnd_targets
+            + self._rnd_weight() * rnd_targets
         )
         with torch.no_grad():
             target_q = self.target.get_q(next_states).max(1)[0]
@@ -563,7 +575,7 @@ class TorchDQNAgent:
         # RND predictor chase: fit visited states toward the frozen target
         # (own optimizer -- curiosity representation stays independent of
         # the Q-value trunk). Skipped when curiosity is disabled.
-        rnd_loss = self.update_rnd(states) if self.rnd_lambda else 0.0
+        rnd_loss = self.update_rnd(states) if self._rnd_weight() > 0 else 0.0
 
         # Periodically sync target network
         self.learn_step += 1
@@ -853,7 +865,7 @@ class TorchDQNAgent:
 
             # RND curiosity on the post-step observation (novel states pay
             # more; the predictor fit in learn() makes them familiar).
-            rnd_bonus = self.rnd_bonus(next_features) if self.rnd_lambda else 0.0
+            rnd_bonus = self.rnd_bonus(next_features) if self._rnd_weight() > 0 else 0.0
 
             # Store transition with all auxiliary targets
             self.store(
@@ -1014,7 +1026,19 @@ def main():
         "--rnd-lambda",
         type=float,
         default=0.1,
-        help="RND curiosity weight (0 disables)",
+        help="RND curiosity start weight (0 disables)",
+    )
+    parser.add_argument(
+        "--rnd-lambda-min",
+        type=float,
+        default=0.1,
+        help="RND curiosity floor after decay",
+    )
+    parser.add_argument(
+        "--rnd-decay-steps",
+        type=int,
+        default=100000,
+        help="linear start->floor horizon in training steps",
     )
     parser.add_argument(
         "--rnd-lr", type=float, default=1e-3, help="RND predictor learning rate"
@@ -1054,6 +1078,8 @@ def main():
         name=args.name,
         url=args.url,
         rnd_lambda=args.rnd_lambda,
+        rnd_lambda_min=args.rnd_lambda_min,
+        rnd_decay_steps=args.rnd_decay_steps,
         rnd_lr=args.rnd_lr,
         spawn_room=args.spawn_room,
     )

@@ -111,6 +111,11 @@ SERVER_SCHEMA = {
         "TREASURY_RESERVE": _f(
             0, 1000000, "Gold the treasury banks before sinking the rest."
         ),
+        "TRAINING_DAMAGE_FRACTION": _f(
+            0,
+            1000000,
+            "Share of NPC damage trainees take; 1.0 or more disables dampening.",
+        ),
         "MARKET_ORDER_SLOTS_BASE": _i(
             1, 200, "Base sell order slots available to every character."
         ),

@@ -399,6 +399,10 @@ else:
         save_every = 5
         weights = os.path.join(tempfile.gettempdir(), "health_weights.json")
         best_weights = os.path.join(tempfile.gettempdir(), "health_best.json")
+        rnd_lambda = 1.0
+        rnd_lambda_min = 0.1
+        rnd_decay_steps = 100000
+        rnd_lr = 1e-3
         spawn_spread = True
         td_norm = True
         td_clip = 5.0

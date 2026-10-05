@@ -98,7 +98,8 @@ _farm = types.SimpleNamespace(
         name_prefix="T", url="ws://x", spawn_spread=False, reward_formula=None
     ),
     agent=types.SimpleNamespace(
-        intrinsic_accept=1.0, intrinsic_progress=2.0, rnd_lambda=0
+        intrinsic_accept=1.0, intrinsic_progress=2.0, rnd_lambda=0,
+        _rnd_weight=lambda: 0.0,
     ),
     spawn_rooms=[],
     spawn_room_for=lambda index: None,
