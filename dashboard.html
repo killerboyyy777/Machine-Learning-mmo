@@ -545,6 +545,7 @@
   </div>
   <div class="panel">
     <h2>Comparison <span class="legend" id="runsCmpNote">tick runs above to compare them</span>
+      <span class="sortctl">x-axis<select id="runsCmpAxis"></select></span>
       <span class="sortctl">chart<select id="runsCmpMetric"></select></span></h2>
     <div style="display:flex;gap:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:280px">
@@ -1245,46 +1246,86 @@ function trendChart(id, values, colorKey, times) {
 }
 // Multi-series comparison chart (Runs tab, #65). trendChart cannot be reused:
 // its setCursor hook reads data[1] only, while a run comparison needs one line
-// per run and a readout naming every one of them. Series are padded with null
-// to a shared x axis so a short run draws as a gap rather than being silently
-// resampled onto another run's timeline.
-function compareChart(id, labels, seriesList, timesList) {
+// per run and a readout naming every one of them. The x axis is wall-clock or
+// steps rather than the sample index (#429): runs that sampled at different
+// cadences put a sample-index x at the same place for different amounts of
+// training, which miscompares them.
+//
+// The x grid is the sorted union of every x any run recorded, and each run's
+// value sits only on the x it was recorded at. Every other slot stays null, so
+// a slower cadence draws as a gap instead of being silently resampled onto
+// another run's timeline (#428: resampling invents data).
+function cmpAxisValues(samples, mode) {
+  const key = mode === "steps" ? "steps" : "_ts";
+  return (samples || []).map(x => numOrNull(pickSample(x, key)));
+}
+
+function cmpXGrid(xsList) {
+  const seen = new Map();
+  for (const xs of xsList) {
+    for (const x of xs || []) if (x != null) seen.set(x, true);
+  }
+  return [...seen.keys()].sort((a, b) => a - b);
+}
+
+function compareChart(id, labels, seriesList, xsList, axisMode) {
   const el = document.getElementById(id);
   if (!el || typeof uPlot === "undefined") return;
   let u = charts[id];
-  const n = Math.max(0, ...seriesList.map(s => (s || []).length));
+  const mode = axisMode || "sample";
+  const grid = mode === "sample"
+    // Sample index kept as the fallback for a log with no timestamp at all.
+    ? Array.from({length: Math.max(0, ...seriesList.map(s => (s || []).length))}, (_, i) => i)
+    : cmpXGrid(xsList);
+  const n = grid.length;
   if (!n) {
     // No samples yet: drop the instance rather than draw a flatline that
     // would read as "measured zero". The panel says what to do instead.
     if (u) { try { u.destroy(); } catch (e) {} delete charts[id]; }
     return;
   }
-  const data = [Array.from({length: n}, (_, i) => i)];
-  for (const s of seriesList) {
-    data.push(Array.from({length: n}, (_, j) => (s[j] == null ? null : s[j])));
-  }
-  const dataKey = labels.join("|") + "::" + seriesList.map(s => s.join(",")).join("|");
+  const data = [grid];
+  seriesList.forEach((s, k) => {
+    const xs = xsList && xsList[k];
+    if (mode === "sample") {
+      data.push(Array.from({length: n}, (_, j) => (s[j] == null ? null : s[j])));
+      return;
+    }
+    // Last sample wins if a run somehow logged the same x twice; every slot a
+    // run never recorded stays null.
+    const byX = new Map();
+    for (let j = 0; j < (s || []).length; j++) {
+      const x = (xs || [])[j];
+      if (x != null && s[j] != null) byX.set(x, s[j]);
+    }
+    data.push(grid.map(x => (byX.has(x) ? byX.get(x) : null)));
+  });
+  const dataKey = labels.join("|") + "::" + mode + "::" + grid.join(",") + "::"
+    + seriesList.map(s => s.join(",")).join("|");
   const w = el.clientWidth || 0;
   if (u && u._dataKey === dataKey && u._w === w) return;
-  if (u && u._nSeries !== seriesList.length) {
-    // Series count is creation-time config in uPlot (one scale and one legend
-    // row each), so a changed selection rebuilds rather than setData.
+  if (u && (u._nSeries !== seriesList.length || u._axisMode !== mode)) {
+    // Series count and the x scale's time flag are creation-time config in
+    // uPlot, so a changed selection or axis rebuilds rather than setData.
     try { u.destroy(); } catch (e) {}
     delete charts[id];
-    return compareChart(id, labels, seriesList, timesList);
+    return compareChart(id, labels, seriesList, xsList, axisMode);
   }
   if (!u) {
-    const grid = cssVar("--border", "#2a333d"), font = cssVar("--dim", "#8b98a5");
+    const border = cssVar("--border", "#2a333d"), font = cssVar("--dim", "#8b98a5");
     u = charts[id] = new uPlot({
       width: el.clientWidth || 260,
       height: 140,
-      scales: {x: {time: false}},
+      scales: {x: {time: mode === "time"}},
       series: [{}].concat(labels.map((lab, i) => ({
         label: lab, stroke: seriesColor(i), width: 1.5,
+        points: { show: true },
+        spanGaps: false,
       }))),
       axes: [
-        {show: true, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
-        {show: true, stroke: font, grid: {stroke: grid}, font: "10px monospace"},
+        {show: true, stroke: font, grid: {stroke: border}, font: "10px monospace",
+         values: (uu, vals) => (mode === "time" ? vals.map(v => fmtTs(v)) : vals)},
+        {show: true, stroke: font, grid: {stroke: border}, font: "10px monospace"},
       ],
       legend: {show: false},
       cursor: {show: true, x: true, y: false, drag: {x: false, y: false}},
@@ -1293,12 +1334,14 @@ function compareChart(id, labels, seriesList, timesList) {
         if (!rl) return;
         const idx = uu.cursor ? uu.cursor.idx : null;
         if (idx == null) { rl.textContent = uu._current ?? "-"; return; }
+        const xs = (uu.data || [])[0] || [];
+        const x = xs[idx];
+        const at = mode === "time" ? fmtTs(x) : (mode === "steps" ? x : (mode === "sample" ? x : null));
         const parts = [];
         for (let i = 1; i < (uu.data || []).length; i++) {
           const v = (uu.data[i] || [])[idx];
           if (v == null) continue;
-          const t = ((uu._times || [])[i - 1] || [])[idx];
-          parts.push(`${labels[i - 1]}: ${v}` + (t ? " @ " + t : ""));
+          parts.push(`${labels[i - 1]}: ${v}` + (at != null ? " @ " + at : ""));
         }
         rl.textContent = parts.length ? parts.join("   ") : "-";
       }]},
@@ -1307,7 +1350,7 @@ function compareChart(id, labels, seriesList, timesList) {
   } else {
     u.setData(data);
   }
-  u._times = timesList || [];
+  u._axisMode = mode;
   u._nSeries = seriesList.length;
   u._dataKey = dataKey;
   u._w = w;
@@ -2147,6 +2190,8 @@ let runsError = "";
 let runsSel = [];         // run_ids ticked for comparison
 let runsMetric = "score"; // ranking metric for the verdict
 let runsCmpMetric = "score";
+// Comparison x axis (#429): wall clock by default, steps when the runs log them.
+let runsCmpAxis = "time";
 let runsGen = 0;
 let runsPoll = 0;
 
@@ -2317,16 +2362,33 @@ function renderRuns(s) {
   markSorted("runCmpHead", "runCmpTable");
 
   const series = ((runsData && runsData.series) || {});
-  const labels = [], lines = [], times = [];
+  const labels = [], lines = [], samplesByRun = [];
+  let anySteps = false, anyTs = false;
   for (const r of sel) {
     const samples = series[r.run_id] || [];
     const vals = samples.map(x => numOrNull(pickSample(x, runsCmpMetric)));
     if (!vals.some(v => v != null)) continue;
     labels.push(r.run_id);
     lines.push(vals);
-    times.push(samples.map(x => fmtTs(x._ts)));
+    samplesByRun.push(samples);
+    if (samples.some(x => numOrNull(pickSample(x, "steps")) != null)) anySteps = true;
+    if (samples.some(x => numOrNull(pickSample(x, "_ts")) != null)) anyTs = true;
   }
-  compareChart("runCmp", labels, lines, times);
+  // Steps when the runs record them, else wall clock. A log with no timestamp
+  // at all keeps the old sample index rather than pretending it has a timeline.
+  const wantsSteps = runsCmpAxis === "steps" && anySteps;
+  const axisMode = wantsSteps ? "steps" : (anyTs ? "time" : "sample");
+  // Rebuild the options with the selected and disabled states already in the
+  // markup, rather than patching each option after the fact. The headless
+  // smoke test drives this page through a DOM stub that has no
+  // HTMLOptionsCollection, so select.options throws there; rendering the
+  // attributes keeps one code path for both.
+  const axisAvail = { time: anyTs, steps: anySteps };
+  setHTML("runsCmpAxis", ["time", "steps"].map(a =>
+    `<option value="${a}"${a === axisMode ? " selected" : ""}` +
+    `${axisAvail[a] ? "" : " disabled"}>${a}</option>`).join(""));
+  const xs = samplesByRun.map(s => cmpAxisValues(s, axisMode));
+  compareChart("runCmp", labels, lines, xs, axisMode);
   setHTML("runCmpLegend", labels.map((lab, i) =>
     `<span><i class="sw" style="background:${seriesColor(i)}"></i>${esc(lab)}</span>`).join(""));
   setTrendVal("runCmp", charts["runCmp"] ? charts["runCmp"]._current : null);
@@ -2419,10 +2481,11 @@ loadRuns();
   scheduleRunsPoll();
 });
 
-for (const id of ["runsMetric", "runsCmpMetric"]) {
+for (const id of ["runsMetric", "runsCmpMetric", "runsCmpAxis"]) {
   $(id)?.addEventListener("change", e => {
     if (id === "runsMetric") runsMetric = e.target.value;
-    else runsCmpMetric = e.target.value;
+    else if (id === "runsCmpMetric") runsCmpMetric = e.target.value;
+    else runsCmpAxis = e.target.value;
     if (lastState) renderRuns(lastState);
   });
 }
