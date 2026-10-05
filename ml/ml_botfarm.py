@@ -38,29 +38,28 @@ import asyncio
 import contextlib
 import json
 import os
-import random
 import signal
 import time
 
 import websockets
 
 try:
-    from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
+    from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
     from .ml_client import LinearQAgent
     from .runlog import seed_everything, start_run
     # Scripted baselines live in ml/plugins now; imported here so the
     # farm CLI, --scripted roles, and existing import sites keep working.
-    from .plugins.scripted import (
+    from .plugins.scripted import (  # noqa: F401
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
         CommissionerPolicy,
     )
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
-    from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, ACTIONS, flatten_obs
+    from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
     from ml_client import LinearQAgent
     from runlog import seed_everything, start_run
-    from plugins.scripted import (
+    from plugins.scripted import (  # noqa: F401
         SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
         GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
         CommissionerPolicy,
@@ -445,11 +444,11 @@ async def main():
     bot_tasks = []
     for i, b in enumerate(farm.bots):
         async def start_delayed(bot=b, idx=i):
-            await asyncio.sleep(2 * idx)  # 2‑second delay per bot index
+            await asyncio.sleep(2 * idx)  # 2-second delay per bot index
             await bot.run()
         bot_tasks.append(asyncio.create_task(start_delayed(), name=b.name))
     eval_task = asyncio.create_task(evaluator(farm))
-    print(f"[farm] {args.bots} bots training on {args.url} — Ctrl+C to stop.")
+    print(f"[farm] {args.bots} bots training on {args.url} - Ctrl+C to stop.")
 
     interrupted = False
     try:
