@@ -1336,7 +1336,7 @@ function compareChart(id, labels, seriesList, xsList, axisMode) {
         if (idx == null) { rl.textContent = uu._current ?? "-"; return; }
         const xs = (uu.data || [])[0] || [];
         const x = xs[idx];
-        const at = mode === "time" ? fmtTs(x) : (mode === "steps" ? x : null);
+        const at = mode === "time" ? fmtTs(x) : (mode === "steps" ? x : (mode === "sample" ? x : null));
         const parts = [];
         for (let i = 1; i < (uu.data || []).length; i++) {
           const v = (uu.data[i] || [])[idx];
