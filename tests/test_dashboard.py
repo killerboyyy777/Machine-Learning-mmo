@@ -365,7 +365,41 @@ assert re.search(r'activeTab === "runs"\) \{\s*(?://[^\n]*\n\s*)*loadRuns\(\);',
 assert "runsError = String(e.message || e)" in html and "let runsData = null" in html
 # Multi-series chart reuses the themed palette instead of hardcoding colors.
 assert "seriesColor(i)" in html and "series:" in html
-print("RUNS_TAB_OK")
+
+# --- Comparison x axis is time/steps, not the sample index (#429) ---------
+# Runs that sampled at different cadences put their nth sample at the same x
+# under an index axis, so the chart compared unequal amounts of training.
+cc = _runs_section(html, "compareChart")
+cx = _runs_section(html, "cmpXGrid")
+ca = _runs_section(html, "cmpAxisValues")
+assert 'id="runsCmpAxis"' in html and "runsCmpAxis" in html, "no x-axis picker"
+assert '["time", "steps"].map(a' in html, "axis options not built"
+# The axis has to come from the recorded x values, not a re-generated index.
+assert "Array.from({length: n}, (_, i) => i)" not in cc.replace(
+    "Array.from({length: n}, (_, i) => i))\n", ""), \
+    "compareChart still plots a sample index"
+assert "cmpXGrid(xsList)" in cc and "const data = [grid]" in cc, "x grid unused"
+assert "byX.has(x) ? byX.get(x) : null" in cc, "series values not placed on their own x"
+# #428 stands: a slot a run never recorded is a gap, never an invented value.
+assert "byX.set(x, s[j])" in cc and cc.count("null") >= 2
+assert "scales: {x: {time: mode === \"time\"}}" in cc, "time axis not honoured"
+# The scale's time flag is creation-time config, so switching axes rebuilds.
+assert "u._axisMode !== mode" in cc and "u._axisMode = mode" in cc
+assert "u._dataKey === dataKey" in cc and "mode + \"::\" + grid.join" in cc
+# Steps only offered when a run actually logs them; no timestamp falls back to
+# the index rather than pretending a timeline exists.
+assert 'mode === "steps" ? "steps" : "_ts"' in ca, "axis values not read from steps/_ts"
+assert "pickSample(x, key)" in ca and "numOrNull" in ca, "axis values not numeric"
+assert 'opt.value === "steps" && !anySteps' in html, "steps offered with no data"
+assert 'axisMode = wantsSteps ? "steps" : (anyTs ? "time" : "sample")' in html
+assert 'runsCmpAxis === "steps" && anySteps' in html
+# Hover names the x the value was recorded at, not a position in the array.
+assert "const xs = (uu.data || [])[0] || [];" in cc
+assert "_times" not in cc, "hover still reads the old per-series times array"
+# Axis choice is a select like every other picker, bound by the shared handler.
+assert '"runsMetric", "runsCmpMetric", "runsCmpAxis"' in html
+assert "else runsCmpAxis = e.target.value" in html
+print("RUNS_XAXIS_OK")
 
 # --- config editor (#63) --------------------------------------------------
 # The read-only viewer is gone: the tab now edits both config files.
