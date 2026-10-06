@@ -304,6 +304,23 @@ def config_editor_check(folder):
     finally:
         srv.CONFIG_FILE = real_srv
 
+    # --- a section with 1 entry can receive a second key ------------------
+    path = os.path.join(folder, "single_entry_section.json")
+    with open(path, "w", newline="") as fh:
+        fh.write('{\n  "leveling": {\n    "XP_BASE": 100\n  }\n}\n')
+    real_srv = srv.CONFIG_FILE
+    try:
+        srv.CONFIG_FILE = path
+        status, body = srv._config_apply("server", {"leveling.XP_GROWTH": "1.5"})
+        assert status == 200 and body["changed"] == ["leveling.XP_GROWTH"], (
+            status,
+            body,
+        )
+        data = json.loads(read_text(path))
+        assert data["leveling"] == {"XP_BASE": 100, "XP_GROWTH": 1.5}, data["leveling"]
+    finally:
+        srv.CONFIG_FILE = real_srv
+
     # --- a CRLF file keeps CRLF: the config hash covers these bytes --------
     path = sandbox("crlf.json", "server_config.json")
     crlf = read_text(path).replace("\n", "\r\n")
