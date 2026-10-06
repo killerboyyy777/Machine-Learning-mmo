@@ -3530,6 +3530,39 @@ async def main():
     unplayer(_qp)
     print("QUEST_GHOST_OK")
 
+    # unregistered ammo names the raw id via _iname(), never KeyError
+    assert "ghost_zzz_ammo" not in srv.ITEM_DEFS
+    _ap = mkplayer("AmmoGhost", 67003, room="market")
+    _saved_ammo = srv.ITEM_DEFS["oak_longbow"].get("ammo")
+    srv.ITEM_DEFS["oak_longbow"]["ammo"] = "ghost_zzz_ammo"
+    srv.npcs["ammo_ghost_dummy"] = {
+        "id": "ammo_ghost_dummy",
+        "name": "Ammo Ghost Dummy",
+        "room": "market",
+        "hp": 1000,
+        "max_hp": 1000,
+        "attack": 0,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": [],
+        "gold": 0,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
+    }
+    try:
+        _ap.equipped = "oak_longbow"
+        _ap.inventory = ["oak_longbow"]
+        inbox.clear()
+        await srv.cmd_attack(_ap, {"target": "ammo ghost"})
+        assert any("ghost_zzz_ammo" in m.get("text", "") for m in inbox), inbox[-3:]
+    finally:
+        srv.ITEM_DEFS["oak_longbow"]["ammo"] = _saved_ammo
+        srv.npcs.pop("ammo_ghost_dummy", None)
+    unplayer(_ap)
+    print("AMMO_GHOST_OK")
+
     # world topology rule (#324): every indoor (shelter) room has exactly
     # one directly-accessible outdoor exit, and every room stays
     # reachable on foot from town_square (bot paths preserved)

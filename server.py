@@ -2242,7 +2242,13 @@ async def cmd_attack(player, msg):
     if ammo_id:
         family = [iid for iid in AMMO_BONUS if iid in player.inventory] if ammo_id in AMMO_BONUS else ([ammo_id] if ammo_id in player.inventory else [])
         if not family:
-            await send(player, {"type": "error", "text": f"You need {ITEM_DEFS[ammo_id]['name']}s to fire the {ITEM_DEFS[player.equipped]['name']}."})
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": f"You need {_iname(ammo_id)}s to fire the {_iname(player.equipped)}.",
+                },
+            )
             return
         best = max(family, key=lambda iid: AMMO_BONUS.get(iid, 0))
         player.inventory.remove(best)
