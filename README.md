@@ -10,7 +10,7 @@ A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
 loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
 human, a bot, and an LLM agent all look identical to the server. On top sits
-an ML stack: Gym-style env (181 obs dims, 53 actions), linear + DQN agents
+an ML stack: Gym-style env (210 obs dims, 54 actions), linear + DQN agents
 with curiosity and PBT, scripted baselines, a 50-agent conductor orchestrator,
 and deterministic eval.
 
@@ -94,7 +94,7 @@ directory by name only, never an absolute path.
 
 The dashboard Config tab edits `server_config.json` and `ml/ml_config.json`
 directly, so you do not have to hand-edit JSON to try a value. It renders the
-same 65 server tunables (and 6 ML ones) the loaders read, with the type, range
+same 67 server tunables (and 6 ML ones) the loaders read, with the type, range
 and help text for each field, and it flags which keys are overridden versus
 still at their code default.
 
