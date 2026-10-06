@@ -3,6 +3,12 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Commission double-fill race closed: `cmd_commission_fill` flips the
+  bounty to terminal `completed` in the same sync stretch as the open
+  check (no await between, cf. the #195.1 double-kill guard), so an
+  interleaved second fill observes `completed` and mints nothing even
+  with surplus verified kills. Payouts reuse the locally computed
+  values; single-fill behavior unchanged.
 - Soak provenance (#318): every run record carries a `session_id`
   (local-time stamp plus short uuid, minted by `ml/runlog.py`), and the
   soak driver mints one session per invocation, tags its run record with

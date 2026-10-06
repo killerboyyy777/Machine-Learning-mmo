@@ -1464,6 +1464,36 @@ async def main():
     unplayer(gfill)
     print("FILL_COLLAB_OK")
 
+    # --- Commission fill pins exact numbers (double-fill race guard) ---
+    _np = mkplayer("NumPoster", 64008, room="guild_hall")
+    _np.gold = 1000
+    _nf = mkplayer("NumFiller", 64009, room="guild_hall")
+    _nf.gold = 50
+    _t0 = srv.tax_treasury
+    await srv.cmd_commission_post(_np, {"target": "rat", "required_kills": 2,
+                                        "reward_gold": 100, "reward_xp": 20})
+    _nc = max(srv._commissions)
+    assert _np.gold == 900  # full reward escrowed at post
+    assert srv._commissions[_nc]["escrow"] == 100
+    srv.record_npc_kill("NumFiller", "Giant Rat")
+    srv.record_npc_kill("NumFiller", "Giant Rat")
+    srv.record_npc_kill("NumFiller", "Giant Rat")  # surplus: race fuel
+    await srv.cmd_commission_fill(_nf, {"commission_id": _nc})
+    assert srv._commissions[_nc]["status"] == "completed"
+    assert srv._commissions[_nc]["escrow"] == 0
+    assert _nf.gold == 150  # +100 eff, first-time pair mult 1.0
+    assert srv.tax_treasury == _t0  # no collusion remainder at mult 1.0
+    assert srv.comm_feed[-1]["gold"] == 100
+    assert srv.comm_feed[-1]["status"] == "completed"
+    _nscore = srv.get_score_entry("NumFiller")["score"]
+    await srv.cmd_commission_fill(_nf, {"commission_id": _nc})  # retry: mints nothing
+    assert srv._commissions[_nc]["status"] == "completed"
+    assert _nf.gold == 150
+    assert srv.get_score_entry("NumFiller")["score"] == _nscore
+    unplayer(_np)
+    unplayer(_nf)
+    print("FILL_NUMBERS_OK")
+
     # --- Commission cancel: poster cancels, half refund ---
     canposter = mkplayer("CanPoster", 40020, room="guild_hall")
     canposter.gold = 200
@@ -3289,7 +3319,14 @@ async def main():
     await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # no kills
     srv.record_npc_kill("FailFiller", "Giant Rat")
     await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # real fill
+    _fscore = srv.get_score_entry("FailFiller")["score"]
+    _fxp = srv.total_xp(srv.get_score_entry("FailFiller"))
+    _fgold = _ff.gold
     await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # double fill
+    assert srv._commissions[_fc]["status"] == "completed"
+    assert srv.get_score_entry("FailFiller")["score"] == _fscore
+    assert srv.total_xp(srv.get_score_entry("FailFiller")) == _fxp
+    assert _ff.gold == _fgold
     await srv.cmd_commission_cancel(_fp, {"commission_id": _fc})  # cancel filled
     await srv.cmd_commission_cancel(_ff, {"commission_id": _fc})  # non-poster
     assert srv.comm_feed[-1]["seq"] == _s0 + 1, srv.comm_feed[-1]
