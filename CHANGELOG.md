@@ -3,6 +3,13 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Soak provenance (#318): every run record carries a `session_id`
+  (local-time stamp plus short uuid, minted by `ml/runlog.py`), and the
+  soak driver mints one session per invocation, tags its run record with
+  it, and writes `session_id`, `seed` and `run_id` into
+  `soak_report.json`, so a report joins to its run on more than the seed
+  alone. Fresh-start needs no new flag: `--reset`/`--no-resume` already
+  cover it.
 - Dashboard (#429): Run comparison chart now uses honest time/steps x-axis with union of sample times (no resampling/interpolation).
 - Dashboard (#445): Preserves gaps, shows points, and keeps gaps visible (sample-mode hover includes sample index).
 

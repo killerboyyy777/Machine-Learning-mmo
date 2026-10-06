@@ -25,6 +25,7 @@ import os
 import random
 import re
 import time
+import uuid
 from urllib.parse import parse_qsl
 
 RUNS_DIRNAME = "runs"
@@ -120,6 +121,17 @@ def _claim_run_dir(path):
         return True
     except OSError:
         return False
+
+
+def new_session_id():
+    """Mint a session id: local-time stamp plus a short uuid (#318).
+
+    The stamp groups one operator session chronologically; the uuid suffix
+    disambiguates same-second sessions.  uuid4 reads OS entropy so two
+    sessions with equal --seed values still differ (random.getrandbits
+    would not, after seed_everything).
+    """
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
 
 def new_run_id(root):
@@ -295,15 +307,20 @@ def _provenance():
         return {"git_sha": "", "config_hash": ""}
 
 
-def start_run(kind, root=None, label="", seed=None, hparams=None, **fields):
+def start_run(
+    kind, root=None, label="", seed=None, hparams=None, session_id=None, **fields
+):
     """Open a run record.  `kind` names the trainer (torch_farm, dqn,
     ml_botfarm, ml_client, soak).  `hparams` is the argparse namespace, which
-    is the only record of the CLI knobs that shape a run."""
+    is the only record of the CLI knobs that shape a run.  `session_id` tags
+    the operator session (#318); callers that span one logical session (a
+    soak) pass a shared id, otherwise one is minted per run."""
     root = root or default_root()
     os.makedirs(root, exist_ok=True)
     now = time.time()
     manifest = {
         "run_id": new_run_id(root),
+        "session_id": session_id or new_session_id(),
         "kind": str(kind),
         "label": str(label or ""),
         "status": "running",
