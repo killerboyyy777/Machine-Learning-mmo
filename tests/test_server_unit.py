@@ -3563,6 +3563,76 @@ async def main():
     unplayer(_ap)
     print("AMMO_GHOST_OK")
 
+    # unregistered buy/sell/list/gather-by-name resolve via _iname(),
+    # never KeyError; list views and messages name the raw id
+    assert "ghost_zzz_trade" not in srv.ITEM_DEFS
+    _tp = mkplayer("TradeGhost", 67004, room="market")
+    _shop = srv.npcs["merchant"]["shop"]
+    _had_ghost_shop = "ghost_zzz_trade" in _shop
+    _shop["ghost_zzz_trade"] = 5
+    try:
+        _tp.gold = 1000
+        _tp.inventory = []
+        inbox.clear()
+        await srv.cmd_buy(_tp, {"item": "ghost_zzz_trade"})
+        assert "ghost_zzz_trade" in _tp.inventory
+        assert any("ghost_zzz_trade" in m.get("text", "") for m in inbox), inbox[-3:]
+        inbox.clear()
+        await srv.cmd_sell(_tp, {"item": "ghost_zzz_trade"})
+        assert "ghost_zzz_trade" not in _tp.inventory
+        assert any("ghost_zzz_trade" in m.get("text", "") for m in inbox), inbox[-3:]
+        _tp.inventory = ["ghost_zzz_trade"]
+        inbox.clear()
+        await srv.cmd_market_post(_tp, {"item": "ghost_zzz_trade", "price": 7})
+        assert any("ghost_zzz_trade" in m.get("text", "") for m in inbox), inbox[-3:]
+        inbox.clear()
+        await srv.cmd_market_list(_tp, {})
+        _ml = next(m for m in inbox if m.get("type") == "market")
+        _ghost_orders = [o for o in _ml["orders"] if o["item"] == "ghost_zzz_trade"]
+        assert _ghost_orders, _ml["orders"]
+    finally:
+        if not _had_ghost_shop:
+            _shop.pop("ghost_zzz_trade", None)
+        srv.market_orders[:] = [
+            o for o in srv.market_orders if o.get("item") != "ghost_zzz_trade"
+        ]
+    unplayer(_tp)
+    print("TRADE_GHOST_OK")
+
+    # gather-by-name matches the _iname() display name, never KeyError:
+    # registered display names resolve, ghost ids fall back to the raw id
+    _gp = mkplayer("GatherGhost", 67005, room="market")
+    srv.gather_nodes["ghost_zzz_node"] = {
+        "id": "ghost_zzz_node",
+        "room": "market",
+        "item": "ghost_zzz_trade",
+        "available": True,
+    }
+    try:
+        _gp.inventory = []
+        inbox.clear()
+        await srv.cmd_gather(_gp, {"node": "ghost_zzz_trade"})
+        assert "ghost_zzz_trade" in _gp.inventory
+        assert any("ghost_zzz_trade" in m.get("text", "") for m in inbox), inbox[-3:]
+    finally:
+        srv.gather_nodes.pop("ghost_zzz_node", None)
+    unplayer(_gp)
+    _gd = mkplayer("GatherDisplay", 67006, room="lumber_camp")
+    _pine = srv.gather_nodes["pine_timber_node"]
+    _pine_available, _pine_respawn = _pine["available"], _pine["respawn_at"]
+    _pine["available"] = True
+    _pine["respawn_at"] = None
+    try:
+        _gd.inventory = []
+        inbox.clear()
+        await srv.cmd_gather(_gd, {"node": "Pine Timber"})
+        assert "pine_timber" in _gd.inventory
+        assert any("Pine Timber" in m.get("text", "") for m in inbox), inbox[-3:]
+    finally:
+        _pine["available"], _pine["respawn_at"] = _pine_available, _pine_respawn
+    unplayer(_gd)
+    print("GATHER_NAME_OK")
+
     # world topology rule (#324): every indoor (shelter) room has exactly
     # one directly-accessible outdoor exit, and every room stays
     # reachable on foot from town_square (bot paths preserved)
