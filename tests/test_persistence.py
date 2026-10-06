@@ -4,6 +4,7 @@ Run from the repo root: python tests/test_persistence.py
 No game server is needed.
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -88,6 +89,19 @@ def runlog_check(folder):
     assert got["checkpoint"] == "torch_agents/ml_weights.json"
     # argparse namespaces hold Paths and Nones; the manifest must stay plain JSON.
     assert got["hparams"]["lr"] == 1e-3 and got["hparams"]["device"] is None
+    # Session provenance (#318): every run carries a timestamped session id,
+    # and a caller spanning one logical session passes a shared one through.
+    _sid_pat = r"\d{8}-\d{6}-[0-9a-f]{6}"
+    assert re.fullmatch(_sid_pat, got["session_id"]), got["session_id"]
+    _kw = {"root": root, "seed": 9, "session_id": "20250101-000000-abc123"}
+    with runlog.start_run("soak", **_kw) as sess:
+        assert sess.manifest["session_id"] == "20250101-000000-abc123"
+    assert runlog.read_run(root, sess.run_id)["session_id"] == _kw["session_id"]
+    _s1, _s2 = runlog.new_session_id(), runlog.new_session_id()
+    assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}", _s1), _s1
+    assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}", _s2), _s2
+    assert _s1 != _s2, (_s1, _s2)
+    print("SESSION_ID_OK")
     samples = runlog.read_samples(root, rid)
     assert len(samples) == 2 and samples[-1]["score"] == 12
     assert samples[-1]["_ts"] >= samples[0]["_ts"]
