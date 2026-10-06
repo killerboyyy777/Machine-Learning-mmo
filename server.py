@@ -2642,9 +2642,7 @@ async def cmd_craft(player, msg):
     have = {iid: player.inventory.count(iid) for iid in set(player.inventory)}
     for iid, qty in recipe["inputs"].items():
         if have.get(iid, 0) < qty:
-            # .get fallback: dynamic ids (e.g. dungeon_shard_10 pre-Floor-10)
-            # aren't in ITEM_DEFS yet -- name the id instead of KeyError.
-            need = ITEM_DEFS.get(iid, {}).get("name", iid)
+            need = _iname(iid)
             await send(player, {"type": "error", "text": f"You need {qty}x {need} to craft that."})
             return
     for iid, qty in recipe["inputs"].items():
@@ -2662,7 +2660,7 @@ async def cmd_craft(player, msg):
     except (TypeError, ValueError):
         output_qty = 1
     player.inventory.extend([result] * output_qty)
-    result_name = ITEM_DEFS.get(result, {}).get("name", result)
+    result_name = _iname(result)
     output_text = f"{output_qty}x {result_name}" if output_qty > 1 else result_name
     await send(player, {"type": "message", "text": f"You craft {output_text}!"})
     entry = get_score_entry(player.name)
@@ -3359,7 +3357,7 @@ async def cmd_quest(player, msg):
                 return
         else:
             need = quest.get("inputs", {})
-            missing = [f"{qty}x {ITEM_DEFS[iid]['name']}" for iid, qty in need.items()
+            missing = [f"{qty}x {_iname(iid)}" for iid, qty in need.items()
                        if player.inventory.count(iid) < qty]
             if missing:
                 await send(player, {"type": "message", "text": f"Sister Maren still needs: {', '.join(missing)}."})
