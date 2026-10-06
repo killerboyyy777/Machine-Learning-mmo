@@ -3289,7 +3289,14 @@ async def main():
     await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # no kills
     srv.record_npc_kill("FailFiller", "Giant Rat")
     await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # real fill
+    _fscore = srv.get_score_entry("FailFiller")["score"]
+    _fxp = srv.total_xp(srv.get_score_entry("FailFiller"))
+    _fgold = _ff.gold
     await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # double fill
+    assert srv._commissions[_fc]["status"] == "completed"
+    assert srv.get_score_entry("FailFiller")["score"] == _fscore
+    assert srv.total_xp(srv.get_score_entry("FailFiller")) == _fxp
+    assert _ff.gold == _fgold
     await srv.cmd_commission_cancel(_fp, {"commission_id": _fc})  # cancel filled
     await srv.cmd_commission_cancel(_ff, {"commission_id": _fc})  # non-poster
     assert srv.comm_feed[-1]["seq"] == _s0 + 1, srv.comm_feed[-1]

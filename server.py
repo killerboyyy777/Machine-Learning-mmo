@@ -2890,6 +2890,11 @@ async def cmd_commission_fill(player, msg):
     # Single terminal vocabulary: open -> completed/cancelled. (An
     # intermediate "filled" write used to live here, overwritten to
     # "completed" below before any snapshot or send could observe it.)
+    # Claim-first (double-fill race): the open check above and this terminal
+    # flip share one sync stretch with no await between (cf. the #195.1
+    # double-kill guard), so an interleaved second fill observes "completed"
+    # and stops. Payouts below reuse the locally computed eff/escrow values.
+    commission["status"] = "completed"
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
     if commission.get("poster") != GUILD_POSTER:
@@ -2920,7 +2925,7 @@ async def cmd_commission_fill(player, msg):
     commission["escrow"] = 0
     if remainder:
         _treasury_credit(remainder)
-    commission["status"] = "completed"
+    # Status already terminal (claimed pre-await above); progress clears here.
     # Terminal rows keep no live counters: progress served its display
     # purpose, and stale counts would over-read on any later view.
     commission["progress"] = {}
