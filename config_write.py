@@ -148,7 +148,7 @@ def _apply_section(lines, file_id, section, edits):
             # stripping it left the old last entry and the new first entry
             # unseparated, which made every reset-then-set round trip die on a
             # re-parse instead of writing.
-            if close - 1 > body_start:
+            if close - 1 >= body_start:
                 lines[close - 1] = _ensure_comma(lines[close - 1])
             for offset, key in enumerate(added):
                 last = offset == len(added) - 1
