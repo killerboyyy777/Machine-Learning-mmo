@@ -30,7 +30,7 @@ sys.path.insert(
 )
 
 from ml.conductor.conductor import Conductor
-from ml.runlog import seed_everything, start_run
+from ml.runlog import new_session_id, seed_everything, start_run
 
 
 def setup_file_logging(base_dir):
@@ -312,6 +312,7 @@ async def main():
     )
     print(f"[soak] settings: {vars(args)}", flush=True)
     run = None
+    session_id = new_session_id()
     if args.run_record:
         run = start_run(
             "soak",
@@ -319,8 +320,10 @@ async def main():
             label=f"{args.agents} agents {args.duration:.0f}s",
             seed=args.seed,
             hparams=vars(args),
+            session_id=session_id,
         )
         print(f"[soak] run record: {run.run_id} ({run.path})", flush=True)
+    print(f"[soak] session: {session_id}", flush=True)
     with contextlib.ExitStack() as stack:
         if run is not None:
             stack.enter_context(run)
@@ -358,6 +361,9 @@ async def main():
         print(f"[soak] tables: {tables}", flush=True)
         print(f"[soak] server_log_errors: {log_errors}", flush=True)
         report = {
+            "session_id": session_id,
+            "run_id": run.run_id if run is not None else "",
+            "seed": args.seed,
             "ts": time.time(),
             "duration": args.duration,
             "agents": args.agents,
