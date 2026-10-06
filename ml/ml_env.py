@@ -1252,10 +1252,8 @@ class TextMMOEnv:
         self._maybe_advance_curriculum()
         if episode_done:
             done = True
-            obs = self._build_obs()
         else:
             done = self.max_steps is not None and self._step_count >= self.max_steps
-            obs = self._build_obs()
         flags_after = {k: bool(self._state.get(k))
                        for _, akey, rkey in _QUEST_FLAG_SPECS
                        for k in (akey, rkey)}
