@@ -3,7 +3,8 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
-- Dashboard: Run comparison chart now uses honest time/steps x-axis with union of sample times (no resampling/interpolation), preserves gaps, shows points and keeps gaps visible (#429/#445).
+- Dashboard (#429): Run comparison chart now uses honest time/steps x-axis with union of sample times (no resampling/interpolation).
+- Dashboard (#445): Preserves gaps, shows points, and keeps gaps visible (sample-mode hover includes sample index).
 
 - RND curiosity revival: the torch farm now wires RND weight +
   schedule into its defaults (`--rnd-lambda` 1.0 start present from
