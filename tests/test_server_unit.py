@@ -3499,9 +3499,36 @@ async def main():
     assert "ghost_zzz_result" in _cp.inventory
     assert any("ghost_zzz_result" in m.get("text", "") for m in inbox), inbox[-3:]
     del srv.RECIPES["ghost_zzz_recipe"]
+    # unregistered craft inputs name the raw id via _iname(), never KeyError
+    assert "ghost_zzz_need" not in srv.ITEM_DEFS
+    srv.RECIPES["ghost_zzz_need_recipe"] = {
+        "inputs": {"ghost_zzz_need": 1},
+        "result": "arrow",
+    }
+    _cp.inventory = []
+    inbox.clear()
+    await srv.cmd_craft(_cp, {"recipe": "ghost_zzz_need_recipe"})
+    assert any("ghost_zzz_need" in m.get("text", "") for m in inbox), inbox[-3:]
+    del srv.RECIPES["ghost_zzz_need_recipe"]
     _cp.inventory = []
     unplayer(_cp)
     print("CRAFT_GHOST_OK")
+
+    # unregistered quest inputs name the raw id via _iname(), never KeyError
+    assert "ghost_zzz_need" not in srv.ITEM_DEFS
+    _qp = mkplayer("QuestGhost", 67002, room="healing_spring")
+    await srv.cmd_quest(_qp, {"action": "accept", "quest": "remedy"})
+    _saved_inputs = dict(srv.QUESTS["remedy"]["inputs"])
+    srv.QUESTS["remedy"]["inputs"] = {"ghost_zzz_need": 1}
+    try:
+        _qp.inventory = []
+        inbox.clear()
+        await srv.cmd_quest(_qp, {"action": "turn_in", "quest": "remedy"})
+        assert any("ghost_zzz_need" in m.get("text", "") for m in inbox), inbox[-3:]
+    finally:
+        srv.QUESTS["remedy"]["inputs"] = _saved_inputs
+    unplayer(_qp)
+    print("QUEST_GHOST_OK")
 
     # world topology rule (#324): every indoor (shelter) room has exactly
     # one directly-accessible outdoor exit, and every room stays
