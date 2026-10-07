@@ -23,7 +23,7 @@ except ImportError:
     _stub.manual_seed = lambda seed: None  # type: ignore[attr-defined]
     sys.modules["torch"] = _stub
 
-import eval as eval_mod  # noqa: E402
+import eval as eval_mod
 
 seen = []
 
@@ -93,7 +93,7 @@ assert len(seen) == n + 1, seen
 assert seen[-1]["reward_formula"] is None, seen[-1]
 print("EVAL_DEFAULT_FORMULA_NONE_OK")
 
-from ml_env import TextMMOEnv as RealEnv  # noqa: E402
+from ml_env import TextMMOEnv as RealEnv
 
 real = RealEnv("EvalFormulaReal", reward_formula="score_delta", reward_mode="xp")
 assert real._has_custom_reward is True, real._has_custom_reward
