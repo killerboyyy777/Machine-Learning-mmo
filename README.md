@@ -15,7 +15,7 @@ with curiosity and PBT, scripted baselines, a 50-agent conductor orchestrator,
 and deterministic eval.
 
 > **Authorship note:** this project is human-designed and human-led but AI
-> coding assistants where used along the way for a lot of implementation.
+> coding assistants were used along the way for a lot of implementation.
 
 ## Setup
 
