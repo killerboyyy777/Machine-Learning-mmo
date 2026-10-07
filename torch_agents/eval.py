@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import torch
 
 from ml.ml_env import TextMMOEnv, flatten_obs
+from ml.reward_dsl import RewardFormulaError, compile_formula, reference
 
 
 def _load_agent(policy, checkpoint):
@@ -49,10 +50,16 @@ def _load_agent(policy, checkpoint):
     return lambda feats, mask: agent.act(feats, 0.0, mask)
 
 
-async def eval_seed(act_fn, url, seed, steps, reward_mode, tag=""):
+async def eval_seed(act_fn, url, seed, steps, reward_mode, tag="", reward_formula=None):
     random.seed(seed)
     torch.manual_seed(seed)
-    env = TextMMOEnv(f"Eval{tag}{seed}", url=url, max_steps=steps, reward_mode=reward_mode)
+    env = TextMMOEnv(
+        f"Eval{tag}{seed}",
+        url=url,
+        max_steps=steps,
+        reward_mode=reward_mode,
+        reward_formula=reward_formula,
+    )
     obs = await env.reset()
     feats = flatten_obs(obs)
     done = False
@@ -73,11 +80,13 @@ def _run_tag(checkpoint):
     return "".join(c for c in stem if c.isalnum())[:12] or "run"
 
 
-async def evaluate(checkpoint, policy, url, seeds, steps, reward_mode, tag=""):
+async def evaluate(
+    checkpoint, policy, url, seeds, steps, reward_mode, tag="", reward_formula=None
+):
     act_fn = _load_agent(policy, checkpoint)
     scores = []
     for s in seeds:
-        score = await eval_seed(act_fn, url, s, steps, reward_mode, tag)
+        score = await eval_seed(act_fn, url, s, steps, reward_mode, tag, reward_formula)
         scores.append(score)
         print(f"  seed {s}: score={score:.2f}")
     return scores
@@ -99,6 +108,7 @@ def report(name, scores):
 # Implemented exactly (regularized incomplete beta + bisection for the
 # critical value) so no scipy dependency is needed.
 # ---------------------------------------------------------------------------
+
 
 def _betacf(a, b, x):
     """Continued fraction for the incomplete beta function."""
@@ -224,19 +234,26 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
         return out
     if sd == 0.0:
         # Identical diffs: difference is exact (or exactly zero).
-        out.update(t=float("inf") if mean_d != 0.0 else 0.0,
-                   p_value=0.0 if mean_d != 0.0 else 1.0,
-                   cohen_d=float("inf") if mean_d > 0 else
-                   (float("-inf") if mean_d < 0 else 0.0),
-                   ci95=[mean_d, mean_d])
+        out.update(
+            t=float("inf") if mean_d != 0.0 else 0.0,
+            p_value=0.0 if mean_d != 0.0 else 1.0,
+            cohen_d=(
+                float("inf") if mean_d > 0 else (float("-inf") if mean_d < 0 else 0.0)
+            ),
+            ci95=[mean_d, mean_d],
+        )
         out["verdict"] = "SIGNIFICANT" if mean_d != 0.0 else "INCONCLUSIVE"
         return out
     se = sd / math.sqrt(n)
     t = mean_d / se
     p = _t_sf(t, n - 1)
     crit = _t_crit(alpha, n - 1)
-    out.update(t=t, p_value=p, cohen_d=mean_d / sd,
-               ci95=[mean_d - crit * se, mean_d + crit * se])
+    out.update(
+        t=t,
+        p_value=p,
+        cohen_d=mean_d / sd,
+        ci95=[mean_d - crit * se, mean_d + crit * se],
+    )
     out["verdict"] = "SIGNIFICANT" if p < alpha else "INCONCLUSIVE"
     return out
 
@@ -251,15 +268,31 @@ def main():
     p.add_argument("--steps", type=int, default=500, help="env steps per seed")
     p.add_argument("--reward-mode", default="score", choices=("score", "xp", "econ"))
     p.add_argument(
+        "--reward-formula",
+        default=None,
+        metavar="EXPR",
+        help="custom reward expression (#68), e.g. "
+        "'0.5*xp_delta + 1.2*profit - 0.1*deaths'. Replaces the mode "
+        "reward entirely. Signals:\n" + reference(),
+    )
+    p.add_argument(
         "--test",
         default="ttest",
         choices=("none", "ttest"),
         help="paired significance test (isolated worlds only; "
         "live eval reports comparative-only)",
     )
-    p.add_argument("--out", default=None,
-                   help="write run record JSON (scores + comparison for #65)")
+    p.add_argument(
+        "--out",
+        default=None,
+        help="write run record JSON (scores + comparison for #65)",
+    )
     args = p.parse_args()
+    if args.reward_formula:
+        try:
+            compile_formula(args.reward_formula)
+        except RewardFormulaError as e:
+            p.error(f"--reward-formula: {e}")
 
     seeds = list(range(args.seeds))
     print(
@@ -267,15 +300,28 @@ def main():
     )
     champ = asyncio.run(
         evaluate(
-            args.checkpoint, args.policy, args.url, seeds, args.steps, args.reward_mode,
+            args.checkpoint,
+            args.policy,
+            args.url,
+            seeds,
+            args.steps,
+            args.reward_mode,
             _run_tag(args.checkpoint),
+            args.reward_formula,
         )
     )
     m, _s = report("challenger", champ)
-    record = {"checkpoint": args.checkpoint, "baseline": args.baseline,
-              "policy": args.policy, "seeds": seeds, "steps": args.steps,
-              "reward_mode": args.reward_mode, "challenger": champ,
-              "comparison": None}
+    record = {
+        "checkpoint": args.checkpoint,
+        "baseline": args.baseline,
+        "policy": args.policy,
+        "seeds": seeds,
+        "steps": args.steps,
+        "reward_mode": args.reward_mode,
+        "reward_formula": args.reward_formula,
+        "challenger": champ,
+        "comparison": None,
+    }
     if args.baseline:
         print(f"[eval] baseline {args.baseline}")
         base = asyncio.run(
@@ -287,6 +333,7 @@ def main():
                 args.steps,
                 args.reward_mode,
                 _run_tag(args.baseline),
+                args.reward_formula,
             )
         )
         mb, _sb = report("baseline  ", base)
@@ -309,10 +356,12 @@ def main():
                 print(f"test: INCONCLUSIVE ({comp['reason']})")
             else:
                 lo, hi = comp["ci95"]
-                print(f"test: {comp['verdict']} "
-                      f"(paired t={comp['t']:.3f}, p={comp['p_value']:.4f}, "
-                      f"d={comp['cohen_d']:.3f}, "
-                      f"95% CI [{lo:+.2f}, {hi:+.2f}])")
+                print(
+                    f"test: {comp['verdict']} "
+                    f"(paired t={comp['t']:.3f}, p={comp['p_value']:.4f}, "
+                    f"d={comp['cohen_d']:.3f}, "
+                    f"95% CI [{lo:+.2f}, {hi:+.2f}])"
+                )
     if args.out:
         with open(args.out, "w") as f:
             json.dump(record, f, indent=2)
