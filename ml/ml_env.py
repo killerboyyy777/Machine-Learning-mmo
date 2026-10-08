@@ -1152,6 +1152,32 @@ class TextMMOEnv:
         self.walked_rooms = walked
         return self._state.get("room_id") == room
 
+    def _reset_episode_counters(self):
+        """Clear per-episode reward state (#435).
+
+        Split out of reset() so it is unit-testable without a socket:
+        reset() connects, this just zeroes counters. Fresh-episode
+        invariant: steps, steps_since_death, and every error/division
+        counter are all 0, and the formation pulse is available again.
+        """
+        self._pending_reward = 0.0
+        self._pending_xp = 0.0
+        self._pending_levels = 0
+        self._pending_deaths = 0
+        self._pending_gold_lost = 0.0
+        self._pending_gold_dropped = 0.0
+        self._pending_xp_lost = 0.0
+        # No death yet this episode, so this equals steps (both start at
+        # 0 and advance in lockstep until the first death resets it).
+        # A bare 0 is ambiguous with "died this step", so disambiguate
+        # via deaths_total: 0/0 means never died, 0/N means died this step.
+        self._steps_since_death = 0
+        self._step_count = 0
+        self.custom_reward_errors = 0
+        if getattr(self, "_formula", None) is not None:
+            self._formula.zero_divisions = 0
+        self._last_formation_step = -10 ** 9
+
     async def reset(self):
         await self._close_ws()
 
@@ -1175,15 +1201,7 @@ class TextMMOEnv:
         await self._send("market_list")
         await asyncio.sleep(self.step_delay * 2)  # let the initial snapshot land
 
-        self._pending_reward = 0.0
-        self._pending_xp = 0.0
-        self._pending_levels = 0
-        self._pending_deaths = 0
-        self._pending_gold_lost = 0.0
-        self._pending_gold_dropped = 0.0
-        self._pending_xp_lost = 0.0
-        self._steps_since_death = 0
-        self._step_count = 0
+        self._reset_episode_counters()
         self.walked_rooms = []
         if (
             self.spawn_room
@@ -1483,20 +1501,30 @@ class TextMMOEnv:
         research hook or a non-finite formula would end an overnight run
         that has already invested hours; the step instead keeps the reward
         the mode would have given, and the failure is counted rather than
-        swallowed.
+        swallowed. At most one error per step no matter how many stages
+        fail (#435): a hook that raises and a formula that raises on the
+        same step is one broken step, not two.
         """
-        value = self._call_reward_hook(signals)
+        failures = []
+        value, hook_error = self._call_reward_hook(signals)
+        if hook_error is not None:
+            failures.append(hook_error)
         from_formula = False
         if value is None and self._formula is not None:
-            value = self._evaluate_formula(signals)
+            value, formula_error = self._evaluate_formula(signals)
+            if formula_error is not None:
+                failures.append(formula_error)
             from_formula = value is not None
         if value is not None:
             if math.isfinite(value):
+                if failures:
+                    self._note_custom_reward_error("; ".join(failures))
                 if from_formula:
                     self._consume_formation_pulse(signals)
                 return value
-            self._note_custom_reward_error(
-                f"custom reward produced a non-finite value ({value!r})")
+            failures.append(f"custom reward produced a non-finite value ({value!r})")
+        if failures:
+            self._note_custom_reward_error("; ".join(failures))
         return self._mode_reward(
             score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
 
@@ -1531,33 +1559,33 @@ class TextMMOEnv:
 
     def _call_reward_hook(self, signals):
         """None means "no opinion", which is what the default plugin hook
-        returns -- an exception here is a real failure, a None is not."""
+        returns -- an exception here is a real failure, a None is not.
+
+        Returns (value, error): the caller notes the error, so one step
+        with several failing stages still counts once (#435).
+        """
         if self._reward_fn is None:
-            return None
+            return None, None
         try:
             raw = self._reward_fn(signals)
-            return None if raw is None else float(raw)
+            return (None if raw is None else float(raw)), None
         except Exception as e:  # noqa: BLE001 - a research hook must not end the run
-            self._note_custom_reward_error(
-                f"reward hook raised {type(e).__name__}: {e}")
-            return None
+            return None, f"reward hook raised {type(e).__name__}: {e}"
 
     def _evaluate_formula(self, signals):
+        """Returns (value, error), same contract as _call_reward_hook."""
         if self._formula is None:
-            return None
+            return None, None
         try:
-            return float(self._formula.evaluate(signals))
+            return float(self._formula.evaluate(signals)), None
         except RewardFormulaError as e:
-            self._note_custom_reward_error(str(e))
-            return None
+            return None, str(e)
         except Exception as e:  # noqa: BLE001 - a formula must not end the run
             # floor(1e308*1e308) raises OverflowError and ceil(nan) raises
             # ValueError inside FUNCTIONS, below any RewardFormulaError. This
             # is the same contract _call_reward_hook honors: an overnight run
             # keeps training on the mode reward instead of dying on step one.
-            self._note_custom_reward_error(
-                f"reward formula raised {type(e).__name__}: {e}")
-            return None
+            return None, f"reward formula raised {type(e).__name__}: {e}"
 
     def _note_custom_reward_error(self, message):
         self.custom_reward_errors += 1

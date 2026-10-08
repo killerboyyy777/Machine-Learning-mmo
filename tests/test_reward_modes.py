@@ -7,6 +7,7 @@ Also #68 (reward formula DSL): the tokenizer, parser, signal plumbing, and
 the fail-soft contract for a formula or hook that goes wrong mid-run.
 """
 
+import inspect
 import os
 import sys
 
@@ -428,7 +429,7 @@ assert _abstain.custom_reward_errors == 0, _abstain.custom_reward_errors
 
 # no hook and no formula: pure mode, and the error counter stays at zero
 _none = TextMMOEnv("DslNone")
-assert _none._call_reward_hook({"score_delta": 1.0}) is None
+assert _none._call_reward_hook({"score_delta": 1.0}) == (None, None)
 assert _none.custom_reward_errors == 0
 print("FORMULA_FAILSOFT_OK")
 
@@ -537,5 +538,87 @@ assert (
 )
 assert _hk._last_formation_step == -(10**9), "the hook path moved the cursor"
 print("FORMATION_PULSE_OK")
+
+# =====================================================================
+# #435 residuals round 2 (items 1-4): init semantics, single-count
+# errors, per-episode counters, similarity hints.
+# =====================================================================
+
+# --- 1: steps_since_death starts at steps (both 0 fresh); a bare 0 is
+# "episode start" iff deaths_total is still 0, "just died" otherwise ---
+_fresh = TextMMOEnv("DslInit", reward_formula="steps_since_death")
+assert _fresh._steps_since_death == 0 and _fresh._step_count == 0
+_fresh_sig = _fresh._reward_signals(
+    0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, _fresh._steps_since_death
+)
+assert _fresh_sig["steps_since_death"] == 0.0 and _fresh_sig["steps"] == 0.0
+assert _fresh_sig["deaths_total"] == 0.0  # the disambiguator: 0/0 = never died
+_fresh._apply_event({"type": "death"})
+_died_sig = _fresh._reward_signals(
+    0.0,
+    0.0,
+    0,
+    0.0,
+    0.0,
+    _fresh._pending_deaths,
+    0.0,
+    0.0,
+    0.0,
+    _fresh._steps_since_death,
+)
+assert _died_sig["steps_since_death"] == 0.0, _died_sig
+assert _died_sig["deaths_total"] == 1.0, _died_sig  # 0/N = died this step
+print("STEPS_SINCE_DEATH_INIT_OK")
+
+# --- 2: one broken step counts once, however many stages fail ---
+_both = TextMMOEnv(
+    "DslBothFail",
+    reward_formula="floor(1e308*1e308)",
+    reward_fn=lambda s: 1 / 0,
+)
+_r = _both._compute_reward(
+    6.0,
+    0.0,
+    0,
+    0.0,
+    0.0,
+    1,
+    _both._reward_signals(6.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0),
+)
+assert _r == 6.0, _r  # hook raised + formula raised -> mode reward, counted once
+assert _both.custom_reward_errors == 1, _both.custom_reward_errors
+print("ERROR_DEDUPE_OK")
+
+# --- 3: episode counters reset without a socket (reset() delegates) ---
+_rc = TextMMOEnv("DslReset", reward_formula="xp_delta / (deaths - deaths)")
+_rc.custom_reward_errors = 3
+_rc._formula.zero_divisions = 2
+_rc._last_formation_step = 41
+_rc._step_count = 7
+_rc._steps_since_death = 7
+_rc._pending_reward = 1.5
+_rc._reset_episode_counters()
+assert _rc.custom_reward_errors == 0
+assert _rc._formula.zero_divisions == 0
+assert _rc._last_formation_step == -(10**9)
+assert _rc._step_count == 0 and _rc._steps_since_death == 0
+assert _rc._pending_reward == 0.0
+
+assert "_reset_episode_counters()" in inspect.getsource(TextMMOEnv.reset)
+print("COUNTER_RESET_OK")
+
+# --- 4: similarity hints stay in-family; short stems keep prefix help ---
+try:
+    compile_formula("xp_delta + delta")
+    raise SystemExit("FAIL: unknown signal accepted: delta")
+except RewardFormulaError as e:
+    assert "did you mean 'deaths'" not in str(e), e  # wrong family entirely
+    assert "did you mean 'xp_delta'" in str(e), e  # a *_delta signal instead
+try:
+    compile_formula("0.5*xp_dlta + 1")
+    raise SystemExit("FAIL: typo accepted")
+except RewardFormulaError as e:
+    assert "xp_delta" in str(e), e
+print("CLOSEST_OK")
 
 print("ALL_REWARD_MODES_OK")
