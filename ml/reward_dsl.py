@@ -19,6 +19,7 @@ Formula authors are usually not programmers, so every error names the
 offending character position and lists what *was* available.
 """
 
+import difflib
 import math
 import re
 
@@ -41,7 +42,11 @@ SIGNALS = {
     "formation": "the one-time party-formation bonus the 'score' mode would have paid",
     "novelty": "reserved for the novelty reward axis; always 0 today",
     "steps": "env steps taken this episode",
-    "steps_since_death": "steps since the last death (0 on the death step itself)",
+    "steps_since_death": (
+        "steps since the last death (0 on the death step itself; "
+        "equals steps while no death has occurred -- a bare 0 means "
+        "'episode start' when deaths_total is 0, 'just died' otherwise)"
+    ),
 }
 
 
@@ -330,17 +335,35 @@ def compile_formula(text):
 
 
 def _closest(name, candidates):
-    """Nearest candidate by common-prefix length: 'xp' should reach 'xp_delta'."""
-    best, best_len = None, 0
+    """Best-guess signal for a typo: similarity first, prefix fallback.
+
+    Prefix-only matching once suggested `deaths` for `delta` (shared "de"),
+    sending the author toward the wrong signal family entirely. difflib
+    catches the truncated stem (`delta` -> `xp_delta`); the prefix fallback
+    survives for short stems (`xp` -> `xp_delta`) that never reach cutoff.
+    """
+    best_ratio, ratio_best = 0.0, None
+    best_prefix, prefix_len = None, 0
     for candidate in candidates:
+        ratio = difflib.SequenceMatcher(None, name, candidate).ratio()
+        if ratio > best_ratio:
+            best_ratio, ratio_best = ratio, candidate
         shared = 0
         for a, b in zip(name, candidate):
             if a != b:
                 break
             shared += 1
-        if shared > best_len:
-            best, best_len = candidate, shared
-    return best if best_len >= 2 else None
+        if shared > prefix_len:
+            best_prefix, prefix_len = candidate, shared
+    if best_ratio >= 0.8:
+        return ratio_best
+    if prefix_len >= 4:
+        return best_prefix
+    if best_ratio >= 0.6:
+        return ratio_best
+    if prefix_len >= 2:
+        return best_prefix
+    return None
 
 
 def evaluate(formula, signals):

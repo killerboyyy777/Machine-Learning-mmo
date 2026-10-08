@@ -98,6 +98,14 @@ All notable changes to the text MMO engine are recorded here.
   `env_reward_formula=42` stays the string `"42"` instead of being
   coerced to an int that the parser rejected, which used to kill the
   agent at startup.
+- Reward DSL fixes (#68 review round 2, #435): per-episode reward
+  counters (`custom_reward_errors`, the formula `zero_divisions` tally,
+  the `formation` pulse cursor) reset with the episode instead of
+  leaking across it; a step where both the plugin hook and the formula
+  fail counts once, not twice; `steps_since_death` documents that a bare
+  0 means "episode start" while `deaths_total` is 0 and "just died"
+  otherwise; and the "did you mean" hint matches by similarity first,
+  so `delta` suggests `xp_delta` instead of `deaths`.
 - Wild interiors (#424): a `wild` room flag, orthogonal to `shelter`, on the
   two spans that begin at the #423 indoor-B gates (north: summit gatehouse,
   howling tunnel, howling col, glacier crown, windcarved crag; south: tideline

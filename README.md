@@ -163,7 +163,7 @@ The README is intentionally short — everything lives in the
 | [Getting Started](../../wiki/Getting-Started) | Install, dashboard, first bot/LLM client |
 | [Protocol](../../wiki/Protocol) | Every command + server message, GM stream |
 | [Game Systems](../../wiki/Game-Systems) | Equipment, carry cap, ammo, world-building, dungeons, leveling, market, quests, scoring, multiplayer, capacity, accounts |
-| [ML Guide](../../wiki/ML-Guide) | Env, reward modes, curriculum, agents, DQN+curiosity, eval, PBT, conductor, soak tests |
+| [ML Guide](../../wiki/ML-Guide) | Env, reward modes, custom reward formula, curriculum, agents, DQN+curiosity, eval, PBT, conductor, soak tests |
 | [Configuration](../../wiki/Configuration) | `server_config.json`, `ml_config.json`, env vars, ports |
 | [Testing](../../wiki/Testing) | Suites, CI, live-test procedure |
 | [Dashboard](../../wiki/Dashboard) | Panels, `/api/state`, GM tab, `/health`, Runs tab, Config tab |
