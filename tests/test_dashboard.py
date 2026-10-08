@@ -90,7 +90,8 @@ for tok in ("red wash + W = wild", 'WILD_MARK = "W"', "if (room.wild)",
 assert chr(0x25B2) not in html, "non-ASCII wild marker in dashboard"
 # Spawn-border fix: outdoor-home tile carries accent AND dash.
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
-import json as _json, os as _os
+import json as _json
+import os as _os
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
 assert len(_world["rooms"]) == 43  # 32 map rooms + guild_hall + 6 wilds (#336) + 4 wild-interior chain rooms (#423)
 assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
