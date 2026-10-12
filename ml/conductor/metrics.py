@@ -14,7 +14,7 @@ class MetricsLogger:
     """Append-only JSONL metrics writer with size-based rotation.
 
     Rotation keeps total disk bounded: ``path`` plus ``keep_files``
-    numbered siblings (``path.1`` …) never exceed
+    numbered siblings (``path.1`` ...) never exceed
     ``(keep_files + 1) * rotate_mb``. Plain (uncompressed) files stay
     directly readable by jq/pandas; gzip-on-rotate is a later option if
     a run ever rotates twice (none has).
