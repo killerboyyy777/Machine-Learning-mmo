@@ -10,6 +10,7 @@ party invite/accept/shared dungeon, and the dashboard snapshot.
 Note: the raw protocol requires FULL direction names (north/south/...,
 up/down/enter) -- shorthand like `w` is rejected by the server.
 """
+
 import asyncio, json, os, re, time
 import websockets
 
@@ -21,12 +22,15 @@ GM_PORT = int(os.environ.get("TEXTMMO_TEST_GM_PORT", "8767"))
 URI = f"ws://127.0.0.1:{GAME_PORT}"
 GM_URI = f"ws://127.0.0.1:{GM_PORT}"
 
+
 async def recv(ws, timeout=3.0, want_type=None):
     deadline = time.time() + timeout
     out = []
     while time.time() < deadline:
         try:
-            msg = json.loads(await asyncio.wait_for(ws.recv(), max(0.05, deadline - time.time())))
+            msg = json.loads(
+                await asyncio.wait_for(ws.recv(), max(0.05, deadline - time.time()))
+            )
         except asyncio.TimeoutError:
             break
         out.append(msg)
@@ -102,7 +106,9 @@ async def fight_until_room(ws, target_room, dir_to_target, max_rounds=40):
         await send(ws, {"cmd": "move", "dir": dir_to_target})
         moved = await drain(ws, 1.0)
         for m in moved[:6]:
-            print(f"    move-> {m.get('type')} {str(m.get('text', m.get('id', '')))[:50]}")
+            print(
+                f"    move-> {m.get('type')} {str(m.get('text', m.get('id', '')))[:50]}"
+            )
         await drain(ws, 0.3)
     raise RuntimeError(f"Could not reach {target_room}")
 
@@ -119,7 +125,11 @@ async def enter_dungeon_floor(ws, floor=1, attempts=6, timeout=5.0):
     await send(ws, {"cmd": "move", "dir": "enter"})
     for _ in range(attempts):
         room = await recv(ws, want_type="room", timeout=timeout)
-        if room is not None and room.get("is_dungeon") and room.get("dungeon_floor") == floor:
+        if (
+            room is not None
+            and room.get("is_dungeon")
+            and room.get("dungeon_floor") == floor
+        ):
             return room
         await send(ws, {"cmd": "look"})
     return None
@@ -151,10 +161,14 @@ def open_guild_escrow():
     the race with the 60s tick is negligible next to this test's existing
     timing assumptions."""
     import urllib.request
-    with urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3) as r:
+
+    with urllib.request.urlopen(
+        f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3
+    ) as r:
         state = json.loads(r.read())
     return sum(
-        c.get("reward_gold", 0) for c in state["commissions"]
+        c.get("reward_gold", 0)
+        for c in state["commissions"]
         if c.get("status") == "open" and c.get("poster") == "Adventurers Guild"
     )
 
@@ -318,8 +332,9 @@ async def main():
         # Heals spend treasury tax, so the cost is parsed out for the
         # treasury asserts downstream (accounting stays exact, not weakened).
         got = await gm_send("gm_heal", player=player_name)
-        assert any("healed" in m.get("text", "") or "full HP" in m.get("text", "")
-                   for m in got), got
+        assert any(
+            "healed" in m.get("text", "") or "full HP" in m.get("text", "") for m in got
+        ), got
         for m in got:
             mt = re.search(r"\((\d+) tax spent\)", m.get("text", ""))
             if mt:
@@ -333,9 +348,13 @@ async def main():
     assert ent.get("room", {}).get("id") == "town_square"
     assert ent.get("welcome", {}).get("protocol_version") == 2, ent.get("welcome")
     msgs = await gm_send("gm_reward", player="LiveA", gold=30)
-    assert any(f"Treasury now {round(670.0 - open_guild_escrow(), 2)}" in m.get("text", "") for m in msgs), (
+    assert any(
+        f"Treasury now {round(670.0 - open_guild_escrow(), 2)}" in m.get("text", "")
+        for m in msgs
+    ), (
         f"{msgs} -- did you reset scores.json to {{}} and start the server "
-        f"with TEXTMMO_GM_SEED=700 in this same shell session?")
+        f"with TEXTMMO_GM_SEED=700 in this same shell session?"
+    )
     print("LOGIN_GM_SEED_OK")
 
     # ---- A: buy a sword (attack 7) so fights are quick
@@ -348,13 +367,13 @@ async def main():
     print("GEAR_UP_OK")
 
     # ---- A: grab the free shield from the shop for later market sale
-    await send(A, {"cmd": "move", "dir": "east"})     # back to town_square
+    await send(A, {"cmd": "move", "dir": "east"})  # back to town_square
     await wait_room(A)
-    await send(A, {"cmd": "move", "dir": "east"})     # old_shop
+    await send(A, {"cmd": "move", "dir": "east"})  # old_shop
     await wait_room(A)
     await send(A, {"cmd": "take", "item": "shield"})
     await drain(A, 1.0)
-    await send(A, {"cmd": "move", "dir": "west"})     # back to town_square
+    await send(A, {"cmd": "move", "dir": "west"})  # back to town_square
     await wait_room(A)
 
     # ---- A: reach graveyard (fight the wandering wolf if it shows again)
@@ -368,7 +387,11 @@ async def main():
 
     # ---- A: enter dungeon (solo auto-party, floor 1)
     droom = await enter_dungeon_floor(A)
-    assert droom is not None and droom["is_dungeon"] is True and droom["dungeon_floor"] == 1, droom
+    assert (
+        droom is not None
+        and droom["is_dungeon"] is True
+        and droom["dungeon_floor"] == 1
+    ), droom
     assert set(droom["exits"]) == {"up"}
     assert droom["party_size"] >= 1
     print("DUNGEON_ENTER_OK")
@@ -410,7 +433,11 @@ async def main():
     # A may reach the graveyard hurt, so the pre-dungeon heal debits before
     # this reward lands -- seen as 418.0/416.0 in CI. Accounting stays
     # exact like the downstream asserts; nothing is weakened).
-    assert any(f"Treasury now {round(420.0 - sum(heal_spent) - open_guild_escrow(), 2)}" in m.get("text", "") for m in msgs), msgs
+    assert any(
+        f"Treasury now {round(420.0 - sum(heal_spent) - open_guild_escrow(), 2)}"
+        in m.get("text", "")
+        for m in msgs
+    ), msgs
     await send(B, {"cmd": "move", "dir": "west"})
     await wait_room(B)
     await send(B, {"cmd": "buy", "item": "rusty"})
@@ -427,29 +454,35 @@ async def main():
     await drain(A, 1.0)
     await send(B, {"cmd": "market_buy"})
     got = await recv(B, timeout=5.0)
-    assert any(m.get("type") == "message" and "You buy" in m.get("text", "") for m in got), got
+    assert any(
+        m.get("type") == "message" and "You buy" in m.get("text", "") for m in got
+    ), got
     await send(A, {"cmd": "market_list"})
     ml = await recv(A, want_type="market", timeout=5.0)
     assert ml is not None
     # 420 (after B's gold) + 5 (tax on 50 sale) = 425, minus any gm_heal
     # tax spent getting here (solo-enter heal above, if A arrived hurt).
-    assert ml["tax_treasury"] == 425.0 - sum(heal_spent) - open_guild_escrow() and ml["tax_collected_lifetime"] == 5.0, (ml["tax_treasury"], ml)
+    assert (
+        ml["tax_treasury"] == 425.0 - sum(heal_spent) - open_guild_escrow()
+        and ml["tax_collected_lifetime"] == 5.0
+    ), (ml["tax_treasury"], ml)
     assert len(ml["orders"]) == 0
     print("MARKET_TRADE_TAX_OK")
 
     # ---- GM spends tax treasury
     got = await gm_send("gm_boss", room="deep_forest", strength=1)
-    assert any("spawned" in m.get("text", "") for m in got), got      # 425-100 = 325
+    assert any("spawned" in m.get("text", "") for m in got), got  # 425-100 = 325
     got = await gm_send("gm_buff", type="xp", minutes=1)
-    assert any(f"Treasury now {round(275.0 - sum(heal_spent) - open_guild_escrow(), 2)}." in m.get("text", "") for m in got), got
+    assert any(
+        f"Treasury now {round(275.0 - sum(heal_spent) - open_guild_escrow(), 2)}."
+        in m.get("text", "")
+        for m in got
+    ), got
     print("GM_SPEND_OK")
 
-    # ---- Party: invite + accept in graveyard
-    # Either character may have died (respawning in town_square) while
-    # idling in the hostile graveyard during B's setup + market + GM steps,
-    # so make sure both are actually standing there before inviting.
-    await fight_until_room(A, "graveyard", "south")
-    await fight_until_room(B, "graveyard", "south")
+    # ---- Party: invite + accept in town_square (safe room; no hostile deaths mid-invite)
+    await fight_until_room(A, "town_square", "north")
+    await fight_until_room(B, "town_square", "north")
     await send(A, {"cmd": "party_invite", "target": "LiveB"})
     await drain(A, 1.0)
     await send(B, {"cmd": "party_accept"})
@@ -457,6 +490,9 @@ async def main():
     pi = await wait_party(A, size=2)
     assert pi is not None and len(pi["members"]) == 2 and pi["leader"] == "LiveA", pi
     print("PARTY_OK")
+
+    await fight_until_room(A, "graveyard", "south")
+    await fight_until_room(B, "graveyard", "south")
     await gm_heal_full("LiveA")
     await gm_heal_full("LiveB")
 
@@ -484,17 +520,25 @@ async def main():
 
     # ---- Dashboard snapshot has the new sections
     import urllib.request
-    state = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3).read())
+
+    state = json.loads(
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{HTTP_PORT}/api/state", timeout=3
+        ).read()
+    )
     assert isinstance(state["dungeons"], list) and len(state["dungeons"]) >= 1
     # Standing guild bounties earmark treasury escrow at post time (refunded
     # on expiry): subtract open Adventurers Guild escrow from expected. For
     # open bounties escrow == reward_gold (only fills/expiry ever move it).
     # Uses the just-fetched state (no second fetch, no extra tick race).
     open_escrow = sum(
-        c.get("reward_gold", 0) for c in state["commissions"]
+        c.get("reward_gold", 0)
+        for c in state["commissions"]
         if c.get("status") == "open" and c.get("poster") == "Adventurers Guild"
     )
-    assert state["market"]["treasury"] == 275.0 - sum(heal_spent) - open_escrow, state["market"]
+    assert state["market"]["treasury"] == 275.0 - sum(heal_spent) - open_escrow, state[
+        "market"
+    ]
     assert state["market"]["collected_lifetime"] == 5.0, state["market"]
     assert "buffs" in state and "bosses" in state
     assert state["server"]["ws_port"] == GAME_PORT
