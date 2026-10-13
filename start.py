@@ -1,7 +1,7 @@
 """Cross-platform launcher for the text MMO engine + bots (stdlib only).
 
 Replaces all 7 Windows-only .bat launchers with subcommands that work on
-Windows, Linux, and Debian. `serve` keeps start.bat parity (banner,
+Windows, Linux, and macOS. `serve` keeps start.bat parity (banner,
 verbose logs, default ports) and adds what the .bat could not do: an
 optional bot farm alongside the server and fail-fast port-taken errors.
 
