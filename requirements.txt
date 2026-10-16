@@ -6,7 +6,7 @@
 # Only `websockets` is required to run the game server, the dashboard,
 # the ML env (`ml/`) and the verification suite (`tests/`).
 
-websockets==17.1
+websockets==17.2
 
 # NumPy — required by PyTorch (tensor conversion) and used by tooling.
 numpy==2.5.4
