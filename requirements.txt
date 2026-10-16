@@ -9,7 +9,7 @@
 websockets==17.1
 
 # NumPy — required by PyTorch (tensor conversion) and used by tooling.
-numpy==2.5.3
+numpy==2.5.4
 
 # PyTorch (CPU) — only needed for the deep-learning agent
 # (`torch_agents/dqn_agent.py`). Training deps live in
