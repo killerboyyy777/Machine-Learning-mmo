@@ -35,17 +35,17 @@ Key design:
   - Training: experience replay; online TD update per step with
     auxiliary losses
   - Exploration: epsilon-greedy with linear decay, plus RND curiosity
-  (frozen random target vs trained predictor; normalized prediction error
-  rides the TD target with weight rnd_lambda, predictor trains separately).
-  That is the exploration signal: RND pays for unfamiliar states, and
-  spawn_room/spawn_spread moves the character somewhere unfamiliar to
-  start with. Do not add a second novelty payment on top (#417).
-- Save/load weights to torch_agents/ml_weights.json (torch.save format, separate
-     from the JSON weights used by ml_client.py); torch_farm.py defaults to
-     ml_farm_weights.json / ml_farm_best.json instead. Note: obs/action
-     growth (quest blocks, new actions) changes OBS_SIZE/N_ACTIONS, so
-     older checkpoints need retraining (load warns instead of crashing on
-     shape mismatch).
+    (frozen random target vs trained predictor; normalized prediction error
+    rides the TD target with weight rnd_lambda, predictor trains separately).
+    That is the exploration signal: RND pays for unfamiliar states, and
+    spawn_room/spawn_spread moves the character somewhere unfamiliar to
+    start with. Do not add a second novelty payment on top (#417).
+  - Save/load weights: torch_agents/ml_weights.json (torch.save format,
+    separate from the JSON weights used by ml_client.py); torch_farm.py
+    defaults to ml_farm_weights.json / ml_farm_best.json instead. Note:
+    obs/action growth (quest blocks, new actions) changes OBS_SIZE/N_ACTIONS,
+    so older checkpoints need retraining (load warns instead of crashing on
+    shape mismatch).
 """
 
 import asyncio
