@@ -5,4 +5,4 @@
 #
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.14.1+cpu
-numpy==2.5.3
+numpy==2.5.4
