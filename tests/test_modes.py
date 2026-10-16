@@ -3,6 +3,8 @@
 Run from the repo root:  python tests/test_modes.py
 Covers #474: mode registry/loading, BaseMode passthrough defaults,
 world-state isolation, arena scoring ledger, arena lifecycle.
+Rework: single-credit scoring per event, config type enforcement at
+construction, frozen world view, corrupt-ledger refusal.
 """
 
 import os
@@ -56,6 +58,24 @@ assert b == {}, b
 assert isolate(store, "arena") is a
 print("ISOLATION_OK")
 
+# --- corrupt ledgers raise instead of being silently wiped ---
+try:
+    isolate({"arena": [1, 2]}, "arena")
+    raise SystemExit("FAIL: corrupt ledger silently replaced")
+except ValueError:
+    pass
+print("ISOLATION_CORRUPT_OK")
+
+# --- the world view is frozen: writes raise, reads work ---
+frozen = ModeContext(world={"rooms": ["town_square"]})
+assert frozen.world["rooms"] == ["town_square"]
+try:
+    frozen.world["pwned"] = True  # type: ignore[index]
+    raise SystemExit("FAIL: mode mutated the world view")
+except TypeError:
+    pass
+print("WORLD_FROZEN_OK")
+
 # --- arena: loads with defaults, stages at the foyer ---
 arena = instantiate("arena")
 assert arena.kill_points == 5.0
@@ -84,20 +104,41 @@ print("ARENA_SCORING_OK")
 
 # --- arena hooks drive the same ledger as direct scoring ---
 hook_ctx = ModeContext(mode_state=arena.initial_state())
-arena.on_kill(hook_ctx, "Alice", "Bob")
-arena.on_kill(hook_ctx, "Alice", "Carol")
-assert hook_ctx.mode_state["kills"] == 2
+for victim in ("Bob", "Carol"):
+    arena.score_kill(hook_ctx, "Alice", victim, 0.0, 0.0)
+    arena.on_kill(hook_ctx, "Alice", victim)
+assert hook_ctx.mode_state["kills"] == 2, hook_ctx.mode_state
 assert hook_ctx.mode_state["streak"] == 2
 assert hook_ctx.mode_state["arena_score"] == 10.0
+arena.score_death(hook_ctx, "Alice", 0.0)
 arena.on_death(hook_ctx, "Alice")
 assert hook_ctx.mode_state["deaths"] == 1
 assert hook_ctx.mode_state["streak"] == 0
 assert hook_ctx.mode_state["arena_score"] == 10.0
 print("ARENA_LIFECYCLE_OK")
 
+# --- one event credits once: hooks never score on their own ---
+single_ctx = ModeContext(mode_state=arena.initial_state())
+arena.on_kill(single_ctx, "Alice", "Bob")
+arena.on_death(single_ctx, "Alice")
+assert single_ctx.mode_state["kills"] == 0, single_ctx.mode_state
+assert single_ctx.mode_state["deaths"] == 0, single_ctx.mode_state
+assert single_ctx.mode_state["arena_score"] == 0.0
+print("NO_DOUBLE_COUNT_OK")
+
+# --- bad knob types fail at construction, not mid-run ---
+try:
+    instantiate("arena", kill_points="bad")
+    raise SystemExit("FAIL: bad knob type accepted at construction")
+except ValueError:
+    pass
+assert instantiate("arena", kill_points=25).kill_points == 25.0
+print("CONFIG_TYPES_OK")
+
 # --- arena config: kill value is tunable, ledger follows it ---
 rich = instantiate("arena", kill_points=25.0)
 rich_ctx = ModeContext(mode_state=rich.initial_state())
+rich.score_kill(rich_ctx, "Alice", "Bob", 0.0, 0.0)
 rich.on_kill(rich_ctx, "Alice", "Bob")
 assert rich_ctx.mode_state["arena_score"] == 25.0
 print("ARENA_CONFIG_OK")

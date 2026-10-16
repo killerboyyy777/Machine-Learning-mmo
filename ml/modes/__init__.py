@@ -13,7 +13,9 @@ module defines the contract and the registry so modes load today and
 the engine can call them tomorrow without renegotiating the API.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 
 @dataclass
@@ -25,9 +27,16 @@ class ModeContext:
     under the mode's name but never interpreted by it.
     """
 
-    world: dict = field(default_factory=dict)
+    world: Mapping = field(default_factory=dict)
     mode_state: dict = field(default_factory=dict)
     config: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # A proxy, not a convention: writes raise TypeError instead of
+        # mutating engine state. Copied first so later engine ticks
+        # cannot move what the mode already saw; nested structures
+        # stay engine-owned (the freeze is shallow by design).
+        self.world = MappingProxyType(dict(self.world))
 
 
 class BaseMode:
@@ -55,7 +64,20 @@ class BaseMode:
                 f"(schema: {sorted(schema)})"
             )
         for key, spec in schema.items():
-            setattr(self, key, config.get(key, spec.get("default")))
+            value = config.get(key, spec.get("default"))
+            coerce = spec.get("type")
+            if (
+                value is not None
+                and coerce is not None
+                and not isinstance(value, coerce)
+            ):
+                try:
+                    value = coerce(value)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"bad config {key}={value!r} for mode {self.name!r}: {e}"
+                    )
+            setattr(self, key, value)
 
     def initial_state(self):
         """Fresh isolated ledger for one character (or party)."""
@@ -84,10 +106,18 @@ class BaseMode:
         return 0.0
 
     def on_kill(self, ctx, killer, victim):
-        """Side effects of a kill beyond scoring (streaks, announcements)."""
+        """Side effects of a kill beyond scoring (announcements).
+
+        Never touches the ledger: the engine calls score_kill once per
+        kill first, then this hook, so scoring here would credit twice.
+        """
 
     def on_death(self, ctx, character):
-        """Side effects of a death beyond scoring (streak resets)."""
+        """Side effects of a death beyond scoring (streak resets elsewhere).
+
+        Never touches the ledger: the engine calls score_death once per
+        death first, then this hook, so scoring here would count twice.
+        """
 
 
 REGISTRY = {}
@@ -138,8 +168,14 @@ def isolate(store, name):
     each mode sees only ``store[name]``. Modes must not reach into
     sibling keys -- that is the whole separation guarantee.
     """
-    ledger = store.get(name)
-    if not isinstance(ledger, dict):
-        ledger = {}
-        store[name] = ledger
+    if name in store:
+        ledger = store[name]
+        if not isinstance(ledger, dict):
+            raise ValueError(
+                f"corrupt ledger for mode {name!r}: expected dict, got "
+                f"{type(ledger).__name__}; refusing to wipe a legacy save"
+            )
+        return ledger
+    ledger = {}
+    store[name] = ledger
     return ledger

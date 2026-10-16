@@ -58,7 +58,7 @@ class ArenaMode(BaseMode):
         return 0.0
 
     def on_kill(self, ctx, killer, victim):
-        self.score_kill(ctx, killer, victim, 0.0, 0.0)
+        """No side effects yet: score_kill already credited the ledger."""
 
     def on_death(self, ctx, character):
-        self.score_death(ctx, character, 0.0)
+        """No side effects yet: score_death already counted the death."""

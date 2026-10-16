@@ -153,6 +153,14 @@ can never signal the game server. Its stdout is detached, so a chatty trainer
 does not flood the server log. Note that a running trainer is not remembered
 across a server restart: restart the server only after pressing Stop.
 
+## Game modes
+
+Rulesets layered on the engine live in `ml/modes/` (seam contract and
+registry in `ml/modes/__init__.py`). `arena` is the first skeleton:
+staged PvP bouts with ledger-only scoring, so engine score, XP, and
+gold stay untouched. Engine call-site wiring is still a follow-up;
+see issue #474 for the seam design and what lands next.
+
 ## Docs (wiki)
 
 The README is intentionally short — everything lives in the
