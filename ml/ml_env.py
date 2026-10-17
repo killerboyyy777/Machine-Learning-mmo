@@ -41,7 +41,7 @@ and leveling), plus the Town Guard repeatable quest:
     guards are spawned dynamically and aren't part of the startup vocab)
   - inventory presence over the known item catalog + unknown-inv flag
   - scalars: hp/gold/score/variety, allies, party size, level + XP progress,
-    market order count + presence, equipped-flag,
+    market order count + presence, equipped-flag
   - market-tax terms: the server's tax rate, the minimum-tax floor, and the
     exact after-tax net value of our own standing sell orders.
   - quest terms: whether each quest is active, whether its objective is
@@ -566,6 +566,7 @@ def quest_stage(obs, quest="guard_charm"):
     charm but no active quest -- accept first, then craft counts).
     delver stages: "no_quest", "collect" (active, floors missing),
     "ready_turn_in" (active + floors cleared).
+    remedy/tonic stages: "no_quest", "collect", "ready_turn_in".
     """
     if quest == "delver":
         active = bool(obs.get("quest2_active"))
