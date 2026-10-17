@@ -117,12 +117,26 @@ async def enter_dungeon_floor(ws, floor=1, attempts=6, timeout=5.0):
     `look` when the buffer runs dry (settled-state polling, no blind
     sleep retries)."""
     await send(ws, {"cmd": "move", "dir": "enter"})
+    last = None
     for _ in range(attempts):
         room = await recv(ws, want_type="room", timeout=timeout)
-        if room is not None and room.get("is_dungeon") and room.get("dungeon_floor") == floor:
+        if room is not None:
+            last = {
+                "is_dungeon": room.get("is_dungeon"),
+                "dungeon_floor": room.get("dungeon_floor"),
+                "room_id": (room.get("room") or {}).get("id"),
+            }
+        if (
+            room is not None
+            and room.get("is_dungeon")
+            and room.get("dungeon_floor") == floor
+        ):
             return room
         await send(ws, {"cmd": "look"})
-    return None
+    raise RuntimeError(
+        f"dungeon entry never settled on floor {floor} "
+        f"after {attempts} attempts (last room seen: {last})"
+    )
 
 
 async def wait_party(ws, size=2, attempts=6, timeout=5.0):
