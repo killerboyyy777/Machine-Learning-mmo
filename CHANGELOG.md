@@ -3,6 +3,15 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Engine/mode seam + arena skeleton (#474): `ml/modes/` defines the
+  engine/mode boundary (ModeContext with a frozen world view,
+  BaseMode lifecycle/scoring hooks with schema-validated config,
+  per-mode ledgers via `isolate()`), and `arena` proves it with
+  staged-PvP ledger-only scoring. Engine call-site wiring,
+  mode-selection plumbing, and ledger persistence are follow-ups.
+  Rework hardening: per-event scoring fires exactly once (side-effect
+  hooks never credit), bad knob types fail at construction, and a
+  corrupt non-dict ledger raises instead of being silently wiped.
 - Commission double-fill race closed: `cmd_commission_fill` flips the
   bounty to terminal `completed` in the same sync stretch as the open
   check (no await between, cf. the #195.1 double-kill guard), so an
