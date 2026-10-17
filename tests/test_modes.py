@@ -12,6 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from dataclasses import FrozenInstanceError
+
 from ml.modes import (
     BaseMode,
     ModeContext,
@@ -22,19 +24,30 @@ from ml.modes import (
 )
 from ml.modes.arena import STAGING_ROOM, ArenaMode
 
+
+def rejects(exc, call, label):
+    """Assert call() raises exc. No raise is the failure that matters;
+    a wrong-type raise propagates here and fails the run on its own."""
+    try:
+        call()
+    except exc:
+        return
+    raise SystemExit(f"FAIL: {label}: no raise, want {exc.__name__}")
+
+
+def setitem(mapping, key, value):
+    mapping[key] = value
+
+
 # --- registry: skeleton loads by name ---
 assert "arena" in available(), available()
 assert get("arena") is ArenaMode
-try:
-    get("no_such_mode")
-    raise SystemExit("FAIL: unknown mode accepted")
-except KeyError:
-    pass
-try:
-    instantiate("arena", bogus_knob=1)
-    raise SystemExit("FAIL: unknown mode config accepted")
-except ValueError:
-    pass
+rejects(KeyError, lambda: get("no_such_mode"), "unknown mode accepted")
+rejects(
+    ValueError,
+    lambda: instantiate("arena", bogus_knob=1),
+    "unknown mode config accepted",
+)
 print("REGISTRY_OK")
 
 # --- base mode: every hook is passthrough, scoring pays nothing ---
@@ -59,21 +72,59 @@ assert isolate(store, "arena") is a
 print("ISOLATION_OK")
 
 # --- corrupt ledgers raise instead of being silently wiped ---
+for bad in ([1, 2], "ledger", None, 7):
+    rejects(
+        ValueError,
+        lambda bad=bad: isolate({"arena": bad}, "arena"),
+        f"corrupt ledger {bad!r} silently replaced",
+    )
+# ...and the refusal leaves the save intact for migration.
+survivor = {"arena": [1, 2]}
 try:
-    isolate({"arena": [1, 2]}, "arena")
-    raise SystemExit("FAIL: corrupt ledger silently replaced")
+    isolate(survivor, "arena")
 except ValueError:
     pass
+assert survivor == {"arena": [1, 2]}, survivor
 print("ISOLATION_CORRUPT_OK")
 
 # --- the world view is frozen: writes raise, reads work ---
-frozen = ModeContext(world={"rooms": ["town_square"]})
-assert frozen.world["rooms"] == ["town_square"]
-try:
-    frozen.world["pwned"] = True  # type: ignore[index]
-    raise SystemExit("FAIL: mode mutated the world view")
-except TypeError:
-    pass
+engine_world: dict = {
+    "rooms": ["town_square"],
+    "npcs": {"town_square": ["rat", "thief"]},
+}
+frozen = ModeContext(world=engine_world)
+assert frozen.world["rooms"] == ("town_square",), frozen.world["rooms"]
+assert frozen.world["npcs"]["town_square"] == ("rat", "thief")
+rejects(
+    TypeError,
+    lambda: setitem(frozen.world, "pwned", True),
+    "mode mutated the world view",
+)
+# Nested rosters are the actual attack surface: a mode appending to a
+# roster is an engine-state write even though the top level is a proxy.
+roster = frozen.world["npcs"]["town_square"]
+rejects(
+    AttributeError,
+    lambda: roster.append("ghost"),  # type: ignore[attr-defined]
+    "mode mutated a nested world roster",
+)
+rejects(
+    TypeError,
+    lambda: setitem(frozen.world["npcs"], "town_square", ()),  # type: ignore[index]
+    "mode replaced a nested world roster",
+)
+# Rebinding the field would swap the proxy out wholesale.
+rejects(
+    FrozenInstanceError,
+    lambda: setattr(frozen, "world", {}),
+    "mode rebound ctx.world",
+)
+# The engine's own structures stay engine-owned: later engine ticks
+# cannot move what the mode already saw.
+engine_world["rooms"].append("dupe_town")
+engine_world["npcs"]["town_square"].append("boss")
+assert frozen.world["rooms"] == ("town_square",), frozen.world["rooms"]
+assert frozen.world["npcs"]["town_square"] == ("rat", "thief")
 print("WORLD_FROZEN_OK")
 
 # --- arena: loads with defaults, stages at the foyer ---
@@ -124,15 +175,35 @@ arena.on_death(single_ctx, "Alice")
 assert single_ctx.mode_state["kills"] == 0, single_ctx.mode_state
 assert single_ctx.mode_state["deaths"] == 0, single_ctx.mode_state
 assert single_ctx.mode_state["arena_score"] == 0.0
+# Full engine order (score then hook) per kill must move the ledger
+# exactly one step, and a death costs no arena points.
+order_ctx = ModeContext(mode_state=arena.initial_state())
+arena.score_kill(order_ctx, "Alice", "Bob", 7.0, 3.0)
+arena.on_kill(order_ctx, "Alice", "Bob")
+arena.score_kill(order_ctx, "Alice", "Carol", 7.0, 3.0)
+arena.on_kill(order_ctx, "Alice", "Carol")
+arena.score_death(order_ctx, "Alice", 7.0)
+arena.on_death(order_ctx, "Alice")
+assert order_ctx.mode_state == {
+    "arena_score": 10.0,
+    "kills": 2,
+    "deaths": 1,
+    "streak": 0,
+}, order_ctx.mode_state
 print("NO_DOUBLE_COUNT_OK")
 
 # --- bad knob types fail at construction, not mid-run ---
-try:
-    instantiate("arena", kill_points="bad")
-    raise SystemExit("FAIL: bad knob type accepted at construction")
-except ValueError:
-    pass
+# Coercion is the contract (mirrors ml.plugins), so "12" -> 12.0; what
+# must never happen is a value the knob cannot hold surviving to
+# score_kill and blowing up there as a TypeError.
+for bad_value in ("bad", None, [1], {"k": 1}, object()):
+    rejects(
+        ValueError,
+        lambda bad_value=bad_value: instantiate("arena", kill_points=bad_value),
+        f"bad knob type {bad_value!r} accepted at construction",
+    )
 assert instantiate("arena", kill_points=25).kill_points == 25.0
+assert instantiate("arena", kill_points="12").kill_points == 12.0
 print("CONFIG_TYPES_OK")
 
 # --- arena config: kill value is tunable, ledger follows it ---

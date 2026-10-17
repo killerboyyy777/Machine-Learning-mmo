@@ -18,7 +18,16 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 
-@dataclass
+def _freeze(value):
+    """Recursive read-only view of engine-owned JSON-ish data."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+@dataclass(frozen=True)
 class ModeContext:
     """What a mode may see and touch during a hook call.
 
@@ -32,11 +41,14 @@ class ModeContext:
     config: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        # A proxy, not a convention: writes raise TypeError instead of
-        # mutating engine state. Copied first so later engine ticks
-        # cannot move what the mode already saw; nested structures
-        # stay engine-owned (the freeze is shallow by design).
-        self.world = MappingProxyType(dict(self.world))
+        # Enforced, not conventional: frozen rejects rebinding the
+        # attribute and the recursive freeze rejects writes at every
+        # depth, because a mode appending to ctx.world["npcs"][room] is
+        # an engine-state write wearing a proxy. Detached from the
+        # engine's own structures so a later tick cannot move what the
+        # mode already saw. Read-only is shallow-by-need, not
+        # shallow-by-design.
+        object.__setattr__(self, "world", _freeze(self.world))
 
 
 class BaseMode:
@@ -64,12 +76,17 @@ class BaseMode:
                 f"(schema: {sorted(schema)})"
             )
         for key, spec in schema.items():
-            value = config.get(key, spec.get("default"))
+            default = spec.get("default")
+            value = config.get(key, default)
             coerce = spec.get("type")
+            # None skips only when the schema opts into it (default is
+            # None). Otherwise it is just another wrong type: passing
+            # kill_points=None must fail here, not as a TypeError inside
+            # score_kill three events later.
             if (
-                value is not None
-                and coerce is not None
+                coerce is not None
                 and not isinstance(value, coerce)
+                and not (value is None and default is None)
             ):
                 try:
                     value = coerce(value)
