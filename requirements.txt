@@ -4,12 +4,21 @@
 #     pip install -r requirements.txt
 #
 # Only `websockets` is required to run the game server, the dashboard,
-# the ML env (`ml/`) and the verification suite (`tests/`).
+# the ML env (`ml/`) and the verification suite (`tests/`). `rich` is
+# listed for the ops terminal UI (`tui/`, #319); nothing on those paths
+# imports it, so the engine stays websockets-only.
 
 websockets==17.2
 
 # NumPy — required by PyTorch (tensor conversion) and used by tooling.
 numpy==2.5.4
+
+# Rich — only for `tui/`, the ssh terminal UI that reads the same
+# `/api/state` snapshot the browser dashboard polls. Not imported by
+# server.py, ml/, torch_agents/ or the tests that don't touch the TUI:
+#     pip install -r requirements.txt
+# is the only install step for `python -m tui`.
+rich==15.0.0
 
 # PyTorch (CPU) — only needed for the deep-learning agent
 # (`torch_agents/dqn_agent.py`). Training deps live in
