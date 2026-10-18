@@ -12,7 +12,7 @@ line in both files, which makes the edit a match over that one line: the
 file's indentation, key order, spacing, trailing commas and `_comment` all
 survive untouched, and a save that changes nothing writes no bytes at all
 (so the hash does not move). Adding a key inserts a line in its section;
-removing one drops the line and fixes up the neighbour's comma.
+removing one drops the line and fixes up the neighbor's comma.
 
 Validated by json.loads before and after: a config file that does not parse is
 never written, and a parse failure after the rewrite leaves the file on disk
