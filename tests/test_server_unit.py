@@ -140,7 +140,7 @@ def config_editor_check(folder):
         path, "server", {"scoring": {"DEATH_ITEM_DROP_PCT": None}}
     )
     assert ok and changed == ["scoring.DEATH_ITEM_DROP_PCT"], (ok, changed)
-    # Dropping the last entry of a section has to repair the neighbour's
+    # Dropping the last entry of a section has to repair the neighbor's
     # comma; dropping the first one must not.
     assert "DEATH_ITEM_DROP_PCT" not in json.loads(
         open(path, encoding="utf-8").read()
