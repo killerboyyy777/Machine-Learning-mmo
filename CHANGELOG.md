@@ -3,6 +3,16 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- TUI, first of the #319 breakdown (#490): `python3 -m tui` renders the
+  dashboard's `/api/state` snapshot over ssh with no browser. Tab strip
+  mirrors the dashboard tabs one for one (a test parses `dashboard.html`
+  and fails on drift), Overview is the first proving panel (health cards,
+  history sparklines, recent activity), and the other tabs are labelled
+  placeholders until their panels land. Snapshot fetch runs on a
+  background thread and keeps the last good frame, so a server restart
+  shows `stale (Ns)` instead of a blank screen; the TUI never writes to
+  the server. `rich` lands in requirements.txt as ops tooling only --
+  a test asserts no engine, ML or agent path imports it.
 - Engine/mode seam + arena skeleton (#474): `ml/modes/` defines the
   engine/mode boundary (ModeContext with a frozen world view,
   BaseMode lifecycle/scoring hooks with schema-validated config,
