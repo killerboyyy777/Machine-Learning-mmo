@@ -4671,7 +4671,7 @@ _CONFIG_TEXT_MAX = 200
 def _config_path(file_id):
     """Resolve at call time, not import time.
 
-    CONFIG_FILE is reassigned by --config (server.py ~L5121), and the editor
+    CONFIG_FILE is reassigned by --config (server.py ~L5682), and the editor
     must write the file this process is actually reading, not the default
     location.
     """
