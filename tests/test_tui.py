@@ -1,12 +1,13 @@
 """Terminal UI contract tests (no running server needed).
 
 Run from the repo root:  python tests/test_tui.py
-Covers #319 TUI-1: the TUI tab registry still mirrors the dashboard tab
+Covers #319: the TUI tab registry still mirrors the dashboard tab
 bar (ids, labels, order, default), the snapshot client turns a real HTTP
 response into a dict and every failure mode into SnapshotError, the
-poller keeps the last good snapshot through an outage, the overview panel
-renders the dashboard's health/trend/activity fields, and the app shell
-routes keys and repaints only when the screen changed.
+poller keeps the last good snapshot through an outage, the
+Overview/World/Players/Market panels (TUI-1 + TUI-2 #491) render the
+dashboard's fields, and the app shell routes keys and repaints only when
+the screen changed.
 
 The rich-dependent half is skipped (not failed) when rich is absent, so
 a websockets-only checkout still gets the contract half. One check is
@@ -67,12 +68,85 @@ def snapshot_fixture():
             "players_online": 3,
             "connections": 4,
         },
-        "players": [],
+        "rooms": [
+            {
+                "id": "town_square",
+                "name": "Town Square",
+                "shelter": True,
+                "wild": False,
+                "exits": [{"dir": "north", "to": "market", "to_name": "Market"}],
+                "players": [{"name": "a", "level": 2}],
+                "npcs": [{"name": "Guard", "alive": True, "hp": 8, "max_hp": 10}],
+                "items": ["Pine Resin"],
+                "gold": 0,
+            },
+            {
+                "id": "wilds",
+                "name": "Wilds",
+                "shelter": False,
+                "wild": True,
+                "exits": [
+                    {"dir": "south", "to": "town_square", "to_name": "Town Square"}
+                ],
+                "players": [],
+                "npcs": [{"name": "Wolf", "alive": False, "hp": 0, "max_hp": 12}],
+                "items": [],
+                "gold": 5,
+            },
+        ],
+        "players": [
+            {
+                "name": "a",
+                "level": 2,
+                "score": 12.5,
+                "kills": 3,
+                "deaths": 1,
+                "gold": 9,
+                "hp": 7,
+                "max_hp": 10,
+                "room": "Town Square",
+                "recent_actions": [
+                    {"time": "12:00:01", "cmd": "gather", "detail": "Pine Resin"},
+                    {"time": "12:00:02", "cmd": "travel", "detail": "north"},
+                ],
+            },
+            {
+                "name": "b",
+                "level": 5,
+                "score": 30.0,
+                "kills": 9,
+                "deaths": 2,
+                "gold": 40,
+                "hp": 10,
+                "max_hp": 20,
+                "room": "Wilds",
+                "recent_actions": [],
+            },
+        ],
+        "scores": [
+            {"name": "b", "level": 5, "score": 30.0},
+            {"name": "a", "level": 2, "score": 12.5},
+        ],
         "market": {
             "treasury": 1234.5,
+            "collected_lifetime": 88.0,
             "trade_count": 77,
             "orders": [{"id": 1, "seller": "a", "item": "Pine Resin", "price": 3}],
-            "history": [],
+            "bids": [{"id": 2, "buyer": "b", "item": "Pine Resin", "price": 2}],
+            "spread": {"best_bid": 2, "best_ask": 3},
+            "history": [
+                {
+                    "time": "12:00:03",
+                    "ts": 300.0,
+                    "buyer": "b",
+                    "seller": "a",
+                    "item": "Pine Resin",
+                    "price": 3,
+                    "tax": 0.3,
+                    "payout": 2.7,
+                    "via": None,
+                }
+            ],
         },
         "dungeons": [{"id": "d1", "party": []}],
         "history": [
@@ -267,8 +341,8 @@ def test_panels():
     waiting = render_panel("overview", None)
     assert "waiting" in waiting.plain.lower(), waiting.plain
 
-    placeholder = _plain(render_panel("world", snap))
-    assert "World" in placeholder and "not ported" in placeholder, placeholder
+    placeholder = _plain(render_panel("dungeon", snap))
+    assert "Dungeons" in placeholder and "not ported" in placeholder, placeholder
 
     panel = _plain(render_panel("overview", snap, rows=10))
     assert "1234.5" in panel, "treasury card missing"
@@ -301,6 +375,62 @@ def test_panels():
         and "snapshot 0.5s old" in frame_text
     )
     print("PANELS_OK")
+
+
+def test_panels_world():
+    """World panel (TUI-2): rooms/exits/occupants + history + activity."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("world", snap, rows=5))
+    assert "not ported" not in text, "world panel should be implemented"
+    for heading in ("Rooms", "History", "Live activity"):
+        assert heading in text, heading
+    assert "Town Square" in text and "Wilds" in text
+    assert "Guard (8/10)" in text, "npc hp missing"
+    assert "Wolf (dead)" in text, "dead npc marker missing"
+    assert "Pine Resin" in text and "north->Market" in text
+    assert "wild" in text and "shelter" in text
+    assert "players online" in text and "top score" in text
+    # Activity is newest-first and capped to the row budget.
+    assert _names(text) == [f"P{n}" for n in range(25, 20, -1)], _names(text)
+    empty = _plain(render_panel("world", {}, rows=3))
+    assert "no rooms in snapshot" in empty and "no activity yet" in empty
+    print("WORLD_OK")
+
+
+def test_panels_players():
+    """Players panel (TUI-2): performance, scores, top-player tracker."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("players", snap, rows=5))
+    assert "not ported" not in text, "players panel should be implemented"
+    for heading in ("Performance", "Scores", "Character tracker"):
+        assert heading in text, heading
+    assert "9" in text and "40" in text, "performance numbers missing"
+    assert "30.0" in text and "12.5" in text
+    # The tracker follows the top scorer (b, no actions recorded).
+    assert "b (lv5)" in text, "tracker did not pick the top scorer"
+    assert "no tracked actions yet" in text
+    empty = _plain(render_panel("players", {}, rows=3))
+    assert "no players online" in empty and "no scores recorded yet" in empty
+    print("PLAYERS_OK")
+
+
+def test_panels_market():
+    """Market panel (TUI-2): treasury, two-sided book, trades, by-item."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("market", snap, rows=5))
+    assert "not ported" not in text, "market panel should be implemented"
+    for heading in ("Treasury", "Orders (sell)", "Bids (buy)", "Trade history"):
+        assert heading in text, heading
+    assert "By item" in text
+    assert "1234.5" in text and "88.0" in text and "77" in text
+    assert "best bid" in text and "best ask" in text
+    assert "Pine Resin" in text
+    assert "0.3" in text and "2.7" in text, "tax/payout columns missing"
+    # One ask at 3g, one bid at 2g -> low ask 3g, high bid 2g, spread 1g.
+    assert "1g" in text, "per-item spread missing"
+    empty = _plain(render_panel("market", {}, rows=3))
+    assert "no trades yet" in empty and "no market items yet" in empty
+    print("MARKET_OK")
 
 
 SPARK_FIRST = "."
@@ -480,9 +610,15 @@ def main():
     test_engine_never_imports_rich()
     if HAVE_RICH:
         test_panels()
+        test_panels_world()
+        test_panels_players()
+        test_panels_market()
         test_app_shell()
     else:
         print("PANELS_OK skipped (rich not installed)")
+        print("WORLD_OK skipped (rich not installed)")
+        print("PLAYERS_OK skipped (rich not installed)")
+        print("MARKET_OK skipped (rich not installed)")
         print("APP_SHELL_OK skipped (rich not installed)")
     print("ALL_TUI_OK")
 

@@ -103,10 +103,10 @@ python3 -m tui --once --width 100  # one frame to stdout, then exit
 ```
 
 The tab strip mirrors the dashboard tabs one for one (Overview, World, Players,
-Market, Dungeons, Agents, Quests, Crafting, Config, Runs, GM); Overview is the
-first tab and the only one with a panel for now, since the rest of the #319
-breakup adds the others. A test parses `dashboard.html` and fails if the two
-ever drift.
+Market, Dungeons, Agents, Quests, Crafting, Config, Runs, GM). Overview, World,
+Players and Market have panels; the rest carry a placeholder until the
+remainder of the #319 breakup adds them. A test parses `dashboard.html` and
+fails if the two ever drift.
 
 ```text
 left/right or tab   switch tabs

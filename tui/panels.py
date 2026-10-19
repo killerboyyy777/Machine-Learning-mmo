@@ -1,15 +1,19 @@
 """Panel rendering for the terminal UI (#319).
 
 One function per dashboard tab, dispatched by tab id. Overview is the
-proving panel (TUI-1): it mirrors `renderOverview()` in dashboard.html
--- health cards, the three history trends, recent activity -- reading the
-same snapshot fields. The other tabs render an explicit placeholder
-until their panels land; the dispatch table below is the seam the rest
-of the #319 breakdown fills in.
+TUI-1 proving panel; World, Players and Market land in TUI-2 (#491) and
+mirror the matching dashboard renderers -- health/trend/activity for
+Overview, rooms/history/activity for World, performance/scores/tracker
+for Players, treasury/book/trades/by-item for Market -- reading the same
+snapshot fields. The remaining tabs render an explicit placeholder until
+their panels land; the dispatch below is the seam the rest of the #319
+breakdown fills in.
 
 Every panel takes `(snapshot)` and returns a rich renderable, so panels
 compose into one frame and stay testable without a terminal.
 """
+
+import time
 
 from rich.console import Group
 from rich.table import Table
@@ -74,6 +78,12 @@ def render_panel(tab, snapshot, rows=ACTIVITY_ROWS):
         return Text("waiting for the first snapshot...", style="dim italic")
     if tab == "overview":
         return render_overview(snapshot, rows)
+    if tab == "world":
+        return render_world(snapshot, rows)
+    if tab == "players":
+        return render_players(snapshot, rows)
+    if tab == "market":
+        return render_market(snapshot, rows)
     return _placeholder(tab)
 
 
@@ -210,6 +220,361 @@ def _activity(snapshot, rows=ACTIVITY_ROWS):
             Text(str(entry.get("detail") or ""), style="dim"),
         )
     return table
+
+
+# --- world ---------------------------------------------------------------
+def render_world(snapshot, rows=ACTIVITY_ROWS):
+    """World tab: rooms, history trends, live activity.
+
+    The browser draws a canvas map; a terminal has no canvas, so the map's
+    data (rooms, exits, occupants) renders as the Rooms table instead.
+    """
+    return Group(
+        Text("Rooms", style="bold"),
+        _rooms_table(snapshot),
+        Text(""),
+        Text("History", style="bold"),
+        _trends(snapshot),
+        Text(""),
+        Text("Live activity", style="bold"),
+        _activity(snapshot, rows),
+    )
+
+
+def _rooms_table(snapshot):
+    rooms = [room for room in (snapshot.get("rooms") or []) if isinstance(room, dict)]
+    if not rooms:
+        return Text("no rooms in snapshot", style="dim italic")
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    table.add_column("room", no_wrap=True)
+    table.add_column("tags", no_wrap=True, style="dim")
+    table.add_column("players", overflow="fold")
+    table.add_column("npcs", overflow="fold")
+    table.add_column("items", overflow="fold")
+    table.add_column("gold", justify="right", no_wrap=True)
+    table.add_column("exits", overflow="fold", style="dim")
+    for room in sorted(rooms, key=lambda entry: str(entry.get("name") or "")):
+        table.add_row(
+            str(room.get("name") or room.get("id") or "?"),
+            _room_tags(room),
+            _room_players(room),
+            _room_npcs(room),
+            _room_items(room),
+            _room_gold(room),
+            _room_exits(room),
+        )
+    return table
+
+
+def _room_tags(room):
+    tags = [
+        label
+        for key, label in (("wild", "wild"), ("shelter", "shelter"))
+        if room.get(key)
+    ]
+    return ",".join(tags) or "-"
+
+
+def _room_players(room):
+    names = []
+    for player in room.get("players") or []:
+        if not isinstance(player, dict):
+            continue
+        level = player.get("level")
+        suffix = f"(lv{level})" if level is not None else ""
+        names.append(f"{player.get('name', '?')}{suffix}")
+    return ", ".join(names) or "-"
+
+
+def _room_npcs(room):
+    names = []
+    for npc in room.get("npcs") or []:
+        if not isinstance(npc, dict):
+            continue
+        if not npc.get("alive"):
+            names.append(f"{npc.get('name', '?')} (dead)")
+            continue
+        hp = ""
+        if npc.get("max_hp"):
+            hp = f" ({_as_float(npc.get('hp')):.0f}/{_as_float(npc.get('max_hp')):.0f})"
+        names.append(f"{npc.get('name', '?')}{hp}")
+    return ", ".join(names) or "-"
+
+
+def _room_items(room):
+    return ", ".join(str(item) for item in (room.get("items") or [])) or "-"
+
+
+def _room_gold(room):
+    gold = _as_float(room.get("gold"))
+    return f"{gold:.0f}" if gold else "-"
+
+
+def _room_exits(room):
+    parts = []
+    for link in room.get("exits") or []:
+        if not isinstance(link, dict):
+            continue
+        target = link.get("to_name") or link.get("to")
+        parts.append(f"{link.get('dir', '?')}->{target}")
+    return " ".join(parts) or "-"
+
+
+# --- players -------------------------------------------------------------
+def render_players(snapshot, rows=ACTIVITY_ROWS):
+    """Players tab: performance, scores, and the top player's tracker."""
+    return Group(
+        Text("Performance", style="bold"),
+        _performance_table(snapshot),
+        Text(""),
+        Text("Scores", style="bold"),
+        _scores_table(snapshot),
+        Text(""),
+        Text("Character tracker", style="bold"),
+        _tracker(snapshot, rows),
+    )
+
+
+def _performance_table(snapshot):
+    players = [p for p in (snapshot.get("players") or []) if isinstance(p, dict)]
+    if not players:
+        return Text("no players online", style="dim italic")
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    for label, kwargs in (
+        ("#", {"justify": "right", "no_wrap": True}),
+        ("name", {"no_wrap": True}),
+        ("lv", {"justify": "right", "no_wrap": True}),
+        ("score", {"justify": "right", "no_wrap": True}),
+        ("kills", {"justify": "right", "no_wrap": True}),
+        ("deaths", {"justify": "right", "no_wrap": True}),
+        ("gold", {"justify": "right", "no_wrap": True}),
+        ("hp", {"justify": "right", "no_wrap": True}),
+        ("room", {"overflow": "ellipsis", "style": "dim"}),
+    ):
+        table.add_column(label, **kwargs)
+    ordered = sorted(players, key=lambda p: _as_float(p.get("score")), reverse=True)
+    for rank, player in enumerate(ordered, start=1):
+        table.add_row(
+            str(rank),
+            str(player.get("name") or "?"),
+            str(player.get("level") or 1),
+            f"{_as_float(player.get('score')):.1f}",
+            str(player.get("kills") or 0),
+            str(player.get("deaths") or 0),
+            f"{_as_float(player.get('gold')):.0f}",
+            f"{_as_float(player.get('hp')):.0f}/{_as_float(player.get('max_hp')):.0f}",
+            str(player.get("room") or "-"),
+        )
+    return table
+
+
+def _scores_table(snapshot):
+    scores = [s for s in (snapshot.get("scores") or []) if isinstance(s, dict)][:10]
+    if not scores:
+        return Text("no scores recorded yet", style="dim italic")
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("name", no_wrap=True)
+    table.add_column("lv", justify="right", no_wrap=True)
+    table.add_column("score", justify="right", no_wrap=True)
+    for rank, score in enumerate(scores, start=1):
+        table.add_row(
+            str(rank),
+            str(score.get("name") or "?"),
+            str(score.get("level") or 1),
+            f"{_as_float(score.get('score')):.1f}",
+        )
+    return table
+
+
+def _tracker(snapshot, rows=ACTIVITY_ROWS):
+    players = [p for p in (snapshot.get("players") or []) if isinstance(p, dict)]
+    if not players:
+        return Text("no online players to track", style="dim italic")
+    top = max(players, key=lambda p: _as_float(p.get("score")))
+    actions = [a for a in (top.get("recent_actions") or []) if isinstance(a, dict)]
+    meta_text = " ".join(
+        [
+            f" (lv{top.get('level') or 1}) |",
+            f"{top.get('room') or '-'} |",
+            f"score {_as_float(top.get('score')):.1f} |",
+            f"{_as_float(top.get('hp')):.0f}/{_as_float(top.get('max_hp')):.0f} hp |",
+            f"{_as_float(top.get('gold')):.0f} gold |",
+            f"{len(actions)} recent actions",
+        ]
+    )
+    meta = Text.assemble((str(top.get("name") or "?"), "bold"), (meta_text, "dim"))
+    if not actions:
+        return Group(meta, Text("no tracked actions yet", style="dim italic"))
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    table.add_column("time", no_wrap=True)
+    table.add_column("cmd", no_wrap=True, style="magenta")
+    table.add_column("detail", overflow="ellipsis", style="dim")
+    for action in actions[-rows:]:
+        table.add_row(
+            str(action.get("time") or "-"),
+            str(action.get("cmd") or "-"),
+            str(action.get("detail") or ""),
+        )
+    return Group(meta, table)
+
+
+# --- market --------------------------------------------------------------
+def render_market(snapshot, rows=ACTIVITY_ROWS):
+    """Market tab: treasury, the two-sided book, trades, per-item stats."""
+    market = snapshot.get("market") or {}
+    return Group(
+        Text("Treasury", style="bold"),
+        _market_summary(market),
+        Text(""),
+        Text("Orders (sell)", style="bold"),
+        _book_table(market.get("orders"), "seller"),
+        Text(""),
+        Text("Bids (buy)", style="bold"),
+        _book_table(market.get("bids"), "buyer"),
+        Text(""),
+        Text("Trade history", style="bold"),
+        _trades_table(market.get("history"), rows),
+        Text(""),
+        Text("By item", style="bold"),
+        _by_item_table(market),
+    )
+
+
+def _market_summary(market):
+    spread = market.get("spread") or {}
+    best_bid = spread.get("best_bid")
+    best_ask = spread.get("best_ask")
+    gap = None
+    if best_bid is not None and best_ask is not None:
+        gap = _as_float(best_ask) - _as_float(best_bid)
+    cards = (
+        ("treasury", f"{_as_float(market.get('treasury')):.1f}"),
+        ("lifetime", f"{_as_float(market.get('collected_lifetime')):.1f}"),
+        ("trades", str(market.get("trade_count") or 0)),
+        ("best bid", _gold(best_bid)),
+        ("best ask", _gold(best_ask)),
+        ("spread", _gold(gap)),
+    )
+    grid = Table.grid(padding=(0, 2))
+    for _ in range(3):
+        grid.add_column(justify="right")
+    for start in range(0, len(cards), 3):
+        chunk = cards[start : start + 3]
+        grid.add_row(*[Text(value, style="bold") for _, value in chunk])
+        grid.add_row(*[Text(label, style="dim") for label, _ in chunk])
+    return grid
+
+
+def _book_table(entries, who):
+    rows = [entry for entry in (entries or []) if isinstance(entry, dict)]
+    if not rows:
+        return Text("none", style="dim italic")
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    table.add_column("id", no_wrap=True)
+    table.add_column("item", overflow="ellipsis")
+    table.add_column("price", justify="right", no_wrap=True)
+    table.add_column(who, no_wrap=True)
+    table.add_column("time", no_wrap=True, style="dim")
+    for row in sorted(rows, key=lambda entry: _as_float(entry.get("price"))):
+        table.add_row(
+            str(row.get("id", "?")),
+            str(row.get("item") or "?"),
+            str(row.get("price", "-")),
+            str(row.get(who) or "?"),
+            _clock(row.get("ts")),
+        )
+    return table
+
+
+def _trades_table(history, rows=ACTIVITY_ROWS):
+    trades = [trade for trade in (history or []) if isinstance(trade, dict)]
+    if not trades:
+        return Text("no trades yet", style="dim italic")
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    table.add_column("time", no_wrap=True)
+    table.add_column("buyer", no_wrap=True)
+    table.add_column("seller", no_wrap=True)
+    table.add_column("item", overflow="ellipsis")
+    table.add_column("price", justify="right", no_wrap=True)
+    table.add_column("tax", justify="right", no_wrap=True)
+    table.add_column("payout", justify="right", no_wrap=True)
+    ordered = sorted(trades, key=lambda trade: _as_float(trade.get("ts")), reverse=True)
+    for trade in ordered[:rows]:
+        table.add_row(
+            str(trade.get("time") or _clock(trade.get("ts"))),
+            str(trade.get("buyer") or "?"),
+            str(trade.get("seller") or "?"),
+            str(trade.get("item") or "?"),
+            str(trade.get("price", "-")),
+            str(trade.get("tax", "-")),
+            str(trade.get("payout", "-")),
+        )
+    return table
+
+
+def _by_item_table(market):
+    orders = [o for o in (market.get("orders") or []) if isinstance(o, dict)]
+    bids = [b for b in (market.get("bids") or []) if isinstance(b, dict)]
+    fills = [f for f in (market.get("history") or []) if isinstance(f, dict)]
+    items = sorted(
+        {str(entry.get("item")) for entry in orders + bids + fills if entry.get("item")}
+    )
+    if not items:
+        return Text("no market items yet", style="dim italic")
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    table.add_column("item", overflow="ellipsis")
+    table.add_column("low ask", justify="right", no_wrap=True)
+    table.add_column("high bid", justify="right", no_wrap=True)
+    table.add_column("spread", justify="right", no_wrap=True)
+    table.add_column("median", justify="right", no_wrap=True)
+    table.add_column("volume", justify="right", no_wrap=True)
+    for item in items:
+        asks = [_as_float(o.get("price")) for o in orders if str(o.get("item")) == item]
+        bid_prices = [
+            _as_float(b.get("price")) for b in bids if str(b.get("item")) == item
+        ]
+        prices = [
+            _as_float(f.get("price")) for f in fills if str(f.get("item")) == item
+        ]
+        low_ask = min(asks) if asks else None
+        high_bid = max(bid_prices) if bid_prices else None
+        gap = None
+        if low_ask is not None and high_bid is not None:
+            gap = low_ask - high_bid
+        table.add_row(
+            item,
+            _gold(low_ask),
+            _gold(high_bid),
+            _gold(gap),
+            _gold(_median(prices)),
+            str(len(prices)),
+        )
+    return table
+
+
+def _median(values):
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _gold(value):
+    return "-" if value is None else f"{_as_float(value):.0f}g"
+
+
+def _clock(ts):
+    value = _as_float(ts)
+    if not value:
+        return "-"
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(value))
+    except (OSError, OverflowError, ValueError):
+        return "-"
 
 
 def render_status(status, age=None):
