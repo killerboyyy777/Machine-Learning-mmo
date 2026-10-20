@@ -8,6 +8,7 @@ optional bot farm alongside the server and fail-fast port-taken errors.
 Usage:
     python start.py                                   # serve, defaults
     python start.py serve --roles "gather:8,dungeon:4,market:3,commissioner:2"
+    python start.py tui                               # terminal dashboard (TUI)
     python start.py botfarm -- --bots 8 --steps 10000  # extra args pass through
     python start.py client -- --name MLAgent --steps 5000
     python start.py torch-bot [-- --demo]
@@ -216,6 +217,21 @@ def cmd_client(args):
     )
 
 
+def cmd_tui(args):
+    return run_child(
+        "-m",
+        ["tui"] + args.extra,
+        banner_lines=(
+            "=" * 60,
+            " Text MMO Terminal UI",
+            "=" * 60,
+            "",
+            " Reads the dashboard /api/state. Make sure the engine is running.",
+            "",
+        ),
+    )
+
+
 def cmd_botfarm(args):
     print("=" * 60)
     print(" ML Bot Farm - train bots, restart only on normal exit")
@@ -387,6 +403,10 @@ def parse_args(argv=None):
     add_runner("botfarm", "N concurrent bots, restart on clean exit", cmd_botfarm)
     add_runner("torch-bot", "PyTorch DQN single agent", cmd_torch_bot)
     add_runner("torch-farm", "PyTorch DQN shared farm", cmd_torch_farm)
+
+    p_tui = sub.add_parser("tui", help="terminal dashboard over /api/state")
+    p_tui.add_argument("extra", nargs=argparse.REMAINDER)
+    p_tui.set_defaults(func=cmd_tui)
 
     p_loop = sub.add_parser("torch-batch-loop", help="batches of 4 torch agents")
     p_loop.add_argument("--url", default=DEFAULT_URL)

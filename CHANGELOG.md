@@ -3,6 +3,13 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- TUI panels, fourth and last of the #319 breakdown (#493): Config (read-only
+  schema, section sizes, overrides against code defaults), Runs (run index
+  summary plus newest-first status/elapsed/metrics) and GM (treasury cards
+  and the item/room/player catalog) render in the terminal, so every dashboard
+  tab now has a panel. Config and Runs fetch `/api/config` and `/api/runs` on
+  tab entry and on `r`; a parity test fails if either tab list ever drifts.
+  `python start.py tui` launches the same app through the usual launcher.
 - TUI panels, third of the #319 breakdown (#492): Dungeon (buffs, bosses,
   lifetime solo/group clears, open instances with per-floor guard state),
   Agents (roster with last action plus a merged newest-first action

@@ -19,6 +19,10 @@ from urllib.request import urlopen
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
 STATE_PATH = "/api/state"
+# Config and runs are not in /api/state: the dashboard fetches them on tab
+# entry, so the TUI does the same instead of polling them every tick.
+CONFIG_PATH = "/api/config"
+RUNS_PATH = "/api/runs"
 DEFAULT_TIMEOUT = 5.0
 DEFAULT_INTERVAL = 2.0  # dashboard polls /api/state on the same cadence
 
@@ -45,22 +49,32 @@ class SnapshotClient:
         A stale-but-last-good snapshot is the caller's business, not the
         client's: this either produces a fresh dict or raises.
         """
+        return self._get_json(STATE_PATH)
+
+    def fetch_config(self):
+        """Editor schema + current values, the same payload the Config tab uses."""
+        return self._get_json(CONFIG_PATH)
+
+    def fetch_runs(self):
+        """Run index + metric fields, the same payload the Runs tab uses."""
+        return self._get_json(RUNS_PATH)
+
+    def _get_json(self, path):
+        url = f"http://{self.host}:{self.port}{path}"
         try:
-            with urlopen(self.url, timeout=self.timeout) as resp:
+            with urlopen(url, timeout=self.timeout) as resp:
                 body = resp.read()
         except HTTPError as exc:
-            raise SnapshotError(f"{self.url} returned HTTP {exc.code}") from exc
+            raise SnapshotError(f"{url} returned HTTP {exc.code}") from exc
         except (URLError, OSError, ValueError) as exc:
-            raise SnapshotError(f"cannot reach {self.url}: {exc}") from exc
+            raise SnapshotError(f"cannot reach {url}: {exc}") from exc
         try:
-            snapshot = json.loads(body.decode("utf-8", "replace"))
+            data = json.loads(body.decode("utf-8", "replace"))
         except ValueError as exc:
-            raise SnapshotError(f"{self.url} did not return JSON: {exc}") from exc
-        if not isinstance(snapshot, dict):
-            raise SnapshotError(
-                f"{self.url} returned {type(snapshot).__name__}, not an object"
-            )
-        return snapshot
+            raise SnapshotError(f"{url} did not return JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise SnapshotError(f"{url} returned {type(data).__name__}, not an object")
+        return data
 
 
 class SnapshotPoller:
