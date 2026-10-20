@@ -32,6 +32,7 @@ from .snapshot import (
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
     SnapshotClient,
+    SnapshotError,
     SnapshotPoller,
 )
 from .tabs import DEFAULT_TAB, TAB_IDS, next_tab, prev_tab
@@ -42,6 +43,23 @@ ESC = "\x1b"
 # (mouse reports, unhandled arrows) is ignored rather than guessed at.
 CSI_KEYS = {"[C": "right", "[D": "left", "[Z": "shift+tab"}
 SEQ_TIMEOUT = 0.05  # seconds to wait for the rest of an escape sequence
+
+# Tabs whose payload is not in /api/state. The dashboard loads these on tab
+# entry (config on entry, runs on a 5s poll while active), so the TUI does a
+# one-shot fetch when the tab opens rather than polling every state tick.
+EXTRA_LOADERS = {"config": "fetch_config", "runs": "fetch_runs"}
+
+
+def load_extra(client, tab):
+    """Fetch a tab's own payload, or None when the tab needs none."""
+    method = EXTRA_LOADERS.get(tab)
+    if method is None or client is None:
+        return None
+    try:
+        return getattr(client, method)()
+    except SnapshotError as exc:
+        return {"error": str(exc)}
+
 
 try:
     import select
@@ -151,11 +169,13 @@ class TuiApp:
         self.console = console if console is not None else Console()
         self.keys = keys if keys is not None else KeyReader()
         self._state = None
+        self.extras = {}
 
     # --- lifecycle -----------------------------------------------------
     def start(self):
         self.keys.start()
         self.poller.start()
+        self.load_tab_extras()
 
     def stop(self):
         self.keys.stop()
@@ -183,10 +203,23 @@ class TuiApp:
             self.stop()
 
     # --- state ---------------------------------------------------------
+    def load_tab_extras(self):
+        """Fetch the active tab's own payload when it has one."""
+        extra = load_extra(self.poller.client, self.tab)
+        if extra is not None:
+            self.extras[self.tab] = extra
+
     def frame(self):
         snapshot = self.poller.snapshot()
         age = None if snapshot is None else self.poller.age()
-        return frame(self.tab, snapshot, self.poller.status(), age, self.console.height)
+        return frame(
+            self.tab,
+            snapshot,
+            self.poller.status(),
+            age,
+            self.console.height,
+            self.extras,
+        )
 
     def handle(self, key):
         """Apply a key. Returns False when the app should quit."""
@@ -194,10 +227,17 @@ class TuiApp:
             return False
         if key in ("right", "tab"):
             self.tab = next_tab(self.tab)
+            self.load_tab_extras()
+            self._state = None
         elif key in ("left", "shift+tab"):
             self.tab = prev_tab(self.tab)
+            self.load_tab_extras()
+            self._state = None
         elif key == "r":
             self.poller.refresh()
+            self.extras.clear()
+            self.load_tab_extras()
+            self._state = None
         elif key == "p":
             self.poller.set_paused(not self.poller.paused())
         return True
@@ -248,7 +288,13 @@ def render_once(poller, tab=DEFAULT_TAB, width=None, console=None):
     """
     out = console if console is not None else Console(width=width, no_color=True)
     ok = poller.refresh()
-    out.print(frame(tab, poller.snapshot(), poller.status(), poller.age()))
+    extras = {}
+    payload = load_extra(poller.client, tab)
+    if payload is not None:
+        extras[tab] = payload
+    out.print(
+        frame(tab, poller.snapshot(), poller.status(), poller.age(), extras=extras)
+    )
     if not ok:
         print(f"tui: {poller.status()}", file=sys.stderr)
     return 0 if ok else 1

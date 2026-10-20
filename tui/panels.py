@@ -2,18 +2,20 @@
 
 One function per dashboard tab, dispatched by tab id. Overview is the
 TUI-1 proving panel; World, Players and Market land in TUI-2 (#491);
-Dungeon, Agents, Quests and Crafting land in TUI-3 (#492). Each mirrors
-the matching dashboard renderers -- health/trend/activity for Overview,
-rooms/history/activity for World, performance/scores/tracker for Players,
-treasury/book/trades/by-item for Market, buffs/bosses/clears/instances for
-Dungeon, roster/action feed for Agents, catalog/commissions for Quests,
-recipes/history/supply/flow for Crafting -- reading the same snapshot
-fields. The remaining tabs render an explicit placeholder until their
-panels land; the dispatch below is the seam the rest of the #319
-breakdown fills in.
+Dungeon, Agents, Quests and Crafting land in TUI-3 (#492); Config, Runs
+and GM land in TUI-4 (#493). Each mirrors the matching dashboard
+renderers -- health/trend/activity for Overview, rooms/history/activity
+for World, performance/scores/tracker for Players, treasury/book/trades/
+by-item for Market, buffs/bosses/clears/instances for Dungeon,
+roster/action feed for Agents, catalog/commissions for Quests,
+recipes/history/supply/flow for Crafting, sections/overrides for Config,
+run index/metrics for Runs, treasury/catalog for GM.
 
-Every panel takes `(snapshot)` and returns a rich renderable, so panels
-compose into one frame and stay testable without a terminal.
+Snapshot-backed panels read /api/state. Config and Runs need their own
+one-shot payloads (/api/config, /api/runs), passed as `extras` because
+the dashboard also loads them on tab entry rather than polling. Every
+panel takes `(snapshot)` and returns a rich renderable, so panels compose
+into one frame and stay testable without a terminal.
 """
 
 import time
@@ -38,7 +40,7 @@ SPARK_CHARS = ".:-=+*#%@"
 CHROME_ROWS = 18
 
 
-def frame(tab, snapshot, status, age=None, height=None):
+def frame(tab, snapshot, status, age=None, height=None, extras=None):
     """The whole TUI frame: tab bar, status line, active panel.
 
     Status sits above the panel, not below: Live crops overflow off the
@@ -48,7 +50,7 @@ def frame(tab, snapshot, status, age=None, height=None):
         render_tab_bar(tab),
         render_status(status, age),
         Text(""),
-        render_panel(tab, snapshot, activity_rows(height)),
+        render_panel(tab, snapshot, activity_rows(height), extras),
     )
 
 
@@ -75,10 +77,11 @@ def render_tab_bar(active):
     return bar
 
 
-def render_panel(tab, snapshot, rows=ACTIVITY_ROWS):
-    """Renderable for `tab`; a placeholder for unimplemented tabs."""
+def render_panel(tab, snapshot, rows=ACTIVITY_ROWS, extras=None):
+    """Renderable for `tab`; a placeholder for unknown tabs."""
     if snapshot is None:
         return Text("waiting for the first snapshot...", style="dim italic")
+    extras = extras or {}
     if tab == "overview":
         return render_overview(snapshot, rows)
     if tab == "world":
@@ -95,6 +98,12 @@ def render_panel(tab, snapshot, rows=ACTIVITY_ROWS):
         return render_quests(snapshot, rows)
     if tab == "crafting":
         return render_crafting(snapshot, rows)
+    if tab == "config":
+        return render_config(snapshot, rows, extras.get("config"))
+    if tab == "runs":
+        return render_runs(snapshot, rows, extras.get("runs"))
+    if tab == "gm":
+        return render_gm(snapshot, rows)
     return _placeholder(tab)
 
 
@@ -1152,6 +1161,242 @@ def _command_flow(snapshot):
     )
     grid.add_row(*[Text(label, style="dim") for label, _ in FLOW_COMMANDS])
     return grid
+
+
+# --- gm ------------------------------------------------------------------
+def render_gm(snapshot, rows=ACTIVITY_ROWS):
+    """GM tab: treasury readout and the item/room/player catalogs."""
+    return Group(
+        Text("Treasury", style="bold"),
+        _market_summary(snapshot.get("market") or {}),
+        Text(""),
+        Text("Catalog", style="bold"),
+        _catalog_table(snapshot.get("catalog") or {}),
+    )
+
+
+def _catalog_table(catalog):
+    table = _table(
+        [
+            ("catalog", {"no_wrap": True}),
+            ("count", {"justify": "right", "no_wrap": True}),
+            ("values", {"overflow": "fold", "style": "dim"}),
+        ]
+    )
+    for label in ("players", "items", "rooms"):
+        values = [str(value) for value in (catalog.get(label) or [])]
+        table.add_row(label, str(len(values)), ", ".join(values) or "-")
+    return table
+
+
+# --- config --------------------------------------------------------------
+def render_config(snapshot, rows=ACTIVITY_ROWS, config=None):
+    """Config tab: read-only schema, section sizes, and overrides.
+
+    The browser tab is the editor; the TUI is an observer, so it shows what
+    is overridden against the code defaults rather than an input form.
+    """
+    if not isinstance(config, dict) or not config:
+        return Text("config not loaded yet", style="dim italic")
+    files = [f for f in (config.get("files") or []) if isinstance(f, dict)]
+    return Group(
+        Text("Config", style="bold"),
+        _config_summary(config, files),
+        Text(""),
+        Text("Sections", style="bold"),
+        _config_sections(files),
+        Text(""),
+        Text("Overrides", style="bold"),
+        _config_overrides(files),
+    )
+
+
+def _config_fields(files):
+    for file in files:
+        for section in file.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            for field in section.get("fields") or []:
+                if isinstance(field, dict):
+                    yield file, section, field
+
+
+def _config_summary(config, files):
+    fields = list(_config_fields(files))
+    overrides = sum(1 for _, _, field in fields if field.get("present"))
+    cards = (
+        ("mode", "editable" if config.get("editable") else "read-only"),
+        ("files", str(len(files))),
+        ("fields", str(len(fields))),
+        ("overrides", str(overrides)),
+    )
+    grid = Table.grid(padding=(0, 2))
+    for _ in cards:
+        grid.add_column(justify="right")
+    grid.add_row(*[Text(value, style="bold") for _, value in cards])
+    grid.add_row(*[Text(label, style="dim") for label, _ in cards])
+    lines = [grid]
+    if config.get("error"):
+        lines.append(Text(str(config["error"]), style="red"))
+    for file in files:
+        label = file.get("label") or file.get("id") or "?"
+        hint = file.get("restart") or ""
+        lines.append(Text(f"{label}: {file.get('path') or '-'} {hint}".strip(), "dim"))
+    return Group(*lines)
+
+
+def _config_sections(files):
+    table = _table(
+        [
+            ("file", {"no_wrap": True}),
+            ("section", {"no_wrap": True}),
+            ("fields", {"justify": "right", "no_wrap": True}),
+            ("overridden", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    rows = 0
+    for file in files:
+        label = str(file.get("label") or file.get("id") or "?")
+        for section in file.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            fields = [f for f in (section.get("fields") or []) if isinstance(f, dict)]
+            changed = sum(1 for field in fields if field.get("present"))
+            table.add_row(
+                label,
+                str(section.get("name") or "?"),
+                str(len(fields)),
+                str(changed),
+            )
+            rows += 1
+    if not rows:
+        return Text("config schema unavailable", style="dim italic")
+    return table
+
+
+def _config_overrides(files):
+    rows = [
+        (
+            str(file.get("label") or file.get("id") or "?"),
+            str(section.get("name") or "?"),
+            str(field.get("key") or "?"),
+            str(field.get("text") or field.get("value") or ""),
+        )
+        for file, section, field in _config_fields(files)
+        if field.get("present")
+    ]
+    if not rows:
+        return Text("all values at code defaults", style="dim italic")
+    table = _table(
+        [
+            ("file", {"no_wrap": True}),
+            ("section", {"no_wrap": True}),
+            ("key", {"no_wrap": True}),
+            ("value", {"overflow": "ellipsis"}),
+        ]
+    )
+    for row in rows:
+        table.add_row(*row)
+    return table
+
+
+# --- runs ----------------------------------------------------------------
+def render_runs(snapshot, rows=ACTIVITY_ROWS, runs=None):
+    """Runs tab: the run index with status, age, and latest metrics."""
+    if not isinstance(runs, dict) or not runs:
+        return Text("runs not loaded yet", style="dim italic")
+    items = [r for r in (runs.get("runs") or []) if isinstance(r, dict)]
+    return Group(
+        Text("Runs", style="bold"),
+        _run_summary(runs, items),
+        Text(""),
+        _runs_table(items, rows),
+    )
+
+
+def _run_summary(runs, items):
+    running = sum(1 for run in items if run.get("status") == "running")
+    cards = (
+        ("indexed", str(len(items))),
+        ("running", str(running)),
+        ("metrics", str(len(runs.get("fields") or []))),
+        ("index", str(runs.get("root_name") or "-")),
+    )
+    grid = Table.grid(padding=(0, 2))
+    for _ in cards:
+        grid.add_column(justify="right")
+    grid.add_row(*[Text(value, style="bold") for _, value in cards])
+    grid.add_row(*[Text(label, style="dim") for label, _ in cards])
+    return grid
+
+
+def _runs_table(items, rows=ACTIVITY_ROWS):
+    if not items:
+        return Text("no runs indexed yet", style="dim italic")
+    table = _table(
+        [
+            ("run", {"no_wrap": True}),
+            ("kind", {"no_wrap": True}),
+            ("status", {"no_wrap": True}),
+            ("elapsed", {"justify": "right", "no_wrap": True}),
+            ("metrics", {"overflow": "fold", "style": "dim"}),
+        ]
+    )
+    ordered = sorted(items, key=_run_started, reverse=True)
+    for run in ordered[:rows]:
+        table.add_row(
+            str(run.get("run_id") or "?"),
+            str(run.get("kind") or "-"),
+            _run_status(run.get("status")),
+            _duration(run.get("elapsed")),
+            _run_metrics(run.get("metrics")),
+        )
+    return table
+
+
+def _run_started(run):
+    return _as_float(run.get("started"))
+
+
+def _run_status(status):
+    value = str(status or "-")
+    if value == "running":
+        style = "bold yellow"
+    elif value == "failed":
+        style = "red"
+    else:
+        style = "dim"
+    return Text(value, style=style)
+
+
+def _duration(seconds):
+    total = int(_as_float(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _run_metrics(metrics):
+    if not isinstance(metrics, dict) or not metrics:
+        return "-"
+    parts = [
+        f"{key}={_metric_value(metrics[key])}"
+        for key in sorted(metrics)
+        if not str(key).startswith("_")
+    ]
+    return ", ".join(parts) or "-"
+
+
+def _metric_value(value):
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return f"{value:g}"
+    return str(value)
 
 
 def render_status(status, age=None):

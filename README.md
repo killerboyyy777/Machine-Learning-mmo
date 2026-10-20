@@ -98,15 +98,17 @@ needs no browser, no X11 and no websocket client on the far end.
 
 ```bash
 python3 -m tui                     # attach to 127.0.0.1:8766
+python3 start.py tui              # same, through the launcher
 python3 -m tui --host 10.0.0.5     # a server somewhere else
 python3 -m tui --once --width 100  # one frame to stdout, then exit
 ```
 
 The tab strip mirrors the dashboard tabs one for one (Overview, World, Players,
-Market, Dungeons, Agents, Quests, Crafting, Config, Runs, GM). All but Config,
-Runs and GM have panels; those three carry a placeholder until the remainder of
-the #319 breakup adds them. A test parses `dashboard.html` and fails if the two
-ever drift.
+Market, Dungeons, Agents, Quests, Crafting, Config, Runs, GM), and every tab has
+a panel of its own. Config and Runs fetch their payloads from `GET /api/config`
+and `GET /api/runs` when the tab opens (and again on `r`); the rest come out of
+`/api/state`. A test parses `dashboard.html` and fails if the two tab lists ever
+drift.
 
 ```text
 left/right or tab   switch tabs
