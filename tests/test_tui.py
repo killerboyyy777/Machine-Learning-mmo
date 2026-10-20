@@ -1,11 +1,12 @@
 """Terminal UI contract tests (no running server needed).
 
 Run from the repo root:  python tests/test_tui.py
-Covers #319 TUI-1: the TUI tab registry still mirrors the dashboard tab
+Covers #319: the TUI tab registry still mirrors the dashboard tab
 bar (ids, labels, order, default), the snapshot client turns a real HTTP
 response into a dict and every failure mode into SnapshotError, the
-poller keeps the last good snapshot through an outage, the overview panel
-renders the dashboard's health/trend/activity fields, and the app shell
+poller keeps the last good snapshot through an outage, the
+Overview/World/Players/Market/Dungeon/Agents/Quests/Crafting panels
+(TUI-1 through TUI-3) render the dashboard's fields, and the app shell
 routes keys and repaints only when the screen changed.
 
 The rich-dependent half is skipped (not failed) when rich is absent, so
@@ -67,14 +68,203 @@ def snapshot_fixture():
             "players_online": 3,
             "connections": 4,
         },
-        "players": [],
+        "rooms": [
+            {
+                "id": "town_square",
+                "name": "Town Square",
+                "shelter": True,
+                "wild": False,
+                "exits": [{"dir": "north", "to": "market", "to_name": "Market"}],
+                "players": [{"name": "a", "level": 2}],
+                "npcs": [{"name": "Guard", "alive": True, "hp": 8, "max_hp": 10}],
+                "items": ["Pine Resin"],
+                "gold": 0,
+            },
+            {
+                "id": "wilds",
+                "name": "Wilds",
+                "shelter": False,
+                "wild": True,
+                "exits": [
+                    {"dir": "south", "to": "town_square", "to_name": "Town Square"}
+                ],
+                "players": [],
+                "npcs": [{"name": "Wolf", "alive": False, "hp": 0, "max_hp": 12}],
+                "items": [],
+                "gold": 5,
+            },
+        ],
+        "players": [
+            {
+                "name": "a",
+                "level": 2,
+                "score": 12.5,
+                "kills": 3,
+                "deaths": 1,
+                "gold": 9,
+                "hp": 7,
+                "max_hp": 10,
+                "room": "Town Square",
+                "last_action": "gather",
+                "recent_actions": [
+                    {
+                        "seq": 1,
+                        "time": "12:00:01",
+                        "cmd": "gather",
+                        "detail": "Pine Resin",
+                    },
+                    {"seq": 2, "time": "12:00:02", "cmd": "travel", "detail": "north"},
+                ],
+            },
+            {
+                "name": "b",
+                "level": 5,
+                "score": 30.0,
+                "kills": 9,
+                "deaths": 2,
+                "gold": 40,
+                "hp": 10,
+                "max_hp": 20,
+                "room": "Wilds",
+                "recent_actions": [],
+            },
+        ],
+        "scores": [
+            {"name": "b", "level": 5, "score": 30.0},
+            {"name": "a", "level": 2, "score": 12.5},
+        ],
         "market": {
             "treasury": 1234.5,
+            "collected_lifetime": 88.0,
             "trade_count": 77,
             "orders": [{"id": 1, "seller": "a", "item": "Pine Resin", "price": 3}],
-            "history": [],
+            "bids": [{"id": 2, "buyer": "b", "item": "Pine Resin", "price": 2}],
+            "spread": {"best_bid": 2, "best_ask": 3},
+            "history": [
+                {
+                    "time": "12:00:03",
+                    "ts": 300.0,
+                    "buyer": "b",
+                    "seller": "a",
+                    "item": "Pine Resin",
+                    "price": 3,
+                    "tax": 0.3,
+                    "payout": 2.7,
+                    "via": None,
+                }
+            ],
         },
-        "dungeons": [{"id": "d1", "party": []}],
+        "dungeons": [
+            {
+                "id": "d1",
+                "party": ["a", "b"],
+                "max_floor_reached": 3,
+                "floors": [
+                    {"floor": 1, "guards_alive": 0, "guards_total": 2, "cleared": True},
+                    {
+                        "floor": 2,
+                        "guards_alive": 1,
+                        "guards_total": 3,
+                        "cleared": False,
+                    },
+                ],
+            }
+        ],
+        "buffs": {"xp": 90, "gold": 0},
+        "bosses": [
+            {
+                "name": "Rat King",
+                "room": "Deep Catacombs",
+                "hp": 40,
+                "max_hp": 100,
+                "attack": 7,
+            }
+        ],
+        "dungeon_clears": {
+            "solo_clears": 4,
+            "group_clears": 2,
+            "solo_max_floor": 6,
+            "group_max_floor": 3,
+            "recent": [],
+        },
+        "quests": {
+            "catalog": [
+                {
+                    "id": "delver",
+                    "brief": "clear dungeon floors",
+                    "giver_name": "Guard",
+                    "room": "Town Square",
+                    "reward_xp": 25,
+                    "reward_gold": 10,
+                },
+                {
+                    "id": "remedy",
+                    "brief": "bring 3 Healing Herbs",
+                    "giver_name": "Healer",
+                    "room": "Town Square",
+                    "reward_xp": 12,
+                    "reward_gold": 5,
+                },
+            ],
+            "active": {"delver": 2, "remedy": 1},
+            "completions": {"delver": 7, "remedy": 3},
+            "turnins_last_min": 2,
+            "recent_turnins": [
+                {"seq": 1, "t": "12:04:00", "name": "b", "qid": "delver"},
+                {"seq": 2, "t": "12:05:00", "name": "a", "qid": "remedy"},
+            ],
+        },
+        "commissions": [
+            {
+                "id": 7,
+                "poster": "a",
+                "target": "Rat",
+                "required_kills": 5,
+                "reward_gold": 20,
+                "reward_xp": 15,
+                "status": "open",
+                "filled_by": None,
+                "created_ts": 0,
+                "progress": {"leader": "b", "kills": 2, "required": 5},
+            }
+        ],
+        "commission_history": [
+            {
+                "seq": 5,
+                "t": "12:06:00",
+                "id": 7,
+                "poster": "a",
+                "filler": "b",
+                "target": "Rat",
+                "gold": 20,
+                "xp": 15,
+                "status": "completed",
+                "refund": None,
+                "forfeit": None,
+            }
+        ],
+        "recipes": [
+            {
+                "id": "charm",
+                "result": "Ancient Guardian Charm",
+                "result_qty": 1,
+                "tier": 2,
+                "category": "quest",
+                "inputs": [
+                    {"item": "Treant Bark", "qty": 1},
+                    {"item": "Troll Hide", "qty": 1},
+                ],
+            }
+        ],
+        "craft_history": [
+            {
+                "seq": 1,
+                "t": "12:00:00",
+                "name": "a",
+                "recipe": "charm",
+                "result": "Ancient Guardian Charm",
+            }
+        ],
         "history": [
             {
                 "ts": 100.0 + i,
@@ -89,7 +279,7 @@ def snapshot_fixture():
                 "seq": i,
                 "time": "12:00:00",
                 "name": f"P{i}",
-                "cmd": "look",
+                "cmd": ("look", "gather", "craft", "take", "buy", "sell")[i % 6],
                 "detail": "",
                 "level": i,
             }
@@ -267,8 +457,8 @@ def test_panels():
     waiting = render_panel("overview", None)
     assert "waiting" in waiting.plain.lower(), waiting.plain
 
-    placeholder = _plain(render_panel("world", snap))
-    assert "World" in placeholder and "not ported" in placeholder, placeholder
+    placeholder = _plain(render_panel("config", snap))
+    assert "Config" in placeholder and "not ported" in placeholder, placeholder
 
     panel = _plain(render_panel("overview", snap, rows=10))
     assert "1234.5" in panel, "treasury card missing"
@@ -301,6 +491,141 @@ def test_panels():
         and "snapshot 0.5s old" in frame_text
     )
     print("PANELS_OK")
+
+
+def test_panels_world():
+    """World panel (TUI-2): rooms/exits/occupants + history + activity."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("world", snap, rows=5))
+    assert "not ported" not in text, "world panel should be implemented"
+    for heading in ("Rooms", "History", "Live activity"):
+        assert heading in text, heading
+    assert "Town Square" in text and "Wilds" in text
+    assert "Guard (8/10)" in text, "npc hp missing"
+    assert "Wolf (dead)" in text, "dead npc marker missing"
+    assert "Pine Resin" in text and "north->Market" in text
+    assert "wild" in text and "shelter" in text
+    assert "players online" in text and "top score" in text
+    # Activity is newest-first and capped to the row budget.
+    assert _names(text) == [f"P{n}" for n in range(25, 20, -1)], _names(text)
+    empty = _plain(render_panel("world", {}, rows=3))
+    assert "no rooms in snapshot" in empty and "no activity yet" in empty
+    print("WORLD_OK")
+
+
+def test_panels_players():
+    """Players panel (TUI-2): performance, scores, top-player tracker."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("players", snap, rows=5))
+    assert "not ported" not in text, "players panel should be implemented"
+    for heading in ("Performance", "Scores", "Character tracker"):
+        assert heading in text, heading
+    assert "9" in text and "40" in text, "performance numbers missing"
+    assert "30.0" in text and "12.5" in text
+    # The tracker follows the top scorer (b, no actions recorded).
+    assert "b (lv5)" in text, "tracker did not pick the top scorer"
+    assert "no tracked actions yet" in text
+    empty = _plain(render_panel("players", {}, rows=3))
+    assert "no players online" in empty and "no scores recorded yet" in empty
+    print("PLAYERS_OK")
+
+
+def test_panels_market():
+    """Market panel (TUI-2): treasury, two-sided book, trades, by-item."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("market", snap, rows=5))
+    assert "not ported" not in text, "market panel should be implemented"
+    for heading in ("Treasury", "Orders (sell)", "Bids (buy)", "Trade history"):
+        assert heading in text, heading
+    assert "By item" in text
+    assert "1234.5" in text and "88.0" in text and "77" in text
+    assert "best bid" in text and "best ask" in text
+    assert "Pine Resin" in text
+    assert "0.3" in text and "2.7" in text, "tax/payout columns missing"
+    # One ask at 3g, one bid at 2g -> low ask 3g, high bid 2g, spread 1g.
+    assert "1g" in text, "per-item spread missing"
+    empty = _plain(render_panel("market", {}, rows=3))
+    assert "no trades yet" in empty and "no market items yet" in empty
+    print("MARKET_OK")
+
+
+def test_panels_dungeon():
+    """Dungeon panel (TUI-3): buffs, bosses, clears, open instances."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("dungeon", snap, rows=5))
+    assert "not ported" not in text, "dungeon panel should be implemented"
+    for heading in ("Buffs", "Bosses", "Dungeon clears", "Dungeons"):
+        assert heading in text, heading
+    assert "XPx2 1:30 left" in text and "GOLDx2 inactive" in text
+    assert "Rat King" in text and "40/100" in text and "7" in text
+    assert "solo clears" in text and "solo max floor" in text
+    assert "d1" in text and "a, b" in text
+    assert "F1 0/2 cleared; F2 1/3 sealed" in text, text
+    empty = _plain(render_panel("dungeon", {}, rows=3))
+    assert "no active buffs" in empty and "no bosses alive" in empty
+    assert "no dungeons opened yet" in empty
+    print("DUNGEON_OK")
+
+
+def test_panels_agents():
+    """Agents panel (TUI-3): roster with last action + merged feed."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("agents", snap, rows=5))
+    assert "not ported" not in text, "agents panel should be implemented"
+    for heading in ("Agents", "Agent activity"):
+        assert heading in text, heading
+    assert "30.0" in text and "12.5" in text
+    assert "gather" in text and "travel" in text
+    assert "a" in text and "b" in text
+    feed = text.split("Agent activity", 1)[1]
+    assert feed.index("travel") < feed.index("gather"), feed
+    empty = _plain(render_panel("agents", {}, rows=3))
+    assert "no agents online" in empty and "no tracked actions yet" in empty
+    print("AGENTS_OK")
+
+
+def test_panels_quests():
+    """Quests panel (TUI-3): catalog, turn-ins, commissions, history."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("quests", snap, rows=5))
+    assert "not ported" not in text, "quests panel should be implemented"
+    for heading in ("Quests", "Recent turn-ins", "Commissions", "Commission history"):
+        assert heading in text, heading
+    assert "delver" in text and "remedy" in text
+    assert "Guard" in text and "Healer" in text
+    assert "25xp + 10g" in text and "12xp + 5g" in text
+    assert "#7" in text and "2/5" in text and "20g + 15xp" in text
+    assert "open" in text and "completed" in text
+    assert "refund" not in text, "completed row must not show a refund split"
+    empty = _plain(render_panel("quests", {}, rows=3))
+    assert "no quests in catalog" in empty and "no turn-ins recorded yet" in empty
+    assert "no commissions posted" in empty and "no commission history yet" in empty
+    print("QUESTS_OK")
+
+
+def test_panels_crafting():
+    """Crafting panel (TUI-3): recipes, history, supply, flow."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("crafting", snap, rows=5))
+    assert "not ported" not in text, "crafting panel should be implemented"
+    for heading in (
+        "Recipes",
+        "Craft history",
+        "Material supply",
+        "Listed supply",
+        "Command flow",
+    ):
+        assert heading in text, heading
+    assert "Ancient Guardian Charm" in text and "Treant Bark" in text
+    assert "Troll Hide" in text and "charm" in text
+    assert "Pine Resin" in text and "3g" in text
+    for label in ("gather", "craft", "take", "buy", "sell"):
+        assert label in text, label
+    empty = _plain(render_panel("crafting", {}, rows=3))
+    assert "no recipes known" in empty and "no crafts yet" in empty
+    assert "no loose materials on the ground" in empty
+    assert "no listed supply" in empty
+    print("CRAFTING_OK")
 
 
 SPARK_FIRST = "."
@@ -480,9 +805,23 @@ def main():
     test_engine_never_imports_rich()
     if HAVE_RICH:
         test_panels()
+        test_panels_world()
+        test_panels_players()
+        test_panels_market()
+        test_panels_dungeon()
+        test_panels_agents()
+        test_panels_quests()
+        test_panels_crafting()
         test_app_shell()
     else:
         print("PANELS_OK skipped (rich not installed)")
+        print("WORLD_OK skipped (rich not installed)")
+        print("PLAYERS_OK skipped (rich not installed)")
+        print("MARKET_OK skipped (rich not installed)")
+        print("DUNGEON_OK skipped (rich not installed)")
+        print("AGENTS_OK skipped (rich not installed)")
+        print("QUESTS_OK skipped (rich not installed)")
+        print("CRAFTING_OK skipped (rich not installed)")
         print("APP_SHELL_OK skipped (rich not installed)")
     print("ALL_TUI_OK")
 

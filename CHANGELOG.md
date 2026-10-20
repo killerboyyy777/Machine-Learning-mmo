@@ -3,6 +3,20 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- TUI panels, third of the #319 breakdown (#492): Dungeon (buffs, bosses,
+  lifetime solo/group clears, open instances with per-floor guard state),
+  Agents (roster with last action plus a merged newest-first action
+  feed), Quests (catalog with active/completion counts, turn-in feed,
+  commissions with leader progress, commission history) and Crafting
+  (recipe browser, craft history, ground and listed supply, command
+  flow) render in the terminal. Config, Runs and GM stay placeholders.
+- TUI panels, second of the #319 breakdown (#491): World (rooms/exits/
+  occupants, history sparklines, live activity), Players (performance
+  board, scores, top-player tracker) and Market (treasury, two-sided
+  book, trade history, per-item ask/bid/spread/median/volume) render in
+  the terminal to dashboard parity over the same `/api/state` fields.
+  Dungeons, Agents, Quests, Crafting, Config, Runs and GM stay labelled
+  placeholders. Rich-free modules unchanged; still no engine import.
 - TUI, first of the #319 breakdown (#490): `python3 -m tui` renders the
   dashboard's `/api/state` snapshot over ssh with no browser. Tab strip
   mirrors the dashboard tabs one for one (a test parses `dashboard.html`
