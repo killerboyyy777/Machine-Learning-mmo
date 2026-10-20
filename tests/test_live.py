@@ -115,7 +115,7 @@ async def recv_one(ws, timeout):
     """First message only, so a queued backlog is consumed in order."""
     try:
         raw = await asyncio.wait_for(ws.recv(), timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return None
     return json.loads(raw)
 
