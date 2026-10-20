@@ -1,12 +1,15 @@
 """Panel rendering for the terminal UI (#319).
 
 One function per dashboard tab, dispatched by tab id. Overview is the
-TUI-1 proving panel; World, Players and Market land in TUI-2 (#491) and
-mirror the matching dashboard renderers -- health/trend/activity for
-Overview, rooms/history/activity for World, performance/scores/tracker
-for Players, treasury/book/trades/by-item for Market -- reading the same
-snapshot fields. The remaining tabs render an explicit placeholder until
-their panels land; the dispatch below is the seam the rest of the #319
+TUI-1 proving panel; World, Players and Market land in TUI-2 (#491);
+Dungeon, Agents, Quests and Crafting land in TUI-3 (#492). Each mirrors
+the matching dashboard renderers -- health/trend/activity for Overview,
+rooms/history/activity for World, performance/scores/tracker for Players,
+treasury/book/trades/by-item for Market, buffs/bosses/clears/instances for
+Dungeon, roster/action feed for Agents, catalog/commissions for Quests,
+recipes/history/supply/flow for Crafting -- reading the same snapshot
+fields. The remaining tabs render an explicit placeholder until their
+panels land; the dispatch below is the seam the rest of the #319
 breakdown fills in.
 
 Every panel takes `(snapshot)` and returns a rich renderable, so panels
@@ -84,6 +87,14 @@ def render_panel(tab, snapshot, rows=ACTIVITY_ROWS):
         return render_players(snapshot, rows)
     if tab == "market":
         return render_market(snapshot, rows)
+    if tab == "dungeon":
+        return render_dungeon(snapshot, rows)
+    if tab == "agents":
+        return render_agents(snapshot, rows)
+    if tab == "quests":
+        return render_quests(snapshot, rows)
+    if tab == "crafting":
+        return render_crafting(snapshot, rows)
     return _placeholder(tab)
 
 
@@ -104,6 +115,14 @@ def _as_float(value, default=0.0):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _table(columns):
+    """Header-only rich table: no box, dim headers, expanded to width."""
+    table = Table(box=None, show_header=True, header_style="dim", expand=True)
+    for label, kwargs in columns:
+        table.add_column(label, **kwargs)
+    return table
 
 
 def render_overview(snapshot, rows=ACTIVITY_ROWS):
@@ -575,6 +594,564 @@ def _clock(ts):
         return time.strftime("%H:%M:%S", time.localtime(value))
     except (OSError, OverflowError, ValueError):
         return "-"
+
+
+# --- dungeon -------------------------------------------------------------
+def render_dungeon(snapshot, rows=ACTIVITY_ROWS):
+    """Dungeon tab: active buffs, bosses, lifetime clears, open instances."""
+    return Group(
+        Text("Buffs", style="bold"),
+        _buffs(snapshot),
+        Text(""),
+        Text("Bosses", style="bold"),
+        _bosses(snapshot),
+        Text(""),
+        Text("Dungeon clears", style="bold"),
+        _dungeon_clears(snapshot),
+        Text(""),
+        Text("Dungeons", style="bold"),
+        _dungeons(snapshot),
+    )
+
+
+def _mmss(seconds):
+    total = int(_as_float(seconds))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}:{secs:02d}"
+
+
+def _buffs(snapshot):
+    buffs = snapshot.get("buffs") or {}
+    if not buffs:
+        return Text("no active buffs", style="dim italic")
+    parts = []
+    for key in ("xp", "gold"):
+        remaining = _as_float(buffs.get(key))
+        label = f"{key.upper()}x2"
+        if remaining > 0:
+            parts.append(f"{label} {_mmss(remaining)} left")
+        else:
+            parts.append(f"{label} inactive")
+    return Text(" | ".join(parts))
+
+
+def _bosses(snapshot):
+    bosses = [b for b in (snapshot.get("bosses") or []) if isinstance(b, dict)]
+    if not bosses:
+        return Text("no bosses alive", style="dim italic")
+    table = _table(
+        [
+            ("name", {"no_wrap": True}),
+            ("room", {"overflow": "ellipsis", "style": "dim"}),
+            ("hp", {"justify": "right", "no_wrap": True}),
+            ("attack", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    for boss in sorted(bosses, key=_boss_fraction, reverse=True):
+        table.add_row(
+            str(boss.get("name") or "?"),
+            str(boss.get("room") or "-"),
+            f"{_as_float(boss.get('hp')):.0f}/{_as_float(boss.get('max_hp')):.0f}",
+            str(int(_as_float(boss.get("attack")))),
+        )
+    return table
+
+
+def _boss_fraction(boss):
+    max_hp = _as_float(boss.get("max_hp"))
+    return _as_float(boss.get("hp")) / max_hp if max_hp else 0.0
+
+
+def _dungeon_clears(snapshot):
+    clears = snapshot.get("dungeon_clears") or {}
+    cards = (
+        ("solo clears", str(int(_as_float(clears.get("solo_clears"))))),
+        ("group clears", str(int(_as_float(clears.get("group_clears"))))),
+        ("solo max floor", str(int(_as_float(clears.get("solo_max_floor"))))),
+        ("group max floor", str(int(_as_float(clears.get("group_max_floor"))))),
+    )
+    grid = Table.grid(padding=(0, 2))
+    for _ in cards:
+        grid.add_column(justify="right")
+    grid.add_row(*[Text(value, style="bold") for _, value in cards])
+    grid.add_row(*[Text(label, style="dim") for label, _ in cards])
+    return grid
+
+
+def _dungeons(snapshot):
+    dungeons = [d for d in (snapshot.get("dungeons") or []) if isinstance(d, dict)]
+    if not dungeons:
+        return Text("no dungeons opened yet", style="dim italic")
+    table = _table(
+        [
+            ("id", {"no_wrap": True}),
+            ("party", {"overflow": "ellipsis"}),
+            ("max floor", {"justify": "right", "no_wrap": True}),
+            ("floors", {"overflow": "fold"}),
+        ]
+    )
+    for dungeon in sorted(dungeons, key=_dungeon_floor, reverse=True):
+        party = ", ".join(str(name) for name in (dungeon.get("party") or [])) or "solo"
+        table.add_row(
+            str(dungeon.get("id") or "?"),
+            party,
+            str(int(_as_float(dungeon.get("max_floor_reached")))),
+            _floor_states(dungeon.get("floors")),
+        )
+    return table
+
+
+def _dungeon_floor(dungeon):
+    return _as_float(dungeon.get("max_floor_reached"))
+
+
+def _floor_states(floors):
+    parts = []
+    for floor in floors or []:
+        if not isinstance(floor, dict):
+            continue
+        state = "cleared" if floor.get("cleared") else "sealed"
+        parts.append(
+            f"F{floor.get('floor', '?')} "
+            f"{floor.get('guards_alive', 0)}/{floor.get('guards_total', 0)} {state}"
+        )
+    return "; ".join(parts) or "floor 1 not generated yet"
+
+
+# --- agents --------------------------------------------------------------
+def render_agents(snapshot, rows=ACTIVITY_ROWS):
+    """Agents tab: the roster plus a merged, newest-first action feed."""
+    return Group(
+        Text("Agents", style="bold"),
+        _agents_table(snapshot),
+        Text(""),
+        Text("Agent activity", style="bold"),
+        _agent_feed(snapshot, rows),
+    )
+
+
+def _agents_table(snapshot):
+    players = [p for p in (snapshot.get("players") or []) if isinstance(p, dict)]
+    if not players:
+        return Text("no agents online", style="dim italic")
+    table = _table(
+        [
+            ("#", {"justify": "right", "no_wrap": True}),
+            ("name", {"no_wrap": True}),
+            ("lv", {"justify": "right", "no_wrap": True}),
+            ("score", {"justify": "right", "no_wrap": True}),
+            ("kills", {"justify": "right", "no_wrap": True}),
+            ("deaths", {"justify": "right", "no_wrap": True}),
+            ("gold", {"justify": "right", "no_wrap": True}),
+            ("hp", {"justify": "right", "no_wrap": True}),
+            ("room", {"overflow": "ellipsis", "style": "dim"}),
+            ("last action", {"overflow": "ellipsis"}),
+        ]
+    )
+    for rank, player in enumerate(
+        sorted(players, key=_agent_score, reverse=True), start=1
+    ):
+        table.add_row(
+            str(rank),
+            str(player.get("name") or "?"),
+            str(player.get("level") or 1),
+            f"{_as_float(player.get('score')):.1f}",
+            str(player.get("kills") or 0),
+            str(player.get("deaths") or 0),
+            f"{_as_float(player.get('gold')):.0f}",
+            f"{_as_float(player.get('hp')):.0f}/{_as_float(player.get('max_hp')):.0f}",
+            str(player.get("room") or "-"),
+            str(player.get("last_action") or "-"),
+        )
+    return table
+
+
+def _agent_score(player):
+    return _as_float(player.get("score"))
+
+
+def _agent_feed(snapshot, rows=ACTIVITY_ROWS):
+    feed = []
+    for player in snapshot.get("players") or []:
+        if not isinstance(player, dict):
+            continue
+        for action in player.get("recent_actions") or []:
+            if isinstance(action, dict):
+                feed.append({**action, "who": player.get("name") or "?"})
+    if not feed:
+        return Text("no tracked actions yet", style="dim italic")
+    table = _table(
+        [
+            ("time", {"no_wrap": True}),
+            ("player", {"no_wrap": True}),
+            ("cmd", {"no_wrap": True, "style": "magenta"}),
+            ("detail", {"overflow": "ellipsis", "style": "dim"}),
+        ]
+    )
+    ordered = sorted(feed, key=_action_seq, reverse=True)
+    for action in ordered[:rows]:
+        table.add_row(
+            str(action.get("time") or "-"),
+            str(action.get("who") or "?"),
+            str(action.get("cmd") or "-"),
+            str(action.get("detail") or ""),
+        )
+    return table
+
+
+def _action_seq(action):
+    return _as_float(action.get("seq"))
+
+
+# --- quests --------------------------------------------------------------
+def render_quests(snapshot, rows=ACTIVITY_ROWS):
+    """Quests tab: catalog, turn-in feed, commissions, commission history."""
+    return Group(
+        Text("Quests", style="bold"),
+        _quest_summary(snapshot),
+        Text(""),
+        _quest_catalog(snapshot),
+        Text(""),
+        Text("Recent turn-ins", style="bold"),
+        _quest_feed(snapshot, rows),
+        Text(""),
+        Text("Commissions", style="bold"),
+        _commissions(snapshot),
+        Text(""),
+        Text("Commission history", style="bold"),
+        _commission_history(snapshot, rows),
+    )
+
+
+def _quest_summary(snapshot):
+    quests = snapshot.get("quests") or {}
+    active = quests.get("active") or {}
+    cards = (
+        ("active", str(int(sum(_as_float(v) for v in active.values())))),
+        ("turn-ins last min", str(int(_as_float(quests.get("turnins_last_min"))))),
+    )
+    grid = Table.grid(padding=(0, 2))
+    for _ in cards:
+        grid.add_column(justify="right")
+    grid.add_row(*[Text(value, style="bold") for _, value in cards])
+    grid.add_row(*[Text(label, style="dim") for label, _ in cards])
+    return grid
+
+
+def _quest_catalog(snapshot):
+    quests = snapshot.get("quests") or {}
+    catalog = [c for c in (quests.get("catalog") or []) if isinstance(c, dict)]
+    active = quests.get("active") or {}
+    completions = quests.get("completions") or {}
+    if not catalog:
+        return Text("no quests in catalog", style="dim italic")
+    table = _table(
+        [
+            ("quest", {"no_wrap": True}),
+            ("brief", {"overflow": "ellipsis"}),
+            ("giver", {"no_wrap": True}),
+            ("room", {"overflow": "ellipsis", "style": "dim"}),
+            ("reward", {"no_wrap": True}),
+            ("active", {"justify": "right", "no_wrap": True}),
+            ("done", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    for quest in sorted(catalog, key=lambda c: _active_count(c, active), reverse=True):
+        qid = str(quest.get("id") or "?")
+        table.add_row(
+            qid,
+            str(quest.get("brief") or ""),
+            str(quest.get("giver_name") or "-"),
+            str(quest.get("room") or "-"),
+            f"{int(_as_float(quest.get('reward_xp')))}xp"
+            f" + {int(_as_float(quest.get('reward_gold')))}g",
+            str(int(_as_float(active.get(qid)))),
+            str(int(_as_float(completions.get(qid)))),
+        )
+    return table
+
+
+def _active_count(quest, active):
+    return _as_float(active.get(str(quest.get("id"))))
+
+
+def _quest_feed(snapshot, rows=ACTIVITY_ROWS):
+    quests = snapshot.get("quests") or {}
+    turnins = [t for t in (quests.get("recent_turnins") or []) if isinstance(t, dict)]
+    if not turnins:
+        return Text("no turn-ins recorded yet", style="dim italic")
+    table = _table(
+        [
+            ("time", {"no_wrap": True}),
+            ("player", {"no_wrap": True}),
+            ("quest", {"no_wrap": True, "style": "magenta"}),
+        ]
+    )
+    ordered = sorted(turnins, key=_action_seq, reverse=True)
+    for turnin in ordered[:rows]:
+        table.add_row(
+            str(turnin.get("t") or "-"),
+            str(turnin.get("name") or "?"),
+            str(turnin.get("qid") or "?"),
+        )
+    return table
+
+
+def _commissions(snapshot):
+    commissions = [
+        c for c in (snapshot.get("commissions") or []) if isinstance(c, dict)
+    ]
+    if not commissions:
+        return Text("no commissions posted", style="dim italic")
+    table = _table(
+        [
+            ("id", {"no_wrap": True}),
+            ("target", {"no_wrap": True}),
+            ("progress", {"no_wrap": True}),
+            ("reward", {"no_wrap": True}),
+            ("poster", {"no_wrap": True}),
+            ("status", {"no_wrap": True}),
+            ("age", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    for commission in sorted(commissions, key=_commission_id, reverse=True):
+        progress = commission.get("progress") or {}
+        required = int(
+            _as_float(progress.get("required") or commission.get("required_kills"))
+        )
+        kills = int(_as_float(progress.get("kills")))
+        leader = progress.get("leader")
+        shown = f"{kills}/{required}" + (f" {leader}" if leader else "")
+        table.add_row(
+            f"#{commission.get('id', '?')}",
+            str(commission.get("target") or "-"),
+            shown,
+            f"{int(_as_float(commission.get('reward_gold')))}g"
+            f" + {int(_as_float(commission.get('reward_xp')))}xp",
+            str(commission.get("poster") or "-"),
+            str(commission.get("status") or "-"),
+            _age(commission.get("created_ts")),
+        )
+    return table
+
+
+def _commission_id(commission):
+    return _as_float(commission.get("id"))
+
+
+def _commission_history(snapshot, rows=ACTIVITY_ROWS):
+    history = [
+        h for h in (snapshot.get("commission_history") or []) if isinstance(h, dict)
+    ]
+    if not history:
+        return Text("no commission history yet", style="dim italic")
+    table = _table(
+        [
+            ("seq", {"justify": "right", "no_wrap": True}),
+            ("time", {"no_wrap": True}),
+            ("id", {"no_wrap": True}),
+            ("filler", {"no_wrap": True}),
+            ("payout", {"no_wrap": True}),
+            ("status", {"no_wrap": True}),
+        ]
+    )
+    ordered = sorted(history, key=_action_seq, reverse=True)
+    for entry in ordered[:rows]:
+        table.add_row(
+            str(int(_as_float(entry.get("seq")))),
+            str(entry.get("t") or "-"),
+            f"#{entry.get('id', '?')} {entry.get('target') or ''}".strip(),
+            str(entry.get("filler") or "-"),
+            _commission_payout(entry),
+            str(entry.get("status") or "-"),
+        )
+    return table
+
+
+def _commission_payout(entry):
+    if entry.get("status") == "cancelled":
+        return f"refund {entry.get('refund', 0)}g / forfeit {entry.get('forfeit', 0)}g"
+    return f"{entry.get('gold', 0)}g + {entry.get('xp', 0)}xp"
+
+
+def _age(ts):
+    value = _as_float(ts)
+    if not value:
+        return "-"
+    seconds = max(0, int(time.time() - value))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+# --- crafting ------------------------------------------------------------
+FLOW_COMMANDS = (
+    ("gather", ("gather",)),
+    ("craft", ("craft",)),
+    ("take", ("take",)),
+    ("buy", ("buy", "market_buy")),
+    ("sell", ("sell", "market_post")),
+)
+
+
+def render_crafting(snapshot, rows=ACTIVITY_ROWS):
+    """Crafting tab: recipes, craft history, supply/demand, command flow."""
+    return Group(
+        Text("Recipes", style="bold"),
+        _recipes(snapshot),
+        Text(""),
+        Text("Craft history", style="bold"),
+        _craft_history(snapshot, rows),
+        Text(""),
+        Text("Material supply", style="bold"),
+        _material_supply(snapshot),
+        Text(""),
+        Text("Listed supply", style="bold"),
+        _listed_supply(snapshot),
+        Text(""),
+        Text("Command flow", style="bold"),
+        _command_flow(snapshot),
+    )
+
+
+def _recipes(snapshot):
+    recipes = [r for r in (snapshot.get("recipes") or []) if isinstance(r, dict)]
+    if not recipes:
+        return Text("no recipes known", style="dim italic")
+    table = _table(
+        [
+            ("result", {"no_wrap": True}),
+            ("tier", {"justify": "right", "no_wrap": True}),
+            ("category", {"no_wrap": True, "style": "dim"}),
+            ("inputs", {"overflow": "fold"}),
+        ]
+    )
+    for recipe in sorted(recipes, key=lambda r: str(r.get("result") or "")):
+        result = str(recipe.get("result") or "?")
+        qty = int(_as_float(recipe.get("result_qty"), 1))
+        if qty > 1:
+            result = f"{result} x{qty}"
+        table.add_row(
+            result,
+            str(recipe.get("tier") or "-"),
+            str(recipe.get("category") or "-"),
+            _recipe_inputs(recipe.get("inputs")),
+        )
+    return table
+
+
+def _recipe_inputs(inputs):
+    parts = []
+    for item in inputs or []:
+        if not isinstance(item, dict):
+            continue
+        parts.append(f"{item.get('qty', 0)}x {item.get('item', '?')}")
+    return ", ".join(parts) or "-"
+
+
+def _craft_history(snapshot, rows=ACTIVITY_ROWS):
+    history = [h for h in (snapshot.get("craft_history") or []) if isinstance(h, dict)]
+    if not history:
+        return Text("no crafts yet", style="dim italic")
+    table = _table(
+        [
+            ("seq", {"justify": "right", "no_wrap": True}),
+            ("time", {"no_wrap": True}),
+            ("player", {"no_wrap": True}),
+            ("recipe", {"no_wrap": True}),
+            ("result", {"no_wrap": True}),
+        ]
+    )
+    ordered = sorted(history, key=_action_seq, reverse=True)
+    for entry in ordered[:rows]:
+        table.add_row(
+            str(int(_as_float(entry.get("seq")))),
+            str(entry.get("t") or "-"),
+            str(entry.get("name") or "?"),
+            str(entry.get("recipe") or "?"),
+            str(entry.get("result") or "?"),
+        )
+    return table
+
+
+def _material_supply(snapshot):
+    supply = {}
+    rooms_of = {}
+    for room in snapshot.get("rooms") or []:
+        if not isinstance(room, dict):
+            continue
+        for item in room.get("items") or []:
+            name = str(item)
+            supply[name] = supply.get(name, 0) + 1
+            rooms_of.setdefault(name, set()).add(str(room.get("name") or "?"))
+    if not supply:
+        return Text("no loose materials on the ground", style="dim italic")
+    table = _table(
+        [
+            ("item", {"overflow": "ellipsis"}),
+            ("count", {"justify": "right", "no_wrap": True}),
+            ("rooms", {"overflow": "fold", "style": "dim"}),
+        ]
+    )
+    for item, count in sorted(supply.items(), key=_count_desc)[:15]:
+        table.add_row(item, str(count), ", ".join(sorted(rooms_of[item])))
+    return table
+
+
+def _listed_supply(snapshot):
+    market = snapshot.get("market") or {}
+    orders = [o for o in (market.get("orders") or []) if isinstance(o, dict)]
+    if not orders:
+        return Text("no listed supply", style="dim italic")
+    items = {}
+    for order in orders:
+        name = str(order.get("item") or "?")
+        entry = items.setdefault(name, {"count": 0, "min": None})
+        entry["count"] += 1
+        price = _as_float(order.get("price"))
+        if entry["min"] is None or price < entry["min"]:
+            entry["min"] = price
+    table = _table(
+        [
+            ("item", {"overflow": "ellipsis"}),
+            ("orders", {"justify": "right", "no_wrap": True}),
+            ("low ask", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    ordered = sorted(items.items(), key=lambda pair: pair[1]["count"], reverse=True)
+    for item, entry in ordered[:15]:
+        table.add_row(item, str(entry["count"]), _gold(entry["min"]))
+    return table
+
+
+def _count_desc(pair):
+    return pair[1]
+
+
+def _command_flow(snapshot):
+    lookup = {}
+    for label, names in FLOW_COMMANDS:
+        for name in names:
+            lookup[name] = label
+    counts = {label: 0 for label, _ in FLOW_COMMANDS}
+    for entry in snapshot.get("activity") or []:
+        if not isinstance(entry, dict):
+            continue
+        label = lookup.get(str(entry.get("cmd") or "").lower())
+        if label:
+            counts[label] += 1
+    grid = Table.grid(padding=(0, 2))
+    for _ in FLOW_COMMANDS:
+        grid.add_column(justify="right")
+    grid.add_row(
+        *[Text(str(counts[label]), style="bold") for label, _ in FLOW_COMMANDS]
+    )
+    grid.add_row(*[Text(label, style="dim") for label, _ in FLOW_COMMANDS])
+    return grid
 
 
 def render_status(status, age=None):
