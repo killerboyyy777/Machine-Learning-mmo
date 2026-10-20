@@ -10,7 +10,11 @@ party invite/accept/shared dungeon, and the dashboard snapshot.
 Note: the raw protocol requires FULL direction names (north/south/...,
 up/down/enter) -- shorthand like `w` is rejected by the server.
 """
-import asyncio, json, os, re, time
+import asyncio
+import json
+import os
+import re
+import time
 import websockets
 
 # Ports are overridable so the same live protocol test can run on this
