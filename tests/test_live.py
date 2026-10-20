@@ -111,35 +111,53 @@ async def fight_until_room(ws, target_room, dir_to_target, max_rounds=40):
     raise RuntimeError(f"Could not reach {target_room}")
 
 
-async def enter_dungeon_floor(ws, floor=1, attempts=6, timeout=5.0):
+async def recv_one(ws, timeout):
+    """First message only, so a queued backlog is consumed in order."""
+    try:
+        raw = await asyncio.wait_for(ws.recv(), timeout)
+    except TimeoutError:
+        return None
+    return json.loads(raw)
+
+
+async def enter_dungeon_floor(ws, floor=1, budget=30.0, poll=5.0):
     """Move 'enter' and wait for the settled dungeon floor view.
 
     Entering the archway races a stale pre-entry (graveyard) room view
-    against the new floor view under CI load, so a first-event-wins read
-    can capture the graveyard view (is_dungeon=False) and fail the floor
-    assert. Poll room events until the floor settles, re-syncing with
-    `look` when the buffer runs dry (settled-state polling, no blind
-    sleep retries)."""
+    against the new floor view under CI load: combat ticks can queue
+    several graveyard broadcasts before the move is processed, so a fixed
+    attempt count can spend every read on that backlog and report a false
+    failure. Drain the pre-entry backlog, then settle on a wall-clock
+    budget while reading one message at a time, so a queued dungeon view
+    is returned as soon as it arrives. A refusal (re-entry delay or a
+    crowded floor) fails immediately with the server's text, which
+    distinguishes a slow server from a rejected entry."""
+    await drain(ws, 0.3)
     await send(ws, {"cmd": "move", "dir": "enter"})
+    deadline = time.time() + budget
     last = None
-    for _ in range(attempts):
-        room = await recv(ws, want_type="room", timeout=timeout)
-        if room is not None:
-            last = {
-                "is_dungeon": room.get("is_dungeon"),
-                "dungeon_floor": room.get("dungeon_floor"),
-                "room_id": (room.get("room") or {}).get("id"),
-            }
-        if (
-            room is not None
-            and room.get("is_dungeon")
-            and room.get("dungeon_floor") == floor
-        ):
-            return room
-        await send(ws, {"cmd": "look"})
+    while time.time() < deadline:
+        msg = await recv_one(ws, min(poll, max(0.05, deadline - time.time())))
+        if msg is None:
+            await send(ws, {"cmd": "look"})
+            continue
+        if msg.get("type") == "error":
+            text = str(msg.get("text", ""))
+            if "archway rejects" in text or "too crowded" in text:
+                raise RuntimeError(f"dungeon entry rejected: {text}")
+            continue
+        if msg.get("type") != "room":
+            continue
+        last = {
+            "is_dungeon": msg.get("is_dungeon"),
+            "dungeon_floor": msg.get("dungeon_floor"),
+            "room_id": msg.get("id"),
+        }
+        if msg.get("is_dungeon") and msg.get("dungeon_floor") == floor:
+            return msg
     raise RuntimeError(
         f"dungeon entry never settled on floor {floor} "
-        f"after {attempts} attempts (last room seen: {last})"
+        f"within {budget:.0f}s (last room seen: {last})"
     )
 
 
