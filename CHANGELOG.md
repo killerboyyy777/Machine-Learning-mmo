@@ -3,6 +3,14 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- LLM harness skeleton (#489): `harness/` adds a stdio MCP server over one
+  game character. The bridge logs in with protocol 2 (name + env token,
+  loopback by default), serializes commands, settles on the last matching
+  frame after a quiet window, and caches room/state. The skeleton exposes
+  `game_look` and `game_move` plus the cached `game://room` resource; the
+  full 34-tool surface is mapped in #489 and follows after review. Stdlib
+  JSON-RPC only, no new runtime dependency; offline proof is a fake
+  WebSocket server plus a real stdio round-trip.
 - TUI panels, fourth and last of the #319 breakdown (#493): Config (read-only
   schema, section sizes, overrides against code defaults), Runs (run index
   summary plus newest-first status/elapsed/metrics) and GM (treasury cards
