@@ -11,7 +11,7 @@
 # ws://server:8767, but it is NOT published to the host (GM has no auth --
 # see SECURITY.md). Publish it only on a trusted machine:
 #   uncomment the "8767:8767" line under server.ports.
-# Protocol is unchanged (PROTOCOL_VERSION = 1); images only package it.
+# Protocol is unchanged (PROTOCOL_VERSION = 2); images only package it.
 
 services:
   server:
