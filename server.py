@@ -1019,7 +1019,7 @@ def consume_npc_kills(name, target, since_ts, count):
 
 
 def collusion_multiplier(poster_name, filler_name):
-    """Scale commission rewards to penalise repeated poster+filler pairs.
+    """Scale commission rewards to penalize repeated poster+filler pairs.
 
     First fill between two names pays full reward; each subsequent fill
     between the same pair halves the effective gold and XP.  Strangers
