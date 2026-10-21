@@ -126,6 +126,29 @@ error. Nothing in the TUI writes to the server; the GM tab is a view for now.
 engine path imports it: the server still speaks only websockets, and a test
 greps the engine, ML and agent trees to keep it that way.
 
+## Driving a character from an MCP client
+
+`harness/` exposes one game character over MCP (stdio), so an MCP-capable
+assistant can observe and act without a custom client. The bridge speaks the
+same protocol v2 WebSocket as any player; `server.py` is unchanged.
+
+```bash
+python3 -m harness --url ws://127.0.0.1:8765 --name ScoutLLM \
+    --token-env TEXTMMO_BOT_TOKEN
+```
+
+The URL defaults to loopback; a non-loopback `ws://` host needs
+`--allow-remote` because the game transport is plaintext. The token is read
+from the named environment variable, never from argv, and is never logged.
+One process owns one character. Calls are serialized because the game protocol
+has no request ids. stdout is the MCP channel; logs go to stderr.
+
+The skeleton exposes two tools, `game_look` and `game_move`, and the cached
+`game://room` resource. The full 34-tool surface and the other observation
+resources are mapped in #489 and land after the skeleton is reviewed. The
+offline proof is `python tests/test_harness.py` (fake WebSocket server plus a
+real stdio round-trip).
+
 ## Editing configuration in the browser
 
 The dashboard Config tab edits `server_config.json` and `ml/ml_config.json`

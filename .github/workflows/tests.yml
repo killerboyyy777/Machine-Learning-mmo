@@ -37,6 +37,7 @@ jobs:
       - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
       - run: python tests/test_tui.py
+      - run: python tests/test_harness.py
       - run: python tests/test_snapshot_contract.py
       - run: python tests/test_scores_backup.py
       - run: python tests/test_training_loops.py
