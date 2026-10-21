@@ -1,0 +1,81 @@
+name: Docker packaging
+
+# Packaging proof for #22/#498: the committed Dockerfile must build and the
+# packaged container must come up healthy. Lives apart from tests.yml so the
+# required test jobs stay untouched; no game traffic is generated here.
+on:
+  push:
+    branches: [master, "review/**", "agent/**", "fix/**"]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Docker image build + container health
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build --tag textmmo-server:ci .
+
+      - name: Start container
+        run: |
+          docker run --detach --name textmmo-ci \
+            --publish 18766:8766 \
+            --env TEXTMMO_GM_SEED=700 \
+            textmmo-server:ci
+
+      # Wait on the image's own HEALTHCHECK rather than a fixed sleep: the
+      # packaged probe is part of what this job proves.
+      - name: Wait for healthy
+        run: |
+          for attempt in $(seq 1 90); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' textmmo-ci)
+            echo "attempt ${attempt}: ${status}"
+            if [ "${status}" = "healthy" ]; then exit 0; fi
+            if [ "${status}" = "unhealthy" ]; then break; fi
+            sleep 1
+          done
+          docker logs textmmo-ci
+          exit 1
+
+      - name: Smoke /health and /api/state
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import urllib.request
+
+          base = "http://127.0.0.1:18766"
+          health = json.load(urllib.request.urlopen(base + "/health", timeout=5))
+          assert health.get("status") == "ok", health
+          assert isinstance(health.get("players_online"), int), health
+
+          state = {}
+          for _ in range(20):
+              state = json.load(urllib.request.urlopen(base + "/api/state", timeout=5))
+              if state.get("server"):
+                  break
+              time.sleep(0.5)
+          assert state.get("server"), state
+          assert "rooms" in state and "market" in state, sorted(state)
+
+          print("DOCKER_SMOKE_OK", json.dumps(health), "rooms", len(state["rooms"]))
+          PY
+
+      - name: Container logs
+        if: failure()
+        run: docker logs textmmo-ci
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force textmmo-ci
