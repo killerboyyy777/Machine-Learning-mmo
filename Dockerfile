@@ -20,13 +20,17 @@ RUN if [ "$INSTALL_TORCH" = "1" ]; then \
       pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu; \
     fi
 
-# Runtime code: server (game + dashboard + GM stream), configs, world,
-# ML env + botfarm + conductor, torch agents. Tests ship too so the
-# image can run the offline suites in CI.
+# Runtime code: server (game + dashboard + GM stream), TUI + launcher,
+# configs, world, ML env + botfarm + conductor, torch agents. Tests ship too
+# so the image can run the offline suites in CI.
 COPY server.py dashboard.html world.json server_config.json ./
+COPY start.py ./
+COPY tui/ ./tui/
 COPY ml/ ./ml/
 COPY torch_agents/ ./torch_agents/
 COPY tests/ ./tests/
+
+RUN python -c "import rich, start, tui.app; print('DOCKER_TUI_IMPORT_OK')"
 
 EXPOSE 8765 8766 8767
 
