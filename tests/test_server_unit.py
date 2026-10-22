@@ -895,6 +895,141 @@ async def main():
         srv.remove_member(pl)
         srv.players.pop(pl.id, None)
 
+    # --- Craft jobs (#501): opt-in queue, escrow, cap, refund, resume ---
+    def drop_job_entry(name, pl):
+        unplayer(pl)
+        srv.SCORES.pop(name.lower(), None)
+
+    jobber = mkplayer("JobCrafter", 60200, room="town_square")
+    jobber.inventory = ["iron_ore"] * 4
+    jentry = srv.get_score_entry("JobCrafter")
+    jentry["craft_jobs"] = []
+    jentry["craft_pending"] = []
+    for _ in range(srv.CRAFT_JOB_MAX):
+        await srv.cmd_craft(jobber, {"action": "start", "recipe": "arrows"})
+    assert jobber.inventory.count("iron_ore") == 1
+    assert "arrow" not in jobber.inventory
+    assert len(jentry["craft_jobs"]) == srv.CRAFT_JOB_MAX
+    await srv.cmd_craft(jobber, {"action": "start", "recipe": "arrows"})
+    assert inbox[-1]["type"] == "error" and "3 craft jobs" in inbox[-1]["text"], inbox[-1]
+    assert len(jentry["craft_jobs"]) == srv.CRAFT_JOB_MAX
+    await srv.cmd_craft(jobber, {"action": "status"})
+    assert inbox[-1]["type"] == "craft_jobs"
+    assert len(inbox[-1]["jobs"]) == srv.CRAFT_JOB_MAX
+    assert inbox[-1]["jobs"][0]["ticks_total"] == srv.CRAFT_JOB_DEFAULT_TICKS
+    assert srv._command_ticks_buffs("craft", {"action": "status"}) is False
+    drop_job_entry("JobCrafter", jobber)
+    print("CRAFT_JOB_CAP_OK")
+
+    refund_jobber = mkplayer("RefundJobber", 60201, room="town_square")
+    refund_jobber.inventory = ["wolf_pelt"] * 3 + ["rat_tail"] * 6
+    rentry = srv.get_score_entry("RefundJobber")
+    rentry["craft_jobs"] = []
+    rentry["craft_pending"] = []
+    for _ in range(3):
+        await srv.cmd_craft(refund_jobber, {"action": "start", "recipe": "reinforced_leather"})
+    first = rentry["craft_jobs"][0]
+    first["started_at"] = time.time() - 2 * srv.NPC_TICK_SECONDS
+    await srv.cmd_craft(refund_jobber, {"action": "cancel", "id": first["id"]})
+    assert "wolf_pelt" not in refund_jobber.inventory
+    assert refund_jobber.inventory.count("rat_tail") == 1
+    assert len(rentry["craft_jobs"]) == 2
+    drop_job_entry("RefundJobber", refund_jobber)
+    print("CRAFT_JOB_REFUND_OK")
+
+    tick_jobber = mkplayer("TickJobber", 60202, room="town_square")
+    tick_jobber.inventory = ["iron_ore"]
+    tentry = srv.get_score_entry("TickJobber")
+    tentry["craft_jobs"] = []
+    tentry["craft_pending"] = []
+    await srv.cmd_craft(tick_jobber, {"action": "start", "recipe": "arrows"})
+    job = tentry["craft_jobs"][0]
+    job["started_at"] = time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
+    before = len(inbox)
+    assert await srv.tick_craft_jobs(time.time()) == 1
+    assert tick_jobber.inventory.count("arrow") == 5
+    assert tentry["craft_jobs"] == []
+    notices = [m for m in inbox[before:] if m.get("type") == "message" and "finished" in m.get("text", "")]
+    assert len(notices) == 1, notices
+    assert await srv.tick_craft_jobs(time.time()) == 0
+    assert tick_jobber.inventory.count("arrow") == 5
+    drop_job_entry("TickJobber", tick_jobber)
+    print("CRAFT_JOB_TICK_OK")
+
+    resume_jobber = mkplayer("ResumeJobber", 60203, room="town_square")
+    resume_jobber.inventory = ["iron_ore"]
+    rentry2 = srv.get_score_entry("ResumeJobber")
+    rentry2["craft_jobs"] = []
+    rentry2["craft_pending"] = []
+    await srv.cmd_craft(resume_jobber, {"action": "start", "recipe": "arrows"})
+    rentry2["craft_jobs"][0]["started_at"] = time.time() - 2 * srv.NPC_TICK_SECONDS
+    srv.SCORES["resumejobber"] = json.loads(json.dumps(rentry2))
+    assert await srv.tick_craft_jobs(time.time()) == 0
+    resumed = srv.SCORES["resumejobber"]
+    assert len(resumed["craft_jobs"]) == 1
+    resumed["craft_jobs"][0]["started_at"] = time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
+    assert await srv.tick_craft_jobs(time.time()) == 1
+    assert resume_jobber.inventory.count("arrow") == 5
+    drop_job_entry("ResumeJobber", resume_jobber)
+    print("CRAFT_JOB_RESUME_OK")
+
+    offline_jobber = mkplayer("OfflineJobber", 60204, room="town_square")
+    offline_jobber.inventory = ["iron_ore"]
+    oentry = srv.get_score_entry("OfflineJobber")
+    oentry["craft_jobs"] = []
+    oentry["craft_pending"] = []
+    await srv.cmd_craft(offline_jobber, {"action": "start", "recipe": "arrows"})
+    oentry["craft_jobs"][0]["started_at"] = time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
+    unplayer(offline_jobber)
+    assert await srv.tick_craft_jobs(time.time()) == 1
+    assert "arrow" not in offline_jobber.inventory
+    assert len(oentry["craft_pending"]) == 1
+    before = len(inbox)
+    srv.players[offline_jobber.id] = offline_jobber
+    srv.add_member(offline_jobber)
+    await srv.cmd_stats(offline_jobber, {})
+    assert offline_jobber.inventory.count("arrow") == 5
+    assert oentry["craft_pending"] == []
+    notices = [m for m in inbox[before:] if m.get("type") == "message" and "finished" in m.get("text", "")]
+    assert len(notices) == 1, notices
+    before = len(inbox)
+    await srv.cmd_stats(offline_jobber, {})
+    assert not [m for m in inbox[before:] if "finished" in m.get("text", "")]
+    drop_job_entry("OfflineJobber", offline_jobber)
+    print("CRAFT_JOB_OFFLINE_PENDING_OK")
+
+    full_jobber = mkplayer("FullJobber", 60205, room="town_square")
+    full_jobber.inventory = ["iron_ore"] + ["rat_tail"] * 23
+    fentry = srv.get_score_entry("FullJobber")
+    fentry["craft_jobs"] = []
+    fentry["craft_pending"] = []
+    await srv.cmd_craft(full_jobber, {"action": "start", "recipe": "arrows"})
+    fentry["craft_jobs"][0]["started_at"] = time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
+    full_jobber.inventory.append("rat_tail")
+    assert await srv.tick_craft_jobs(time.time()) == 1
+    assert "arrow" not in full_jobber.inventory
+    assert len(fentry["craft_pending"]) == 1 and fentry["craft_pending"][0]["notified"] is True
+    full_jobber.inventory.pop()
+    await srv.cmd_craft(full_jobber, {"action": "collect"})
+    assert full_jobber.inventory.count("arrow") == 5
+    assert fentry["craft_pending"] == []
+    drop_job_entry("FullJobber", full_jobber)
+    print("CRAFT_JOB_FULL_PACK_OK")
+
+    late_jobber = mkplayer("LateJobber", 60206, room="town_square")
+    late_jobber.inventory = ["iron_ore"]
+    lentry = srv.get_score_entry("LateJobber")
+    lentry["craft_jobs"] = []
+    lentry["craft_pending"] = []
+    await srv.cmd_craft(late_jobber, {"action": "start", "recipe": "arrows"})
+    lentry["craft_jobs"][0]["started_at"] = time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
+    await srv.cmd_craft(late_jobber, {"action": "cancel", "id": lentry["craft_jobs"][0]["id"]})
+    assert late_jobber.inventory.count("arrow") == 5
+    assert "iron_ore" not in late_jobber.inventory
+    assert lentry["craft_jobs"] == []
+    drop_job_entry("LateJobber", late_jobber)
+    print("CRAFT_JOB_LATE_CANCEL_OK")
+
     # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
     griefer = mkplayer("Griefer", 60001, room="town_square")
     guard_hp0 = srv.npcs["guard"]["hp"]
@@ -2889,12 +3024,21 @@ async def main():
     _eb["item_bank"] = ["rusty_sword"]
     _ec = srv.get_score_entry("PruneClean")
     _ec["last_seen"] = _old
+    _ej = srv.get_score_entry("PruneCraftJob")
+    _ej["last_seen"] = _old
+    _ej["craft_jobs"] = [{"id": 1}]
+    _ep = srv.get_score_entry("PruneCraftPending")
+    _ep["last_seen"] = _old
+    _ep["craft_pending"] = [{"id": 2}]
     srv._last_score_prune = 0.0
     srv.prune_score_entries()
     assert "prunebanked" in srv.SCORES and "pruneclean" not in srv.SCORES, sorted(
         srv.SCORES
     )
+    assert "prunecraftjob" in srv.SCORES and "prunecraftpending" in srv.SCORES
     del srv.SCORES["prunebanked"]
+    del srv.SCORES["prunecraftjob"]
+    del srv.SCORES["prunecraftpending"]
     srv._last_score_prune = time.time()
     print("PRUNE_BANK_OK")
 
