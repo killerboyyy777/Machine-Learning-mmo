@@ -49,7 +49,7 @@ jobs are opt-in through the same command:
 A player can run three jobs at once. Inputs are escrowed when the job starts;
 progress follows the server's 3-second tick loop (`recipe.ticks`, default 5).
 Cancelling refunds only the work not yet run, rounded down per input. Finished
-output goes straight to the pack when there is room, otherwise it waits in
+output and refunds fill the pack up to the carry cap, and any remainder waits in
 `craft_pending` and is delivered on login, look, or stats (or by `collect`).
 Jobs live in `scores.json`, so they resume after a restart.
 

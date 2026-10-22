@@ -7,9 +7,9 @@ All notable changes to the text MMO engine are recorded here.
   `craft <recipe>` stays instant for existing clients and the ML env. Jobs
   persist in `scores.json`, cap at three per player, escrow inputs at start,
   advance on the existing 3-second loop (`recipe.ticks`, default 5), refund
-  only unrun work on cancel, and hold finished output in `craft_pending` until
-  login/look/stats or `craft collect` can deliver it. One completion notice per
-  job; no ML action changes.
+  only unrun work on cancel, and hold finished output or refunds that exceed the
+  carry cap in `craft_pending` until login/look/stats or `craft collect` can
+  deliver them. One completion notice per job; no ML action changes.
 - LLM harness skeleton (#489): `harness/` adds a stdio MCP server over one
   game character. The bridge logs in with protocol 2 (name + env token,
   loopback by default), serializes commands, settles on the last matching

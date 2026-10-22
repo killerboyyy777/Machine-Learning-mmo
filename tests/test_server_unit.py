@@ -1006,15 +1006,51 @@ async def main():
     await srv.cmd_craft(full_jobber, {"action": "start", "recipe": "arrows"})
     fentry["craft_jobs"][0]["started_at"] = time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
     full_jobber.inventory.append("rat_tail")
+    assert srv._inventory_units(full_jobber) == srv.INVENTORY_CAP
     assert await srv.tick_craft_jobs(time.time()) == 1
     assert "arrow" not in full_jobber.inventory
-    assert len(fentry["craft_pending"]) == 1 and fentry["craft_pending"][0]["notified"] is True
+    assert len(fentry["craft_pending"]) == 1
+    held = fentry["craft_pending"][0]
+    assert held["notified"] is True and held["kind"] == "output" and held["qty"] == 5
+    assert srv._inventory_units(full_jobber) <= srv.INVENTORY_CAP
     full_jobber.inventory.pop()
+    await srv.cmd_craft(full_jobber, {"action": "collect"})
+    assert full_jobber.inventory.count("arrow") == 1
+    assert fentry["craft_pending"][0]["qty"] == 4
+    assert srv._inventory_units(full_jobber) <= srv.INVENTORY_CAP
+    for _ in range(4):
+        full_jobber.inventory.remove("rat_tail")
     await srv.cmd_craft(full_jobber, {"action": "collect"})
     assert full_jobber.inventory.count("arrow") == 5
     assert fentry["craft_pending"] == []
+    assert srv._inventory_units(full_jobber) <= srv.INVENTORY_CAP
     drop_job_entry("FullJobber", full_jobber)
     print("CRAFT_JOB_FULL_PACK_OK")
+
+    cancel_full = mkplayer("CancelFullJobber", 60207, room="town_square")
+    cancel_full.inventory = ["iron_ore"] + ["rat_tail"] * 23
+    centry = srv.get_score_entry("CancelFullJobber")
+    centry["craft_jobs"] = []
+    centry["craft_pending"] = []
+    await srv.cmd_craft(cancel_full, {"action": "start", "recipe": "arrows"})
+    cancel_full.inventory.append("rat_tail")
+    assert srv._inventory_units(cancel_full) == srv.INVENTORY_CAP
+    before = len(inbox)
+    await srv.cmd_craft(cancel_full, {"action": "cancel", "id": centry["craft_jobs"][0]["id"]})
+    assert srv._inventory_units(cancel_full) <= srv.INVENTORY_CAP
+    assert "iron_ore" not in cancel_full.inventory
+    assert centry["craft_jobs"] == []
+    assert len(centry["craft_pending"]) == 1
+    held = centry["craft_pending"][0]
+    assert held["kind"] == "refund" and held["result"] == "iron_ore" and held["qty"] == 1
+    assert any("held for craft collect" in m.get("text", "") for m in inbox[before:])
+    cancel_full.inventory.pop()
+    await srv.cmd_craft(cancel_full, {"action": "collect"})
+    assert cancel_full.inventory.count("iron_ore") == 1
+    assert centry["craft_pending"] == []
+    assert srv._inventory_units(cancel_full) <= srv.INVENTORY_CAP
+    drop_job_entry("CancelFullJobber", cancel_full)
+    print("CRAFT_JOB_CANCEL_FULL_PACK_OK")
 
     late_jobber = mkplayer("LateJobber", 60206, room="town_square")
     late_jobber.inventory = ["iron_ore"]

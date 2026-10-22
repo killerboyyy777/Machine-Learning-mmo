@@ -1258,6 +1258,10 @@ def _pack_full(player):
     return _inventory_units(player) >= INVENTORY_CAP
 
 
+def _inventory_room(player):
+    return max(0, INVENTORY_CAP - _inventory_units(player))
+
+
 def _pack_full_error():
     return f"Your pack is full ({INVENTORY_CAP} units). Drop something first."
 
@@ -2697,6 +2701,22 @@ def _craft_output_text(result, output_qty):
     return f"{output_qty}x {result_name}" if output_qty > 1 else result_name
 
 
+def _queue_craft_pending(entry, job_id, recipe, result, qty, now, kind, notified):
+    pending = entry.get("craft_pending")
+    if not isinstance(pending, list):
+        pending = []
+        entry["craft_pending"] = pending
+    pending.append({
+        "id": job_id,
+        "recipe": recipe,
+        "result": result,
+        "qty": qty,
+        "notified": notified,
+        "completed_at": now,
+        "kind": kind,
+    })
+
+
 def _craft_job_view(job, now):
     ticks_left = _craft_ticks_left(job, now)
     return {
@@ -2759,22 +2779,26 @@ async def _finish_craft_job(entry, job, now):
         output_qty = 1
     output_text = _craft_output_text(result, output_qty)
     player = _online_player(name)
-    if player is not None and not _pack_full(player):
-        player.inventory.extend([result] * output_qty)
-        await send(player, {"type": "message", "text": f"Craft job #{job_id} finished: {output_text}!"})
-    else:
-        pending = entry.setdefault("craft_pending", [])
-        pending.append({
-            "id": job_id,
-            "recipe": job.get("recipe"),
-            "result": result,
-            "qty": output_qty,
-            "notified": player is not None,
-            "completed_at": now,
-        })
-        if player is not None:
-            await send(player, {"type": "message", "text": f"Craft job #{job_id} finished: {output_text}. "
-                  "Your pack is full; use craft collect when you have room."})
+    room = _inventory_room(player) if player is not None else 0
+    delivered = min(output_qty, room)
+    held = output_qty - delivered
+    if delivered:
+        player.inventory.extend([result] * delivered)
+    if held:
+        _queue_craft_pending(
+            entry, job_id, job.get("recipe"), result, held, now, "output",
+            player is not None,
+        )
+    if player is not None:
+        if not held:
+            text = f"Craft job #{job_id} finished: {output_text}!"
+        elif delivered:
+            text = (f"Craft job #{job_id} finished: {_craft_output_text(result, delivered)}. "
+                    f"Your pack is full; {_craft_output_text(result, held)} held for craft collect.")
+        else:
+            text = (f"Craft job #{job_id} finished: {output_text}. "
+                    "Your pack is full; use craft collect when you have room.")
+        await send(player, {"type": "message", "text": text})
     await _record_craft_completion(
         name, job.get("recipe"), result, job.get("inputs") or {},
         job.get("tier", 0), output_qty, entry,
@@ -2797,21 +2821,30 @@ async def _deliver_craft_pending(player, entry=None):
         if not isinstance(item, dict) or not item.get("result"):
             changed = True
             continue
-        if _pack_full(player):
+        room = _inventory_room(player)
+        if room <= 0:
             remaining.append(item)
             continue
         try:
             qty = max(1, int(item.get("qty", 1)))
         except (TypeError, ValueError):
             qty = 1
-        player.inventory.extend([item["result"]] * qty)
-        output_text = _craft_output_text(item["result"], qty)
+        taken = min(qty, room)
+        player.inventory.extend([item["result"]] * taken)
+        output_text = _craft_output_text(item["result"], taken)
         job_id = item.get("id")
-        if item.get("notified"):
+        if item.get("kind") == "refund":
+            text = f"You recover {output_text} from cancelled craft job #{job_id}."
+        elif item.get("notified"):
             text = f"You collect {output_text} from craft job #{job_id}."
         else:
             text = f"Craft job #{job_id} finished: {output_text}!"
         await send(player, {"type": "message", "text": text})
+        if taken < qty:
+            leftover = dict(item)
+            leftover["qty"] = qty - taken
+            leftover["notified"] = True
+            remaining.append(leftover)
         delivered += 1
         changed = True
     entry["craft_pending"] = remaining
@@ -2905,6 +2938,7 @@ async def _cmd_craft_status(player):
                 "result": _iname(item.get("result")),
                 "qty": item.get("qty", 1),
                 "notified": bool(item.get("notified")),
+                "kind": item.get("kind") or "output",
             }
             for item in pending if isinstance(item, dict)
         ] if isinstance(pending, list) else [],
@@ -2954,19 +2988,36 @@ async def _cmd_craft_cancel(player, msg):
     total = max(1, int(job.get("ticks_total", CRAFT_JOB_DEFAULT_TICKS)))
     ticks_left = _craft_ticks_left(job, now)
     refunds = []
+    held = []
     for iid, qty in (job.get("inputs") or {}).items():
         try:
             qty = int(qty)
         except (TypeError, ValueError):
             continue
         refund = (qty * ticks_left) // total
-        if refund:
-            player.inventory.extend([iid] * refund)
-            refunds.append(f"{refund}x {_iname(iid)}")
+        if not refund:
+            continue
+        room = _inventory_room(player)
+        taken = min(refund, room)
+        if taken:
+            player.inventory.extend([iid] * taken)
+            refunds.append(f"{taken}x {_iname(iid)}")
+        remainder = refund - taken
+        if remainder:
+            _queue_craft_pending(
+                entry, job_id, job.get("recipe"), iid, remainder, now, "refund", True,
+            )
+            held.append(f"{remainder}x {_iname(iid)}")
     jobs[:] = [j for j in jobs if j is not job]
     mark_scores_dirty()
-    if refunds:
+    if refunds and held:
+        text = (f"Craft job #{job_id} cancelled. Refunded " + ", ".join(refunds) +
+                "; pack full, " + ", ".join(held) + " held for craft collect.")
+    elif refunds:
         text = f"Craft job #{job_id} cancelled. Refunded " + ", ".join(refunds) + "."
+    elif held:
+        text = (f"Craft job #{job_id} cancelled. Your pack is full; " +
+                ", ".join(held) + " held for craft collect.")
     else:
         text = f"Craft job #{job_id} cancelled. No materials were refunded."
     await send(player, {"type": "message", "text": text})
