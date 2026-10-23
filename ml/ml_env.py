@@ -633,7 +633,7 @@ def pack_units(state):
     event (state["pack_units"]): the 20-name inv list truncates near the
     cap, so counting names under-reports 21-24-unit packs and leaves
     take/gather/buy mask-valid when the server will reject them (#191).
-    Falls back to name-counting when no stats has landed yet."""
+    Falls back to name-counting when no stats have landed yet."""
     if state.get("pack_units") is not None:
         return max(0, int(state["pack_units"]))
     inv = state.get("inv_names") or []
