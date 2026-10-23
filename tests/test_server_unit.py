@@ -1066,6 +1066,47 @@ async def main():
     drop_job_entry("LateJobber", late_jobber)
     print("CRAFT_JOB_LATE_CANCEL_OK")
 
+    race_jobber = mkplayer("RaceJobber", 60208, room="town_square")
+    race_jobber.inventory = ["iron_ore"] + ["rat_tail"] * 23
+    rentry3 = srv.get_score_entry("RaceJobber")
+    rentry3["craft_jobs"] = []
+    rentry3["craft_pending"] = [
+        {
+            "id": 9901,
+            "recipe": "race",
+            "result": "rat_tail",
+            "qty": 1,
+            "notified": True,
+            "kind": "output",
+        }
+    ]
+    await srv.cmd_craft(race_jobber, {"action": "start", "recipe": "arrows"})
+    rentry3["craft_jobs"][0]["started_at"] = (
+        time.time() - srv.CRAFT_JOB_DEFAULT_TICKS * srv.NPC_TICK_SECONDS
+    )
+    saved_send = srv.send
+    raced = {"ran": False}
+
+    async def race_send(p, payload):
+        await saved_send(p, payload)
+        if not raced["ran"]:
+            raced["ran"] = True
+            await srv._deliver_craft_pending(race_jobber, rentry3)
+            await srv.tick_craft_jobs(time.time())
+
+    srv.send = race_send
+    try:
+        await srv._deliver_craft_pending(race_jobber, rentry3)
+    finally:
+        srv.send = saved_send
+    assert len(rentry3["craft_pending"]) == 1, rentry3["craft_pending"]
+    held = rentry3["craft_pending"][0]
+    assert held["result"] == "arrow" and held["qty"] == 5 and held["kind"] == "output"
+    assert race_jobber.inventory.count("rat_tail") == 24
+    assert race_jobber.inventory.count("arrow") == 0
+    drop_job_entry("RaceJobber", race_jobber)
+    print("CRAFT_JOB_PENDING_RACE_OK")
+
     # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
     griefer = mkplayer("Griefer", 60001, room="town_square")
     guard_hp0 = srv.npcs["guard"]["hp"]
