@@ -34,6 +34,25 @@ the commissions board carries a `progress` summary (leading hunter,
 kills vs required, display-only -- fills still verify from kill
 timestamps). ML observations are unchanged by them.
 
+### Craft jobs
+
+`craft <recipe>` stays instant for existing clients and the ML env. Tick-based
+jobs are opt-in through the same command:
+
+```json
+{"cmd": "craft", "action": "start", "recipe": "arrows"}
+{"cmd": "craft", "action": "status"}
+{"cmd": "craft", "action": "collect"}
+{"cmd": "craft", "action": "cancel", "id": 1}
+```
+
+A player can run three jobs at once. Inputs are escrowed when the job starts;
+progress follows the server's 3-second tick loop (`recipe.ticks`, default 5).
+Cancelling refunds only the work not yet run, rounded down per input. Finished
+output and refunds fill the pack up to the carry cap, and any remainder waits in
+`craft_pending` and is delivered on login, look, or stats (or by `collect`).
+Jobs live in `scores.json`, so they resume after a restart.
+
 ## Docker (full stack, zero install)
 
 ```bash
