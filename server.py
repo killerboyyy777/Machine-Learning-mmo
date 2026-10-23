@@ -2815,6 +2815,7 @@ async def _deliver_craft_pending(player, entry=None):
     if not isinstance(pending, list) or not pending:
         return 0
     remaining = []
+    messages = []
     delivered = 0
     changed = False
     for item in pending:
@@ -2839,7 +2840,7 @@ async def _deliver_craft_pending(player, entry=None):
             text = f"You collect {output_text} from craft job #{job_id}."
         else:
             text = f"Craft job #{job_id} finished: {output_text}!"
-        await send(player, {"type": "message", "text": text})
+        messages.append({"type": "message", "text": text})
         if taken < qty:
             leftover = dict(item)
             leftover["qty"] = qty - taken
@@ -2850,6 +2851,8 @@ async def _deliver_craft_pending(player, entry=None):
     entry["craft_pending"] = remaining
     if changed:
         mark_scores_dirty()
+    for message in messages:
+        await send(player, message)
     return delivered
 
 
