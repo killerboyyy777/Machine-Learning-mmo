@@ -869,7 +869,8 @@ def prune_score_entries(now=None):
             entry = SCORES[key]
         if key in online:
             continue
-        if entry.get("gold_bank", 0) or entry.get("item_bank"):
+        if (entry.get("gold_bank", 0) or entry.get("item_bank")
+                or entry.get("craft_jobs") or entry.get("craft_pending")):
             continue
         del SCORES[key]
         for tk in [k for k in track_log if k.lower() == key]:
@@ -907,6 +908,9 @@ def get_score_entry(name):
     entry.setdefault("gold_bank", 0)         # coin earned while offline
     entry.setdefault("item_bank", [])        # items won while offline/pack-full
     entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
+    entry.setdefault("craft_jobs", [])       # running tick-based craft jobs (#501)
+    entry.setdefault("craft_job_seq", 0)     # last job id handed out
+    entry.setdefault("craft_pending", [])    # finished output waiting for pack space
     entry.setdefault("tax_paid", 0.0)        # market tax they bore (seller side)
     entry.setdefault("market_slots", MARKET_ORDER_SLOTS_BASE)  # open sell-order cap (expandable)
     entry.setdefault("dungeon_floors_cleared", 0)
@@ -1200,8 +1204,10 @@ NO_BUFF_TICK = frozenset({
 
 def _command_ticks_buffs(cmd, msg):
     """Pure gate for buff consumption (unit-testable without dispatch)."""
+    action = str((msg or {}).get("action") or "").lower()
     return (cmd not in NO_BUFF_TICK
-            and not (cmd == "quest" and (msg or {}).get("action") == "list"))
+            and not (cmd == "quest" and action == "list")
+            and not (cmd == "craft" and action == "status"))
 
 
 def _tick_player_buffs(player):
@@ -1250,6 +1256,10 @@ def _unequipped_inventory(player):
 
 def _pack_full(player):
     return _inventory_units(player) >= INVENTORY_CAP
+
+
+def _inventory_room(player):
+    return max(0, INVENTORY_CAP - _inventory_units(player))
 
 
 def _pack_full_error():
@@ -2171,11 +2181,13 @@ async def cmd_login(player, msg):
             f"you sent {client_version}. Update your client.")
     await send(player, welcome)
     await send(player, room_view(player.room))
+    await _deliver_craft_pending(player, entry)
     await send(player, stats_view(player))
     await broadcast_room(player.room, {"type": "message", "text": f"{name} appears."}, exclude=player)
 
 
 async def cmd_look(player, msg):
+    await _deliver_craft_pending(player)
     await send(player, room_view(player.room))
 
 
@@ -2639,19 +2651,30 @@ async def cmd_sell(player, msg):
     await send(player, stats_view(player))
 
 
-async def cmd_craft(player, msg):
-    global craft_feed_seq
-    rid, recipe = find_recipe(msg.get("recipe", ""))
-    if not recipe:
-        await send(player, {"type": "error", "text": "No such recipe."})
-        return
+def _craft_output_qty(recipe):
+    try:
+        return max(1, int(recipe.get("output_qty", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _craft_ticks(recipe):
+    try:
+        return max(1, int(recipe.get("ticks", CRAFT_JOB_DEFAULT_TICKS)))
+    except (TypeError, ValueError):
+        return CRAFT_JOB_DEFAULT_TICKS
+
+
+def _craft_missing_input(player, inputs):
     have = {iid: player.inventory.count(iid) for iid in set(player.inventory)}
-    for iid, qty in recipe["inputs"].items():
+    for iid, qty in inputs.items():
         if have.get(iid, 0) < qty:
-            need = _iname(iid)
-            await send(player, {"type": "error", "text": f"You need {qty}x {need} to craft that."})
-            return
-    for iid, qty in recipe["inputs"].items():
+            return iid, qty
+    return None
+
+
+def _take_craft_inputs(player, inputs):
+    for iid, qty in inputs.items():
         for _ in range(qty):
             player.inventory.remove(iid)
         if player.equipped == iid and iid not in player.inventory:
@@ -2660,42 +2683,386 @@ async def cmd_craft(player, msg):
             player.armor = None
         if player.offhand == iid and iid not in player.inventory:
             player.offhand = None
-    result = recipe["result"]
-    try:
-        output_qty = max(1, int(recipe.get("output_qty", 1)))
-    except (TypeError, ValueError):
-        output_qty = 1
-    player.inventory.extend([result] * output_qty)
+
+
+def _craft_deadline(job):
+    ticks = max(1, int(job.get("ticks_total", CRAFT_JOB_DEFAULT_TICKS)))
+    return float(job.get("started_at", 0)) + ticks * NPC_TICK_SECONDS
+
+
+def _craft_ticks_left(job, now):
+    total = max(1, int(job.get("ticks_total", CRAFT_JOB_DEFAULT_TICKS)))
+    elapsed = max(0.0, now - float(job.get("started_at", 0)))
+    return max(0, total - int(elapsed // NPC_TICK_SECONDS))
+
+
+def _craft_output_text(result, output_qty):
     result_name = _iname(result)
-    output_text = f"{output_qty}x {result_name}" if output_qty > 1 else result_name
-    await send(player, {"type": "message", "text": f"You craft {output_text}!"})
-    entry = get_score_entry(player.name)
-    input_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) * qty for iid, qty in recipe["inputs"].items())
+    return f"{output_qty}x {result_name}" if output_qty > 1 else result_name
+
+
+def _queue_craft_pending(entry, job_id, recipe, result, qty, now, kind, notified):
+    pending = entry.get("craft_pending")
+    if not isinstance(pending, list):
+        pending = []
+        entry["craft_pending"] = pending
+    pending.append({
+        "id": job_id,
+        "recipe": recipe,
+        "result": result,
+        "qty": qty,
+        "notified": notified,
+        "completed_at": now,
+        "kind": kind,
+    })
+
+
+def _craft_job_view(job, now):
+    ticks_left = _craft_ticks_left(job, now)
+    return {
+        "id": job.get("id"),
+        "recipe": job.get("recipe"),
+        "result": _iname(job.get("result")),
+        "output_qty": job.get("output_qty", 1),
+        "ticks_total": job.get("ticks_total", CRAFT_JOB_DEFAULT_TICKS),
+        "ticks_left": ticks_left,
+        "seconds_left": max(0, int(_craft_deadline(job) - now)),
+        "ready": ticks_left == 0,
+    }
+
+
+async def _record_craft_completion(name, rid, result, inputs, tier, output_qty, entry=None):
+    global craft_feed_seq
+    entry = entry or get_score_entry(name)
+    input_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) * qty for iid, qty in inputs.items())
     output_value = ITEM_DEFS.get(result, {}).get("value", 0) * output_qty
     net_profit = output_value - input_value
-    entry.setdefault("craft_profitability", {})[recipe["result"]] = entry["craft_profitability"].get(recipe["result"], 0) + net_profit
-    entry.setdefault("crafts_tier", {}).setdefault(recipe.get("tier", 0), 0)
-    entry["crafts_tier"][recipe.get("tier", 0)] += 1
+    entry.setdefault("craft_profitability", {})[result] = entry["craft_profitability"].get(result, 0) + net_profit
+    entry.setdefault("crafts_tier", {}).setdefault(tier, 0)
+    entry["crafts_tier"][tier] += 1
     mark_scores_dirty()
-    await award_points(player, 8, f"crafted {result_name}")
-    await award_xp(player.name, 8, f"crafted {result_name}")
+    result_name = _iname(result)
+    await award_points_to_name(name, 8, f"crafted {result_name}")
+    await award_xp(name, 8, f"crafted {result_name}")
     craft_feed_seq += 1
     craft_feed.append(
         {
             "seq": craft_feed_seq,
             "t": time.strftime("%H:%M:%S"),
-            "name": player.name,
+            "name": name,
             "recipe": rid,
             "result": result,
         }
     )
     while len(craft_feed) > CRAFT_FEED_SIZE:
         del craft_feed[0]
-    if entry["quest_guard_active"] and result == "ancient_guardian_charm":
+
+
+async def _craft_quest_hint(entry, result, player=None):
+    if entry.get("quest_guard_active") and result == "ancient_guardian_charm":
         entry["guard_charm_crafted"] = True
         mark_scores_dirty()
-        await send(player, {"type": "message", "text": "The Ancient Guardian Charm feels warm in your hands... "
-              "perhaps the Town Guard will find it useful?"})
+        if player is not None:
+            await send(player, {"type": "message", "text": "The Ancient Guardian Charm feels warm in your hands... "
+                  "perhaps the Town Guard will find it useful?"})
+
+
+async def _finish_craft_job(entry, job, now):
+    name = entry.get("display_name") or ""
+    result = job.get("result")
+    if not name or not result:
+        return False
+    job_id = job.get("id")
+    try:
+        output_qty = max(1, int(job.get("output_qty", 1)))
+    except (TypeError, ValueError):
+        output_qty = 1
+    output_text = _craft_output_text(result, output_qty)
+    player = _online_player(name)
+    room = _inventory_room(player) if player is not None else 0
+    delivered = min(output_qty, room)
+    held = output_qty - delivered
+    if delivered:
+        player.inventory.extend([result] * delivered)
+    if held:
+        _queue_craft_pending(
+            entry, job_id, job.get("recipe"), result, held, now, "output",
+            player is not None,
+        )
+    if player is not None:
+        if not held:
+            text = f"Craft job #{job_id} finished: {output_text}!"
+        elif delivered:
+            text = (f"Craft job #{job_id} finished: {_craft_output_text(result, delivered)}. "
+                    f"Your pack is full; {_craft_output_text(result, held)} held for craft collect.")
+        else:
+            text = (f"Craft job #{job_id} finished: {output_text}. "
+                    "Your pack is full; use craft collect when you have room.")
+        await send(player, {"type": "message", "text": text})
+    await _record_craft_completion(
+        name, job.get("recipe"), result, job.get("inputs") or {},
+        job.get("tier", 0), output_qty, entry,
+    )
+    await _craft_quest_hint(entry, result, player)
+    return True
+
+
+async def _deliver_craft_pending(player, entry=None):
+    if player is None or not player.logged_in:
+        return 0
+    entry = entry or get_score_entry(player.name)
+    pending = entry.get("craft_pending")
+    if not isinstance(pending, list) or not pending:
+        return 0
+    remaining = []
+    delivered = 0
+    changed = False
+    for item in pending:
+        if not isinstance(item, dict) or not item.get("result"):
+            changed = True
+            continue
+        room = _inventory_room(player)
+        if room <= 0:
+            remaining.append(item)
+            continue
+        try:
+            qty = max(1, int(item.get("qty", 1)))
+        except (TypeError, ValueError):
+            qty = 1
+        taken = min(qty, room)
+        player.inventory.extend([item["result"]] * taken)
+        output_text = _craft_output_text(item["result"], taken)
+        job_id = item.get("id")
+        if item.get("kind") == "refund":
+            text = f"You recover {output_text} from cancelled craft job #{job_id}."
+        elif item.get("notified"):
+            text = f"You collect {output_text} from craft job #{job_id}."
+        else:
+            text = f"Craft job #{job_id} finished: {output_text}!"
+        await send(player, {"type": "message", "text": text})
+        if taken < qty:
+            leftover = dict(item)
+            leftover["qty"] = qty - taken
+            leftover["notified"] = True
+            remaining.append(leftover)
+        delivered += 1
+        changed = True
+    entry["craft_pending"] = remaining
+    if changed:
+        mark_scores_dirty()
+    return delivered
+
+
+async def tick_craft_jobs(now=None):
+    now = now if now is not None else time.time()
+    completed = 0
+    for entry in list(SCORES.values()):
+        if not isinstance(entry, dict):
+            continue
+        jobs = entry.get("craft_jobs")
+        if not isinstance(jobs, list) or not jobs:
+            continue
+        due = [job for job in jobs if isinstance(job, dict) and now >= _craft_deadline(job)]
+        if not due:
+            continue
+        due_ids = {id(job) for job in due}
+        entry["craft_jobs"] = [job for job in jobs if id(job) not in due_ids]
+        for job in due:
+            if await _finish_craft_job(entry, job, now):
+                completed += 1
+        mark_scores_dirty()
+    return completed
+
+
+async def _cmd_craft_start(player, msg):
+    rid, recipe = find_recipe(msg.get("recipe", ""))
+    if not recipe:
+        await send(player, {"type": "error", "text": "No such recipe."})
+        return
+    entry = get_score_entry(player.name)
+    jobs = entry.get("craft_jobs")
+    if not isinstance(jobs, list):
+        jobs = []
+        entry["craft_jobs"] = jobs
+    if len(jobs) >= CRAFT_JOB_MAX:
+        await send(player, {"type": "error", "text": f"You already have {CRAFT_JOB_MAX} craft jobs running."})
+        return
+    missing = _craft_missing_input(player, recipe["inputs"])
+    if missing:
+        iid, qty = missing
+        await send(player, {"type": "error", "text": f"You need {qty}x {_iname(iid)} to craft that."})
+        return
+    _take_craft_inputs(player, recipe["inputs"])
+    seq = int(entry.get("craft_job_seq", 0) or 0)
+    for job in jobs:
+        try:
+            seq = max(seq, int(job.get("id", 0)))
+        except (TypeError, ValueError):
+            pass
+    seq += 1
+    ticks_total = _craft_ticks(recipe)
+    output_qty = _craft_output_qty(recipe)
+    job = {
+        "id": seq,
+        "recipe": rid,
+        "result": recipe["result"],
+        "output_qty": output_qty,
+        "ticks_total": ticks_total,
+        "started_at": time.time(),
+        "inputs": dict(recipe["inputs"]),
+        "tier": recipe.get("tier", 0),
+    }
+    jobs.append(job)
+    entry["craft_job_seq"] = seq
+    mark_scores_dirty()
+    output_text = _craft_output_text(recipe["result"], output_qty)
+    await send(player, {"type": "message", "text": f"Craft job #{seq} started: {output_text} in "
+          f"{ticks_total * NPC_TICK_SECONDS}s."})
+    await send(player, stats_view(player))
+
+
+async def _cmd_craft_status(player):
+    entry = get_score_entry(player.name)
+    now = time.time()
+    jobs = entry.get("craft_jobs")
+    pending = entry.get("craft_pending")
+    await send(player, {
+        "type": "craft_jobs",
+        "max_jobs": CRAFT_JOB_MAX,
+        "jobs": [_craft_job_view(job, now) for job in jobs if isinstance(job, dict)]
+        if isinstance(jobs, list) else [],
+        "pending": [
+            {
+                "id": item.get("id"),
+                "recipe": item.get("recipe"),
+                "result": _iname(item.get("result")),
+                "qty": item.get("qty", 1),
+                "notified": bool(item.get("notified")),
+                "kind": item.get("kind") or "output",
+            }
+            for item in pending if isinstance(item, dict)
+        ] if isinstance(pending, list) else [],
+    })
+
+
+async def _cmd_craft_collect(player):
+    entry = get_score_entry(player.name)
+    pending = entry.get("craft_pending")
+    if not isinstance(pending, list) or not pending:
+        await send(player, {"type": "message", "text": "No finished craft jobs are waiting."})
+        return
+    if _pack_full(player):
+        await send(player, {"type": "error", "text": _pack_full_error()})
+        return
+    delivered = await _deliver_craft_pending(player, entry)
+    if delivered:
+        await send(player, stats_view(player))
+    else:
+        await send(player, {"type": "error", "text": _pack_full_error()})
+
+
+async def _cmd_craft_cancel(player, msg):
+    raw_id = msg.get("id", msg.get("job_id"))
+    try:
+        job_id = int(raw_id)
+    except (TypeError, ValueError):
+        await send(player, {"type": "error", "text": "craft cancel requires a job id."})
+        return
+    entry = get_score_entry(player.name)
+    jobs = entry.get("craft_jobs")
+    if not isinstance(jobs, list):
+        jobs = []
+        entry["craft_jobs"] = jobs
+    job = next((j for j in jobs if isinstance(j, dict) and j.get("id") == job_id), None)
+    if job is None:
+        await send(player, {"type": "error", "text": f"No running craft job #{job_id}."})
+        return
+    now = time.time()
+    if now >= _craft_deadline(job):
+        jobs[:] = [j for j in jobs if j is not job]
+        await _finish_craft_job(entry, job, now)
+        mark_scores_dirty()
+        await send(player, {"type": "message", "text": f"Craft job #{job_id} had already finished and cannot be cancelled."})
+        await send(player, stats_view(player))
+        return
+    total = max(1, int(job.get("ticks_total", CRAFT_JOB_DEFAULT_TICKS)))
+    ticks_left = _craft_ticks_left(job, now)
+    refunds = []
+    held = []
+    for iid, qty in (job.get("inputs") or {}).items():
+        try:
+            qty = int(qty)
+        except (TypeError, ValueError):
+            continue
+        refund = (qty * ticks_left) // total
+        if not refund:
+            continue
+        room = _inventory_room(player)
+        taken = min(refund, room)
+        if taken:
+            player.inventory.extend([iid] * taken)
+            refunds.append(f"{taken}x {_iname(iid)}")
+        remainder = refund - taken
+        if remainder:
+            _queue_craft_pending(
+                entry, job_id, job.get("recipe"), iid, remainder, now, "refund", True,
+            )
+            held.append(f"{remainder}x {_iname(iid)}")
+    jobs[:] = [j for j in jobs if j is not job]
+    mark_scores_dirty()
+    if refunds and held:
+        text = (f"Craft job #{job_id} cancelled. Refunded " + ", ".join(refunds) +
+                "; pack full, " + ", ".join(held) + " held for craft collect.")
+    elif refunds:
+        text = f"Craft job #{job_id} cancelled. Refunded " + ", ".join(refunds) + "."
+    elif held:
+        text = (f"Craft job #{job_id} cancelled. Your pack is full; " +
+                ", ".join(held) + " held for craft collect.")
+    else:
+        text = f"Craft job #{job_id} cancelled. No materials were refunded."
+    await send(player, {"type": "message", "text": text})
+    await send(player, stats_view(player))
+
+
+async def cmd_craft(player, msg):
+    action = str(msg.get("action") or "").strip().lower()
+    if action == "start":
+        await _cmd_craft_start(player, msg)
+        return
+    if action == "status":
+        await _cmd_craft_status(player)
+        return
+    if action == "collect":
+        await _cmd_craft_collect(player)
+        return
+    if action == "cancel":
+        await _cmd_craft_cancel(player, msg)
+        return
+    if action:
+        await send(player, {"type": "error", "text": f"Unknown craft action '{action}'. "
+              "Use start, status, collect, or cancel."})
+        return
+    rid, recipe = find_recipe(msg.get("recipe", ""))
+    if not recipe:
+        await send(player, {"type": "error", "text": "No such recipe."})
+        return
+    missing = _craft_missing_input(player, recipe["inputs"])
+    if missing:
+        iid, qty = missing
+        await send(player, {"type": "error", "text": f"You need {qty}x {_iname(iid)} to craft that."})
+        return
+    _take_craft_inputs(player, recipe["inputs"])
+    result = recipe["result"]
+    output_qty = _craft_output_qty(recipe)
+    player.inventory.extend([result] * output_qty)
+    output_text = _craft_output_text(result, output_qty)
+    await send(player, {"type": "message", "text": f"You craft {output_text}!"})
+    entry = get_score_entry(player.name)
+    await _record_craft_completion(
+        player.name, rid, result, recipe["inputs"], recipe.get("tier", 0),
+        output_qty, entry,
+    )
+    await _craft_quest_hint(entry, result, player)
     await send(player, stats_view(player))
 
 
@@ -3041,6 +3408,7 @@ async def cmd_inventory(player, msg):
 
 
 async def cmd_stats(player, msg):
+    await _deliver_craft_pending(player)
     await send(player, stats_view(player))
 
 
@@ -3059,7 +3427,8 @@ async def cmd_leaderboard(player, msg):
 
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
-        "Commands: login look move attack take gather drop equip use rest heal buy sell craft "
+        "Commands: login look move attack take gather drop equip use rest heal buy sell "
+        "craft [start|status|collect|cancel] "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
         "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest"
@@ -3102,6 +3471,8 @@ quest_feed_seq = 0
 CRAFT_FEED_SIZE = 50
 craft_feed = []
 craft_feed_seq = 0
+CRAFT_JOB_MAX = 3
+CRAFT_JOB_DEFAULT_TICKS = 5
 COMM_FEED_SIZE = 100
 comm_feed = []
 comm_feed_seq = 0
@@ -5405,6 +5776,7 @@ async def npc_ai_loop():
         tick_standing_bounties(now)
         await prune_market_orders(now)
         prune_invites(now)
+        await tick_craft_jobs(now)
         for node in list(gather_nodes.values()):
             if not node["available"] and node["respawn_at"] and now >= node["respawn_at"]:
                 node["available"] = True
