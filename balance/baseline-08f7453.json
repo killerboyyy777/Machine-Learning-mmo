@@ -1,0 +1,182 @@
+{
+  "derived": {
+    "commissions": {
+      "cancelled": 0,
+      "completed": 0,
+      "history": 1,
+      "open": 5
+    },
+    "craft": {
+      "history": 0
+    },
+    "dungeons": {
+      "group_clears": 0,
+      "group_max_floor": 0,
+      "solo_clears": 66,
+      "solo_max_floor": 2
+    },
+    "economy_tables": {
+      "commissions_open": 5,
+      "commissions_terminal": 0,
+      "dungeon_gold_keys": 0,
+      "market_orders": 0,
+      "pending_invites": 0,
+      "players_online": 0,
+      "treasury": 700.0,
+      "treasury_lifetime": 35.0
+    },
+    "market": {
+      "collected_lifetime": 35.0,
+      "open_orders": 0,
+      "reserve": 500.0,
+      "sunk_lifetime": 35.0,
+      "tax_effective_pct": 22.22,
+      "tax_min": 1,
+      "tax_rate": 0.1,
+      "trade_count": 33,
+      "treasury": 700.0
+    },
+    "players": {
+      "banked_gold_max": 184,
+      "banked_gold_mean": 20.65,
+      "banked_gold_median": 5.5,
+      "banked_gold_total": 413,
+      "count": 20,
+      "deaths": 917,
+      "dungeon_floors_cleared": 66,
+      "kills": 1080,
+      "levels": {
+        "1": 14,
+        "2": 6
+      },
+      "rooms_visited_mean": 31.5,
+      "source": "scores.json (persisted at disconnect; carried gold not persisted)",
+      "tax_paid": 34.0,
+      "trades_completed": 33
+    },
+    "quests": {
+      "active": 4,
+      "completions": 4,
+      "turnins_last_min": 0
+    },
+    "rooms": {
+      "count": 43
+    },
+    "scores": {
+      "count": 20,
+      "max": 109.65,
+      "mean": 32.1
+    },
+    "server": {
+      "players_online": 0,
+      "uptime_s": 3634
+    },
+    "soak": {
+      "agents": 20,
+      "alive": 20,
+      "by_type": {
+        "linear": {
+          "alive": 10,
+          "episodes": 364,
+          "mean_reward": -0.0855
+        },
+        "scripted": {
+          "alive": 10,
+          "episodes": 507,
+          "mean_reward": -0.1607
+        }
+      },
+      "episodes": 871,
+      "mean_reward": -0.1293,
+      "server_log_errors": {
+        "handler_errors": 0,
+        "tracebacks": 0
+      }
+    }
+  },
+  "economy_tables_raw": {
+    "commissions_open": 5,
+    "commissions_terminal": 0,
+    "dungeon_gold_keys": 0,
+    "market_orders": 0,
+    "pending_invites": 0,
+    "players_online": 0,
+    "treasury": 700.0,
+    "treasury_lifetime": 35.0,
+    "type": "tables"
+  },
+  "meta": {
+    "agents": 20,
+    "capture": {
+      "note": "Live /api/state had 0 players at capture; per-agent stats are the server's persisted records (last_seen at run end).",
+      "player_stats_source": "scores.json",
+      "state_sampled": "after agents disconnected"
+    },
+    "caveats": [
+      "TEXTMMO_GM_SEED seeds only the treasury, not world RNG; conductor --seed 700 seeds agent RNG.",
+      "soak.log's periodic 'Timeout (0:30:00)' stack dumps are faulthandler watchdogs.",
+      "Market orders expired via the soak overlay's 300s TTL; commissions keep 600s TTL.",
+      "Open orders read 0 at capture: the soak overlay expires orders after 300s and logout clears a player's orders."
+    ],
+    "command": "TEXTMMO_GM_SEED=700 python -u server.py --port 18770 --http-port 18771 --gm-port 18772 --config ml/conductor/soak_server_config.json ; python -u ml/conductor/soak.py --agents 20 --duration 3600 --url ws://127.0.0.1:18770 --gm-url ws://127.0.0.1:18772 --seed 700 --min-agents 16 --status-every 300 --server-log C:\\Users\\Jona\\AppData\\Local\\Temp\\opencode\\balance-08f7453\\server.log --base-dir C:\\Users\\Jona\\AppData\\Local\\Temp\\opencode\\balance-08f7453\\soak_run --reset all --no-resume --slot linear --slot linear --slot gather --slot dungeon --slot market --slot commissioner",
+    "duration_s": 3600.0,
+    "finished_at_utc": "2026-10-22T10:58:42Z",
+    "fresh_economy": true,
+    "master_sha": "08f7453",
+    "name": "v0.10.0 economy baseline",
+    "note": "Captured locally on Python 3.14; CI/release target is 3.12.",
+    "ports": {
+      "dashboard": 18771,
+      "game": 18770,
+      "gm": 18772
+    },
+    "python": "3.14.2",
+    "seed": 700,
+    "seed_money": {
+      "env": "TEXTMMO_GM_SEED",
+      "note": "Seeds the treasury at startup (CHANGELOG); README fresh-world recipe.",
+      "treasury_start": 700.0,
+      "value": 700
+    },
+    "server_config": [
+      "server_config.json",
+      "ml/conductor/soak_server_config.json"
+    ],
+    "slots": [
+      "linear",
+      "linear",
+      "gather",
+      "dungeon",
+      "market",
+      "commissioner"
+    ],
+    "started_at_utc": "2026-10-22T09:58:33Z"
+  },
+  "soak_report": {
+    "agents": 20,
+    "alive": 20,
+    "by_type": {
+      "linear": {
+        "alive": 10,
+        "episodes": 364,
+        "mean_reward": -0.0855
+      },
+      "scripted": {
+        "alive": 10,
+        "episodes": 507,
+        "mean_reward": -0.1607
+      }
+    },
+    "duration": 3600.0,
+    "episodes": 871,
+    "run_id": "20261022-115837",
+    "seed": 700,
+    "server_log_errors": {
+      "handler_errors": 0,
+      "tracebacks": 0
+    },
+    "session_id": "20261022-115837-76db23",
+    "supervisor_running": 0,
+    "ts": 1792666722.4834442
+  }
+}
