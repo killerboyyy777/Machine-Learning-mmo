@@ -12,6 +12,7 @@ env/
 # The wildcard covers rotated backups (scores.json.1, .2, ...) too --
 # one careless git add -A must never commit world state.
 scores.json*
+companions.json*
 
 # ML / Torch training checkpoints (local training progress, never commit)
 ml/ml_weights.json
