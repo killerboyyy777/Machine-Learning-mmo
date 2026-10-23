@@ -1107,6 +1107,118 @@ async def main():
     drop_job_entry("RaceJobber", race_jobber)
     print("CRAFT_JOB_PENDING_RACE_OK")
 
+    # --- Companion core (#531): grant, summon/follow, assist, downed/revive ---
+    comp_owner = mkplayer("CompOwner", 60300, room="town_square")
+    comp_owner.gold = 100
+    gm_player = mkplayer("GMCompanion", 60399, room="town_square")
+    await srv.cmd_gm_companion_grant(
+        gm_player, {"player": "CompOwner", "species": "wolf", "name": "Fang"}
+    )
+    rec = srv._companion_active("CompOwner")
+    assert rec is not None and rec["species"] == "wolf" and rec["name"] == "Fang"
+    assert rec["hp"] == srv.COMPANIONS["wolf"]["base_hp"]
+    assert srv._companion_max_hp(rec) == srv.COMPANIONS["wolf"]["base_hp"]
+    await srv.cmd_gm_companion_grant(gm_player, {"player": "CompOwner", "species": "mule"})
+    assert inbox[-1]["type"] == "error" and "already has a companion" in inbox[-1]["text"]
+
+    await srv.cmd_companion(comp_owner, {"action": "status"})
+    assert inbox[-1]["type"] == "companion" and inbox[-1]["has_companion"]
+    assert inbox[-1]["summoned"] is False
+    await srv.cmd_companion(comp_owner, {"action": "summon"})
+    assert "compowner" in srv.COMPANION_SUMMONED
+    await srv.cmd_companion(comp_owner, {"action": "status"})
+    assert inbox[-1]["summoned"] is True and inbox[-1]["room"] == "town_square"
+
+    # Follow is room-derived: a summoned companion is always where the owner is.
+    await srv.cmd_move(comp_owner, {"dir": "east"})
+    assert comp_owner.room == "old_shop"
+    await srv.cmd_companion(comp_owner, {"action": "status"})
+    assert inbox[-1]["room"] == "old_shop"
+    await srv.cmd_move(comp_owner, {"dir": "west"})
+    assert comp_owner.room == "town_square"
+
+    srv.npcs["comp_dummy"] = {
+        "id": "comp_dummy", "name": "Companion Dummy", "room": "town_square",
+        "hp": 100, "max_hp": 100, "attack": 0, "hostile": True, "behavior": "idle",
+        "loot": [], "gold": 0, "respawn_seconds": 60,
+        "alive": True, "respawn_at": None, "contributors": {},
+    }
+    await srv.cmd_attack(comp_owner, {"target": "companion dummy"})
+    hp_after_owner = srv.npcs["comp_dummy"]["hp"]
+    assert srv.npcs["comp_dummy"]["contributors"].get("CompOwner", 0) > 0
+    await srv.tick_companions(time.time())
+    assert srv.npcs["comp_dummy"]["hp"] < hp_after_owner
+    assert srv.npcs["comp_dummy"]["contributors"]["CompOwner"] > 0
+
+    # Companion targeting is NPC-only: a player bystander never loses HP.
+    bystander = mkplayer("CompBystander", 60301, room="town_square")
+    del srv.npcs["comp_dummy"]
+    bystander_hp = bystander.hp
+    await srv.tick_companions(time.time())
+    assert bystander.hp == bystander_hp
+
+    down_at = time.time()
+    await srv._damage_companion(comp_owner, rec, 999, "Test Brute", down_at)
+    assert rec["hp"] == 0
+    assert rec["downed_until"] >= down_at + srv.COMPANION_DOWNED_SECONDS - 1
+    await srv.cmd_companion(comp_owner, {"action": "status"})
+    assert inbox[-1]["downed"] is True
+    assert inbox[-1]["revive_cost"] == 50
+
+    rec["downed_until"] = time.time() + 61
+    comp_owner.gold = 100
+    srv.tax_treasury = 0.0
+    srv.tax_collected_lifetime = 0.0
+    srv.tax_sunk_lifetime = 0.0
+    await srv.cmd_companion(comp_owner, {"action": "revive"})
+    assert comp_owner.gold == 80, comp_owner.gold
+    assert srv.tax_treasury == 20.0 and srv.tax_collected_lifetime == 20.0
+    assert rec["hp"] == 7 and rec["downed_until"] == 0
+    assert "compowner" in srv.COMPANION_SUMMONED
+
+    await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
+    rec["downed_until"] = time.time() - 1
+    await srv.tick_companions(time.time())
+    assert rec["hp"] == 7 and rec["downed_until"] == 0
+
+    await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
+    await srv.respawn_player(comp_owner)
+    assert rec["hp"] == 7 and rec["downed_until"] == 0
+
+    with tempfile.TemporaryDirectory() as td:
+        comp_path = os.path.join(td, "companions.json")
+
+        def read_companion_file():
+            with open(comp_path) as fh:
+                return json.load(fh)
+
+        def write_companion_file(payload):
+            with open(comp_path, "w") as fh:
+                json.dump(payload, fh)
+
+        rec["hp"] = 0
+        rec["downed_until"] = time.time() + 120
+        assert srv.save_companions(comp_path)
+        raw = await asyncio.to_thread(read_companion_file)
+        assert raw["version"] == 1
+        loaded = srv.load_companions(comp_path)
+        loaded_rec = loaded["compowner"]["companions"][0]
+        assert loaded_rec["hp"] == 0
+        assert loaded_rec["downed_until"] == rec["downed_until"]
+        await asyncio.to_thread(write_companion_file, {"version": 2, "players": {}})
+        assert srv.load_companions(comp_path) == {}
+        await asyncio.to_thread(write_companion_file, {"version": 1, "players": {"ghost": {
+            "companions": [{"species": "dragon"}]}}})
+        assert srv.load_companions(comp_path) == {}
+
+    srv.COMPANION_PLAYERS.pop("compowner", None)
+    srv.COMPANION_SUMMONED.discard("compowner")
+    srv.COMPANION_TARGETS.pop("compowner", None)
+    drop_job_entry("CompOwner", comp_owner)
+    drop_job_entry("CompBystander", bystander)
+    drop_job_entry("GMCompanion", gm_player)
+    print("COMPANION_CORE_OK")
+
     # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
     griefer = mkplayer("Griefer", 60001, room="town_square")
     guard_hp0 = srv.npcs["guard"]["hp"]
