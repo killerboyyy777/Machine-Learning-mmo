@@ -39,6 +39,16 @@ COMPANION_DOWNED_SECONDS = 300
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
+# Companion progression (#533): the companion earns a share of the owner's XP
+# award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
+COMPANION_XP_SHARE = 0.25
+COMPANION_LEVEL_CAP = 10
+# Companion passives (#533): wolf pack_fervor, mule carry_beast, sheep gentle_blessing.
+COMPANION_WOLF_ATTACK_MULT = 1.10
+COMPANION_WOLF_XP_MULT = 1.10
+COMPANION_MULE_CARRY_BONUS = 2
+COMPANION_MULE_GATHER_YIELD_BONUS = 1
+COMPANION_SHEPHERD_HEAL_MULT = 1.20
 HOST = "0.0.0.0"
 PORT = 8765
 # GM stream bind: loopback-only by default (no auth -- see SECURITY.md).
@@ -1341,6 +1351,12 @@ async def award_xp(name, amount, reason):
                 "xp_to_next": entry["xp_to_next"],
                 "reason": reason,
             })
+    # Companion progression (#533): a summoned companion earns a share of the
+    # owner's award through the same closed-form curve, capped at COMPANION_LEVEL_CAP.
+    for p in players_by_name.get(name.lower(), ()):
+        if p.logged_in:
+            _companion_award_xp(p, amount, reason)
+            break
     return leveled
 
 
@@ -1414,15 +1430,23 @@ def _unequipped_inventory(player):
 
 
 def _pack_full(player):
-    return _inventory_units(player) >= INVENTORY_CAP
+    return _inventory_units(player) >= _inventory_cap(player)
 
 
 def _inventory_room(player):
-    return max(0, INVENTORY_CAP - _inventory_units(player))
+    return max(0, _inventory_cap(player) - _inventory_units(player))
 
 
-def _pack_full_error():
-    return f"Your pack is full ({INVENTORY_CAP} units). Drop something first."
+def _pack_full_error(player=None):
+    return f"Your pack is full ({_inventory_cap(player)} units). Drop something first."
+
+
+def _inventory_cap(player):
+    """Pack capacity with the active companion's mule bonus (#533)."""
+    cap = INVENTORY_CAP
+    if _companion_species(player) == "mule":
+        cap += COMPANION_MULE_CARRY_BONUS
+    return cap
 
 
 def _player_defense(player):
@@ -1661,6 +1685,78 @@ def _companion_heal(rec, fraction):
     mark_companions_dirty()
 
 
+def _companion_award_xp(owner, amount, reason=None):
+    """Companion earns COMPANION_XP_SHARE of the owner's award (#533).
+
+    Runs the player's closed-form level curve against the companion's own xp,
+    capped at COMPANION_LEVEL_CAP, then applies the per-level stat bump. No
+    extra grind economy: the share is a fraction of an award that already
+    happened, not a new source of progress.
+    """
+    if not owner or amount is None or amount <= 0:
+        return []
+    rec = _companion_active(owner.name)
+    if rec is None:
+        return []
+    share = float(amount) * COMPANION_XP_SHARE * _companion_xp_mult(rec)
+    if share <= 0:
+        return []
+    xp = float(rec.get("xp") or 0)
+    level = int(rec.get("level") or 1)
+    xp += share  # Add earned share to the pool before level-up checks
+    needed = xp_to_next(level)
+    leveled = []
+    while level < COMPANION_LEVEL_CAP and xp >= needed:
+        xp -= needed
+        level += 1
+        needed = xp_to_next(level)
+        leveled.append(level)
+    # Save XP even if no level-up occurred
+    rec["xp"] = xp
+    if leveled:
+        rec["level"] = level
+        mark_companions_dirty()
+        vlog(f"{owner.name}'s companion reached level {level} ({reason or 'xp'})")
+    else:
+        mark_companions_dirty()
+    return leveled
+
+
+def _companion_attack_mult(rec):
+    """Wolf pack_fervor: the pack hits harder while the wolf is engaged (#533)."""
+    species = str(rec.get("species") or "")
+    passive = COMPANIONS.get(species, {}).get("passive")
+    if passive == "pack_fervor":
+        return COMPANION_WOLF_ATTACK_MULT
+    return 1.0
+
+
+def _companion_xp_mult(rec):
+    """Wolf pack_fervor: companion earns a harder combat XP curve share (#533)."""
+    species = str(rec.get("species") or "")
+    passive = COMPANIONS.get(species, {}).get("passive")
+    if passive == "pack_fervor":
+        return COMPANION_WOLF_XP_MULT
+    return 1.0
+
+
+def _companion_species(player):
+    """Active companion species for a player, or None when none is summoned (#533)."""
+    if not player or not player.name:
+        return None
+    rec = _companion_active(player.name)
+    if rec is None:
+        return None
+    return str(rec.get("species") or "")
+
+
+def _companion_heal_mult(player):
+    """Sheep gentle_blessing: heal and buff effect lasts 20% longer (#533)."""
+    if _companion_species(player) == "sheep":
+        return COMPANION_SHEPHERD_HEAL_MULT
+    return 1.0
+
+
 def _summoned_companion(name):
     key = str(name or "").lower()
     if key not in COMPANION_SUMMONED:
@@ -1756,7 +1852,7 @@ async def _companion_attack_npc(owner, rec, npc):
     max_dmg = max(0, int(npc.get("hp", 0)) - 1)
     if max_dmg <= 0:
         return
-    dmg = min(max_dmg, random.randint(1, _companion_attack_power(rec)))
+    dmg = min(max_dmg, random.randint(1, int(_companion_attack_power(rec) * _companion_attack_mult(rec))))
     npc["hp"] -= dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
     if npc["hp"] <= 1:
@@ -2102,7 +2198,7 @@ def stats_view(player):
         "attack": player.attack,
         "gold": player.gold,
         "pack": _inventory_units(player),
-        "pack_max": INVENTORY_CAP,
+        "pack_max": _inventory_cap(player),
         "equipped": _iname(player.equipped) if player.equipped else None,
         "armor": _iname(player.armor) if player.armor else None,
         "offhand": _iname(player.offhand) if player.offhand else None,
@@ -2932,7 +3028,7 @@ async def cmd_gather(player, msg):
     quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
     # Multi-yield must not overflow the pack (#232): truncate to the
     # remaining space (a full pack already refused above, so >= 1 fits).
-    quantity = min(quantity, INVENTORY_CAP - _inventory_units(player))
+    quantity = min(quantity, _inventory_cap(player) - _inventory_units(player))
     player.inventory.extend([node["item"]] * quantity)
     item_name = _iname(node["item"])
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
@@ -2976,7 +3072,7 @@ async def cmd_use(player, msg):
         category = effect["category"]
         player.active_buffs[category] = {
             "amount": int(effect.get("amount", 0)),
-            "remaining": int(effect.get("duration_actions", 1)),
+            "remaining": int(effect.get("duration_actions", 1)) * _companion_heal_mult(player),
         }
         await send(player, {
             "type": "message",
@@ -2985,7 +3081,7 @@ async def cmd_use(player, msg):
         })
         await send(player, stats_view(player))
         return
-    heal = definition.get("heal_amount", 0)
+    heal = float(definition.get("heal_amount", 0)) * _companion_heal_mult(player)
     before = player.hp
     player.hp = min(player.max_hp, player.hp + heal)
     await send(player, {"type": "message", "text": f"You use {_iname(iid)} and recover {player.hp - before} HP."})

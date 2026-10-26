@@ -1254,6 +1254,10 @@ async def main():
             "companions": [{"species": "dragon"}]}}})
         assert srv.load_companions(comp_path) == {}
 
+    # Clean up original companion core players
+    drop_job_entry("CompOwner", comp_owner)
+    drop_job_entry("CompBystander", bystander)
+    drop_job_entry("GMCompanion", gm_player)
     srv.COMPANION_PLAYERS.pop("compowner", None)
     srv.COMPANION_SUMMONED.discard("compowner")
     srv.COMPANION_TARGETS.pop("compowner", None)
@@ -1311,9 +1315,56 @@ async def main():
         assert srv._companion_store("BoundNobody") is None
     finally:
         srv.COMPANION_PLAYERS = saved_players
-    drop_job_entry("CompOwner", comp_owner)
-    drop_job_entry("CompBystander", bystander)
-    drop_job_entry("GMCompanion", gm_player)
+    # --- Companion progression (#533): XP share, passives, level cap ---
+    for n in ["xpowner", "wolfowner", "muleowner", "sheepowner", "capowner"]:
+        srv.COMPANION_PLAYERS.pop(n, None)
+    # XP share: companion earns 25% of owner's award_xp using same curve.
+    srv.COMPANION_PLAYERS.pop("xpowner", None)
+    xp_owner = mkplayer("XpOwner", 70000, room="town_square")
+    xp_owner.inventory.append("mule_deed")
+    await srv.cmd_companion(xp_owner, {"action": "adopt", "species": "mule"})
+    assert inbox[-1]["type"] == "message" and "adopted" in inbox[-1]["text"], f"Adopt failed: {inbox[-1]}"
+    rec_xp = srv._companion_active("XpOwner")
+    assert rec_xp is not None, "Companion should be active after adopt"
+    before_xp = rec_xp.get("xp", 0)
+    await srv.award_xp("XpOwner", 100, "test")
+    rec_xp = srv._companion_active("XpOwner")
+    assert rec_xp["xp"] == before_xp + 25, f"Companion should earn 25% of owner's XP: got {rec_xp['xp']} expected {before_xp + 25}"
+    # Wolf passive: +10% attack and combat XP.
+    wolf_owner = mkplayer("WolfOwner", 70001, room="forest_edge")
+    wolf_owner.inventory.append("wolf_pup")
+    await srv.cmd_companion(wolf_owner, {"action": "adopt", "species": "wolf"})
+    rec_wolf = srv._companion_active("WolfOwner")
+    assert srv.COMPANIONS.get(rec_wolf["species"], {}).get("passive") == "pack_fervor"
+    assert srv._companion_attack_mult(rec_wolf) == srv.COMPANION_WOLF_ATTACK_MULT
+    assert srv._companion_xp_mult(rec_wolf) == srv.COMPANION_WOLF_XP_MULT
+    # Mule passive: +2 carry capacity, +1 gather yield.
+    mule_owner = mkplayer("MuleOwner", 70002, room="town_square")
+    mule_owner.inventory.append("mule_deed")
+    await srv.cmd_companion(mule_owner, {"action": "adopt", "species": "mule"})
+    assert srv._companion_species(mule_owner) == "mule"
+    # Fill pack to 24 (base cap) - should NOT be full due to +2 bonus (26 cap)
+    for _ in range(24): mule_owner.inventory.append("iron_ore")
+    assert not srv._pack_full(mule_owner), "Mule carry bonus should prevent pack full"
+    # Sheep passive: +20% heal/buff duration.
+    sheep_owner = mkplayer("SheepOwner", 70003, room="town_square")
+    sheep_owner.inventory.append("sheep_deed")
+    await srv.cmd_companion(sheep_owner, {"action": "adopt", "species": "sheep"})
+    assert srv._companion_heal_mult(sheep_owner) == srv.COMPANION_SHEPHERD_HEAL_MULT
+    # Level cap: companion cannot exceed COMPANION_LEVEL_CAP
+    cap_owner = mkplayer("CapOwner", 70004, room="town_square")
+    cap_owner.inventory.append("wolf_pup")
+    await srv.cmd_companion(cap_owner, {"action": "adopt", "species": "wolf"})
+    rec_cap = srv._companion_active("CapOwner")
+    rec_cap["level"] = srv.COMPANION_LEVEL_CAP
+    rec_cap["xp"] = 999999
+    srv._companion_award_xp(cap_owner, 100, "cap_test")
+    assert rec_cap["level"] == srv.COMPANION_LEVEL_CAP, "Level should not exceed cap"
+    # Cleanup
+    for n, pl in [("xpowner", xp_owner), ("wolfowner", wolf_owner), ("muleowner", mule_owner), ("sheepowner", sheep_owner), ("capowner", cap_owner)]:
+        if pl:
+            drop_job_entry(n, pl)
+            srv.COMPANION_PLAYERS.pop(n, None)
     print("COMPANION_CORE_OK")
 
     # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
