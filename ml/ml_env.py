@@ -250,7 +250,7 @@ _COMMISSION_RE = re.compile(
 
 
 def _parse_commissions(text):
-    """Best-effort parse of a commission_list message; [] when unparseable."""
+    """Best-effort parse of a commission_list message; [] when unparsable."""
     out = []
     for m in _COMMISSION_RE.finditer(text or ""):
         cid, kills, target, gold, xp, rate, poster = m.groups()
