@@ -1254,6 +1254,10 @@ async def main():
             "companions": [{"species": "dragon"}]}}})
         assert srv.load_companions(comp_path) == {}
 
+    # Clean up original companion core players
+    drop_job_entry("CompOwner", comp_owner)
+    drop_job_entry("CompBystander", bystander)
+    drop_job_entry("GMCompanion", gm_player)
     srv.COMPANION_PLAYERS.pop("compowner", None)
     srv.COMPANION_SUMMONED.discard("compowner")
     srv.COMPANION_TARGETS.pop("compowner", None)
