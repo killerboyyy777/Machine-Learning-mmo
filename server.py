@@ -3884,7 +3884,7 @@ async def cmd_companion(player, msg):
                 return
             player.inventory.remove("sheep_deed")
         else:
-            await send(player, {"type": "error", "text": f"Cannot adopt that companion species."})
+            await send(player, {"type": "error", "text": "Cannot adopt that companion species."})
             return
         store = _companion_store(player.name, create=True)
         if store is None:
