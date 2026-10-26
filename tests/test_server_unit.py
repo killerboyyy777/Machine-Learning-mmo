@@ -3606,7 +3606,7 @@ async def main():
     srv.SCORES.pop("xpclamp", None)
     print("XP_CLAMP_OK")
 
-    # GM loopback gate: non-loopback and unparseable peers are refused
+    # GM loopback gate: non-loopback and unparsable peers are refused
     # before any task exists; the dead "localhost" entry no longer passes
     class _GMWS:
         def __init__(self, peer):

@@ -73,6 +73,7 @@ async def _run(args, token):
 
 
 def main(argv=None):
+    """Parse CLI arguments and run the stdio MCP bridge over the game character."""
     parser = _parser()
     args = parser.parse_args(argv)
     if not args.name.strip():
