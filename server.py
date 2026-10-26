@@ -4874,10 +4874,6 @@ async def cmd_gm_reward(player, msg):
     await send(player, {"type": "error", "text": "gm_reward needs 'gold' or 'item'."})
 
 
-def ITHERE_ITEM_NAMES_MSG(iid):
-    return ITEM_DEFS.get(iid, {}).get("name", iid)
-
-
 async def cmd_gm_buff(player, msg):
     kind = str(msg.get("type", "")).lower()
     if kind not in ("xp", "gold"):
