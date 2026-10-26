@@ -1292,6 +1292,9 @@ async def main():
     await srv.cmd_companion(comp2, {"action": "adopt", "species": "dragon"})
     assert inbox[-1]["type"] == "error" and "Unknown companion species" in inbox[-1]["text"]
     # Clean up
+    drop_job_entry("CompAdopter", comp2)
+    drop_job_entry("CompMuleOwner", comp3)
+    drop_job_entry("CompSheepOwner", comp4)
     srv.COMPANION_PLAYERS.pop("compadopter", None)
     srv.COMPANION_PLAYERS.pop("compmuleowner", None)
     srv.COMPANION_PLAYERS.pop("compsheepowner", None)
