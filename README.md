@@ -53,6 +53,27 @@ output and refunds fill the pack up to the carry cap, and any remainder waits in
 `craft_pending` and is delivered on login, look, or stats (or by `collect`).
 Jobs live in `scores.json`, so they resume after a restart.
 
+### Companions
+
+`companion <action>` drives the single companion a player can own (#531):
+
+```json
+{"cmd": "companion", "action": "summon"}
+{"cmd": "companion", "action": "status"}
+{"cmd": "companion", "action": "dismiss"}
+{"cmd": "companion", "action": "revive"}
+```
+
+A summoned companion follows its owner between rooms. It assists only fights the
+owner started: an `attack` arms it against that NPC, and so does a hit on the
+owner or the companion, for five seconds. It never pulls an idle mob. Assist
+damage is credited to the owner and stops at 1 HP, so the killing blow (and its
+loot and quest credit) stays with the player. Companions take a 25% share of
+hostile NPC attacks. At 0 HP a companion retreats for 5 minutes and then
+returns at 25% HP, or `revive` pays `ceil(remaining/60) * 10` gold into the
+treasury to bring it back immediately. Summoning never takes a party slot.
+Records live in `companions.json` (version 1).
+
 ## Docker (full stack, zero install)
 
 ```bash

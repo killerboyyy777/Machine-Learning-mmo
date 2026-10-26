@@ -3,6 +3,16 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Companions (#531): one levelable companion per player, persisted in
+  `companions.json` (version 1, atomic save, 5000-player bound, list-ready
+  records) and driven by `companion summon|dismiss|status|revive`. A summoned
+  companion follows its owner and assists only owner-initiated fights: an
+  `attack`, or a hit on the owner or the companion, arms it against that NPC for
+  five seconds, and it never pulls an idle mob. Damage is credited to the owner
+  and stops at 1 HP so the player keeps the killing blow; companions take a 25%
+  share of hostile attacks and retreat for 300s when downed. Revive costs
+  `ceil(remaining/60) * 10` gold into the treasury; owner death returns the
+  companion free. No out-of-combat regen in v1.
 - Craft jobs (#501): crafting can now run as an opt-in tick-based queue while
   `craft <recipe>` stays instant for existing clients and the ML env. Jobs
   persist in `scores.json`, cap at three per player, escrow inputs at start,

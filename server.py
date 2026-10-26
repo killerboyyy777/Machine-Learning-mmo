@@ -24,6 +24,7 @@ from os.path import join, dirname, abspath
 
 WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
 SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
+COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
 
 NPC_TICK_SECONDS = 3
 # Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
@@ -32,6 +33,12 @@ NPC_TICK_SECONDS = 3
 # healer) never duplicate. All combat/respawn paths are id-keyed, so extra
 # instances just work; name-targeting hits the first alive match.
 MOB_EXTRA_SPAWNS = 1
+COMPANION_SAVE_SECONDS = 5.0
+COMPANION_MAX_PLAYERS = 5000
+COMPANION_DOWNED_SECONDS = 300
+COMPANION_REVIVE_GOLD_PER_MINUTE = 10
+COMPANION_AGGRO_SHARE = 0.25
+COMPANION_ASSIST_WINDOW_SECONDS = 5.0
 HOST = "0.0.0.0"
 PORT = 8765
 # GM stream bind: loopback-only by default (no auth -- see SECURITY.md).
@@ -370,6 +377,8 @@ npcs = {}
 for nid, tmpl in WORLD["npcs"].items():
     npcs[nid] = {**tmpl, "id": nid, "alive": True, "respawn_at": None, "contributors": {}}
 
+COMPANIONS = WORLD.get("companions", {})
+
 
 def _sync_extra_spawns():
     """Rebuild hostile extra-spawn instances from MOB_EXTRA_SPAWNS.
@@ -460,6 +469,15 @@ def validate_world(data):
     for nid, npc in (data.get("npcs") or {}).items():
         if npc.get("room") not in rooms:
             errors.append(f"npc {nid!r} sits in unknown room {npc.get('room')!r}")
+    for cid, spec in (data.get("companions") or {}).items():
+        if not isinstance(spec, dict):
+            errors.append(f"companion {cid!r} must be an object")
+            continue
+        for key in ("name", "base_hp", "base_attack", "base_defense",
+                    "hp_per_level", "attack_per_level", "defense_per_level",
+                    "passive", "acquisition"):
+            if key not in spec:
+                errors.append(f"companion {cid!r} missing {key!r}")
     for rname, rec in (data.get("recipes") or {}).items():
         rec = rec if isinstance(rec, dict) else {}
         if not _known_item(rec.get("result")):
@@ -888,6 +906,147 @@ async def scores_save_loop():
         prune_score_entries()
         if _scores_dirty and save_scores():
             _scores_dirty = False
+
+
+COMPANION_VERSION = 1
+COMPANION_MAX_PER_PLAYER = 8
+
+
+def _normalize_companion_record(rec):
+    if not isinstance(rec, dict):
+        return None
+    species = str(rec.get("species") or "")
+    spec = COMPANIONS.get(species)
+    if not isinstance(spec, dict):
+        return None
+    try:
+        level = max(1, int(rec.get("level", 1) or 1))
+    except (TypeError, ValueError):
+        level = 1
+    max_hp = int(spec.get("base_hp", 20)) + (level - 1) * int(spec.get("hp_per_level", 0))
+    max_hp = max(1, max_hp)
+    try:
+        hp = int(rec.get("hp", max_hp))
+    except (TypeError, ValueError):
+        hp = max_hp
+    hp = max(0, min(max_hp, hp))
+    try:
+        xp = float(rec.get("xp", 0) or 0)
+    except (TypeError, ValueError):
+        xp = 0.0
+    try:
+        downed_until = float(rec.get("downed_until", 0) or 0)
+    except (TypeError, ValueError):
+        downed_until = 0.0
+    if hp > 0:
+        downed_until = 0.0
+    elif downed_until <= 0:
+        downed_until = time.time() + COMPANION_DOWNED_SECONDS
+    try:
+        acquired_at = float(rec.get("acquired_at", 0) or 0)
+    except (TypeError, ValueError):
+        acquired_at = 0.0
+    name = str(rec.get("name") or spec.get("name") or species).strip()[:40]
+    script = str(rec.get("script") or "")[:2000]
+    return {
+        "species": species,
+        "name": name or species,
+        "level": level,
+        "xp": xp,
+        "hp": hp,
+        "downed_until": downed_until,
+        "script": script,
+        "acquired_at": acquired_at,
+    }
+
+
+COMPANION_FILE_BLOCKED = False
+
+
+def load_companions(path=None):
+    global COMPANION_FILE_BLOCKED
+    path = path or COMPANIONS_FILE
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: could not load {os.path.basename(path)}: {e}")
+        return {}
+    if not isinstance(data, dict) or data.get("version") != COMPANION_VERSION:
+        # Leave an unknown version on disk untouched so a newer server can
+        # still read it after a rollback.
+        if os.path.abspath(path) == os.path.abspath(COMPANIONS_FILE):
+            COMPANION_FILE_BLOCKED = True
+        print(f"Warning: {os.path.basename(path)} version is not {COMPANION_VERSION}; not loaded")
+        return {}
+    raw_players = data.get("players")
+    if not isinstance(raw_players, dict):
+        return {}
+    loaded = {}
+    for key, row in raw_players.items():
+        if len(loaded) >= COMPANION_MAX_PLAYERS:
+            break
+        if not isinstance(row, dict):
+            continue
+        records = []
+        for rec in list(row.get("companions") or [])[:COMPANION_MAX_PER_PLAYER]:
+            norm = _normalize_companion_record(rec)
+            if norm is not None:
+                records.append(norm)
+        if not records:
+            continue
+        try:
+            active = int(row.get("active", 0) or 0)
+        except (TypeError, ValueError):
+            active = 0
+        active = max(0, min(active, len(records) - 1))
+        try:
+            updated_at = float(row.get("updated_at", 0) or 0)
+        except (TypeError, ValueError):
+            updated_at = 0.0
+        loaded[str(key).lower()] = {
+            "companions": records,
+            "active": active,
+            "updated_at": updated_at,
+        }
+    return loaded
+
+
+def save_companions(path=None):
+    if path is None and COMPANION_FILE_BLOCKED:
+        return False
+    path = path or COMPANIONS_FILE
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"version": COMPANION_VERSION, "players": COMPANION_PLAYERS}, f)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+COMPANION_PLAYERS = load_companions()
+_companions_dirty = False
+
+
+def mark_companions_dirty():
+    global _companions_dirty
+    _companions_dirty = True
+
+
+async def companions_save_loop():
+    global _companions_dirty
+    while True:
+        await asyncio.sleep(COMPANION_SAVE_SECONDS)
+        if _companions_dirty and save_companions():
+            _companions_dirty = False
 
 
 def get_score_entry(name):
@@ -1426,6 +1585,270 @@ def _online_player(name):
     return None
 
 
+COMPANION_SUMMONED = set()
+COMPANION_TARGETS = {}
+
+
+def _companion_store(name, create=False):
+    key = str(name or "").lower()
+    if not key:
+        return None
+    store = COMPANION_PLAYERS.get(key)
+    if store is None and create:
+        if len(COMPANION_PLAYERS) >= COMPANION_MAX_PLAYERS:
+            return None
+        store = {"companions": [], "active": 0, "updated_at": time.time()}
+        COMPANION_PLAYERS[key] = store
+    return store
+
+
+def _companion_active(name):
+    store = _companion_store(name)
+    if not store:
+        return None
+    records = store.get("companions") or []
+    if not records:
+        return None
+    try:
+        active = int(store.get("active", 0) or 0)
+    except (TypeError, ValueError):
+        active = 0
+    if active < 0 or active >= len(records):
+        active = 0
+    return records[active]
+
+
+def _companion_max_hp(rec):
+    spec = COMPANIONS.get(rec.get("species"), {}) if rec else {}
+    return max(1, int(spec.get("base_hp", 20))
+               + (int(rec.get("level", 1) or 1) - 1) * int(spec.get("hp_per_level", 0)))
+
+
+def _companion_attack_power(rec):
+    spec = COMPANIONS.get(rec.get("species"), {}) if rec else {}
+    return max(1, int(spec.get("base_attack", 1))
+               + (int(rec.get("level", 1) or 1) - 1) * int(spec.get("attack_per_level", 0)))
+
+
+def _companion_defense(rec):
+    spec = COMPANIONS.get(rec.get("species"), {}) if rec else {}
+    return max(0, int(spec.get("base_defense", 0))
+               + (int(rec.get("level", 1) or 1) - 1) * int(spec.get("defense_per_level", 0)))
+
+
+def _companion_is_downed(rec, now=None):
+    if not rec:
+        return False
+    now = now if now is not None else time.time()
+    return rec.get("hp", 0) <= 0 or rec.get("downed_until", 0) > now
+
+
+def _companion_revive_cost(rec, now=None):
+    if not _companion_is_downed(rec, now):
+        return 0
+    now = now if now is not None else time.time()
+    remaining = max(0.0, float(rec.get("downed_until", 0) or 0) - now)
+    seconds = int(remaining)
+    if remaining > seconds:
+        seconds += 1
+    minutes = max(1, (seconds + 59) // 60)
+    return minutes * COMPANION_REVIVE_GOLD_PER_MINUTE
+
+
+def _companion_heal(rec, fraction):
+    rec["hp"] = max(1, int(_companion_max_hp(rec) * fraction + 0.999))
+    rec["downed_until"] = 0.0
+    mark_companions_dirty()
+
+
+def _summoned_companion(name):
+    key = str(name or "").lower()
+    if key not in COMPANION_SUMMONED:
+        return None
+    rec = _companion_active(key)
+    if rec is None or _companion_is_downed(rec):
+        return None
+    return rec
+
+
+def _summoned_companions_in_room(room_id):
+    out = []
+    for key in list(COMPANION_SUMMONED):
+        owner = _online_player(key)
+        if not owner or owner.room != room_id:
+            continue
+        rec = _summoned_companion(key)
+        if rec is not None:
+            out.append((owner, rec))
+    return out
+
+
+def _companion_status_payload(owner):
+    now = time.time()
+    rec = _companion_active(owner.name)
+    if rec is None:
+        return {"type": "companion", "has_companion": False}
+    max_hp = _companion_max_hp(rec)
+    downed = _companion_is_downed(rec, now)
+    summoned = _summoned_companion(owner.name) is not None
+    return {
+        "type": "companion",
+        "has_companion": True,
+        "species": rec.get("species"),
+        "name": rec.get("name"),
+        "level": rec.get("level", 1),
+        "xp": rec.get("xp", 0),
+        "hp": rec.get("hp", 0),
+        "max_hp": max_hp,
+        "attack": _companion_attack_power(rec),
+        "defense": _companion_defense(rec),
+        "passive": COMPANIONS.get(rec.get("species"), {}).get("passive"),
+        "summoned": summoned,
+        "downed": downed,
+        "downed_until": rec.get("downed_until", 0) if downed else 0,
+        "revive_cost": _companion_revive_cost(rec, now),
+        "room": owner.room if summoned else None,
+    }
+
+
+def _companion_retaliate(owner, npc_id, now=None):
+    """Stamp the hostile that just hit the owner or their companion."""
+    if not npc_id:
+        return
+    COMPANION_TARGETS[str(owner.name or "").lower()] = (
+        npc_id, now if now is not None else time.time())
+
+
+def _companion_assist_target(owner):
+    """Hostile this owner has engaged, or None.
+
+    Assist is owner-initiated (#544 owner call A): cmd_attack and retaliation
+    stamp COMPANION_TARGETS for COMPANION_ASSIST_WINDOW_SECONDS, and only that
+    stamp arms the pet. A hostile standing in the room is never picked on its
+    own, so a summoned pet cannot pull a mob the owner never engaged.
+    """
+    key = owner.name.lower()
+    tracked = COMPANION_TARGETS.get(key)
+    if not tracked:
+        return None
+    npc_id, seen_at = tracked
+    if time.time() - seen_at > COMPANION_ASSIST_WINDOW_SECONDS:
+        COMPANION_TARGETS.pop(key, None)
+        return None
+    for npc in npcs_in_room(owner.room):
+        if npc.get("id") != npc_id:
+            continue
+        # Assist stops at 1 HP so the owner keeps the killing blow; a mob that
+        # can no longer be damaged must not hold the slot until the window ends.
+        if is_quest_giver(npc["id"]) or npc.get("hp", 0) <= 1:
+            COMPANION_TARGETS.pop(key, None)
+            return None
+        return npc
+    COMPANION_TARGETS.pop(key, None)
+    return None
+
+
+async def _companion_attack_npc(owner, rec, npc):
+    if not npc or npc.get("hp", 0) <= 0:
+        return
+    # Assist stops at 1 HP so the owner's killing blow remains the only
+    # source of the existing kill-credit/loot path.
+    max_dmg = max(0, int(npc.get("hp", 0)) - 1)
+    if max_dmg <= 0:
+        return
+    dmg = min(max_dmg, random.randint(1, _companion_attack_power(rec)))
+    npc["hp"] -= dmg
+    npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
+    if npc["hp"] <= 1:
+        COMPANION_TARGETS.pop(owner.name.lower(), None)
+    else:
+        COMPANION_TARGETS[owner.name.lower()] = (npc.get("id"), time.time())
+    await send(owner, {
+        "type": "combat",
+        "text": f"{rec['name']} hits {npc['name']} for {dmg}.",
+    })
+    await broadcast_room(owner.room, {
+        "type": "combat",
+        "text": f"{rec['name']} hits {npc['name']} for {dmg}.",
+    }, exclude=owner)
+    await sync_room(owner.room)
+
+
+async def _damage_companion(owner, rec, amount, source_name, now=None, source_id=None):
+    now = now if now is not None else time.time()
+    # Retaliation (#544 owner call A): being hit arms the companion against that
+    # NPC without ever pulling a mob the owner ignored.
+    _companion_retaliate(owner, source_id, now)
+    dmg = max(0, int(amount) - _companion_defense(rec))
+    dmg = _training_damage(dmg)
+    rec["hp"] = max(0, int(rec.get("hp", 0)) - dmg)
+    mark_companions_dirty()
+    await send(owner, {
+        "type": "combat",
+        "text": f"{source_name} hits {rec['name']} for {dmg}.",
+    })
+    await broadcast_room(owner.room, {
+        "type": "combat",
+        "text": f"{source_name} hits {rec['name']} for {dmg}.",
+    }, exclude=owner)
+    if rec["hp"] <= 0 and not rec.get("downed_until"):
+        rec["hp"] = 0
+        rec["downed_until"] = now + COMPANION_DOWNED_SECONDS
+        COMPANION_TARGETS.pop(owner.name.lower(), None)
+        mark_companions_dirty()
+        cost = _companion_revive_cost(rec, now)
+        await send(owner, {
+            "type": "message",
+            "text": f"{rec['name']} is downed and retreats. Revive costs {cost} gold, "
+                    f"or it returns in {COMPANION_DOWNED_SECONDS // 60} minutes.",
+        })
+        await broadcast_room(owner.room, {
+            "type": "message",
+            "text": f"{rec['name']} is downed and retreats.",
+        }, exclude=owner)
+    return rec["hp"] <= 0
+
+
+async def _return_companion_with_owner(owner):
+    key = owner.name.lower()
+    if key not in COMPANION_SUMMONED:
+        return
+    rec = _companion_active(key)
+    if rec is None:
+        return
+    if _companion_is_downed(rec):
+        _companion_heal(rec, 0.25)
+    await send(owner, {
+        "type": "message",
+        "text": f"{rec['name']} returns with you.",
+    })
+
+
+async def tick_companions(now=None):
+    now = now if now is not None else time.time()
+    for key in list(COMPANION_PLAYERS):
+        rec = _companion_active(key)
+        if rec is None:
+            continue
+        if _companion_is_downed(rec, now):
+            downed_until = float(rec.get("downed_until", 0) or 0)
+            if downed_until and now >= downed_until:
+                _companion_heal(rec, 0.25)
+                owner = _online_player(key)
+                if owner and key in COMPANION_SUMMONED:
+                    await send(owner, {
+                        "type": "message",
+                        "text": f"{rec['name']} returns to your side.",
+                    })
+            continue
+        owner = _online_player(key)
+        if not owner or key not in COMPANION_SUMMONED:
+            continue
+        target = _companion_assist_target(owner)
+        if target is not None:
+            await _companion_attack_npc(owner, rec, target)
+
+
 def _best_ask_for_bid(iid, buyer_name, max_price):
     """Cheapest non-own ask at or below the bid (price-time priority)."""
     low = str(buyer_name or "").lower()
@@ -1820,6 +2243,7 @@ async def respawn_player(player):
     remove_member(player)
     player.room = START_ROOM
     add_member(player)
+    await _return_companion_with_owner(player)
     text = "You died and wake up back in Town Square."
     if dropped > 0 or lost > 0:
         text += f" You dropped {dropped} gold where you fell and lost {lost} gold outright."
@@ -2268,6 +2692,7 @@ async def cmd_attack(player, msg):
     dmg = random.randint(1, player.attack) + ammo_bonus
     npc["hp"] -= dmg
     npc["contributors"][player.name] = npc["contributors"].get(player.name, 0) + dmg
+    COMPANION_TARGETS[player.name.lower()] = (npc.get("id"), time.time())
     await send(player, {"type": "combat", "text": f"You hit {npc['name']} for {dmg}."})
     await broadcast_room(player.room, {"type": "combat", "text": f"{player.name} hits {npc['name']} for {dmg}."}, exclude=player)
     # Same-tick double-kill guard (#195.1): two attackers' damage can
@@ -3428,10 +3853,69 @@ async def cmd_leaderboard(player, msg):
     ]})
 
 
+async def cmd_companion(player, msg):
+    action = str(msg.get("action") or "status").strip().lower()
+    rec = _companion_active(player.name)
+    if action == "status":
+        await send(player, _companion_status_payload(player))
+        return
+    if rec is None:
+        await send(player, {"type": "error", "text": "You have no companion."})
+        return
+    key = player.name.lower()
+    if action == "summon":
+        now = time.time()
+        if _companion_is_downed(rec, now):
+            if rec.get("downed_until") and now >= rec["downed_until"]:
+                _companion_heal(rec, 0.25)
+            else:
+                remaining = max(0, int(float(rec.get("downed_until", 0) or 0) - now))
+                await send(player, {
+                    "type": "error",
+                    "text": f"{rec['name']} is downed for another {remaining}s.",
+                })
+                return
+        if key in COMPANION_SUMMONED:
+            await send(player, {"type": "message", "text": f"{rec['name']} is already at your side."})
+            return
+        COMPANION_SUMMONED.add(key)
+        await send(player, {"type": "message", "text": f"{rec['name']} joins you."})
+        return
+    if action == "dismiss":
+        COMPANION_SUMMONED.discard(key)
+        COMPANION_TARGETS.pop(key, None)
+        await send(player, {"type": "message", "text": f"{rec['name']} is stabled."})
+        return
+    if action == "revive":
+        now = time.time()
+        if not _companion_is_downed(rec, now):
+            await send(player, {"type": "error", "text": f"{rec['name']} is not downed."})
+            return
+        cost = _companion_revive_cost(rec, now)
+        if player.gold < cost:
+            await send(player, {
+                "type": "error",
+                "text": f"Reviving {rec['name']} costs {cost} gold; you have {player.gold}.",
+            })
+            return
+        player.gold -= cost
+        sunk = _treasury_credit(cost)
+        mark_scores_dirty()
+        _companion_heal(rec, 0.25)
+        COMPANION_SUMMONED.add(key)
+        note = f" ({sunk:g} sunk by the reserve cap)" if sunk else ""
+        await send(player, {
+            "type": "message",
+            "text": f"You pay {cost} gold to revive {rec['name']}{note}.",
+        })
+        return
+    await send(player, {"type": "error", "text": "companion action must be summon, dismiss, status, or revive."})
+
+
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
         "Commands: login look move attack take gather drop equip use rest heal buy sell "
-        "craft [start|status|collect|cancel] "
+        "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive] "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
         "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest"
@@ -4586,6 +5070,50 @@ async def cmd_gm_tables(player, msg):
                         "players_online": len(players)})
 
 
+async def cmd_gm_companion_grant(player, msg):
+    name = str(msg.get("player") or "").strip()
+    species = str(msg.get("species") or "").strip()
+    if not name:
+        await send(player, {"type": "error", "text": "gm_companion_grant needs a 'player' name."})
+        return
+    if species not in COMPANIONS:
+        choices = ", ".join(sorted(COMPANIONS))
+        await send(player, {"type": "error", "text": f"Unknown companion species '{species}'. Choose: {choices}."})
+        return
+    target = find_player_anywhere(name)
+    canonical = target.name if target else name
+    store = _companion_store(canonical, create=True)
+    if store is None:
+        await send(player, {"type": "error", "text": "Companion table is full."})
+        return
+    if store.get("companions"):
+        await send(player, {"type": "error", "text": f"{canonical} already has a companion."})
+        return
+    rec = _normalize_companion_record({
+        "species": species,
+        "name": msg.get("name") or COMPANIONS[species].get("name") or species,
+        "level": 1,
+        "hp": COMPANIONS[species].get("base_hp", 20),
+        "acquired_at": time.time(),
+    })
+    if rec is None:
+        await send(player, {"type": "error", "text": "Could not build that companion."})
+        return
+    store["companions"] = [rec]
+    store["active"] = 0
+    store["updated_at"] = time.time()
+    mark_companions_dirty()
+    if target:
+        await send(target, {
+            "type": "message",
+            "text": f"The GM grants you a companion: {rec['name']}.",
+        })
+    await send(player, {
+        "type": "message",
+        "text": f"GM: granted {rec['name']} ({species}) to {canonical}.",
+    })
+
+
 GM_HANDLERS = {
     "gm_reward": cmd_gm_reward,
     "gm_buff": cmd_gm_buff,
@@ -4596,6 +5124,7 @@ GM_HANDLERS = {
     "gm_slay": cmd_gm_slay,
     "gm_kick": cmd_gm_kick,
     "gm_tables": cmd_gm_tables,
+    "gm_companion_grant": cmd_gm_companion_grant,
 }
 
 
@@ -4659,6 +5188,7 @@ HANDLERS = {
     "use": cmd_use,
     "rest": cmd_rest,
     "heal": cmd_heal,
+    "companion": cmd_companion,
     "buy": cmd_buy,
     "sell": cmd_sell,
     "craft": cmd_craft,
@@ -5776,6 +6306,7 @@ async def npc_ai_loop():
         await prune_market_orders(now)
         prune_invites(now)
         await tick_craft_jobs(now)
+        await tick_companions(now)
         for node in list(gather_nodes.values()):
             if not node["available"] and node["respawn_at"] and now >= node["respawn_at"]:
                 node["available"] = True
@@ -5790,16 +6321,25 @@ async def npc_ai_loop():
                 continue
             room_id = npc["room"]
             targets = players_in_room(room_id)
-            if npc["hostile"] and targets:
-                victim = random.choice(targets)
-                dmg = random.randint(1, npc["attack"])
-                dmg = max(0, dmg - _player_damage_reduction(victim))
-                dmg = _training_damage(dmg)
-                victim.hp -= dmg
-                await send(victim, {"type": "combat", "text": f"{npc['name']} attacks you for {dmg}."})
-                await broadcast_room(room_id, {"type": "combat", "text": f"{npc['name']} attacks {victim.name} for {dmg}."}, exclude=victim)
-                if victim.hp <= 0:
-                    await respawn_player(victim)
+            companions = _summoned_companions_in_room(room_id) if npc["hostile"] else []
+            if npc["hostile"] and (targets or companions):
+                if companions and random.random() < COMPANION_AGGRO_SHARE:
+                    owner, rec = random.choice(companions)
+                    await _damage_companion(owner, rec, random.randint(1, npc["attack"]),
+                                            npc["name"], now, npc["id"])
+                elif targets:
+                    victim = random.choice(targets)
+                    dmg = random.randint(1, npc["attack"])
+                    dmg = max(0, dmg - _player_damage_reduction(victim))
+                    dmg = _training_damage(dmg)
+                    victim.hp -= dmg
+                    # Retaliation (#544 owner call A): a hit on the owner is an
+                    # owner-initiated fight, so the pet may answer it.
+                    _companion_retaliate(victim, npc["id"], now)
+                    await send(victim, {"type": "combat", "text": f"{npc['name']} attacks you for {dmg}."})
+                    await broadcast_room(room_id, {"type": "combat", "text": f"{npc['name']} attacks {victim.name} for {dmg}."}, exclude=victim)
+                    if victim.hp <= 0:
+                        await respawn_player(victim)
             elif not npc["hostile"] and npc.get("behavior") == "wander" and random.random() < 0.1:
                 exits = ROOMS.get(room_id, {}).get("exits", {})
                 if exits:
@@ -5921,6 +6461,8 @@ async def handle_connection(ws):
                     player.room = DUNGEON_ENTRANCE_ROOM
                 if name_owners.get(player.name.lower()) == pid:
                     del name_owners[player.name.lower()]
+                COMPANION_SUMMONED.discard(player.name.lower())
+                COMPANION_TARGETS.pop(player.name.lower(), None)
                 await _leave_party_on_disconnect(player)
                 # Carried gold is otherwise session-scoped (never written to a
                 # score entry), so a disconnect would vaporize it. Park it in
@@ -5998,6 +6540,7 @@ async def main():
         bg_tasks.extend([
             asyncio.create_task(_run_resilient("npc_ai", npc_ai_loop)),
             asyncio.create_task(_run_resilient("scores_save", scores_save_loop)),
+            asyncio.create_task(_run_resilient("companions_save", companions_save_loop)),
             asyncio.create_task(_run_resilient("dashboard_snapshot", dashboard_refresh_loop)),
         ])
         try:
@@ -6024,6 +6567,7 @@ async def main():
                     pass
     finally:
         save_scores()
+        save_companions()
         print("Scores saved. Bye.", flush=True)
 
 

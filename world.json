@@ -1,5 +1,40 @@
 {
   "start_room": "town_square",
+  "companions": {
+    "wolf": {
+      "name": "Wolf",
+      "base_hp": 26,
+      "base_attack": 4,
+      "base_defense": 1,
+      "hp_per_level": 6,
+      "attack_per_level": 1,
+      "defense_per_level": 1,
+      "passive": "pack_fervor",
+      "acquisition": "boss_drop"
+    },
+    "mule": {
+      "name": "Pack Mule",
+      "base_hp": 30,
+      "base_attack": 2,
+      "base_defense": 2,
+      "hp_per_level": 6,
+      "attack_per_level": 1,
+      "defense_per_level": 1,
+      "passive": "carry_beast",
+      "acquisition": "craft"
+    },
+    "sheep": {
+      "name": "Sheep",
+      "base_hp": 24,
+      "base_attack": 2,
+      "base_defense": 1,
+      "hp_per_level": 6,
+      "attack_per_level": 1,
+      "defense_per_level": 1,
+      "passive": "gentle_blessing",
+      "acquisition": "shop"
+    }
+  },
   "rooms": {
     "town_square": {
       "name": "Town Square",
