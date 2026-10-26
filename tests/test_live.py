@@ -120,7 +120,7 @@ async def recv_one(ws, timeout):
     return json.loads(raw)
 
 
-async def enter_dungeon_floor(ws, floor=1, budget=30.0, poll=5.0):
+async def enter_dungeon_floor(ws, floor=1, budget=30.0, poll=5.0, reroutes=2):
     """Move 'enter' and wait for the settled dungeon floor view.
 
     Entering the archway races a stale pre-entry (graveyard) room view
@@ -131,30 +131,48 @@ async def enter_dungeon_floor(ws, floor=1, budget=30.0, poll=5.0):
     budget while reading one message at a time, so a queued dungeon view
     is returned as soon as it arrives. A refusal (re-entry delay or a
     crowded floor) fails immediately with the server's text, which
-    distinguishes a slow server from a rejected entry."""
+    distinguishes a slow server from a rejected entry.
+
+    A death while walking to or waiting at the entrance respawns in Town
+    Square, where 'enter' is not an exit, so settling there can only burn
+    the budget (#541). A room view that is neither the entrance nor a
+    dungeon means the player was moved by death: walk back and re-issue
+    the entry. The corpse run is excluded from the settle budget, since
+    it is movement rather than the server stalling."""
     await drain(ws, 0.3)
-    await send(ws, {"cmd": "move", "dir": "enter"})
     deadline = time.time() + budget
     last = None
-    while time.time() < deadline:
-        msg = await recv_one(ws, min(poll, max(0.05, deadline - time.time())))
-        if msg is None:
-            await send(ws, {"cmd": "look"})
-            continue
-        if msg.get("type") == "error":
-            text = str(msg.get("text", ""))
-            if "archway rejects" in text or "too crowded" in text:
-                raise RuntimeError(f"dungeon entry rejected: {text}")
-            continue
-        if msg.get("type") != "room":
-            continue
-        last = {
-            "is_dungeon": msg.get("is_dungeon"),
-            "dungeon_floor": msg.get("dungeon_floor"),
-            "room_id": msg.get("id"),
-        }
-        if msg.get("is_dungeon") and msg.get("dungeon_floor") == floor:
-            return msg
+    for _ in range(reroutes + 1):
+        await send(ws, {"cmd": "move", "dir": "enter"})
+        moved_away = False
+        while time.time() < deadline:
+            msg = await recv_one(ws, min(poll, max(0.05, deadline - time.time())))
+            if msg is None:
+                await send(ws, {"cmd": "look"})
+                continue
+            if msg.get("type") == "error":
+                text = str(msg.get("text", ""))
+                if "archway rejects" in text or "too crowded" in text:
+                    raise RuntimeError(f"dungeon entry rejected: {text}")
+                continue
+            if msg.get("type") != "room":
+                continue
+            last = {
+                "is_dungeon": msg.get("is_dungeon"),
+                "dungeon_floor": msg.get("dungeon_floor"),
+                "room_id": msg.get("id"),
+            }
+            if msg.get("is_dungeon") and msg.get("dungeon_floor") == floor:
+                return msg
+            if not msg.get("is_dungeon") and msg.get("id") != "graveyard":
+                moved_away = True
+                break
+        if not moved_away:
+            break
+        started = time.time()
+        await fight_until_room(ws, "graveyard", "south")
+        deadline += time.time() - started
+        await drain(ws, 0.3)
     raise RuntimeError(
         f"dungeon entry never settled on floor {floor} "
         f"within {budget:.0f}s (last room seen: {last})"
