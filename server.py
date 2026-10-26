@@ -1711,18 +1711,40 @@ def _companion_status_payload(owner):
     }
 
 
+def _companion_retaliate(owner, npc_id, now=None):
+    """Stamp the hostile that just hit the owner or their companion."""
+    if not npc_id:
+        return
+    COMPANION_TARGETS[str(owner.name or "").lower()] = (
+        npc_id, now if now is not None else time.time())
+
+
 def _companion_assist_target(owner):
-    now = time.time()
-    tracked = COMPANION_TARGETS.get(owner.name.lower())
-    if tracked:
-        npc_id, seen_at = tracked
-        if now - seen_at <= COMPANION_ASSIST_WINDOW_SECONDS:
-            for npc in npcs_in_room(owner.room):
-                if npc.get("id") == npc_id and not is_quest_giver(npc["id"]):
-                    return npc
+    """Hostile this owner has engaged, or None.
+
+    Assist is owner-initiated (#544 owner call A): cmd_attack and retaliation
+    stamp COMPANION_TARGETS for COMPANION_ASSIST_WINDOW_SECONDS, and only that
+    stamp arms the pet. A hostile standing in the room is never picked on its
+    own, so a summoned pet cannot pull a mob the owner never engaged.
+    """
+    key = owner.name.lower()
+    tracked = COMPANION_TARGETS.get(key)
+    if not tracked:
+        return None
+    npc_id, seen_at = tracked
+    if time.time() - seen_at > COMPANION_ASSIST_WINDOW_SECONDS:
+        COMPANION_TARGETS.pop(key, None)
+        return None
     for npc in npcs_in_room(owner.room):
-        if npc.get("hostile") and not is_quest_giver(npc["id"]):
-            return npc
+        if npc.get("id") != npc_id:
+            continue
+        # Assist stops at 1 HP so the owner keeps the killing blow; a mob that
+        # can no longer be damaged must not hold the slot until the window ends.
+        if is_quest_giver(npc["id"]) or npc.get("hp", 0) <= 1:
+            COMPANION_TARGETS.pop(key, None)
+            return None
+        return npc
+    COMPANION_TARGETS.pop(key, None)
     return None
 
 
@@ -1737,7 +1759,10 @@ async def _companion_attack_npc(owner, rec, npc):
     dmg = min(max_dmg, random.randint(1, _companion_attack_power(rec)))
     npc["hp"] -= dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
-    COMPANION_TARGETS[owner.name.lower()] = (npc.get("id"), time.time())
+    if npc["hp"] <= 1:
+        COMPANION_TARGETS.pop(owner.name.lower(), None)
+    else:
+        COMPANION_TARGETS[owner.name.lower()] = (npc.get("id"), time.time())
     await send(owner, {
         "type": "combat",
         "text": f"{rec['name']} hits {npc['name']} for {dmg}.",
@@ -1749,8 +1774,11 @@ async def _companion_attack_npc(owner, rec, npc):
     await sync_room(owner.room)
 
 
-async def _damage_companion(owner, rec, amount, source_name, now=None):
+async def _damage_companion(owner, rec, amount, source_name, now=None, source_id=None):
     now = now if now is not None else time.time()
+    # Retaliation (#544 owner call A): being hit arms the companion against that
+    # NPC without ever pulling a mob the owner ignored.
+    _companion_retaliate(owner, source_id, now)
     dmg = max(0, int(amount) - _companion_defense(rec))
     dmg = _training_damage(dmg)
     rec["hp"] = max(0, int(rec.get("hp", 0)) - dmg)
@@ -1766,6 +1794,7 @@ async def _damage_companion(owner, rec, amount, source_name, now=None):
     if rec["hp"] <= 0 and not rec.get("downed_until"):
         rec["hp"] = 0
         rec["downed_until"] = now + COMPANION_DOWNED_SECONDS
+        COMPANION_TARGETS.pop(owner.name.lower(), None)
         mark_companions_dirty()
         cost = _companion_revive_cost(rec, now)
         await send(owner, {
@@ -3871,6 +3900,7 @@ async def cmd_companion(player, msg):
             return
         player.gold -= cost
         sunk = _treasury_credit(cost)
+        mark_scores_dirty()
         _companion_heal(rec, 0.25)
         COMPANION_SUMMONED.add(key)
         note = f" ({sunk:g} sunk by the reserve cap)" if sunk else ""
@@ -6300,13 +6330,16 @@ async def npc_ai_loop():
                 if companions and random.random() < COMPANION_AGGRO_SHARE:
                     owner, rec = random.choice(companions)
                     await _damage_companion(owner, rec, random.randint(1, npc["attack"]),
-                                            npc["name"], now)
+                                            npc["name"], now, npc["id"])
                 elif targets:
                     victim = random.choice(targets)
                     dmg = random.randint(1, npc["attack"])
                     dmg = max(0, dmg - _player_damage_reduction(victim))
                     dmg = _training_damage(dmg)
                     victim.hp -= dmg
+                    # Retaliation (#544 owner call A): a hit on the owner is an
+                    # owner-initiated fight, so the pet may answer it.
+                    _companion_retaliate(victim, npc["id"], now)
                     await send(victim, {"type": "combat", "text": f"{npc['name']} attacks you for {dmg}."})
                     await broadcast_room(room_id, {"type": "combat", "text": f"{npc['name']} attacks {victim.name} for {dmg}."}, exclude=victim)
                     if victim.hp <= 0:

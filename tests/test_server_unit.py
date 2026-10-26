@@ -1128,6 +1128,9 @@ async def main():
     assert "compowner" in srv.COMPANION_SUMMONED
     await srv.cmd_companion(comp_owner, {"action": "status"})
     assert inbox[-1]["summoned"] is True and inbox[-1]["room"] == "town_square"
+    # A companion is a follower, not a party member: summoning must not take a
+    # party seat or create a party (#544 owner call A keeps it owner-scoped).
+    assert comp_owner.party_id is None and not srv.parties
 
     # Follow is room-derived: a summoned companion is always where the owner is.
     await srv.cmd_move(comp_owner, {"dir": "east"})
@@ -1150,9 +1153,47 @@ async def main():
     assert srv.npcs["comp_dummy"]["hp"] < hp_after_owner
     assert srv.npcs["comp_dummy"]["contributors"]["CompOwner"] > 0
 
+    # Owner-initiated assist (#544 owner call A): with the stamp cleared, a
+    # hostile dummy is still standing in the room and the pet must not touch it.
+    srv.COMPANION_TARGETS.pop("compowner", None)
+    idle_hp = srv.npcs["comp_dummy"]["hp"]
+    await srv.tick_companions(time.time())
+    assert srv.npcs["comp_dummy"]["hp"] == idle_hp, "companion pulled an unengaged mob"
+    assert "compowner" not in srv.COMPANION_TARGETS
+
+    # A hit on the owner is owner-initiated, so the pet answers that NPC.
+    srv._companion_retaliate(comp_owner, "comp_dummy")
+    await srv.tick_companions(time.time())
+    assert srv.npcs["comp_dummy"]["hp"] < idle_hp, "companion ignored retaliation"
+
+    # A tracked mob at 1 HP releases the slot instead of stalling the pet on a
+    # target it is not allowed to finish; the next engaged mob gets the hit.
+    for nid, nm, hp in (("comp_low", "Low Dummy", 1), ("comp_high", "High Dummy", 100)):
+        srv.npcs[nid] = {
+            "id": nid, "name": nm, "room": "town_square",
+            "hp": hp, "max_hp": 100, "attack": 0, "hostile": True,
+            "behavior": "idle", "loot": [], "gold": 0, "respawn_seconds": 60,
+            "alive": True, "respawn_at": None, "contributors": {},
+        }
+    srv.COMPANION_TARGETS["compowner"] = ("comp_low", time.time())
+    await srv.tick_companions(time.time())
+    assert srv.npcs["comp_low"]["hp"] == 1, "companion damaged a 1-HP mob"
+    assert srv.npcs["comp_low"]["contributors"] == {}
+    assert "compowner" not in srv.COMPANION_TARGETS
+    await srv.cmd_attack(comp_owner, {"target": "high dummy"})
+    high_hp = srv.npcs["comp_high"]["hp"]
+    await srv.tick_companions(time.time())
+    assert srv.npcs["comp_high"]["hp"] < high_hp, "companion skipped the healthy mob"
+
+    # Being hit also arms the pet against the attacker (companion retaliation).
+    await srv._damage_companion(comp_owner, rec, 1, "Test Brute", time.time(), "comp_low")
+    assert srv.COMPANION_TARGETS["compowner"][0] == "comp_low"
+    srv.COMPANION_TARGETS.pop("compowner", None)
+
     # Companion targeting is NPC-only: a player bystander never loses HP.
     bystander = mkplayer("CompBystander", 60301, room="town_square")
-    del srv.npcs["comp_dummy"]
+    for nid in ("comp_dummy", "comp_low", "comp_high"):
+        srv.npcs.pop(nid, None)
     bystander_hp = bystander.hp
     await srv.tick_companions(time.time())
     assert bystander.hp == bystander_hp
@@ -1170,11 +1211,13 @@ async def main():
     srv.tax_treasury = 0.0
     srv.tax_collected_lifetime = 0.0
     srv.tax_sunk_lifetime = 0.0
+    srv._scores_dirty = False
     await srv.cmd_companion(comp_owner, {"action": "revive"})
     assert comp_owner.gold == 80, comp_owner.gold
     assert srv.tax_treasury == 20.0 and srv.tax_collected_lifetime == 20.0
     assert rec["hp"] == 7 and rec["downed_until"] == 0
     assert "compowner" in srv.COMPANION_SUMMONED
+    assert srv._scores_dirty is True, "revive paid gold without marking scores dirty"
 
     await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
     rec["downed_until"] = time.time() - 1
@@ -1214,6 +1257,19 @@ async def main():
     srv.COMPANION_PLAYERS.pop("compowner", None)
     srv.COMPANION_SUMMONED.discard("compowner")
     srv.COMPANION_TARGETS.pop("compowner", None)
+
+    # Hard player bound: the registry refuses a new key at the cap rather than
+    # growing without limit.
+    saved_players = srv.COMPANION_PLAYERS
+    try:
+        srv.COMPANION_PLAYERS = {
+            f"bound{i}": {"companions": [], "active": 0}
+            for i in range(srv.COMPANION_MAX_PLAYERS)
+        }
+        assert srv._companion_store("BoundOverflow", create=True) is None
+        assert srv._companion_store("BoundNobody") is None
+    finally:
+        srv.COMPANION_PLAYERS = saved_players
     drop_job_entry("CompOwner", comp_owner)
     drop_job_entry("CompBystander", bystander)
     drop_job_entry("GMCompanion", gm_player)
