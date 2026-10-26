@@ -1258,6 +1258,44 @@ async def main():
     srv.COMPANION_SUMMONED.discard("compowner")
     srv.COMPANION_TARGETS.pop("compowner", None)
 
+    # --- Companion acquisition (#532): adopt wolf/mule/sheep ---
+    comp2 = mkplayer("CompAdopter", 60400, room="town_square")
+    # Wolf: needs wolf_pup in inventory
+    await srv.cmd_companion(comp2, {"action": "adopt", "species": "wolf"})
+    assert inbox[-1]["type"] == "error" and "need a wolf pup" in inbox[-1]["text"]
+    comp2.inventory.append("wolf_pup")
+    await srv.cmd_companion(comp2, {"action": "adopt", "species": "wolf"})
+    assert inbox[-1]["type"] == "message" and "adopted" in inbox[-1]["text"]
+    assert "wolf_pup" not in comp2.inventory
+    rec2 = srv._companion_active("CompAdopter")
+    assert rec2 is not None and rec2["species"] == "wolf" and rec2["hp"] == srv.COMPANIONS["wolf"]["base_hp"]
+    # Mule: needs mule_deed in inventory
+    comp3 = mkplayer("CompMuleOwner", 60500, room="town_square")
+    comp3.inventory.append("mule_deed")
+    await srv.cmd_companion(comp3, {"action": "adopt", "species": "mule"})
+    assert inbox[-1]["type"] == "message" and "adopted" in inbox[-1]["text"]
+    assert "mule_deed" not in comp3.inventory
+    rec3 = srv._companion_active("CompMuleOwner")
+    assert rec3 is not None and rec3["species"] == "mule"
+    # Sheep: needs sheep_deed in inventory
+    comp4 = mkplayer("CompSheepOwner", 60600, room="town_square")
+    comp4.inventory.append("sheep_deed")
+    await srv.cmd_companion(comp4, {"action": "adopt", "species": "sheep"})
+    assert inbox[-1]["type"] == "message" and "adopted" in inbox[-1]["text"]
+    assert "sheep_deed" not in comp4.inventory
+    rec4 = srv._companion_active("CompSheepOwner")
+    assert rec4 is not None and rec4["species"] == "sheep"
+    # Cannot adopt if already have companion
+    await srv.cmd_companion(comp2, {"action": "adopt", "species": "mule"})
+    assert inbox[-1]["type"] == "error" and "already have a companion" in inbox[-1]["text"]
+    # Unknown species
+    await srv.cmd_companion(comp2, {"action": "adopt", "species": "dragon"})
+    assert inbox[-1]["type"] == "error" and "Unknown companion species" in inbox[-1]["text"]
+    # Clean up
+    srv.COMPANION_PLAYERS.pop("compadopter", None)
+    srv.COMPANION_PLAYERS.pop("compmuleowner", None)
+    srv.COMPANION_PLAYERS.pop("compsheepowner", None)
+
     # Hard player bound: the registry refuses a new key at the cap rather than
     # growing without limit.
     saved_players = srv.COMPANION_PLAYERS

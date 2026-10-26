@@ -3859,6 +3859,56 @@ async def cmd_companion(player, msg):
     if action == "status":
         await send(player, _companion_status_payload(player))
         return
+    if action == "adopt":
+        species = str(msg.get("species") or "").strip().lower()
+        if species not in COMPANIONS:
+            choices = ", ".join(sorted(COMPANIONS))
+            await send(player, {"type": "error", "text": f"Unknown companion species '{species}'. Choose: {choices}."})
+            return
+        if rec is not None:
+            await send(player, {"type": "error", "text": "You already have a companion. Dismiss it before adopting a new one."})
+            return
+        if species == "wolf":
+            if "wolf_pup" not in player.inventory:
+                await send(player, {"type": "error", "text": "You need a wolf pup to adopt a wolf companion."})
+                return
+            player.inventory.remove("wolf_pup")
+        elif species == "mule":
+            if "mule_deed" not in player.inventory:
+                await send(player, {"type": "error", "text": "You need a mule deed to adopt a pack mule companion."})
+                return
+            player.inventory.remove("mule_deed")
+        elif species == "sheep":
+            if "sheep_deed" not in player.inventory:
+                await send(player, {"type": "error", "text": "You need a sheep deed to adopt a sheep companion."})
+                return
+            player.inventory.remove("sheep_deed")
+        else:
+            await send(player, {"type": "error", "text": f"Cannot adopt that companion species."})
+            return
+        store = _companion_store(player.name, create=True)
+        if store is None:
+            await send(player, {"type": "error", "text": "Companion table is full."})
+            return
+        if store.get("companions"):
+            await send(player, {"type": "error", "text": "You already have a companion. Dismiss it before adopting a new one."})
+            return
+        rec = _normalize_companion_record({
+            "species": species,
+            "name": COMPANIONS[species].get("name", species.capitalize()),
+            "level": 1,
+            "hp": COMPANIONS[species].get("base_hp", 20),
+            "acquired_at": time.time(),
+        })
+        if rec is None:
+            await send(player, {"type": "error", "text": "Could not adopt that companion."})
+            return
+        store["companions"] = [rec]
+        store["active"] = 0
+        store["updated_at"] = time.time()
+        mark_companions_dirty()
+        await send(player, {"type": "message", "text": f"You adopted {rec['name']} as your companion!"})
+        return
     if rec is None:
         await send(player, {"type": "error", "text": "You have no companion."})
         return
@@ -3915,7 +3965,7 @@ async def cmd_companion(player, msg):
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
         "Commands: login look move attack take gather drop equip use rest heal buy sell "
-        "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive] "
+        "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt] "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
         "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest"

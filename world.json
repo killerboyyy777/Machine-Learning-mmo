@@ -333,7 +333,7 @@
       "loot": [],
       "gold": 0,
       "respawn_seconds": 5,
-      "shop": {"healing_herb": 5, "rusty_sword": 15, "old_shield": 8, "arrow": 2}
+      "shop": {"healing_herb": 5, "rusty_sword": 15, "old_shield": 8, "arrow": 2, "sheep_deed": 200}
     },
     "healer": {
       "name": "Sister Maren",
@@ -391,7 +391,7 @@
       "attack": 8,
       "hostile": true,
       "behavior": "idle",
-      "loot": ["treant_bark", "rusty_sword"],
+      "loot": ["treant_bark", "rusty_sword", "wolf_pup"],
       "gold": 20,
       "respawn_seconds": 90
     },
@@ -726,7 +726,10 @@
     "scrap_iron": {"name": "Scrap Iron", "type": "junk", "value": 4},
     "salt_crystal": {"name": "Salt Crystal", "type": "junk", "value": 3},
     "glacier_core": {"name": "Glacier Core", "type": "junk", "value": 42},
-    "abyssal_heart": {"name": "Abyssal Heart", "type": "junk", "value": 45}
+    "abyssal_heart": {"name": "Abyssal Heart", "type": "junk", "value": 45},
+    "wolf_pup": {"name": "Wolf Pup", "type": "companion_item", "value": 0},
+    "mule_deed": {"name": "Pack Mule Deed", "type": "companion_item", "value": 50},
+    "sheep_deed": {"name": "Sheep Deed", "type": "companion_item", "value": 0}
   },
   "recipes": {
     "reinforced_leather": {
@@ -845,6 +848,12 @@
       "result": "abyssal_warden_draught",
       "tier": 6,
       "category": "buff"
+    },
+    "mule_deed": {
+      "inputs": {"reinforced_leather": 1, "field_ration": 2, "iron_ore": 1},
+      "result": "mule_deed",
+      "tier": 2,
+      "category": "companion"
     }
   },
   "room_items": {
