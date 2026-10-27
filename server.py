@@ -1948,7 +1948,6 @@ async def _return_companion_with_owner(owner):
 
 class DroneLangError(Exception):
     """Parse-time or runtime error for DroneLang scripts."""
-    pass
 
 
 def _dronelang_tokenize(script: str):
@@ -2283,9 +2282,7 @@ async def dronelang_tick(owner, rec, now=None):
         mark_companions_dirty()
         return (False, str(e))
 
-    visits = 0
-    for rule in rules:
-        visits += 1
+    for visits, rule in enumerate(rules, 1):
         if visits > DRONELANG_MAX_VISITS:
             rec["_dronelang_error"] = f"Runtime node visit budget exceeded ({DRONELANG_MAX_VISITS})"
             mark_companions_dirty()
@@ -2294,7 +2291,7 @@ async def dronelang_tick(owner, rec, now=None):
         pred = rule["predicate"]
         try:
             result = _dronelang_eval_predicate(owner, rec, pred, now or time.time())
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a bad predicate must not end the tick
             rec["_dronelang_error"] = f"Predicate error: {e}"
             mark_companions_dirty()
             return (False, rec["_dronelang_error"])
@@ -2306,7 +2303,7 @@ async def dronelang_tick(owner, rec, now=None):
                     rec.pop("_dronelang_error", None)
                     mark_companions_dirty()
                     return (True, None)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a bad action must not end the tick
                 rec["_dronelang_error"] = f"Action error: {e}"
                 mark_companions_dirty()
                 return (False, rec["_dronelang_error"])
@@ -2317,7 +2314,7 @@ async def dronelang_tick(owner, rec, now=None):
                     rec.pop("_dronelang_error", None)
                     mark_companions_dirty()
                     return (True, None)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a bad action must not end the tick
                 rec["_dronelang_error"] = f"Else-action error: {e}"
                 mark_companions_dirty()
                 return (False, rec["_dronelang_error"])

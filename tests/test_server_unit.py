@@ -4328,7 +4328,7 @@ async def _test_parse_and_validate(srv):
         print("DRONE_PARSE_CHAR_LIMIT_OK")
 
     # Too many rules (>32)
-    many_rules = " ".join([f"if (always) {{ follow }};"] * 35)
+    many_rules = " ".join(["if (always) { follow };"] * 35)
     try:
         srv.dronelang_parse(many_rules)
         assert False, "Should have raised DroneLangError for rule limit"
@@ -4367,7 +4367,6 @@ async def _test_parse_and_validate(srv):
 
 async def _test_predicates(srv):
     """Predicate evaluation tests - all 11 predicates in True and False states."""
-    from server import _dronelang_eval_predicate
 
     # We'll test with companion records and owners set up
     # Create a minimal companion record
@@ -4483,9 +4482,8 @@ async def _test_predicates(srv):
 
 async def _test_actions(srv):
     """Action execution tests - all 9 actions, attack only targets hostile NPCs."""
-    from server import _dronelang_exec_action
-    import asyncio
     import server as srv_mod
+    from server import _dronelang_exec_action
 
     # Create a minimal companion record
     rec = {
@@ -4596,8 +4594,6 @@ async def _test_actions(srv):
 
 async def _test_runtime_fallback(srv):
     """Runtime error fallback tests."""
-    from server import tick_companions, DroneLangError
-    import asyncio
 
     # Create companion record with a script that will cause runtime error
     rec = {
@@ -4654,7 +4650,6 @@ async def _test_runtime_fallback(srv):
 
 async def _test_commands(srv):
     """Commands tests: script set, show, clear."""
-    from server import tick_companions
     import server as srv_mod
 
     comp_owner = type("CompOwner", (), {"name": "CmdOwner", "gold": 100})()
@@ -4680,20 +4675,17 @@ async def _test_commands(srv):
 
     # Test companion script set - valid script
     valid_script = "if (always) { follow };"
-    try:
-        srv.dronelang_parse(valid_script)
-        await srv.cmd_companion(comp_owner, {"action": "script", "sub": "set", "script": valid_script})
-        assert rec["script"] == valid_script
-        print("DRONE_CMD_SET_VALID_OK")
-    except Exception as e:
-        assert False, f"Valid script should be accepted: {e}"
+    srv.dronelang_parse(valid_script)
+    await srv.cmd_companion(comp_owner, {"action": "script", "sub": "set", "script": valid_script})
+    assert rec["script"] == valid_script
+    print("DRONE_CMD_SET_VALID_OK")
 
     # Test companion script set - invalid script (unknown predicate)
     invalid_script = "if (nonexistent) { follow };"
     try:
         await srv.cmd_companion(comp_owner, {"action": "script", "sub": "set", "script": invalid_script})
         assert False, "Invalid script should be rejected"
-    except Exception as e:
+    except AssertionError as e:
         # Should get error about unknown predicate
         assert "unknown" in str(e).lower() or "invalid" in str(e).lower()
         print("DRONE_CMD_SET_INVALID_OK")
