@@ -49,6 +49,26 @@ COMPANION_WOLF_XP_MULT = 1.10
 COMPANION_MULE_CARRY_BONUS = 2
 COMPANION_MULE_GATHER_YIELD_BONUS = 1
 COMPANION_SHEPHERD_HEAL_MULT = 1.20
+
+# Companion DroneLang (#534): flat IF/ELSE script language for companion AI.
+# Limits: 2000 chars, 32 rules, 200 node-visit budget per tick.
+DRONELANG_MAX_CHARS = 2000
+DRONELANG_MAX_RULES = 32
+DRONELANG_MAX_VISITS = 200
+
+DRONELANG_PREDICATES = frozenset({
+    "always", "companion_hp_below", "owner_hp_below", "owner_in_combat",
+    "owner_has_item", "sees_hostile", "has_target", "room_is", "room_not",
+    "exit_exists", "tick_mod",
+})
+
+DRONELANG_ACTIONS = frozenset({
+    "follow", "assist", "attack", "gather", "guard", "rest", "say", "emote", "idle",
+})
+
+DRONELANG_ACTION_TARGET_REQUIRED = frozenset({"attack", "gather", "guard", "say", "emote"})
+DRONELANG_ACTION_TARGET_FORBIDDEN = frozenset({"follow", "assist", "rest", "idle"})
+
 HOST = "0.0.0.0"
 PORT = 8765
 # GM stream bind: loopback-only by default (no auth -- see SECURITY.md).
@@ -389,6 +409,13 @@ for nid, tmpl in WORLD["npcs"].items():
 
 COMPANIONS = WORLD.get("companions", {})
 
+# Deed each species consumes on adoption: (item id, refusal wording, species label).
+COMPANION_ADOPT_DEEDS = {
+    "wolf": ("wolf_pup", "a wolf pup", "wolf"),
+    "mule": ("mule_deed", "a mule deed", "pack mule"),
+    "sheep": ("sheep_deed", "a sheep deed", "sheep"),
+}
+
 
 def _sync_extra_spawns():
     """Rebuild hostile extra-spawn instances from MOB_EXTRA_SPAWNS.
@@ -656,9 +683,9 @@ _last_invite_prune = 0.0
 async def prune_market_orders(now=None):
     """Expire stale market listings (MARKET_ORDER_TTL_SECONDS).
 
-    Expired items go back to online sellers with a notice. Offline sellers
-    keep their listings until they return: there is no item bank, and
-    voiding player property is worse than listing it.
+    Expired items go back to online sellers with a notice (into the item
+    bank when their pack is full). Offline sellers keep their listings until
+    they return: voiding player property is worse than listing it.
     """
     global _last_market_prune
     now = now if now is not None else time.time()
@@ -677,12 +704,15 @@ async def prune_market_orders(now=None):
         if seller is None:
             continue
         market_orders.remove(o)
-        seller.inventory.append(o["item"])
+        in_pack = _deliver_item_or_bank(seller, o["item"])
         mark_scores_dirty()
         pruned += 1
         name = ITEM_DEFS.get(o["item"], {}).get("name", o["item"])
+        where = (
+            "back in your pack" if in_pack else "waiting in your item bank (pack full)"
+        )
         await send(seller, {"type": "message",
-                            "text": f"Your market order #{o['id']} ({name}) expired after a day unfilled; the item is back in your pack."})
+                            "text": f"Your market order #{o['id']} ({name}) expired after a day unfilled; the item is {where}."})
         await send(seller, stats_view(seller))
     for b in list(market_bids):
         if now - b.get("ts", now) <= MARKET_ORDER_TTL_SECONDS:
@@ -1441,12 +1471,28 @@ def _pack_full_error(player=None):
     return f"Your pack is full ({_inventory_cap(player)} units). Drop something first."
 
 
+def _deliver_item_or_bank(player, iid):
+    """Hand one item back to its owner: pack first, item bank when full."""
+    if not _pack_full(player):
+        player.inventory.append(iid)
+        return True
+    get_score_entry(player.name).setdefault("item_bank", []).append(iid)
+    return False
+
+
 def _inventory_cap(player):
     """Pack capacity with the active companion's mule bonus (#533)."""
     cap = INVENTORY_CAP
     if _companion_species(player) == "mule":
         cap += COMPANION_MULE_CARRY_BONUS
     return cap
+
+
+def _gather_yield_bonus(player):
+    """Extra harvest units from the active companion's mule bonus (#533)."""
+    if _companion_species(player) == "mule":
+        return COMPANION_MULE_GATHER_YIELD_BONUS
+    return 0
 
 
 def _player_defense(player):
@@ -1804,6 +1850,38 @@ def _companion_status_payload(owner):
         "downed_until": rec.get("downed_until", 0) if downed else 0,
         "revive_cost": _companion_revive_cost(rec, now),
         "room": owner.room if summoned else None,
+        "script": rec.get("script", ""),
+        "dronelang_error": rec.get("_dronelang_error", ""),
+    }
+
+
+def _companion_script_state(rec):
+    """Read-only DroneLang state (#535): none, active, or error."""
+    if not str(rec.get("script") or "").strip():
+        return "none"
+    if rec.get("_dronelang_error"):
+        return "error"
+    return "active"
+
+
+def _companion_view(player):
+    """Owner-facing companion sheet, or None when none is active (#535)."""
+    if not player or not player.name:
+        return None
+    rec = _companion_active(player.name)
+    if rec is None:
+        return None
+    species = str(rec.get("species") or "")
+    return {
+        "name": rec.get("name", ""),
+        "species": species,
+        "level": int(rec.get("level") or 1),
+        "hp": int(rec.get("hp") or 0),
+        "max_hp": _companion_max_hp(rec),
+        "attack": _companion_attack_power(rec),
+        "defense": _companion_defense(rec),
+        "passive": COMPANIONS.get(species, {}).get("passive"),
+        "script_state": _companion_script_state(rec),
     }
 
 
@@ -1920,6 +1998,389 @@ async def _return_companion_with_owner(owner):
     })
 
 
+# ---------------------------------------------------------------------------
+# Companion DroneLang parser/validator (#534)
+# ---------------------------------------------------------------------------
+
+class DroneLangError(Exception):
+    """Parse-time or runtime error for DroneLang scripts."""
+
+
+def _dronelang_tokenize(script: str):
+    """Tokenize a DroneLang script into (type, value) tuples."""
+    tokens = []
+    i = 0
+    while i < len(script):
+        ch = script[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch == '#':  # Comment to end of line
+            while i < len(script) and script[i] != '\n':
+                i += 1
+            continue
+        if ch in '(){}':
+            tokens.append((ch, ch))
+            i += 1
+            continue
+        if ch == ';':
+            tokens.append((';', ';'))
+            i += 1
+            continue
+        if ch == '=':
+            if i + 1 < len(script) and script[i + 1] == '=':
+                tokens.append(('==', '=='))
+                i += 2
+            else:
+                tokens.append(('=', '='))
+                i += 1
+            continue
+        if ch == '!':
+            if i + 1 < len(script) and script[i + 1] == '=':
+                tokens.append(('!=', '!='))
+                i += 2
+            else:
+                raise DroneLangError("Unexpected '!' (did you mean '!='?)")
+            continue
+        if ch == '<':
+            if i + 1 < len(script) and script[i + 1] == '=':
+                tokens.append(('<=', '<='))
+                i += 2
+            else:
+                tokens.append(('<', '<'))
+                i += 1
+            continue
+        if ch == '>':
+            if i + 1 < len(script) and script[i + 1] == '=':
+                tokens.append(('>=', '>='))
+                i += 2
+            else:
+                tokens.append(('>', '>'))
+                i += 1
+            continue
+        if ch.isalpha() or ch == '_':
+            start = i
+            while i < len(script) and (script[i].isalnum() or script[i] == '_'):
+                i += 1
+            tokens.append(('IDENT', script[start:i]))
+            continue
+        if ch.isdigit() or (ch == '-' and i + 1 < len(script) and script[i + 1].isdigit()):
+            start = i
+            i += 1
+            while i < len(script) and script[i].isdigit():
+                i += 1
+            tokens.append(('NUMBER', script[start:i]))
+            continue
+        if ch == '"':
+            start = i
+            i += 1
+            while i < len(script) and script[i] != '"':
+                if script[i] == '\\' and i + 1 < len(script):
+                    i += 2
+                else:
+                    i += 1
+            if i >= len(script):
+                raise DroneLangError("Unterminated string literal")
+            i += 1  # skip closing quote
+            tokens.append(('STRING', script[start:i]))
+            continue
+        raise DroneLangError(f"Unexpected character: {ch!r}")
+    tokens.append(('EOF', ''))
+    return tokens
+
+
+class DroneLangParser:
+    """Parser for the flat IF/ELSE DroneLang grammar."""
+    def __init__(self, tokens):
+        self.tokens = tokens
+        self.pos = 0
+        self.current = tokens[0] if tokens else ('EOF', '')
+        self.visits = 0
+        self.rules = []
+
+    def _advance(self):
+        self.pos += 1
+        if self.pos < len(self.tokens):
+            self.current = self.tokens[self.pos]
+
+    def _expect(self, typ, val=None):
+        if self.current[0] != typ or (val is not None and self.current[1] != val):
+            got = f"{self.current[0]}:{self.current[1]}" if self.current[0] != 'EOF' else 'EOF'
+            exp = f"{typ}:{val}" if val else typ
+            raise DroneLangError(f"Expected {exp}, got {got}")
+        self._advance()
+
+    def _check_visit(self):
+        self.visits += 1
+        if self.visits > DRONELANG_MAX_VISITS:
+            raise DroneLangError(f"Parse node visit budget exceeded ({DRONELANG_MAX_VISITS})")
+
+    def parse(self):
+        """Parse the script and return a list of rule dicts."""
+        self._check_visit()
+        while self.current[0] != 'EOF':
+            if len(self.rules) >= DRONELANG_MAX_RULES:
+                raise DroneLangError(f"Too many rules (max {DRONELANG_MAX_RULES})")
+            self.rules.append(self._parse_rule())
+        return self.rules
+
+    def _parse_rule(self):
+        self._check_visit()
+        if self.current[0] == 'IDENT' and self.current[1] == 'if':
+            self._advance()
+            self._expect('(')
+            pred = self._parse_predicate()
+            self._expect(')')
+            self._expect('{')
+            then_action = self._parse_action()
+            # Optional semicolon before closing brace
+            if self.current[0] == ';':
+                self._advance()
+            self._expect('}')
+            else_action = None
+            if self.current[0] == 'IDENT' and self.current[1] == 'else':
+                self._advance()
+                self._expect('{')
+                else_action = self._parse_action()
+                if self.current[0] == ';':
+                    self._advance()
+                self._expect('}')
+            self._expect(';')
+            return {"type": "if", "predicate": pred, "then": then_action, "else": else_action}
+        else:
+            raise DroneLangError("Expected 'if' at rule start")
+
+    def _parse_predicate(self):
+        self._check_visit()
+        # Predicate name
+        if self.current[0] != 'IDENT':
+            raise DroneLangError(f"Expected predicate name, got {self.current}")
+        name = self.current[1]
+        self._advance()
+        if name not in DRONELANG_PREDICATES:
+            raise DroneLangError(f"Unknown predicate: {name}")
+
+        # Parse arguments based on predicate
+        args = []
+        if name in ("companion_hp_below", "owner_hp_below", "tick_mod"):
+            self._expect('(')
+            if self.current[0] != 'NUMBER':
+                raise DroneLangError(f"Expected number argument for {name}")
+            args.append(int(self.current[1]))
+            self._advance()
+            self._expect(')')
+        elif name in ("owner_has_item", "room_is", "room_not", "exit_exists"):
+            self._expect('(')
+            if self.current[0] != 'STRING':
+                raise DroneLangError(f"Expected string argument for {name}")
+            args.append(self.current[1][1:-1])  # strip quotes
+            self._advance()
+            self._expect(')')
+        elif name not in ("always", "owner_in_combat", "sees_hostile", "has_target"):
+            raise DroneLangError(f"Unknown predicate: {name}")
+        return {"name": name, "args": args}
+
+    def _parse_action(self):
+        self._check_visit()
+        if self.current[0] != 'IDENT':
+            raise DroneLangError(f"Expected action name, got {self.current}")
+        name = self.current[1]
+        self._advance()
+        if name not in DRONELANG_ACTIONS:
+            raise DroneLangError(f"Unknown action: {name}")
+
+        args = []
+        if name in DRONELANG_ACTION_TARGET_REQUIRED:
+            self._expect('(')
+            if name in ("say", "emote"):
+                if self.current[0] != 'STRING':
+                    raise DroneLangError(f"Expected string argument for {name}")
+                args.append(self.current[1][1:-1])
+                self._advance()
+            else:
+                if self.current[0] != 'STRING':
+                    raise DroneLangError(f"Expected string argument for {name}")
+                args.append(self.current[1][1:-1])
+                self._advance()
+            self._expect(')')
+        elif name in DRONELANG_ACTION_TARGET_FORBIDDEN:
+            # No arguments
+            pass
+        else:
+            raise DroneLangError(f"Unknown action: {name}")
+        return {"name": name, "args": args}
+
+
+def dronelang_parse(script: str):
+    """Parse and validate a DroneLang script. Returns list of rules or raises DroneLangError."""
+    if len(script) > DRONELANG_MAX_CHARS:
+        raise DroneLangError(f"Script exceeds {DRONELANG_MAX_CHARS} character limit")
+    tokens = _dronelang_tokenize(script)
+    parser = DroneLangParser(tokens)
+    return parser.parse()
+
+
+# Runtime evaluation
+
+def _dronelang_eval_predicate(owner, rec, pred, now):
+    """Evaluate a single predicate. Returns True/False."""
+    name = pred["name"]
+    args = pred["args"]
+
+    if name == "always":
+        return True
+    if name == "companion_hp_below":
+        max_hp = _companion_max_hp(rec)
+        return rec["hp"] < max_hp * args[0] / 100
+    if name == "owner_hp_below":
+        return owner.hp < owner.max_hp * args[0] / 100
+    if name == "owner_in_combat":
+        # Owner is in combat if they have a COMPANION_TARGETS entry
+        return owner.name.lower() in COMPANION_TARGETS
+    if name == "owner_has_item":
+        return any(args[0].lower() in ITEM_DEFS.get(i, {}).get("name", "").lower()
+                   for i in owner.inventory)
+    if name == "sees_hostile":
+        return any(npc.get("hostile") for npc in npcs_in_room(owner.room))
+    if name == "has_target":
+        return _companion_assist_target(owner) is not None
+    if name == "room_is":
+        return owner.room == args[0]
+    if name == "room_not":
+        return owner.room != args[0]
+    if name == "exit_exists":
+        exits = ROOMS.get(owner.room, {}).get("exits", {})
+        return args[0] in exits
+    if name == "tick_mod":
+        return int(now) % args[0] == 0
+    return False
+
+
+async def _dronelang_exec_action(owner, rec, action, now):
+    """Execute a single action. Returns True if action was taken."""
+    name = action["name"]
+    args = action["args"]
+
+    if name == "idle":
+        return True  # Do nothing this tick
+    if name == "follow":
+        # Already following by default when summoned
+        return True
+    if name == "assist":
+        target = _companion_assist_target(owner)
+        if target:
+            await _companion_attack_npc(owner, rec, target)
+            return True
+        return False
+    if name == "attack":
+        # Attack NPCs only - find hostile in room matching name
+        target_name = args[0].lower()
+        for npc in npcs_in_room(owner.room):
+            if npc.get("hostile") and target_name in npc["name"].lower():
+                await _companion_attack_npc(owner, rec, npc)
+                return True
+        return False
+    if name == "gather":
+        # Gather from a node matching the name
+        node_name = args[0].lower()
+        for node in gather_nodes_in_room(owner.room):
+            if (node_name in node["id"].lower() or
+                node_name in node["item"].lower() or
+                node_name in _iname(node["item"]).lower()):
+                if _pack_full(owner):
+                    return False
+                node["available"] = False
+                node["respawn_at"] = now + float(node.get("respawn_seconds", 30))
+                qty = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+                qty = min(qty, _inventory_cap(owner) - _inventory_units(owner))
+                owner.inventory.extend([node["item"]] * qty)
+                await send(owner, {"type": "message", "text": f"{rec['name']} gathers {qty}x {_iname(node['item'])}."})
+                await send(owner, stats_view(owner))
+                await sync_room(owner.room)
+                return True
+        return False
+    if name == "guard":
+        # Guard: stay in current room, attack any hostile that enters
+        # This is handled by the default assist behavior when owner is attacked
+        # Mark as guarding - we can track this in rec
+        rec["_dronelang_guard"] = args[0]  # room to guard
+        return True
+    if name == "rest":
+        if not ROOMS.get(owner.room, {}).get("rest_area"):
+            return False
+        if rec["hp"] >= _companion_max_hp(rec):
+            return False
+        rec["hp"] = min(_companion_max_hp(rec), rec["hp"] + 5)
+        mark_companions_dirty()
+        await send(owner, {"type": "message", "text": f"{rec['name']} rests and recovers 5 HP."})
+        return True
+    if name == "say":
+        await broadcast_room(owner.room, {"type": "message", "text": f"{rec['name']}: {args[0]}"})
+        return True
+    if name == "emote":
+        await broadcast_room(owner.room, {"type": "message", "text": f"{rec['name']} {args[0]}"})
+        return True
+    return False
+
+
+async def dronelang_tick(owner, rec, now=None):
+    """Execute the companion's DroneLang script for one tick.
+    Returns (action_taken, error_message)."""
+    script = rec.get("script", "")
+    if not script:
+        return (False, None)  # No script, use default behavior
+
+    try:
+        rules = dronelang_parse(script)
+    except DroneLangError as e:
+        # Parse error at runtime - shouldn't happen if validated on set, but handle it
+        rec["_dronelang_error"] = str(e)
+        mark_companions_dirty()
+        return (False, str(e))
+
+    for visits, rule in enumerate(rules, 1):
+        if visits > DRONELANG_MAX_VISITS:
+            rec["_dronelang_error"] = f"Runtime node visit budget exceeded ({DRONELANG_MAX_VISITS})"
+            mark_companions_dirty()
+            return (False, rec["_dronelang_error"])
+
+        pred = rule["predicate"]
+        try:
+            result = _dronelang_eval_predicate(owner, rec, pred, now or time.time())
+        except Exception as e:  # noqa: BLE001 - a bad predicate must not end the tick
+            rec["_dronelang_error"] = f"Predicate error: {e}"
+            mark_companions_dirty()
+            return (False, rec["_dronelang_error"])
+
+        if result:
+            try:
+                action_taken = await _dronelang_exec_action(owner, rec, rule["then"], now or time.time())
+                if action_taken:
+                    rec.pop("_dronelang_error", None)
+                    mark_companions_dirty()
+                    return (True, None)
+            except Exception as e:  # noqa: BLE001 - a bad action must not end the tick
+                rec["_dronelang_error"] = f"Action error: {e}"
+                mark_companions_dirty()
+                return (False, rec["_dronelang_error"])
+        elif rule["else"] is not None:
+            try:
+                action_taken = await _dronelang_exec_action(owner, rec, rule["else"], now or time.time())
+                if action_taken:
+                    rec.pop("_dronelang_error", None)
+                    mark_companions_dirty()
+                    return (True, None)
+            except Exception as e:  # noqa: BLE001 - a bad action must not end the tick
+                rec["_dronelang_error"] = f"Else-action error: {e}"
+                mark_companions_dirty()
+                return (False, rec["_dronelang_error"])
+
+    # No rule matched or no action taken
+    rec.pop("_dronelang_error", None)
+    mark_companions_dirty()
+    return (False, None)
+
+
 async def tick_companions(now=None):
     now = now if now is not None else time.time()
     for key in list(COMPANION_PLAYERS):
@@ -1940,9 +2401,26 @@ async def tick_companions(now=None):
         owner = _online_player(key)
         if not owner or key not in COMPANION_SUMMONED:
             continue
-        target = _companion_assist_target(owner)
-        if target is not None:
-            await _companion_attack_npc(owner, rec, target)
+        # DroneLang execution (#534)
+        action_taken, error = await dronelang_tick(owner, rec, now)
+        if error:
+            # Runtime error: log once and fall back to default-assist
+            if not rec.get("_dronelang_error_logged"):
+                vlog(f"Companion {rec['name']} DroneLang error: {error} (falling back to default-assist)")
+                rec["_dronelang_error_logged"] = True
+                mark_companions_dirty()
+            target = _companion_assist_target(owner)
+            if target is not None:
+                await _companion_attack_npc(owner, rec, target)
+        elif not action_taken:
+            # No script or no rule matched: default-assist behavior
+            target = _companion_assist_target(owner)
+            if target is not None:
+                await _companion_attack_npc(owner, rec, target)
+        else:
+            # Script executed an action successfully
+            rec.pop("_dronelang_error_logged", None)
+            mark_companions_dirty()
 
 
 def _best_ask_for_bid(iid, buyer_name, max_price):
@@ -2225,6 +2703,7 @@ def stats_view(player):
             for category, value in player.active_buffs.items()
             if value.get("remaining", 0) > 0
         },
+        "companion": _companion_view(player),
         "death_preview": death_preview(player),
     }
 
@@ -2660,12 +3139,7 @@ async def cmd_login(player, msg):
         player.gold += entry["gold_bank"]
         entry["gold_bank"] = 0
         mark_scores_dirty()
-    banked = entry.get("item_bank", []) or []
-    if banked:
-        player.inventory.extend(banked)
-        entry["item_bank"] = []
-        mark_scores_dirty()
-        await send(player, {"type": "message", "text": f"{len(banked)} stored item(s) arrive in your pack."})
+    banked = list(entry.get("item_bank") or [])
     if not entry.get("starting_purse_claimed"):
         # First-ever login only (flag persists in scores.json): returning
         # characters keep whatever they hold. TTL-evicted entries re-grant
@@ -2683,6 +3157,29 @@ async def cmd_login(player, msg):
     player.name = name
     player.logged_in = True
     player.room = dest
+    if banked:
+        # The bank can hold more than one pack (fills while pack-full keep
+        # landing there), so hand over what fits and leave the rest banked;
+        # dumping it all would raise the carry cap on every relog (#462).
+        delivered = 0
+        for iid in banked:
+            if not _inventory_room(player):
+                break
+            player.inventory.append(iid)
+            delivered += 1
+        held = len(banked) - delivered
+        entry["item_bank"] = banked[delivered:]
+        mark_scores_dirty()
+        if not delivered:
+            text = f"Your pack is full; {held} stored item(s) stay banked."
+        elif held:
+            text = (
+                f"{delivered} stored item(s) arrive in your pack; "
+                f"{held} stay banked (pack full)."
+            )
+        else:
+            text = f"{delivered} stored item(s) arrive in your pack."
+        await send(player, {"type": "message", "text": text})
     if player.room not in entry["rooms_visited"]:
         entry["rooms_visited"].append(player.room)
     sync_player_level(player)
@@ -3026,9 +3523,10 @@ async def cmd_gather(player, msg):
     node["available"] = False
     node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
     quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+    quantity += _gather_yield_bonus(player)
     # Multi-yield must not overflow the pack (#232): truncate to the
     # remaining space (a full pack already refused above, so >= 1 fits).
-    quantity = min(quantity, _inventory_cap(player) - _inventory_units(player))
+    quantity = min(quantity, _inventory_room(player))
     player.inventory.extend([node["item"]] * quantity)
     item_name = _iname(node["item"])
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
@@ -3578,10 +4076,31 @@ async def cmd_craft(player, msg):
     _take_craft_inputs(player, recipe["inputs"])
     result = recipe["result"]
     output_qty = _craft_output_qty(recipe)
-    player.inventory.extend([result] * output_qty)
-    output_text = _craft_output_text(result, output_qty)
-    await send(player, {"type": "message", "text": f"You craft {output_text}!"})
     entry = get_score_entry(player.name)
+    # Same rule as the job path (#501): never push the pack past the cap;
+    # whatever does not fit waits for craft collect.
+    delivered = min(output_qty, _inventory_room(player))
+    if delivered:
+        player.inventory.extend([result] * delivered)
+    held = output_qty - delivered
+    if held:
+        seq = int(entry.get("craft_job_seq", 0) or 0) + 1
+        entry["craft_job_seq"] = seq
+        _queue_craft_pending(entry, seq, rid, result, held, time.time(), "output", True)
+    output_text = _craft_output_text(result, output_qty)
+    if not delivered:
+        text = (
+            f"You craft {output_text}, but your pack is full; "
+            "use craft collect when you have room."
+        )
+    elif held:
+        text = (
+            f"You craft {_craft_output_text(result, delivered)}; "
+            f"{_craft_output_text(result, held)} held for craft collect."
+        )
+    else:
+        text = f"You craft {output_text}!"
+    await send(player, {"type": "message", "text": text})
     await _record_craft_completion(
         player.name, rid, result, recipe["inputs"], recipe.get("tier", 0),
         output_qty, entry,
@@ -3964,23 +4483,17 @@ async def cmd_companion(player, msg):
         if rec is not None:
             await send(player, {"type": "error", "text": "You already have a companion. Dismiss it before adopting a new one."})
             return
-        if species == "wolf":
-            if "wolf_pup" not in player.inventory:
-                await send(player, {"type": "error", "text": "You need a wolf pup to adopt a wolf companion."})
-                return
-            player.inventory.remove("wolf_pup")
-        elif species == "mule":
-            if "mule_deed" not in player.inventory:
-                await send(player, {"type": "error", "text": "You need a mule deed to adopt a pack mule companion."})
-                return
-            player.inventory.remove("mule_deed")
-        elif species == "sheep":
-            if "sheep_deed" not in player.inventory:
-                await send(player, {"type": "error", "text": "You need a sheep deed to adopt a sheep companion."})
-                return
-            player.inventory.remove("sheep_deed")
-        else:
+        # The deed is only checked here and spent once the store has accepted
+        # the adoption: spending it earlier lost the deed when the companion
+        # table was full.
+        deed = COMPANION_ADOPT_DEEDS.get(species)
+        if deed is None:
             await send(player, {"type": "error", "text": "Cannot adopt that companion species."})
+            return
+        iid, deed_name, label = deed
+        if iid not in player.inventory:
+            need = f"You need {deed_name} to adopt a {label} companion."
+            await send(player, {"type": "error", "text": need})
             return
         store = _companion_store(player.name, create=True)
         if store is None:
@@ -3999,6 +4512,7 @@ async def cmd_companion(player, msg):
         if rec is None:
             await send(player, {"type": "error", "text": "Could not adopt that companion."})
             return
+        player.inventory.remove(iid)
         store["companions"] = [rec]
         store["active"] = 0
         store["updated_at"] = time.time()
@@ -4055,16 +4569,61 @@ async def cmd_companion(player, msg):
             "text": f"You pay {cost} gold to revive {rec['name']}{note}.",
         })
         return
-    await send(player, {"type": "error", "text": "companion action must be summon, dismiss, status, or revive."})
+    if action == "script":
+        sub = str(msg.get("sub") or "").strip().lower()
+        if sub == "set":
+            script = str(msg.get("script") or "")
+            if not script:
+                await send(player, {"type": "error", "text": "Usage: companion script set <script>"})
+                return
+            if rec is None:
+                await send(player, {"type": "error", "text": "You have no companion."})
+                return
+            try:
+                rules = dronelang_parse(script)
+            except DroneLangError as e:
+                await send(player, {"type": "error", "text": f"Invalid script: {e}"})
+                return
+            rec["script"] = script[:DRONELANG_MAX_CHARS]
+            rec.pop("_dronelang_error", None)
+            rec.pop("_dronelang_error_logged", None)
+            mark_companions_dirty()
+            await send(player, {"type": "message", "text": f"Script set on {rec['name']} ({len(rules)} rules)."})
+            return
+        if sub == "show":
+            if rec is None:
+                await send(player, {"type": "error", "text": "You have no companion."})
+                return
+            script = rec.get("script", "")
+            if script:
+                await send(player, {"type": "message", "text": f"Current script:\n{script}"})
+            else:
+                await send(player, {"type": "message", "text": "No script set."})
+            return
+        if sub == "clear":
+            if rec is None:
+                await send(player, {"type": "error", "text": "You have no companion."})
+                return
+            rec["script"] = ""
+            rec.pop("_dronelang_error", None)
+            rec.pop("_dronelang_error_logged", None)
+            mark_companions_dirty()
+            await send(player, {"type": "message", "text": "Script cleared."})
+            return
+        await send(player, {"type": "error", "text": "companion script subcommand must be set, show, or clear."})
+        return
+    await send(player, {"type": "error", "text": "companion action must be summon, dismiss, status, revive, adopt, or script."})
 
 
 async def cmd_help(player, msg):
     await send(player, {"type": "help", "text": (
         "Commands: login look move attack take gather drop equip use rest heal buy sell "
-        "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt] "
+        "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
-        "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest"
+        "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
+        "stats lists your active companion: name, species, level, hp, attack, "
+        "defense, passive, script state."
     )})
 
 # ---------------------------------------------------------------------------
@@ -4699,9 +5258,16 @@ async def cmd_market_cancel(player, msg):
         # otherwise a variant-case seller's items strand un-cancellable.
         if o["id"] == oid and o["seller"].lower() == player.name.lower():
             market_orders.remove(o)
-            player.inventory.append(o["item"])
+            in_pack = _deliver_item_or_bank(player, o["item"])
             mark_scores_dirty()
-            await send(player, {"type": "message", "text": f"Cancelled order #{oid}."})
+            if in_pack:
+                text = f"Cancelled order #{oid}."
+            else:
+                text = (
+                    f"Cancelled order #{oid}; pack full, "
+                    f"{_iname(o['item'])} deposited in your item bank."
+                )
+            await send(player, {"type": "message", "text": text})
             await send(player, stats_view(player))
             return
     for b in list(market_bids):
@@ -5569,6 +6135,7 @@ def world_snapshot():
             "adaptive_score": adaptive_score(p),
             "variety": round(compute_variety(e), 2), "room": p.room,
             "last_action": (track_log.get(p.name, [{}])[-1].get("cmd", "") if track_log.get(p.name) else ""),
+            "companion": _companion_view(p),
             "recent_actions": list(track_log.get(p.name, [])),
         })
     scores = sorted(

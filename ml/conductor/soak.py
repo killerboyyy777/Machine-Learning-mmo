@@ -196,7 +196,14 @@ async def status_logger(cond, path, interval, run=None):
                 alive=snap["alive"],
                 duration=snap["uptime"],
             )
-        await asyncio.sleep(interval)
+        # Sliced so a run that ends mid-interval does not hold the process
+        # (and the caller's gather) open for the rest of it: the default
+        # 300s interval otherwise adds five idle minutes to every smoke run.
+        slept = 0.0
+        while cond.status()["running"] and slept < interval:
+            step = min(1.0, interval - slept)
+            await asyncio.sleep(step)
+            slept += step
     final = summarize(cond)
     _append_jsonl(path, final)
     if run is not None:

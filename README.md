@@ -2,10 +2,6 @@
 
 [![Tests](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml/badge.svg)](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml)
 
-[![BTC Donate](https://img.shields.io/badge/BTC-Donate-f7931a?logo=bitcoin&style=flat-square)](https://www.blockchain.com/explorer/addresses/btc/bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg)
-[![LTC Donate](https://img.shields.io/badge/LTC-Donate-a6a9aa?logo=litecoin&style=flat-square)](https://live.blockcypher.com/ltc/address/ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4)
-[![Steam Donate](https://img.shields.io/badge/Steam-Donate-000000?logo=steam&style=flat-square)](https://steamcommunity.com/tradeoffer/new/?partner=1211192445&token=T9Hiu3Oz)
-
 A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
 loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
@@ -27,52 +23,9 @@ python3 server.py          # world on ws://0.0.0.0:8765
 
 Run `python start.py` (any OS) for the server + banner, or add
 `--roles "gather:8,dungeon:4,market:3,commissioner:2"` to also launch
-bots. Edit `world.json` for your own rooms/NPCs/items (loaded once at
-startup). `/api/state` also exposes `craft_history` and
-`commission_history` rings (seq-ordered, newest last); each bounty on
-the commissions board carries a `progress` summary (leading hunter,
-kills vs required, display-only -- fills still verify from kill
-timestamps). ML observations are unchanged by them.
-
-### Craft jobs
-
-`craft <recipe>` stays instant for existing clients and the ML env. Tick-based
-jobs are opt-in through the same command:
-
-```json
-{"cmd": "craft", "action": "start", "recipe": "arrows"}
-{"cmd": "craft", "action": "status"}
-{"cmd": "craft", "action": "collect"}
-{"cmd": "craft", "action": "cancel", "id": 1}
-```
-
-A player can run three jobs at once. Inputs are escrowed when the job starts;
-progress follows the server's 3-second tick loop (`recipe.ticks`, default 5).
-Cancelling refunds only the work not yet run, rounded down per input. Finished
-output and refunds fill the pack up to the carry cap, and any remainder waits in
-`craft_pending` and is delivered on login, look, or stats (or by `collect`).
-Jobs live in `scores.json`, so they resume after a restart.
-
-### Companions
-
-`companion <action>` drives the single companion a player can own (#531):
-
-```json
-{"cmd": "companion", "action": "summon"}
-{"cmd": "companion", "action": "status"}
-{"cmd": "companion", "action": "dismiss"}
-{"cmd": "companion", "action": "revive"}
-```
-
-A summoned companion follows its owner between rooms. It assists only fights the
-owner started: an `attack` arms it against that NPC, and so does a hit on the
-owner or the companion, for five seconds. It never pulls an idle mob. Assist
-damage is credited to the owner and stops at 1 HP, so the killing blow (and its
-loot and quest credit) stays with the player. Companions take a 25% share of
-hostile NPC attacks. At 0 HP a companion retreats for 5 minutes and then
-returns at 25% HP, or `revive` pays `ceil(remaining/60) * 10` gold into the
-treasury to bring it back immediately. Summoning never takes a party slot.
-Records live in `companions.json` (version 1).
+bots. Edit `world.json` for your own rooms/NPCs/items. See the
+[wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) for
+details on game systems, ML guide, and API documentation.
 
 ## Docker (full stack, zero install)
 
@@ -105,176 +58,58 @@ TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
 
-## Training runs
+## Companions
 
-Every trainer writes a run record under `runs/<run_id>/` (gitignored):
-`run.json` for identity, seed, hyper-parameters and git provenance, plus an
-append-only `metrics.jsonl` series. That makes two runs comparable after the
-fact instead of by scrolling back through stdout.
+Adopt a wolf, mule, or sheep companion, then summon it. Companions earn a
+share of your XP and level up to 10 (see the wiki). `stats`
+returns a read-only companion sheet
+(`name, species, level, hp, max_hp, attack, defense, passive, script_state`),
+and the dashboard Agents tab plus the TUI Agents panel show the same fields.
+DroneLang scripts drive companion actions via
+`companion script set|show|clear`.
 
-```bash
-python3 ml/ml_client.py --seed 7 --steps 300    # reproducible run
-python3 torch_agents/torch_farm.py --runs-dir /tmp/pilot-runs
-python3 ml/ml_client.py --no-run-record         # train without recording
-```
+## Balance gate
 
-`--seed`, `--runs-dir` and `--no-run-record` work on `ml/ml_client.py`,
-`ml/ml_botfarm.py`, `ml/conductor/soak.py`, `torch_agents/dqn_agent.py` and
-`torch_agents/torch_farm.py`. `--seed` is independent of recording.
-
-The dashboard Runs tab lists every run; tick up to 24 to overlay them on one
-chart and diff them in a wide table. The column set follows the run kinds
-present (`dqn`/`torch_farm`/`ml_client` report steps and reward,
-`ml_botfarm` fitness and top score, `soak` episodes and mean reward), and each
-metric is ranked in the direction that is actually better, so a loss is not
-crowned as a winner. `GET /api/runs` serves the same data; it returns the runs
-directory by name only, never an absolute path.
-
-## Watching from a terminal (TUI)
-
-The dashboard is a browser. The TUI is the same view over ssh: `tui/` reads
-`GET /api/state` with the standard library and renders it with rich, so it
-needs no browser, no X11 and no websocket client on the far end.
+`ml/balance.py` is the v0.11.0 release gate (#537). It runs a mixed-agent
+profile against a live server, samples `/api/state` plus the loopback GM
+stream, scores a scenario matrix against explicit (provisional) PASS/FAIL
+thresholds, writes `balance/balance_report.json`, and exits nonzero on FAIL.
+The nightly soak (`ml/conductor/soak.py`) still owns liveness and is
+unchanged.
 
 ```bash
-python3 -m tui                     # attach to 127.0.0.1:8766
-python3 start.py tui              # same, through the launcher
-python3 -m tui --host 10.0.0.5     # a server somewhere else
-python3 -m tui --once --width 100  # one frame to stdout, then exit
+python3 ml/balance.py matrix                 # scenarios, profiles, skips
+TEXTMMO_GM_SEED=700 python3 server.py &     # fresh world
+python3 ml/balance.py run --profile smoke   # 10 min, 10 agents
+python3 ml/balance.py run --profile gate    # 4h x 20 agents x seeds 700/701/702
+python3 ml/balance.py baseline --seed 700 --commit "$(git rev-parse --short HEAD)" \
+  --out balance/baseline-08f7453.json
 ```
 
-The tab strip mirrors the dashboard tabs one for one (Overview, World, Players,
-Market, Dungeons, Agents, Quests, Crafting, Config, Runs, GM), and every tab has
-a panel of its own. Config and Runs fetch their payloads from `GET /api/config`
-and `GET /api/runs` when the tab opens (and again on `r`); the rest come out of
-`/api/state`. A test parses `dashboard.html` and fails if the two tab lists ever
-drift.
-
-```text
-left/right or tab   switch tabs
-r                   force a snapshot refresh now
-p                   pause the poll loop (freeze the last good frame)
-q                   quit
-```
-
-Snapshots are fetched on a background thread and the last good one is kept, so
-a server restart shows a stale frame instead of a blank screen. The status line
-says which state you are in: `live`, `stale (Ns)`, `paused`, or the fetch
-error. Nothing in the TUI writes to the server; the GM tab is a view for now.
-
-`rich` is an ops-tooling dependency, installed with `requirements.txt`. No
-engine path imports it: the server still speaks only websockets, and a test
-greps the engine, ML and agent trees to keep it that way.
-
-## Driving a character from an MCP client
-
-`harness/` exposes one game character over MCP (stdio), so an MCP-capable
-assistant can observe and act without a custom client. The bridge speaks the
-same protocol v2 WebSocket as any player; `server.py` is unchanged.
+Every later scenario is compared to the stored v0.10.0 baseline, not to
+vibes:
 
 ```bash
-python3 -m harness --url ws://127.0.0.1:8765 --name ScoutLLM \
-    --token-env TEXTMMO_BOT_TOKEN
+python3 ml/balance.py evaluate --measurements balance/measurements-smoke-700.json \
+  --baseline balance/baseline-08f7453.json
 ```
 
-The URL defaults to loopback; a non-loopback `ws://` host needs
-`--allow-remote` because the game transport is plaintext. The token is read
-from the named environment variable, never from argv, and is never logged.
-One process owns one character. Calls are serialized because the game protocol
-has no request ids. stdout is the MCP channel; logs go to stderr.
+Thresholds are provisional until the owner confirms them (issue #537
+section 4). They live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges
+a JSON override without editing code. Scenarios that depend on unlanded work
+(NPC AI v2 #536) or missing telemetry (acquisition/drop rates #532, item and
+gold conservation, companion damage share) are reported as skipped with the
+reason, never silently passed. The coverage check still fails a scenario that
+was supposed to produce a measurement and produced none.
 
-The skeleton exposes two tools, `game_look` and `game_move`, and the cached
-`game://room` resource. The full 34-tool surface and the other observation
-resources are mapped in #489 and land after the skeleton is reviewed. The
-offline proof is `python tests/test_harness.py` (fake WebSocket server plus a
-real stdio round-trip).
+## Architecture
 
-## Editing configuration in the browser
+The engine is built as a stateless-ish WebSocket server that manages a persistent world state.
+- **Server**: Python based, handling JSON-RPC like messages.
+- **Dashboard**: Static HTML/JS providing real-time monitoring via `/api/state`.
+- **ML Stack**: A layered approach with a Gym environment wrapping the game protocol, allowing DQN and other agents to play the game.
 
-The dashboard Config tab edits `server_config.json` and `ml/ml_config.json`
-directly, so you do not have to hand-edit JSON to try a value. It renders the
-same 67 server tunables (and 6 ML ones) the loaders read, with the type, range
-and help text for each field, and it flags which keys are overridden versus
-still at their code default.
-
-Three presets -- Balanced, Fast Training and Economy Focus -- stage their values
-into the form for review; nothing is written until you press Save. A field with
-a reset button can be dropped back to the code default, which removes the
-override from the file rather than pinning a copy of it.
-
-```text
-GET  /api/config    read the schema, current values, presets (no-store)
-POST /api/config    {"file": "server", "edits": {"economy.TAX_RATE": "0.2"}}
-                   a null value drops the override
-```
-
-Two things to know before you edit a live server:
-
-- Saves are written to disk but not applied to the running process. Both loaders
-  read config at startup, so the reply and the UI both tell you to restart.
-- Writes require a request from the machine the server runs on with a local
-  `Origin`. Reached from anywhere else, `GET /api/config` is read-only and
-  `editable` comes back `false`.
-
-Files are edited surgically: only the lines you changed are rewritten, so
-unrelated keys keep their formatting and a value that parses the same as what
-is already there writes zero bytes. That matters because `ml/versioning.py`
-hashes the raw config bytes into the checkpoint `config_hash`, so a
-reformatted-but-equivalent file would invalidate every saved model.
-
-## Starting training in the browser
-
-The dashboard Agents tab has a Start training panel that launches
-`torch_agents/torch_farm.py` without a terminal. You set the agent count,
-step budget (0 means run until you press Stop), seed and checkpoints; pick a
-preset to stage values into the form, then press Start. The panel shows the
-pid, elapsed time and exit code, and Stop signals exactly the process the
-server started.
-
-```text
-GET  /api/trainers      schema, presets, checkpoints, editable (LAN read)
-GET  /api/train/status  running, pid, elapsed, exit code (LAN read)
-POST /api/train/start   {"agents": 4, "steps": 0, "seed": 7}
-POST /api/train/stop    {}
-```
-
-The request carries field values only. The server builds the command line
-from them, refuses unknown keys and out-of-range numbers, and never runs a
-shell. Checkpoints are restricted to `torch_agents/`, `ml/` and
-`checkpoints/` and to `.pt`, `.pth`, `*weights.json` or `*best.json` names,
-because the trainer overwrites whatever `--weights` points at; the defaults
-match `torch_farm.py`'s own, so a dashboard fleet and a CLI fleet resume each
-other. Start and Stop need a loopback browser, the same rule as config
-writes; the reads stay LAN-visible.
-
-The trainer runs as a child process in its own process group, so stopping it
-can never signal the game server. Its stdout is detached, so a chatty trainer
-does not flood the server log. Note that a running trainer is not remembered
-across a server restart: restart the server only after pressing Stop.
-
-## Game modes
-
-Rulesets layered on the engine live in `ml/modes/` (seam contract and
-registry in `ml/modes/__init__.py`). `arena` is the first skeleton:
-staged PvP bouts with ledger-only scoring, so engine score, XP, and
-gold stay untouched. Engine call-site wiring is still a follow-up;
-see issue #474 for the seam design and what lands next.
-
-## Docs (wiki)
-
-The README is intentionally short — everything lives in the
-[wiki](../../wiki):
-
-| Guide | Contents |
-|---|---|
-| [Getting Started](../../wiki/Getting-Started) | Install, dashboard, first bot/LLM client |
-| [Protocol](../../wiki/Protocol) | Every command + server message, GM stream |
-| [Game Systems](../../wiki/Game-Systems) | Equipment, carry cap, ammo, world-building, dungeons, leveling, market, quests, scoring, multiplayer, capacity, accounts |
-| [ML Guide](../../wiki/ML-Guide) | Env, reward modes, custom reward formula, curriculum, agents, DQN+curiosity, eval, PBT, conductor, soak tests |
-| [Configuration](../../wiki/Configuration) | `server_config.json`, `ml_config.json`, env vars, ports |
-| [Testing](../../wiki/Testing) | Suites, CI, live-test procedure |
-| [Dashboard](../../wiki/Dashboard) | Panels, `/api/state`, GM tab, `/health`, Runs tab, Config tab |
-| [Troubleshooting](../../wiki/Troubleshooting) | 0 players, wedges, ghosts, stale checkpoints, ports |
+See the [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) for deep-dives into the protocol and ML implementation.
 
 ## Community
 

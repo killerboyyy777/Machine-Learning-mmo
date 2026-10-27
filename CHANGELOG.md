@@ -3,6 +3,19 @@
 All notable changes to the text MMO engine are recorded here.
 
 ## Unreleased
+- Balance gate harness (#537): `ml/balance.py` adds the release-gate
+  scenario matrix (economy, combat, craft, market, liveness, plus observed
+  progression/party) with explicit provisional thresholds from issue #537:
+  zero item/gold conservation drift, treasury band and reserve sink,
+  deaths/hour, companion damage share, craft refund/input loss, median
+  spread, trade volume and wash trades, same-seed determinism, and liveness.
+  It samples `/api/state` and the loopback GM stream, writes
+  `balance/balance_report.json`, exits nonzero on FAIL, and diffs every run
+  against `balance/baseline-08f7453.json`; `baseline` captures a new
+  reference. Unlanded or untapped telemetry (NPC AI v2 #536, acquisition
+  drops, conservation counters) is reported as skipped with the reason, and
+  a coverage check fails a scenario that produced no measurement. The
+  nightly soak (`ml/conductor/soak.py`) is unchanged and stays liveness-only.
 - Companions (#531): one levelable companion per player, persisted in
   `companions.json` (version 1, atomic save, 5000-player bound, list-ready
   records) and driven by `companion summon|dismiss|status|revive`. A summoned
@@ -13,6 +26,12 @@ All notable changes to the text MMO engine are recorded here.
   share of hostile attacks and retreat for 300s when downed. Revive costs
   `ceil(remaining/60) * 10` gold into the treasury; owner death returns the
   companion free. No out-of-combat regen in v1.
+- Companion surfaces (#535): `stats` now returns a read-only `companion`
+  object (`name, species, level, hp, max_hp, attack, defense, passive,
+  script_state`) or `null` when none is active. `script_state` is `none`
+  (no DroneLang script), `active`, or `error` (last script tick failed).
+  The same sheet rides `/api/state`, so the dashboard Agents tab and the TUI
+  Agents panel render it without new commands or actions.
 - Craft jobs (#501): crafting can now run as an opt-in tick-based queue while
   `craft <recipe>` stays instant for existing clients and the ML env. Jobs
   persist in `scores.json`, cap at three per player, escrow inputs at start,

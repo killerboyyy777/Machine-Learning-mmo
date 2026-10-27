@@ -50,10 +50,10 @@
   },
 
   "dungeon": {
-    "DUNGEON_BASE_HP": 20,
-    "DUNGEON_BASE_ATK": 4,
-    "DUNGEON_HP_GROWTH": 0.35,
-    "DUNGEON_ATK_GROWTH": 0.5,
+    "DUNGEON_BASE_HP": 12,
+    "DUNGEON_BASE_ATK": 2,
+    "DUNGEON_HP_GROWTH": 0.07,
+    "DUNGEON_ATK_GROWTH": 0.055,
     "DUNGEON_MAX_FLOOR": 50,
     "WARDEN_HP": 350,
     "WARDEN_ATK": 28,

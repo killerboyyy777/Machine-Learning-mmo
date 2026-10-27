@@ -739,6 +739,22 @@ def render_agents(snapshot, rows=ACTIVITY_ROWS):
     )
 
 
+def _companion_cell(player):
+    companion = player.get("companion")
+    if not isinstance(companion, dict):
+        return "-"
+    passive_name = companion.get("passive")
+    passive = f" {passive_name}" if passive_name else ""
+    return (
+        f"{companion.get('name') or '?'} ({companion.get('species') or '?'} "
+        f"lv{companion.get('level') or 1}) "
+        f"{_as_float(companion.get('hp')):.0f}/{_as_float(companion.get('max_hp')):.0f}hp "
+        f"{_as_float(companion.get('attack')):.0f}atk "
+        f"{_as_float(companion.get('defense')):.0f}def{passive} "
+        f"script {companion.get('script_state') or 'none'}"
+    )
+
+
 def _agents_table(snapshot):
     players = [p for p in (snapshot.get("players") or []) if isinstance(p, dict)]
     if not players:
@@ -755,6 +771,7 @@ def _agents_table(snapshot):
             ("hp", {"justify": "right", "no_wrap": True}),
             ("room", {"overflow": "ellipsis", "style": "dim"}),
             ("last action", {"overflow": "ellipsis"}),
+            ("companion", {"overflow": "ellipsis"}),
         ]
     )
     for rank, player in enumerate(
@@ -771,6 +788,7 @@ def _agents_table(snapshot):
             f"{_as_float(player.get('hp')):.0f}/{_as_float(player.get('max_hp')):.0f}",
             str(player.get("room") or "-"),
             str(player.get("last_action") or "-"),
+            _companion_cell(player),
         )
     return table
 
