@@ -68,3 +68,13 @@ python ml/conductor/soak.py --agents 20 --duration 3600 --seed 700 --min-agents 
   log, `scores.json`) stay outside git; this file is the distilled snapshot.
 - Liveness gate was 16/20 (nightly uses 40/50); the balance read is the
   per-type rewards plus the economy counters above.
+
+## Harness
+
+`ml/balance.py` (#537) is the scenario-matrix gate that compares later runs
+against this file (`--baseline balance/baseline-08f7453.json`) and writes
+`balance/balance_report.json`. The baseline itself was captured with the
+nightly soak driver and distilled into the JSON above; raw run logs stay
+outside git. Generated reports land in `balance/` on purpose (the directory
+is not ignored) so a release run can commit the report or attach it as a CI
+artifact; conductor state goes to `soak_run/balance/`, which is ignored.

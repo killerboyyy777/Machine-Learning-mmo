@@ -68,6 +68,40 @@ and the dashboard Agents tab plus the TUI Agents panel show the same fields.
 DroneLang scripts drive companion actions via
 `companion script set|show|clear`.
 
+## Balance gate
+
+`ml/balance.py` is the v0.11.0 release gate (#537). It runs a mixed-agent
+profile against a live server, samples `/api/state` plus the loopback GM
+stream, scores a scenario matrix against explicit (provisional) PASS/FAIL
+thresholds, writes `balance/balance_report.json`, and exits nonzero on FAIL.
+The nightly soak (`ml/conductor/soak.py`) still owns liveness and is
+unchanged.
+
+```bash
+python3 ml/balance.py matrix                 # scenarios, profiles, skips
+TEXTMMO_GM_SEED=700 python3 server.py &     # fresh world
+python3 ml/balance.py run --profile smoke   # 10 min, 10 agents
+python3 ml/balance.py run --profile gate    # 4h x 20 agents x seeds 700/701/702
+python3 ml/balance.py baseline --seed 700 --commit "$(git rev-parse --short HEAD)" \
+  --out balance/baseline-08f7453.json
+```
+
+Every later scenario is compared to the stored v0.10.0 baseline, not to
+vibes:
+
+```bash
+python3 ml/balance.py evaluate --measurements balance/measurements-smoke-700.json \
+  --baseline balance/baseline-08f7453.json
+```
+
+Thresholds are provisional until the owner confirms them (issue #537
+section 4). They live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges
+a JSON override without editing code. Scenarios that depend on unlanded work
+(NPC AI v2 #536) or missing telemetry (acquisition/drop rates #532, item and
+gold conservation, companion damage share) are reported as skipped with the
+reason, never silently passed. The coverage check still fails a scenario that
+was supposed to produce a measurement and produced none.
+
 ## Architecture
 
 The engine is built as a stateless-ish WebSocket server that manages a persistent world state.

@@ -1,0 +1,613 @@
+{
+  "schema": "balance_report/v1",
+  "generated_at_utc": "2026-10-27T13:43:50Z",
+  "profile": "smoke",
+  "provisional_thresholds": true,
+  "thresholds": {
+    "conservation": {
+      "max_items_drift": 0.0,
+      "max_gold_drift": 0.0
+    },
+    "treasury": {
+      "band_pct_of_reserve": 10.0,
+      "steady_after_s": 1800.0
+    },
+    "combat": {
+      "deaths_per_hour_min": 0.5,
+      "deaths_per_hour_max": 3.0,
+      "companion_damage_share_pct_min": 20.0,
+      "companion_damage_share_pct_max": 40.0
+    },
+    "craft": {
+      "max_input_loss": 0.0,
+      "max_refund_excess": 0.0,
+      "max_negative_inventory": 0,
+      "min_completions": 0
+    },
+    "market": {
+      "max_median_spread_pct": 25.0,
+      "min_trade_volume": 1,
+      "max_wash_trades": 0
+    },
+    "liveness": {
+      "min_agents": 8
+    },
+    "determinism": {
+      "enabled": true
+    }
+  },
+  "seeds": [
+    700
+  ],
+  "runs": [
+    {
+      "seed": 700,
+      "verdict": "FAIL",
+      "checks": [
+        {
+          "id": "conservation.items_drift",
+          "scenario": "economy",
+          "metric": "conservation.items_drift",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0.0,
+          "status": "skip",
+          "detail": "no measurement for conservation.items_drift in this run; see the scenario reason"
+        },
+        {
+          "id": "conservation.gold_drift",
+          "scenario": "economy",
+          "metric": "conservation.gold_drift",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0.0,
+          "status": "skip",
+          "detail": "no measurement for conservation.gold_drift in this run; see the scenario reason"
+        },
+        {
+          "id": "treasury.band",
+          "scenario": "economy",
+          "metric": "treasury.band_pct",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 10.0,
+          "status": "skip",
+          "detail": "no measurement for treasury.band_pct in this run; see the scenario reason"
+        },
+        {
+          "id": "treasury.sink_grew",
+          "scenario": "economy",
+          "metric": "treasury.sink_grew",
+          "op": "is",
+          "value": true,
+          "blocking": true,
+          "provisional": true,
+          "limit": true,
+          "status": "pass"
+        },
+        {
+          "id": "treasury.not_monotonic",
+          "scenario": "economy",
+          "metric": "treasury.monotonic_climb",
+          "op": "is",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": false,
+          "status": "skip",
+          "detail": "no measurement for treasury.monotonic_climb in this run; see the scenario reason"
+        },
+        {
+          "id": "combat.deaths_per_hour",
+          "scenario": "combat",
+          "metric": "combat.deaths_per_hour",
+          "op": "in",
+          "value": 79.707,
+          "blocking": true,
+          "provisional": true,
+          "limit": [
+            0.5,
+            3.0
+          ],
+          "status": "fail",
+          "detail": "combat.deaths_per_hour=79.707 violates in [0.5, 3.0]"
+        },
+        {
+          "id": "combat.companion_damage_share",
+          "scenario": "combat",
+          "metric": "combat.companion_damage_share_pct",
+          "op": "in",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": [
+            20.0,
+            40.0
+          ],
+          "status": "skip",
+          "detail": "no measurement for combat.companion_damage_share_pct in this run; see the scenario reason"
+        },
+        {
+          "id": "craft.input_loss",
+          "scenario": "craft",
+          "metric": "craft.input_loss",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0.0,
+          "status": "skip",
+          "detail": "no measurement for craft.input_loss in this run; see the scenario reason"
+        },
+        {
+          "id": "craft.refund_excess",
+          "scenario": "craft",
+          "metric": "craft.refund_excess",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0.0,
+          "status": "skip",
+          "detail": "no measurement for craft.refund_excess in this run; see the scenario reason"
+        },
+        {
+          "id": "craft.negative_inventory",
+          "scenario": "craft",
+          "metric": "craft.negative_inventory",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0,
+          "status": "skip",
+          "detail": "no measurement for craft.negative_inventory in this run; see the scenario reason"
+        },
+        {
+          "id": "craft.completions",
+          "scenario": "craft",
+          "metric": "craft.completions",
+          "op": ">=",
+          "value": 3,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0,
+          "status": "pass"
+        },
+        {
+          "id": "market.median_spread",
+          "scenario": "market",
+          "metric": "market.median_spread_pct",
+          "op": "<=",
+          "value": null,
+          "blocking": true,
+          "provisional": true,
+          "limit": 25.0,
+          "status": "skip",
+          "detail": "no measurement for market.median_spread_pct in this run; see the scenario reason"
+        },
+        {
+          "id": "market.trade_volume",
+          "scenario": "market",
+          "metric": "market.trade_volume",
+          "op": ">=",
+          "value": 18.0,
+          "blocking": true,
+          "provisional": true,
+          "limit": 1,
+          "status": "pass"
+        },
+        {
+          "id": "market.wash_trades",
+          "scenario": "market",
+          "metric": "market.wash_trades",
+          "op": "<=",
+          "value": 0,
+          "blocking": true,
+          "provisional": true,
+          "limit": 0,
+          "status": "pass"
+        },
+        {
+          "id": "liveness.min_agents",
+          "scenario": "liveness",
+          "metric": "liveness.min_alive",
+          "op": ">=",
+          "value": 10,
+          "blocking": true,
+          "provisional": true,
+          "limit": 8,
+          "status": "pass"
+        }
+      ],
+      "scenarios": [
+        {
+          "name": "economy",
+          "title": "Sources vs sinks, treasury convergence, market sink",
+          "issue": "#537",
+          "status": "ran",
+          "reason": "",
+          "evaluated": 1,
+          "checks": 5
+        },
+        {
+          "name": "combat",
+          "title": "Deaths/hour, attacks-to-kill, potion use, companion share",
+          "issue": "#537",
+          "status": "ran",
+          "reason": "",
+          "evaluated": 1,
+          "checks": 2
+        },
+        {
+          "name": "craft",
+          "title": "Throughput, cancel/refund, escrow conservation",
+          "issue": "#501",
+          "status": "ran",
+          "reason": "",
+          "evaluated": 1,
+          "checks": 4
+        },
+        {
+          "name": "market",
+          "title": "Spread, volume, price drift, wash trades",
+          "issue": "#537",
+          "status": "ran",
+          "reason": "",
+          "evaluated": 2,
+          "checks": 3
+        },
+        {
+          "name": "liveness",
+          "title": "Alive agents through the run (after the spawn ramp)",
+          "issue": "#537",
+          "status": "ran",
+          "reason": "",
+          "evaluated": 1,
+          "checks": 1
+        }
+      ],
+      "summary": {
+        "pass": 5,
+        "fail": 1,
+        "skip": 9,
+        "blocking_fail": 1,
+        "failing": [
+          "combat.deaths_per_hour"
+        ],
+        "skipped": [
+          "conservation.items_drift",
+          "conservation.gold_drift",
+          "treasury.band",
+          "treasury.not_monotonic",
+          "combat.companion_damage_share",
+          "craft.input_loss",
+          "craft.refund_excess",
+          "craft.negative_inventory",
+          "market.median_spread"
+        ]
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "conservation.items_drift",
+      "scenario": "economy",
+      "metric": "conservation.items_drift",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0.0,
+      "status": "skip",
+      "detail": "no measurement for conservation.items_drift in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "conservation.gold_drift",
+      "scenario": "economy",
+      "metric": "conservation.gold_drift",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0.0,
+      "status": "skip",
+      "detail": "no measurement for conservation.gold_drift in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "treasury.band",
+      "scenario": "economy",
+      "metric": "treasury.band_pct",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 10.0,
+      "status": "skip",
+      "detail": "no measurement for treasury.band_pct in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "treasury.sink_grew",
+      "scenario": "economy",
+      "metric": "treasury.sink_grew",
+      "op": "is",
+      "value": true,
+      "blocking": true,
+      "provisional": true,
+      "limit": true,
+      "status": "pass",
+      "seed": 700
+    },
+    {
+      "id": "treasury.not_monotonic",
+      "scenario": "economy",
+      "metric": "treasury.monotonic_climb",
+      "op": "is",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": false,
+      "status": "skip",
+      "detail": "no measurement for treasury.monotonic_climb in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "combat.deaths_per_hour",
+      "scenario": "combat",
+      "metric": "combat.deaths_per_hour",
+      "op": "in",
+      "value": 79.707,
+      "blocking": true,
+      "provisional": true,
+      "limit": [
+        0.5,
+        3.0
+      ],
+      "status": "fail",
+      "detail": "combat.deaths_per_hour=79.707 violates in [0.5, 3.0]",
+      "seed": 700
+    },
+    {
+      "id": "combat.companion_damage_share",
+      "scenario": "combat",
+      "metric": "combat.companion_damage_share_pct",
+      "op": "in",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": [
+        20.0,
+        40.0
+      ],
+      "status": "skip",
+      "detail": "no measurement for combat.companion_damage_share_pct in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "craft.input_loss",
+      "scenario": "craft",
+      "metric": "craft.input_loss",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0.0,
+      "status": "skip",
+      "detail": "no measurement for craft.input_loss in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "craft.refund_excess",
+      "scenario": "craft",
+      "metric": "craft.refund_excess",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0.0,
+      "status": "skip",
+      "detail": "no measurement for craft.refund_excess in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "craft.negative_inventory",
+      "scenario": "craft",
+      "metric": "craft.negative_inventory",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0,
+      "status": "skip",
+      "detail": "no measurement for craft.negative_inventory in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "craft.completions",
+      "scenario": "craft",
+      "metric": "craft.completions",
+      "op": ">=",
+      "value": 3,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0,
+      "status": "pass",
+      "seed": 700
+    },
+    {
+      "id": "market.median_spread",
+      "scenario": "market",
+      "metric": "market.median_spread_pct",
+      "op": "<=",
+      "value": null,
+      "blocking": true,
+      "provisional": true,
+      "limit": 25.0,
+      "status": "skip",
+      "detail": "no measurement for market.median_spread_pct in this run; see the scenario reason",
+      "seed": 700
+    },
+    {
+      "id": "market.trade_volume",
+      "scenario": "market",
+      "metric": "market.trade_volume",
+      "op": ">=",
+      "value": 18.0,
+      "blocking": true,
+      "provisional": true,
+      "limit": 1,
+      "status": "pass",
+      "seed": 700
+    },
+    {
+      "id": "market.wash_trades",
+      "scenario": "market",
+      "metric": "market.wash_trades",
+      "op": "<=",
+      "value": 0,
+      "blocking": true,
+      "provisional": true,
+      "limit": 0,
+      "status": "pass",
+      "seed": 700
+    },
+    {
+      "id": "liveness.min_agents",
+      "scenario": "liveness",
+      "metric": "liveness.min_alive",
+      "op": ">=",
+      "value": 10,
+      "blocking": true,
+      "provisional": true,
+      "limit": 8,
+      "status": "pass",
+      "seed": 700
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "economy",
+      "title": "Sources vs sinks, treasury convergence, market sink",
+      "issue": "#537",
+      "status": "ran",
+      "reason": "",
+      "evaluated": 1,
+      "checks": 5
+    },
+    {
+      "name": "combat",
+      "title": "Deaths/hour, attacks-to-kill, potion use, companion share",
+      "issue": "#537",
+      "status": "ran",
+      "reason": "",
+      "evaluated": 1,
+      "checks": 2
+    },
+    {
+      "name": "craft",
+      "title": "Throughput, cancel/refund, escrow conservation",
+      "issue": "#501",
+      "status": "ran",
+      "reason": "",
+      "evaluated": 1,
+      "checks": 4
+    },
+    {
+      "name": "market",
+      "title": "Spread, volume, price drift, wash trades",
+      "issue": "#537",
+      "status": "ran",
+      "reason": "",
+      "evaluated": 2,
+      "checks": 3
+    },
+    {
+      "name": "liveness",
+      "title": "Alive agents through the run (after the spawn ramp)",
+      "issue": "#537",
+      "status": "ran",
+      "reason": "",
+      "evaluated": 1,
+      "checks": 1
+    }
+  ],
+  "summary": {
+    "pass": 5,
+    "fail": 1,
+    "skip": 9,
+    "blocking_fail": 1,
+    "failing": [
+      "combat.deaths_per_hour"
+    ],
+    "skipped": [
+      "conservation.items_drift",
+      "conservation.gold_drift",
+      "treasury.band",
+      "treasury.not_monotonic",
+      "combat.companion_damage_share",
+      "craft.input_loss",
+      "craft.refund_excess",
+      "craft.negative_inventory",
+      "market.median_spread"
+    ],
+    "verdict": "FAIL"
+  },
+  "baseline": {
+    "path": "balance/baseline-08f7453.json",
+    "schema": "distilled/v0",
+    "meta": {
+      "name": "v0.10.0 economy baseline",
+      "master_sha": "08f7453",
+      "seed": 700,
+      "duration_s": 3600.0,
+      "agents": 20
+    },
+    "deltas": [
+      {
+        "metric": "treasury.end",
+        "current": 676.0,
+        "baseline": 700.0,
+        "delta_pct": -3.43
+      },
+      {
+        "metric": "market.sunk_lifetime",
+        "current": 18.0,
+        "baseline": 35.0,
+        "delta_pct": -48.57
+      },
+      {
+        "metric": "market.trade_count",
+        "current": 18.0,
+        "baseline": 33,
+        "delta_pct": -45.45
+      },
+      {
+        "metric": "economy.tax_effective_pct",
+        "current": 0.0,
+        "baseline": 22.22,
+        "delta_pct": -100.0
+      },
+      {
+        "metric": "combat.deaths",
+        "current": 133.0,
+        "baseline": 917,
+        "delta_pct": -85.5
+      },
+      {
+        "metric": "liveness.final_alive",
+        "current": 10,
+        "baseline": 20,
+        "delta_pct": -50.0
+      }
+    ]
+  }
+}

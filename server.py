@@ -409,6 +409,13 @@ for nid, tmpl in WORLD["npcs"].items():
 
 COMPANIONS = WORLD.get("companions", {})
 
+# Deed each species consumes on adoption: (item id, refusal wording, species label).
+COMPANION_ADOPT_DEEDS = {
+    "wolf": ("wolf_pup", "a wolf pup", "wolf"),
+    "mule": ("mule_deed", "a mule deed", "pack mule"),
+    "sheep": ("sheep_deed", "a sheep deed", "sheep"),
+}
+
 
 def _sync_extra_spawns():
     """Rebuild hostile extra-spawn instances from MOB_EXTRA_SPAWNS.
@@ -676,9 +683,9 @@ _last_invite_prune = 0.0
 async def prune_market_orders(now=None):
     """Expire stale market listings (MARKET_ORDER_TTL_SECONDS).
 
-    Expired items go back to online sellers with a notice. Offline sellers
-    keep their listings until they return: there is no item bank, and
-    voiding player property is worse than listing it.
+    Expired items go back to online sellers with a notice (into the item
+    bank when their pack is full). Offline sellers keep their listings until
+    they return: voiding player property is worse than listing it.
     """
     global _last_market_prune
     now = now if now is not None else time.time()
@@ -697,12 +704,15 @@ async def prune_market_orders(now=None):
         if seller is None:
             continue
         market_orders.remove(o)
-        seller.inventory.append(o["item"])
+        in_pack = _deliver_item_or_bank(seller, o["item"])
         mark_scores_dirty()
         pruned += 1
         name = ITEM_DEFS.get(o["item"], {}).get("name", o["item"])
+        where = (
+            "back in your pack" if in_pack else "waiting in your item bank (pack full)"
+        )
         await send(seller, {"type": "message",
-                            "text": f"Your market order #{o['id']} ({name}) expired after a day unfilled; the item is back in your pack."})
+                            "text": f"Your market order #{o['id']} ({name}) expired after a day unfilled; the item is {where}."})
         await send(seller, stats_view(seller))
     for b in list(market_bids):
         if now - b.get("ts", now) <= MARKET_ORDER_TTL_SECONDS:
@@ -1461,12 +1471,28 @@ def _pack_full_error(player=None):
     return f"Your pack is full ({_inventory_cap(player)} units). Drop something first."
 
 
+def _deliver_item_or_bank(player, iid):
+    """Hand one item back to its owner: pack first, item bank when full."""
+    if not _pack_full(player):
+        player.inventory.append(iid)
+        return True
+    get_score_entry(player.name).setdefault("item_bank", []).append(iid)
+    return False
+
+
 def _inventory_cap(player):
     """Pack capacity with the active companion's mule bonus (#533)."""
     cap = INVENTORY_CAP
     if _companion_species(player) == "mule":
         cap += COMPANION_MULE_CARRY_BONUS
     return cap
+
+
+def _gather_yield_bonus(player):
+    """Extra harvest units from the active companion's mule bonus (#533)."""
+    if _companion_species(player) == "mule":
+        return COMPANION_MULE_GATHER_YIELD_BONUS
+    return 0
 
 
 def _player_defense(player):
@@ -3113,12 +3139,7 @@ async def cmd_login(player, msg):
         player.gold += entry["gold_bank"]
         entry["gold_bank"] = 0
         mark_scores_dirty()
-    banked = entry.get("item_bank", []) or []
-    if banked:
-        player.inventory.extend(banked)
-        entry["item_bank"] = []
-        mark_scores_dirty()
-        await send(player, {"type": "message", "text": f"{len(banked)} stored item(s) arrive in your pack."})
+    banked = list(entry.get("item_bank") or [])
     if not entry.get("starting_purse_claimed"):
         # First-ever login only (flag persists in scores.json): returning
         # characters keep whatever they hold. TTL-evicted entries re-grant
@@ -3136,6 +3157,29 @@ async def cmd_login(player, msg):
     player.name = name
     player.logged_in = True
     player.room = dest
+    if banked:
+        # The bank can hold more than one pack (fills while pack-full keep
+        # landing there), so hand over what fits and leave the rest banked;
+        # dumping it all would raise the carry cap on every relog (#462).
+        delivered = 0
+        for iid in banked:
+            if not _inventory_room(player):
+                break
+            player.inventory.append(iid)
+            delivered += 1
+        held = len(banked) - delivered
+        entry["item_bank"] = banked[delivered:]
+        mark_scores_dirty()
+        if not delivered:
+            text = f"Your pack is full; {held} stored item(s) stay banked."
+        elif held:
+            text = (
+                f"{delivered} stored item(s) arrive in your pack; "
+                f"{held} stay banked (pack full)."
+            )
+        else:
+            text = f"{delivered} stored item(s) arrive in your pack."
+        await send(player, {"type": "message", "text": text})
     if player.room not in entry["rooms_visited"]:
         entry["rooms_visited"].append(player.room)
     sync_player_level(player)
@@ -3479,9 +3523,10 @@ async def cmd_gather(player, msg):
     node["available"] = False
     node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
     quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+    quantity += _gather_yield_bonus(player)
     # Multi-yield must not overflow the pack (#232): truncate to the
     # remaining space (a full pack already refused above, so >= 1 fits).
-    quantity = min(quantity, _inventory_cap(player) - _inventory_units(player))
+    quantity = min(quantity, _inventory_room(player))
     player.inventory.extend([node["item"]] * quantity)
     item_name = _iname(node["item"])
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
@@ -4031,10 +4076,31 @@ async def cmd_craft(player, msg):
     _take_craft_inputs(player, recipe["inputs"])
     result = recipe["result"]
     output_qty = _craft_output_qty(recipe)
-    player.inventory.extend([result] * output_qty)
-    output_text = _craft_output_text(result, output_qty)
-    await send(player, {"type": "message", "text": f"You craft {output_text}!"})
     entry = get_score_entry(player.name)
+    # Same rule as the job path (#501): never push the pack past the cap;
+    # whatever does not fit waits for craft collect.
+    delivered = min(output_qty, _inventory_room(player))
+    if delivered:
+        player.inventory.extend([result] * delivered)
+    held = output_qty - delivered
+    if held:
+        seq = int(entry.get("craft_job_seq", 0) or 0) + 1
+        entry["craft_job_seq"] = seq
+        _queue_craft_pending(entry, seq, rid, result, held, time.time(), "output", True)
+    output_text = _craft_output_text(result, output_qty)
+    if not delivered:
+        text = (
+            f"You craft {output_text}, but your pack is full; "
+            "use craft collect when you have room."
+        )
+    elif held:
+        text = (
+            f"You craft {_craft_output_text(result, delivered)}; "
+            f"{_craft_output_text(result, held)} held for craft collect."
+        )
+    else:
+        text = f"You craft {output_text}!"
+    await send(player, {"type": "message", "text": text})
     await _record_craft_completion(
         player.name, rid, result, recipe["inputs"], recipe.get("tier", 0),
         output_qty, entry,
@@ -4417,23 +4483,17 @@ async def cmd_companion(player, msg):
         if rec is not None:
             await send(player, {"type": "error", "text": "You already have a companion. Dismiss it before adopting a new one."})
             return
-        if species == "wolf":
-            if "wolf_pup" not in player.inventory:
-                await send(player, {"type": "error", "text": "You need a wolf pup to adopt a wolf companion."})
-                return
-            player.inventory.remove("wolf_pup")
-        elif species == "mule":
-            if "mule_deed" not in player.inventory:
-                await send(player, {"type": "error", "text": "You need a mule deed to adopt a pack mule companion."})
-                return
-            player.inventory.remove("mule_deed")
-        elif species == "sheep":
-            if "sheep_deed" not in player.inventory:
-                await send(player, {"type": "error", "text": "You need a sheep deed to adopt a sheep companion."})
-                return
-            player.inventory.remove("sheep_deed")
-        else:
+        # The deed is only checked here and spent once the store has accepted
+        # the adoption: spending it earlier lost the deed when the companion
+        # table was full.
+        deed = COMPANION_ADOPT_DEEDS.get(species)
+        if deed is None:
             await send(player, {"type": "error", "text": "Cannot adopt that companion species."})
+            return
+        iid, deed_name, label = deed
+        if iid not in player.inventory:
+            need = f"You need {deed_name} to adopt a {label} companion."
+            await send(player, {"type": "error", "text": need})
             return
         store = _companion_store(player.name, create=True)
         if store is None:
@@ -4452,6 +4512,7 @@ async def cmd_companion(player, msg):
         if rec is None:
             await send(player, {"type": "error", "text": "Could not adopt that companion."})
             return
+        player.inventory.remove(iid)
         store["companions"] = [rec]
         store["active"] = 0
         store["updated_at"] = time.time()
@@ -5197,9 +5258,16 @@ async def cmd_market_cancel(player, msg):
         # otherwise a variant-case seller's items strand un-cancellable.
         if o["id"] == oid and o["seller"].lower() == player.name.lower():
             market_orders.remove(o)
-            player.inventory.append(o["item"])
+            in_pack = _deliver_item_or_bank(player, o["item"])
             mark_scores_dirty()
-            await send(player, {"type": "message", "text": f"Cancelled order #{oid}."})
+            if in_pack:
+                text = f"Cancelled order #{oid}."
+            else:
+                text = (
+                    f"Cancelled order #{oid}; pack full, "
+                    f"{_iname(o['item'])} deposited in your item bank."
+                )
+            await send(player, {"type": "message", "text": text})
             await send(player, stats_view(player))
             return
     for b in list(market_bids):
