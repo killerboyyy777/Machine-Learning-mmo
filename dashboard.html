@@ -399,7 +399,7 @@
     <div class="tscroll cap"><table data-sort="agents">
       <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
              <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
-             <th>room</th><th>last action</th></tr></thead>
+             <th>room</th><th>last action</th><th>companion</th></tr></thead>
       <tbody id="agents"></tbody>
     </table></div>
     <p class="empty" id="noAgents" style="display:none">No online players.</p>
@@ -1719,7 +1719,17 @@ function renderDungeonClears(c) {
   set("dc-group-max", d.group_max_floor);
 }
 
-const AGENT_COLS = [...PLAYER_COLS, p => p.last_action || ""];
+const AGENT_COLS = [...PLAYER_COLS, p => p.last_action || "",
+  p => (p.companion ? p.companion.name || "" : "")];
+
+// Read-only companion sheet (#535): no controls, no new actions.
+function companionCell(c) {
+  if (!c) return "-";
+  const passive = c.passive ? `, ${esc(c.passive)}` : "";
+  return `${esc(c.name)} (${esc(c.species)} lv${c.level ?? 1}) ` +
+    `${c.hp ?? 0}/${c.max_hp ?? 0} hp, ${c.attack ?? 0} atk, ${c.defense ?? 0} def` +
+    `${passive}, script ${esc(c.script_state || "none")}`;
+}
 function renderAgents(players) {
   const rows = sortRows("agents", players, AGENT_COLS, 3, -1);
   setHTML("agents", rows.map((p, i) => `
@@ -1734,6 +1744,7 @@ function renderAgents(players) {
       <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
       <td>${esc(p.room)}</td>
       <td>${esc(p.last_action || "-")}</td>
+      <td>${companionCell(p.companion)}</td>
     </tr>`).join(""));
   $("noAgents").style.display = players.length ? "none" : "";
   const feed = [];
