@@ -8,7 +8,7 @@
 # listed for the ops terminal UI (`tui/`, #319); nothing on those paths
 # imports it, so the engine stays websockets-only.
 
-websockets==17.2
+websockets==17.3
 
 # NumPy — required by PyTorch (tensor conversion) and used by tooling.
 numpy==2.5.4
