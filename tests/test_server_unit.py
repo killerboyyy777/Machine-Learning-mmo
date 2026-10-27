@@ -1254,10 +1254,10 @@ async def main():
             "companions": [{"species": "dragon"}]}}})
         assert srv.load_companions(comp_path) == {}
 
-    # Clean up CompOwner, Bystander, GMCompanion
-    unplayer(comp_owner)
-    unplayer(bystander)
-    unplayer(gm_player)
+    # Clean up original companion core players
+    drop_job_entry("CompOwner", comp_owner)
+    drop_job_entry("CompBystander", bystander)
+    drop_job_entry("GMCompanion", gm_player)
     srv.COMPANION_PLAYERS.pop("compowner", None)
     srv.COMPANION_SUMMONED.discard("compowner")
     srv.COMPANION_TARGETS.pop("compowner", None)
@@ -4280,7 +4280,16 @@ async def main():
         assert empty["runs"] == [] and empty["fields"] == [] and not empty.get("error")
     print("RUNS_INDEX_OK")
 
-    # ---------------------------------------------------------------------------
+    # --- Config editor for server_config.json + ml_config.json (#63) ------
+    with tempfile.TemporaryDirectory() as folder:
+        config_editor_check(folder)
+
+    # --- One-click training launch surface (#64) --------------------------
+    with tempfile.TemporaryDirectory() as folder:
+        training_launch_check(folder)
+
+
+# ---------------------------------------------------------------------------
 # Companion DroneLang (#534) unit tests
 # ---------------------------------------------------------------------------
 
@@ -4704,10 +4713,5 @@ async def _test_commands(srv):
     srv_mod.COMPANION_PLAYERS.pop(comp_owner_key, None)
     srv.COMPANION_SUMMONED.discard(comp_owner_key)
     srv.COMPANION_SUMMONED.discard("cmdowner")
-
-
-    # --- One-click training launch surface (#64) --------------------------
-    with tempfile.TemporaryDirectory() as folder:
-        training_launch_check(folder)
 
 asyncio.run(main())
