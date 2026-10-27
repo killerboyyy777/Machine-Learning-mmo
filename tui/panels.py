@@ -41,7 +41,7 @@ CHROME_ROWS = 18
 
 
 def frame(tab, snapshot, status, age=None, height=None, extras=None):
-    """The whole TUI frame: tab bar, status line, active panel.
+    """Render the whole TUI frame: tab bar, status line, active panel.
 
     Status sits above the panel, not below: Live crops overflow off the
     bottom, so a footer is the first thing an 80x24 terminal loses.
@@ -78,7 +78,7 @@ def render_tab_bar(active):
 
 
 def render_panel(tab, snapshot, rows=ACTIVITY_ROWS, extras=None):
-    """Renderable for `tab`; a placeholder for unknown tabs."""
+    """Render a panel for `tab`; return a placeholder for unknown tabs."""
     if snapshot is None:
         return Text("waiting for the first snapshot...", style="dim italic")
     extras = extras or {}
@@ -118,8 +118,11 @@ def _placeholder(tab):
 
 
 def _as_float(value, default=0.0):
-    """Snapshot fields are numbers by contract, but a bad one must not
-    take the whole frame down: the dashboard renders `-` instead."""
+    """Convert value to float, falling back to default if parsing fails.
+
+    Snapshot fields are numbers by contract, but a bad one must not
+    take the whole frame down: the dashboard renders `-` instead.
+    """
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -1320,7 +1323,7 @@ def _config_overrides(files):
 
 # --- runs ----------------------------------------------------------------
 def render_runs(snapshot, rows=ACTIVITY_ROWS, runs=None):
-    """Runs tab: the run index with status, age, and latest metrics."""
+    """Render the runs tab: the run index with status, age, and latest metrics."""
     if not isinstance(runs, dict) or not runs:
         return Text("runs not loaded yet", style="dim italic")
     items = [r for r in (runs.get("runs") or []) if isinstance(r, dict)]
