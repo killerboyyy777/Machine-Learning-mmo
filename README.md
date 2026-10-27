@@ -58,6 +58,16 @@ TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
 
+## Companions
+
+Adopt a wolf, mule, or sheep companion, then summon it. Companions earn a
+share of your XP and level up to 10 (see the wiki). `stats`
+returns a read-only companion sheet
+(`name, species, level, hp, max_hp, attack, defense, passive, script_state`),
+and the dashboard Agents tab plus the TUI Agents panel show the same fields.
+DroneLang scripts drive companion actions via
+`companion script set|show|clear`.
+
 ## Architecture
 
 The engine is built as a stateless-ish WebSocket server that manages a persistent world state.

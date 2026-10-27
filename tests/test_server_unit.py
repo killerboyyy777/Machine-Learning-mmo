@@ -19,6 +19,19 @@ import server as srv
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def companion_surface_bodies():
+    """Dashboard/TUI companion renderers for the #535 parity check."""
+    with open(os.path.join(ROOT, "dashboard.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    with open(os.path.join(ROOT, "tui", "panels.py"), encoding="utf-8") as fh:
+        panels = fh.read()
+    js_start = html.index("function companionCell(c) {")
+    js_body = html[js_start : html.index("\n}\n", js_start)]
+    py_start = panels.index("def _companion_cell(player):")
+    py_body = panels[py_start : panels.index("\n\ndef _agents_table", py_start)]
+    return js_body, py_body
+
+
 def config_editor_check(folder):
     """#63 editor: schema, the byte-stable writer, and both HTTP helpers.
 
@@ -1375,6 +1388,67 @@ async def main():
     await _test_runtime_fallback(srv)
     await _test_commands(srv)
     print("DRONE_LANG_TESTS_OK")
+
+    # --- Companion surfaces (#535): stats payload + dashboard/TUI parity ---
+    companion_fields = (
+        "name",
+        "species",
+        "level",
+        "hp",
+        "max_hp",
+        "attack",
+        "defense",
+        "passive",
+        "script_state",
+    )
+    surface_player = mkplayer("CompSurface", 60450, room="town_square")
+    assert srv.stats_view(surface_player)["companion"] is None
+    surface_rec = srv._normalize_companion_record(
+        {
+            "species": "wolf",
+            "name": "Fang",
+            "level": 4,
+            "hp": 18,
+        }
+    )
+    srv.COMPANION_PLAYERS["compsurface"] = {
+        "companions": [surface_rec],
+        "active": 0,
+        "updated_at": time.time(),
+    }
+    sheet = srv.stats_view(surface_player)["companion"]
+    assert tuple(sheet) == companion_fields, sheet
+    assert sheet == {
+        "name": "Fang",
+        "species": "wolf",
+        "level": 4,
+        "hp": 18,
+        "max_hp": srv._companion_max_hp(surface_rec),
+        "attack": srv._companion_attack_power(surface_rec),
+        "defense": srv._companion_defense(surface_rec),
+        "passive": srv.COMPANIONS["wolf"]["passive"],
+        "script_state": "none",
+    }, sheet
+    # The /api/state snapshot (dashboard + TUI source) uses the same sheet.
+    snapshot_row = next(
+        p for p in srv.world_snapshot()["players"] if p["name"] == "CompSurface"
+    )
+    assert snapshot_row["companion"] == sheet
+    # script_state derives from the saved script and its runtime error latch.
+    surface_rec["script"] = "if (always) { follow };"
+    assert srv.stats_view(surface_player)["companion"]["script_state"] == "active"
+    surface_rec["_dronelang_error"] = "Action error: boom"
+    assert srv.stats_view(surface_player)["companion"]["script_state"] == "error"
+    surface_rec.pop("_dronelang_error", None)
+    # Both clients render every field off the same object.
+    js_body, py_body = companion_surface_bodies()
+    py_body = py_body.replace("'", '"')
+    for field in companion_fields:
+        assert f"c.{field}" in js_body, f"dashboard companionCell ignores {field}"
+        assert f'"{field}"' in py_body, f"tui _companion_cell ignores {field}"
+    drop_job_entry("CompSurface", surface_player)
+    srv.COMPANION_PLAYERS.pop("compsurface", None)
+    print("COMPANION_SURFACES_OK")
 
     # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
     griefer = mkplayer("Griefer", 60001, room="town_square")

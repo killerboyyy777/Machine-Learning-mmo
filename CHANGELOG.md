@@ -13,6 +13,12 @@ All notable changes to the text MMO engine are recorded here.
   share of hostile attacks and retreat for 300s when downed. Revive costs
   `ceil(remaining/60) * 10` gold into the treasury; owner death returns the
   companion free. No out-of-combat regen in v1.
+- Companion surfaces (#535): `stats` now returns a read-only `companion`
+  object (`name, species, level, hp, max_hp, attack, defense, passive,
+  script_state`) or `null` when none is active. `script_state` is `none`
+  (no DroneLang script), `active`, or `error` (last script tick failed).
+  The same sheet rides `/api/state`, so the dashboard Agents tab and the TUI
+  Agents panel render it without new commands or actions.
 - Craft jobs (#501): crafting can now run as an opt-in tick-based queue while
   `craft <recipe>` stays instant for existing clients and the ML env. Jobs
   persist in `scores.json`, cap at three per player, escrow inputs at start,

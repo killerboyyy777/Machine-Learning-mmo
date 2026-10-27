@@ -1829,6 +1829,36 @@ def _companion_status_payload(owner):
     }
 
 
+def _companion_script_state(rec):
+    """Read-only DroneLang state (#535): none, active, or error."""
+    if not str(rec.get("script") or "").strip():
+        return "none"
+    if rec.get("_dronelang_error"):
+        return "error"
+    return "active"
+
+
+def _companion_view(player):
+    """Owner-facing companion sheet, or None when none is active (#535)."""
+    if not player or not player.name:
+        return None
+    rec = _companion_active(player.name)
+    if rec is None:
+        return None
+    species = str(rec.get("species") or "")
+    return {
+        "name": rec.get("name", ""),
+        "species": species,
+        "level": int(rec.get("level") or 1),
+        "hp": int(rec.get("hp") or 0),
+        "max_hp": _companion_max_hp(rec),
+        "attack": _companion_attack_power(rec),
+        "defense": _companion_defense(rec),
+        "passive": COMPANIONS.get(species, {}).get("passive"),
+        "script_state": _companion_script_state(rec),
+    }
+
+
 def _companion_retaliate(owner, npc_id, now=None):
     """Stamp the hostile that just hit the owner or their companion."""
     if not npc_id:
@@ -2647,6 +2677,7 @@ def stats_view(player):
             for category, value in player.active_buffs.items()
             if value.get("remaining", 0) > 0
         },
+        "companion": _companion_view(player),
         "death_preview": death_preview(player),
     }
 
@@ -4529,7 +4560,9 @@ async def cmd_help(player, msg):
         "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
         "commission_post commission_list commission_fill commission_cancel "
         "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
-        "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest"
+        "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
+        "stats lists your active companion: name, species, level, hp, attack, "
+        "defense, passive, script state."
     )})
 
 # ---------------------------------------------------------------------------
@@ -6034,6 +6067,7 @@ def world_snapshot():
             "adaptive_score": adaptive_score(p),
             "variety": round(compute_variety(e), 2), "room": p.room,
             "last_action": (track_log.get(p.name, [{}])[-1].get("cmd", "") if track_log.get(p.name) else ""),
+            "companion": _companion_view(p),
             "recent_actions": list(track_log.get(p.name, [])),
         })
     scores = sorted(
