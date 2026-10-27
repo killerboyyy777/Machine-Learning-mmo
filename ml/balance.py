@@ -557,11 +557,29 @@ def derive(samples, ledger=None, telemetry=None):
         for player in players:
             name = player.get("name")
             current = _num(player.get("deaths"))
+            wild_deaths = _num(player.get("wild_deaths", 0))
+            civ_deaths = _num(player.get("civ_deaths", 0))
             if name is None or current is None:
                 continue
             if name in death_tracking:
-                deaths += max(0.0, current - death_tracking[name])
-            death_tracking[name] = current
+                prev = death_tracking[name]
+                deaths += max(0.0, current - prev.get("deaths", 0))
+                # Track wild vs civ deaths separately
+                wild_deaths_delta = max(0, wild_deaths - prev.get("wild_deaths", 0))
+                civ_deaths_delta = max(0, civ_deaths - prev.get("civ_deaths", 0))
+                # Store the updated tracking info
+                death_tracking[name] = {
+                    "deaths": current,
+                    "wild_deaths": wild_deaths,
+                    "civ_deaths": civ_deaths
+                }
+            else:
+                # First time seeing this player
+                death_tracking[name] = {
+                    "deaths": current,
+                    "wild_deaths": wild_deaths,
+                    "civ_deaths": civ_deaths
+                }
         previous_t = t
 
         for entry in state.get("craft_history") or []:
@@ -616,8 +634,15 @@ def derive(samples, ledger=None, telemetry=None):
         trade_volume = max(0, histories[-1] - histories[0]) if histories else None
 
     deaths_per_hour = None
+    wild_deaths_per_hour = None
+    civ_deaths_per_hour = None
     if agent_seconds > 0:
         deaths_per_hour = round(deaths / (agent_seconds / 3600.0), 3)
+        # Calculate civ vs wild deaths per hour
+        wild_deaths_sum = sum(tracking.get("wild_deaths", 0) for tracking in death_tracking.values())
+        civ_deaths_sum = sum(tracking.get("civ_deaths", 0) for tracking in death_tracking.values())
+        wild_deaths_per_hour = round(wild_deaths_sum / (agent_seconds / 3600.0), 3)
+        civ_deaths_per_hour = round(civ_deaths_sum / (agent_seconds / 3600.0), 3)
 
     craft_completions = None
     if craft_seq:
@@ -656,6 +681,8 @@ def derive(samples, ledger=None, telemetry=None):
             "deaths": round(deaths, 3),
             "agent_hours": round(agent_seconds / 3600.0, 3),
             "deaths_per_hour": deaths_per_hour,
+            "wild_deaths_per_hour": wild_deaths_per_hour,
+            "civ_deaths_per_hour": civ_deaths_per_hour,
             "companion_damage_share_pct": _num(
                 telemetry.get("companion_damage_share_pct")
             ),

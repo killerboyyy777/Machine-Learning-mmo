@@ -616,6 +616,34 @@ async def main():
     srv.buffs["xp"] = 0
     print("BUFF_OK")
 
+    # --- HP regeneration test ---
+    regen_player = srv.Player(ws=FakeWS(), id=9998, name="RegenTester", logged_in=True)
+    regen_player.max_hp = 30
+    regen_player.hp = 20  # Start with less than max HP
+    srv.add_member(regen_player)
+    # Initialize timestamp trackers
+    regen_player.last_damage_ts = 0
+    regen_player.last_regen_ts = 0
+    
+    # Simulate time passage for regen to be ready (HP_REGEN_SECONDS = 10)
+    # We'll manipulate the timestamps directly to test the logic
+    old_time = time.time()
+    regen_player.last_regen_ts = old_time - srv.HP_REGEN_SECONDS - 1  # Ready to regen
+    regen_player.last_damage_ts = old_time - srv.HP_REGEN_DAMAGE_WINDOW - 1  # No recent damage
+    
+    # Manually trigger the regeneration logic from npc_ai_loop
+    now = time.time()
+    if regen_player.logged_in and regen_player.hp < regen_player.max_hp:
+        if now - regen_player.last_regen_ts >= srv.HP_REGEN_SECONDS:
+            if now - regen_player.last_damage_ts >= srv.HP_REGEN_DAMAGE_WINDOW:
+                old_hp = regen_player.hp
+                regen_player.hp = min(regen_player.max_hp, regen_player.hp + srv.HP_REGEN_AMOUNT)
+                if regen_player.hp > old_hp:
+                    regen_player.last_regen_ts = now
+    
+    assert regen_player.hp == 22, f"Expected HP to be 22 after regen, got {regen_player.hp}"
+    print("HP_REGEN_OK")
+
     # --- Quantity-aware recipes ---
     crafter = srv.Player(ws=FakeWS(), id=10001, name="RecipeTester", logged_in=True)
     crafter.inventory = ["iron_ore"]

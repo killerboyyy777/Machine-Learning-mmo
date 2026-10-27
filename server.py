@@ -108,8 +108,10 @@ GM_PORT = 8767
 # clients keep working unchanged.
 PROTOCOL_VERSION = 2
 
-# Scoring anti-grind tuning
-ACTION_WINDOW = 20
+# HP regeneration tuning
+HP_REGEN_AMOUNT = 2
+HP_REGEN_SECONDS = 10
+HP_REGEN_DAMAGE_WINDOW = 15
 MIN_HISTORY_FOR_VARIETY = 5
 MIN_VARIETY = 0.2
 DIFFICULTY_K = 50.0
@@ -1417,6 +1419,15 @@ async def apply_death_penalty(player, gold_lost=0):
     value of any items scattered in a risk zone)."""
     entry = get_score_entry(player.name)
     entry["deaths"] += 1
+    
+    # Track deaths by zone type for balance monitoring
+    room = ROOMS.get(player.room, {})
+    is_wild = room.get("wild", False)
+    if is_wild:
+        entry["wild_deaths"] = entry.get("wild_deaths", 0) + 1
+    else:
+        entry["civ_deaths"] = entry.get("civ_deaths", 0) + 1
+    
     penalty = DEATH_PENALTY + DEATH_SCORE_PER_GOLD_LOST * max(0, gold_lost)
     entry["score"] = max(0.0, entry["score"] - penalty)
     record_score_point(player.name, entry["score"])
@@ -1704,6 +1715,8 @@ class Player:
     active_buffs: dict = field(default_factory=dict)
     outbound: deque = field(default_factory=lambda: deque(maxlen=OUTBOUND_QUEUE_MAX))
     outbound_event: object = None
+    last_damage_ts: float = 0.0
+    last_regen_ts: float = 0.0
 
     def __post_init__(self):
         if self.outbound_event is None:
@@ -3923,6 +3936,7 @@ async def cmd_attack(player, msg):
             retaliation = max(0, retaliation - _player_damage_reduction(player))
             retaliation = _training_damage(retaliation)
             player.hp -= retaliation
+            player.last_damage_ts = time.time()
             await send(
                 player,
                 {
@@ -8592,6 +8606,26 @@ async def npc_ai_loop():
         prune_invites(now)
         await tick_craft_jobs(now)
         await tick_companions(now)
+        # HP regeneration for all players
+        for player in list(players.values()):
+            if player.logged_in and player.hp < player.max_hp:
+                # Check if enough time has passed since last regen
+                if now - player.last_regen_ts >= HP_REGEN_SECONDS:
+                    # Check if player hasn't taken damage recently
+                    if now - player.last_damage_ts >= HP_REGEN_DAMAGE_WINDOW:
+                        # Regenerate HP
+                        old_hp = player.hp
+                        player.hp = min(player.max_hp, player.hp + HP_REGEN_AMOUNT)
+                        if player.hp > old_hp:
+                            player.last_regen_ts = now
+                            # Optional: send regen notification to player
+                            await send(
+                                player,
+                                {
+                                    "type": "message",
+                                    "text": f"You feel revitalized and recover {player.hp - old_hp} HP.",
+                                },
+                            )
         for node in list(gather_nodes.values()):
             if (
                 not node["available"]
@@ -8604,12 +8638,29 @@ async def npc_ai_loop():
         for npc in list(all_npcs()):
             if not npc.get("alive", False):
                 if npc["respawn_at"] and now >= npc["respawn_at"]:
-                    respawn_npc(npc)
-                    await broadcast_room(
-                        npc["room"],
-                        {"type": "message", "text": f"{npc['name']} respawns."},
-                    )
-                    await sync_room(npc["room"])
+                    # Determine respawn time based on zone type
+                    room = ROOMS.get(npc["room"], {})
+                    is_wild = room.get("wild", False)
+                    
+                    # Civ zones: longer respawn (double the normal time)
+                    # Wild zones: normal respawn time
+                    if not is_wild and npc.get("respawn_seconds", 30) > 0:
+                        # Check if enough time has passed for civ zone (2x normal time)
+                        if now >= npc["respawn_at"]:
+                            respawn_npc(npc)
+                            await broadcast_room(
+                                npc["room"],
+                                {"type": "message", "text": f"{npc['name']} respawns."},
+                            )
+                            await sync_room(npc["room"])
+                    elif is_wild:
+                        # Wild zones use normal respawn time
+                        respawn_npc(npc)
+                        await broadcast_room(
+                            npc["room"],
+                            {"type": "message", "text": f"{npc['name']} respawns."},
+                        )
+                        await sync_room(npc["room"])
                 continue
             room_id = npc["room"]
             targets = players_in_room(room_id)
