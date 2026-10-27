@@ -1488,6 +1488,13 @@ def _inventory_cap(player):
     return cap
 
 
+def _gather_yield_bonus(player):
+    """Extra harvest units from the active companion's mule bonus (#533)."""
+    if _companion_species(player) == "mule":
+        return COMPANION_MULE_GATHER_YIELD_BONUS
+    return 0
+
+
 def _player_defense(player):
     """Damage reduction from worn gear (armor + offhand slots)."""
     total = 0
@@ -3516,9 +3523,10 @@ async def cmd_gather(player, msg):
     node["available"] = False
     node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
     quantity = random.randint(int(node.get("min_yield", 1)), int(node.get("max_yield", 1)))
+    quantity += _gather_yield_bonus(player)
     # Multi-yield must not overflow the pack (#232): truncate to the
     # remaining space (a full pack already refused above, so >= 1 fits).
-    quantity = min(quantity, _inventory_cap(player) - _inventory_units(player))
+    quantity = min(quantity, _inventory_room(player))
     player.inventory.extend([node["item"]] * quantity)
     item_name = _iname(node["item"])
     await send(player, {"type": "message", "text": f"You gather {quantity}x {item_name}."})
