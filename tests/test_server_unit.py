@@ -1359,6 +1359,39 @@ async def main():
     # Fill pack to 24 (base cap) - should NOT be full due to +2 bonus (26 cap)
     for _ in range(24): mule_owner.inventory.append("iron_ore")
     assert not srv._pack_full(mule_owner), "Mule carry bonus should prevent pack full"
+    # Gather yield bonus: same node and roll, mule owner gets exactly one more.
+    plain_gatherer = mkplayer("PlainGatherer", 70005, room="lumber_camp")
+    mule_gatherer = mkplayer("MuleGatherer", 70006, room="lumber_camp")
+    mule_gatherer.inventory.append("mule_deed")
+    await srv.cmd_companion(mule_gatherer, {"action": "adopt", "species": "mule"})
+    yield_node = srv.gather_nodes["pine_timber_node"]
+    yield_node["available"] = True
+    yield_node["respawn_at"] = None
+    with _mock.patch.object(srv.random, "randint", return_value=2):
+        await srv.cmd_gather(plain_gatherer, {"node": "pine timber"})
+    assert plain_gatherer.inventory.count("pine_timber") == 2
+    yield_node["available"] = True
+    yield_node["respawn_at"] = None
+    with _mock.patch.object(srv.random, "randint", return_value=2):
+        await srv.cmd_gather(mule_gatherer, {"node": "pine timber"})
+    assert (
+        mule_gatherer.inventory.count("pine_timber") == 3
+    ), "Mule should add one gather unit"
+    # A full pack is still refused before the node is consumed or any yield lands.
+    full_mule = mkplayer("FullMule", 70007, room="lumber_camp")
+    full_mule.inventory.append("mule_deed")
+    await srv.cmd_companion(full_mule, {"action": "adopt", "species": "mule"})
+    full_mule.inventory = ["iron_ore"] * srv._inventory_cap(full_mule)
+    assert srv._pack_full(full_mule)
+    yield_node["available"] = True
+    yield_node["respawn_at"] = None
+    with _mock.patch.object(srv.random, "randint", return_value=2):
+        await srv.cmd_gather(full_mule, {"node": "pine timber"})
+    assert inbox[-1]["type"] == "error" and "pack is full" in inbox[-1]["text"].lower()
+    assert "pine_timber" not in full_mule.inventory
+    assert yield_node["available"] is True, "Refused gather must not consume the node"
+    yield_node["available"] = True
+    yield_node["respawn_at"] = None
     # Sheep passive: +20% heal/buff duration.
     sheep_owner = mkplayer("SheepOwner", 70003, room="town_square")
     sheep_owner.inventory.append("sheep_deed")
@@ -1374,7 +1407,16 @@ async def main():
     srv._companion_award_xp(cap_owner, 100, "cap_test")
     assert rec_cap["level"] == srv.COMPANION_LEVEL_CAP, "Level should not exceed cap"
     # Cleanup
-    for n, pl in [("xpowner", xp_owner), ("wolfowner", wolf_owner), ("muleowner", mule_owner), ("sheepowner", sheep_owner), ("capowner", cap_owner)]:
+    for n, pl in [
+        ("xpowner", xp_owner),
+        ("wolfowner", wolf_owner),
+        ("muleowner", mule_owner),
+        ("sheepowner", sheep_owner),
+        ("capowner", cap_owner),
+        ("plaingatherer", plain_gatherer),
+        ("mulegatherer", mule_gatherer),
+        ("fullmule", full_mule),
+    ]:
         if pl:
             drop_job_entry(n, pl)
             srv.COMPANION_PLAYERS.pop(n, None)
