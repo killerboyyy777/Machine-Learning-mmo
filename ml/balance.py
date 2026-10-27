@@ -1272,7 +1272,7 @@ async def _sample_loop(cond, http_url, gm_url, interval, stop, started):
             print(f"[balance] sample failed: {type(exc).__name__}: {exc}", flush=True)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
     return samples
 
