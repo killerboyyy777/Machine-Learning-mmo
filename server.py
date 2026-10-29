@@ -112,6 +112,13 @@ PROTOCOL_VERSION = 2
 HP_REGEN_AMOUNT = 2
 HP_REGEN_SECONDS = 10
 HP_REGEN_DAMAGE_WINDOW = 15
+# Zonal hostility differential (#538): a civilian room's hostiles come back
+# slower than a wild room's, so safe lands are quieter without ever being
+# free of danger. Applied when the kill schedules the respawn.
+CIV_NPC_RESPAWN_MULT = 2.0
+# Recent-action ring used by variety scoring; unbounded history would let an
+# old playstyle keep counting after the player switched.
+ACTION_WINDOW = 20
 MIN_HISTORY_FOR_VARIETY = 5
 MIN_VARIETY = 0.2
 DIFFICULTY_K = 50.0
@@ -3241,6 +3248,17 @@ async def respawn_player(player):
         await sync_room(death_room)
 
 
+def _npc_respawn_at(npc, default_seconds=30):
+    """When a dead NPC comes back: civ-zone hostiles wait longer (#538)."""
+    secs = npc.get("respawn_seconds", default_seconds)
+    if not secs:
+        return None
+    room = ROOMS.get(npc.get("room"), {})
+    if not room.get("wild", False):
+        secs = secs * CIV_NPC_RESPAWN_MULT
+    return time.time() + secs
+
+
 def respawn_npc(npc):
     """Bring an NPC back to life. Dungeon guard respawn re-seals the floor."""
     npc["alive"] = True
@@ -3794,8 +3812,7 @@ async def cmd_attack(player, msg):
     # not minted -- one payout split, never two).
     if npc["hp"] <= 0 and npc.get("alive", True):
         npc["alive"] = False
-        respawn_secs = npc.get("respawn_seconds", 30)
-        npc["respawn_at"] = time.time() + respawn_secs if respawn_secs else None
+        npc["respawn_at"] = _npc_respawn_at(npc)
         for loot_id in npc.get("loot", []):
             _add_ground(player.room, loot_id)
         contributors = npc["contributors"]
@@ -7004,11 +7021,7 @@ async def cmd_gm_slay(player, msg):
     if not await _spend_tax(player, cost, f"slay {npc['name']}"):
         return
     npc["alive"] = False
-    npc["respawn_at"] = (
-        time.time() + (npc.get("respawn_seconds", 60) or 60)
-        if npc.get("respawn_seconds", 60)
-        else None
-    )
+    npc["respawn_at"] = _npc_respawn_at(npc, default_seconds=60)
     for loot_id in npc.get("loot", []):
         _add_ground(npc["room"], loot_id)
     await broadcast_room(
@@ -7537,6 +7550,8 @@ def world_snapshot():
                 "score_history": [s for _, s in _score_history.get(p.name.lower(), [])],
                 "kills": e.get("kills", 0),
                 "deaths": e.get("deaths", 0),
+                "wild_deaths": e.get("wild_deaths", 0),
+                "civ_deaths": e.get("civ_deaths", 0),
                 "gold": p.gold,
                 "hp": p.hp,
                 "max_hp": p.max_hp,
@@ -8638,29 +8653,12 @@ async def npc_ai_loop():
         for npc in list(all_npcs()):
             if not npc.get("alive", False):
                 if npc["respawn_at"] and now >= npc["respawn_at"]:
-                    # Determine respawn time based on zone type
-                    room = ROOMS.get(npc["room"], {})
-                    is_wild = room.get("wild", False)
-                    
-                    # Civ zones: longer respawn (double the normal time)
-                    # Wild zones: normal respawn time
-                    if not is_wild and npc.get("respawn_seconds", 30) > 0:
-                        # Check if enough time has passed for civ zone (2x normal time)
-                        if now >= npc["respawn_at"]:
-                            respawn_npc(npc)
-                            await broadcast_room(
-                                npc["room"],
-                                {"type": "message", "text": f"{npc['name']} respawns."},
-                            )
-                            await sync_room(npc["room"])
-                    elif is_wild:
-                        # Wild zones use normal respawn time
-                        respawn_npc(npc)
-                        await broadcast_room(
-                            npc["room"],
-                            {"type": "message", "text": f"{npc['name']} respawns."},
-                        )
-                        await sync_room(npc["room"])
+                    respawn_npc(npc)
+                    await broadcast_room(
+                        npc["room"],
+                        {"type": "message", "text": f"{npc['name']} respawns."},
+                    )
+                    await sync_room(npc["room"])
                 continue
             room_id = npc["room"]
             targets = players_in_room(room_id)

@@ -21,11 +21,21 @@ sys.path.insert(0, ROOT)
 import ml.balance as bal
 
 
-def _player(name, deaths, level=1):
-    return {"name": name, "level": level, "deaths": deaths, "kills": 1, "gold": 5}
+def _player(name, deaths, level=1, wild_deaths=None, civ_deaths=None, kills=None):
+    if wild_deaths is None and civ_deaths is None:
+        civ_deaths = deaths // 2
+    return {
+        "name": name,
+        "level": level,
+        "deaths": deaths,
+        "kills": deaths * 2 if kills is None else kills,
+        "wild_deaths": deaths - (civ_deaths or 0) if wild_deaths is None else wild_deaths,
+        "civ_deaths": civ_deaths or 0,
+        "gold": 5,
+    }
 
 
-def make_samples(alive=8, final_deaths=(1, 1), craft_seq=(3,)):
+def make_samples(alive=8, final_deaths=(2, 2), craft_seq=(3,)):
     """Three samples: spawn, steady state, end. Two tracked players."""
     base = {
         "server": {"players_online": 2},
@@ -149,10 +159,16 @@ def test_derive_metrics():
     assert derived["treasury"]["sunk_end"] == 15.0
     assert derived["treasury"]["tax_effective_pct"] == 22.22
     assert derived["treasury"]["series"][-1] == {"t": 2400.0, "value": 505.0}
-    # Two players x 2400s = 1.333 agent-hours; two deaths => 1.5/h.
-    assert derived["combat"]["deaths"] == 2
+    # Two players x 2400s = 1.333 agent-hours; four deaths => 3.0/h.
+    assert derived["combat"]["deaths"] == 4
     assert abs(derived["combat"]["agent_hours"] - 1.333) < 0.01
-    assert abs(derived["combat"]["deaths_per_hour"] - 1.5) < 0.01
+    assert abs(derived["combat"]["deaths_per_hour"] - 3.0) < 0.01
+    # Traffic splits evenly: two deaths in wild rooms, two in civilian ones.
+    assert abs(derived["combat"]["wild_deaths_per_hour"] - 1.5) < 0.01
+    assert abs(derived["combat"]["civ_deaths_per_hour"] - 1.5) < 0.01
+    assert derived["combat"]["civ_death_share_pct"] == 50.0
+    assert derived["combat"]["kills"] == 8
+    assert derived["combat"]["deaths_per_kill"] == 0.5
     assert derived["combat"]["companion_damage_share_pct"] == 25.0
     # (ask 110, bid 100) => 9.52% spread; trade_count 0 -> 12.
     assert derived["market"]["median_spread_pct"] == 9.524
@@ -165,6 +181,44 @@ def test_derive_metrics():
     assert derived["liveness"]["final_alive"] == 8
     assert derived["determinism"]["fingerprint"]
     print("DERIVE_METRICS_OK")
+
+
+def test_zone_deaths_accumulate_deltas():
+    # Bot names are reused, so a run starts with lifetime counters already
+    # on the books: only the growth inside the window may be scored.
+    samples = make_samples()
+    for index, sample in enumerate(samples):
+        grew = 1 if index else 0
+        for player in sample["state"]["players"]:
+            player["deaths"] = 100 + grew
+            player["wild_deaths"] = 60 + grew
+            player["civ_deaths"] = 40
+    derived = bal.derive(samples, LEDGER, TELEMETRY)
+    assert derived["combat"]["deaths"] == 2
+    assert abs(derived["combat"]["wild_deaths_per_hour"] - 1.5) < 0.01
+    assert derived["combat"]["civ_death_share_pct"] == 0.0
+    print("ZONE_DEATH_DELTA_OK")
+
+
+def test_missing_zone_counters_skip_not_fail():
+    samples = make_samples()
+    for sample in samples:
+        for player in sample["state"]["players"]:
+            player.pop("wild_deaths")
+            player.pop("civ_deaths")
+    derived = bal.derive(samples, LEDGER, TELEMETRY)
+    assert derived["combat"]["wild_deaths_per_hour"] is None
+    assert derived["combat"]["civ_death_share_pct"] is None
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": derived},
+        bal.load_thresholds(profile="smoke"),
+        "smoke",
+        700,
+    )
+    statuses = {c["id"]: c["status"] for c in report["checks"]}
+    assert statuses["combat.civ_death_share"] == "skip"
+    assert statuses["combat.wild_deaths_per_hour"] == "skip"
+    print("ZONE_TELEMETRY_ABSENT_SKIP_OK")
 
 
 def test_derive_without_ledger_skips_not_passes():
@@ -238,6 +292,10 @@ def test_evaluate_pass_and_schema():
     for expected in (
         "conservation.items_drift",
         "treasury.band",
+        "combat.civ_deaths_per_hour",
+        "combat.civ_death_share",
+        "combat.wild_deaths_per_hour",
+        "combat.deaths_per_kill",
         "combat.deaths_per_hour",
         "craft.completions",
         "market.median_spread",
@@ -274,7 +332,7 @@ def test_evaluate_pass_and_schema():
 def test_evaluate_fail_paths():
     measurements = make_measurements()
     derived = copy.deepcopy(measurements["derived"])
-    derived["combat"]["deaths_per_hour"] = 20.0
+    derived["combat"]["civ_death_share_pct"] = 99.0
     derived["market"]["median_spread_pct"] = 40.0
     derived["treasury"]["reserve"] = 1000.0
     broken = dict(measurements, derived=derived)
@@ -284,7 +342,7 @@ def test_evaluate_fail_paths():
     failing = _failing(report)
     assert report["verdict"] == "FAIL"
     assert {
-        "combat.deaths_per_hour",
+        "combat.civ_death_share",
         "market.median_spread",
         "treasury.band",
     } <= failing, failing
@@ -319,10 +377,10 @@ def test_profile_overrides_and_threshold_file():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "thresholds.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"combat": {"deaths_per_hour_max": 99.0}}, fh)
+            json.dump({"combat": {"civ_death_share_pct_max": 99.0}}, fh)
         overridden = bal.load_thresholds(path, "smoke")
-    assert overridden["combat"]["deaths_per_hour_max"] == 99.0
-    assert overridden["combat"]["deaths_per_hour_min"] == 0.5
+    assert overridden["combat"]["civ_death_share_pct_max"] == 99.0
+    assert overridden["combat"]["deaths_per_kill_max"] == 1.5
     # A typo in a threshold path is an error, never a silent pass.
     try:
         bal.resolve_threshold(overridden, ("combat", "nope"))
@@ -385,7 +443,7 @@ def test_cli_exit_codes():
         assert report["summary"]["verdict"] == "PASS"
 
         broken = make_measurements()
-        broken["derived"]["combat"]["deaths_per_hour"] = 50.0
+        broken["derived"]["combat"]["civ_death_share_pct"] = 99.0
         failing = _write_measurements(tmp, broken)
         code = bal.main(["evaluate", "--measurements", failing])
         assert code == 1, code
@@ -463,8 +521,10 @@ def test_matrix_catalog():
     assert bal.SCENARIOS["progression"]["observed_only"]
     thresholds = bal.load_thresholds(profile="gate")
     assert thresholds["liveness"]["min_agents"] == 16
-    assert thresholds["combat"]["deaths_per_hour_min"] == 0.5
-    assert thresholds["combat"]["deaths_per_hour_max"] == 3.0
+    assert thresholds["combat"]["civ_deaths_per_hour_min"] == 0.5
+    assert thresholds["combat"]["civ_death_share_pct_max"] == 95.0
+    assert thresholds["combat"]["wild_deaths_per_hour_min"] == 0.5
+    assert thresholds["combat"]["deaths_per_kill_max"] == 1.5
     assert thresholds["market"]["max_median_spread_pct"] == 25.0
     print("MATRIX_CATALOG_OK")
 
@@ -489,6 +549,8 @@ def test_import_has_no_heavy_deps():
 def main():
     test_conservation_identity()
     test_derive_metrics()
+    test_zone_deaths_accumulate_deltas()
+    test_missing_zone_counters_skip_not_fail()
     test_derive_without_ledger_skips_not_passes()
     test_wash_trade_detected()
     test_zero_craft_and_unexercised_sink()

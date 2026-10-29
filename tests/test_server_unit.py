@@ -644,6 +644,29 @@ async def main():
     assert regen_player.hp == 22, f"Expected HP to be 22 after regen, got {regen_player.hp}"
     print("HP_REGEN_OK")
 
+    # ACTION_WINDOW caps the recent-action ring variety scoring reads. It went
+    # missing once (record_action then raised NameError on every command), so
+    # assert both the constant and the trim it drives.
+    assert srv.ACTION_WINDOW > 0
+    for index in range(srv.ACTION_WINDOW + 7):
+        srv.record_action("WindowTester", ("look", index))
+    window_hist = srv.get_score_entry("WindowTester")["history"]
+    assert len(window_hist) == srv.ACTION_WINDOW, len(window_hist)
+    assert window_hist[-1] == ["look", srv.ACTION_WINDOW + 6]
+    print("ACTION_WINDOW_OK")
+
+    # Zonal hostility differential (#538): the same hostile waits longer to
+    # come back in a civilian room than in a wild one.
+    civ_room = next(r for r, v in srv.ROOMS.items() if not v.get("wild"))
+    wild_room = next(r for r, v in srv.ROOMS.items() if v.get("wild"))
+    civ_wait = srv._npc_respawn_at({"room": civ_room, "respawn_seconds": 30}) - time.time()
+    wild_wait = (
+        srv._npc_respawn_at({"room": wild_room, "respawn_seconds": 30}) - time.time()
+    )
+    assert 29.0 <= wild_wait <= 31.0, wild_wait
+    assert abs(civ_wait - 30.0 * srv.CIV_NPC_RESPAWN_MULT) < 1.5, civ_wait
+    print("CIV_RESPAWN_DIFFERENTIAL_OK")
+
     # --- Quantity-aware recipes ---
     crafter = srv.Player(ws=FakeWS(), id=10001, name="RecipeTester", logged_in=True)
     crafter.inventory = ["iron_ore"]
