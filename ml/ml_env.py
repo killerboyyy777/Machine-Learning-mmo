@@ -2000,7 +2000,7 @@ class TextMMOEnv:
             # hostile in view (server matches substrings case-insensitively),
             # falling back to the server's own "rat" default when blind; 1
             # kill, escrow up to 10g of carried gold. MASKED when broke
-            # (escrow<=0 → server would reject a zero-reward post, #337)
+            # (escrow<=0 -> server would reject a zero-reward post, #337)
             # and when away from the guild hall (post is presence-gated).
             # Never masked otherwise: affordability is priced in.
             if s.get("room_id") != getattr(srv, "GUILD_ROOM", "guild_hall"):
