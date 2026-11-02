@@ -238,7 +238,7 @@ class DungeonPlugin(ScriptedPolicy):
             # Delver quest state gates the giver branch (#357): accept once
             # to get active, turn in only when ready. Active-but-not-ready
             # must fall through to the dungeon descent below -- the
-            # pre-#357 mask-order form repeated quest2_turn_in forever
+            # pre-#357 mask-order logic repeated quest2_turn_in forever
             # because failed turn-ins only send messages, never state.
             if not s.get("quest_delver_active"):
                 yield self._first_valid(env, ("quest2_accept",), mask)
