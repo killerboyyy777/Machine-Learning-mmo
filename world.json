@@ -73,12 +73,14 @@
       "name": "Deep Forest",
       "description": "Sunlight barely reaches the forest floor here. Something is watching you.",
       "shelter": false,
+      "wild": true,
       "exits": {"south": "forest_edge", "east": "mountain_pass", "north": "pinewood_thicket"}
     },
     "mountain_pass": {
       "name": "Mountain Pass",
       "description": "A narrow, windswept pass. It's a dangerous shortcut, but a shortcut all the same.",
       "shelter": false,
+      "wild": true,
       "exits": {"west": "deep_forest", "down": "graveyard", "east": "highland_trail"}
     },
     "graveyard": {
@@ -202,6 +204,7 @@
       "name": "Storm Summit",
       "description": "The highest peak for miles. Lightning scars the black rock between snowdrifts.",
       "shelter": false,
+      "wild": true,
       "exits": {"south": "frozen_pass", "north": "summit_gatehouse"}
     },
     "summit_gatehouse": {
@@ -234,12 +237,14 @@
       "name": "Stone Circle",
       "description": "Ancient standing stones hum faintly. Moss and mountain berries grow between them.",
       "shelter": false,
+      "wild": true,
       "exits": {"south": "highland_trail"}
     },
     "sky_nest": {
       "name": "Sky Nest",
       "description": "A vast aerie above the clouds. Frost crystals glitter in a giant's nest of bones.",
       "shelter": false,
+      "wild": true,
       "exits": {"down": "eagle_roost"}
     },
     "crypt_hall": {

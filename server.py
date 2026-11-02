@@ -42,7 +42,7 @@ COMPANION_DOWNED_SECONDS = 300
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
-COMPANION_ATTACK_COOLDOWN = 1.2
+COMPANION_ATTACK_COOLDOWN = 0.8
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
@@ -496,7 +496,7 @@ def _sync_extra_spawns():
     want = max(0, int(MOB_EXTRA_SPAWNS))
     if want > 0:
         for nid, tmpl in WORLD["npcs"].items():
-            if tmpl.get("hostile"):
+            if tmpl.get("hostile") and ROOMS.get(tmpl.get("room"), {}).get("wild"):
                 for i in range(1, want + 1):
                     xid = f"{nid}__x{i}"
                     npcs[xid] = {
