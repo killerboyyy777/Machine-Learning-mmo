@@ -1380,7 +1380,7 @@ def collusion_multiplier(poster_name, filler_name):
     still get *something* (avoiding feel-bad zero-reward completions).
     The escrow remainder (posted gold minus reduced payout) is sunk to
     the treasury as an additional collusion deterrent."""
-    # Case-normalised: score entries are keyed by lower-cased name, so
+    # Case-normalized: score entries are keyed by lower-cased name, so
     # "Alice" and "alice" are the same economic actor. Exact-case keys
     # here would let case variants reset the collusion curve for free.
     poster = get_score_entry(poster_name)
