@@ -41,6 +41,11 @@ import server as srv
 
 from . import AgentPlugin, register
 
+# Wild rooms keep their stand-your-ground risk only while HP is healthy.
+# Below this fraction the policy retreats, so a wild visit costs HP instead
+# of turning one agent into a respawn loop.
+WILD_STAND_HP_FRAC = 0.35
+
 
 class ScriptedPolicy(AgentPlugin):
     """Fixed behavior-tree baseline: no learning, just a priority list over
@@ -223,17 +228,22 @@ class ScriptedPolicy(AgentPlugin):
 
         The env attack mask only offers `attack` when the agent can win;
         without this check a role stands in the room and bleeds out.
-        Wild rooms are exempt: there, standing your ground is the risk.
+        Wild rooms stay stand-your-ground while HP is above
+        WILD_STAND_HP_FRAC, which keeps wild lethal on entry; below it the
+        agent leaves rather than feeding a respawn loop.
         """
         room = env._state.get("room_id")
         if not self._room_hostiles(room):
-            return None
-        if (srv.ROOMS.get(room) or {}).get("wild"):
             return None
         mask = self._valid(env) if mask is None else mask
         attack = self._idx("attack")
         if attack is not None and mask[attack]:
             return None
+        if (srv.ROOMS.get(room) or {}).get("wild"):
+            hp = float(env._state.get("hp", 1) or 0)
+            max_hp = float(env._state.get("max_hp", 1) or 1)
+            if hp > max_hp * WILD_STAND_HP_FRAC:
+                return None
         return self._safe_random_move(env, mask)
 
     def _dungeon_entrance_room(self):
