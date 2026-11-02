@@ -29,7 +29,9 @@ def _player(name, deaths, level=1, wild_deaths=None, civ_deaths=None, kills=None
         "level": level,
         "deaths": deaths,
         "kills": deaths * 2 if kills is None else kills,
-        "wild_deaths": deaths - (civ_deaths or 0) if wild_deaths is None else wild_deaths,
+        "wild_deaths": (
+            deaths - (civ_deaths or 0) if wild_deaths is None else wild_deaths
+        ),
         "civ_deaths": civ_deaths or 0,
         "gold": 5,
     }

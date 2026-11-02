@@ -87,28 +87,24 @@ async def main():
                 await ws.send(json.dumps(room_view(current["room"])))
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "attack":
-                await ws.send(json.dumps({"type": "combat", "text": "You hit the target."}))
+                await ws.send(
+                    json.dumps({"type": "combat", "text": "You hit the target."})
+                )
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "take":
                 await ws.send(json.dumps({"type": "inventory", "items": []}))
                 await ws.send(json.dumps(stats_view()))
-            elif cmd == "rest":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "buy":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "sell":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "equip":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "use":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "craft":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "gather":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "heal":
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "drop":
+            elif cmd in (
+                "rest",
+                "buy",
+                "sell",
+                "equip",
+                "use",
+                "craft",
+                "gather",
+                "heal",
+                "drop",
+            ):
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "companion_script_set":
                 await ws.send(json.dumps({"type": "companion", "script_set": True}))

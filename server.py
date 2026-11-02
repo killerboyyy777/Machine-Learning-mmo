@@ -904,12 +904,10 @@ def floor_from_room(room_id):
 
 
 def all_npcs():
-    for npc in npcs.values():
-        yield npc
+    yield from npcs.values()
     for d in dungeons.values():
         for f in d.floors.values():
-            for g in f.guards:
-                yield g
+            yield from f.guards
 
 
 def npcs_in_room(room_id):
@@ -1438,7 +1436,7 @@ async def apply_death_penalty(player, gold_lost=0):
     value of any items scattered in a risk zone)."""
     entry = get_score_entry(player.name)
     entry["deaths"] += 1
-    
+
     # Track deaths by zone type for balance monitoring
     room = ROOMS.get(player.room, {})
     is_wild = room.get("wild", False)
@@ -1446,7 +1444,7 @@ async def apply_death_penalty(player, gold_lost=0):
         entry["wild_deaths"] = entry.get("wild_deaths", 0) + 1
     else:
         entry["civ_deaths"] = entry.get("civ_deaths", 0) + 1
-    
+
     penalty = DEATH_PENALTY + DEATH_SCORE_PER_GOLD_LOST * max(0, gold_lost)
     entry["score"] = max(0.0, entry["score"] - penalty)
     record_score_point(player.name, entry["score"])
@@ -7593,9 +7591,9 @@ def _commission_progress(c):
 def _commission_snapshot():
     """Dashboard commissions board: open + closed bounties, newest first,
     capped (completed/cancelled records persist server-side, unbounded)."""
-    cmds = sorted(
-        _commissions.values(), key=lambda c: c.get("id", 0), reverse=True
-    )[:100]
+    cmds = sorted(_commissions.values(), key=lambda c: c.get("id", 0), reverse=True)[
+        :100
+    ]
     return [
         {
             "id": c.get("id"),

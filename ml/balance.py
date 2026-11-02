@@ -682,20 +682,21 @@ def derive(samples, ledger=None, telemetry=None):
                 "kills": player_kills,
             }
         previous_t = t
-        
+
         # Stability tracking
         online_players = [p for p in players if p.get("level") is not None]
         if online_players:
-            avg_level = sum(_num(p.get("level")) or 0 for p in online_players) / len(online_players)
+            avg_level = sum(_num(p.get("level")) or 0 for p in online_players) / len(
+                online_players
+            )
             stability_avg_levels.append((t, avg_level))
-            
+
         total_score = _num(state.get("total_score"))
         if total_score is not None:
             stability_total_scores.append((t, total_score))
-            
+
         total_gold = sum(_num(p.get("gold")) or 0 for p in players)
         stability_economy.append((t, total_gold))
-            
 
         for entry in state.get("craft_history") or []:
             seq = _num(entry.get("seq"))
@@ -792,7 +793,7 @@ def derive(samples, ledger=None, telemetry=None):
         agent_counts = [a for _, a in stability_agents if a > 0]
         if agent_counts:
             population_ratio = min(agent_counts) / max(agent_counts)
-    
+
     return {
         "treasury": {
             "reserve": reserve,
@@ -864,8 +865,12 @@ def derive(samples, ledger=None, telemetry=None):
         },
         "stability": {
             "economic_slope": _slope(stability_economy) if stability_economy else None,
-            "level_slope": _slope(stability_avg_levels) if stability_avg_levels else None,
-            "score_slope": _slope(stability_total_scores) if stability_total_scores else None,
+            "level_slope": (
+                _slope(stability_avg_levels) if stability_avg_levels else None
+            ),
+            "score_slope": (
+                _slope(stability_total_scores) if stability_total_scores else None
+            ),
             "population_ratio": population_ratio,
         },
     }
@@ -1855,7 +1860,9 @@ def parse_args(argv=None):
     evaluate.add_argument("--out", default=None)
 
     run = sub.add_parser("run", help="run a profile against a live server")
-    run.add_argument("--profile", default="smoke", choices=("smoke", "gate", "stability"))
+    run.add_argument(
+        "--profile", default="smoke", choices=("smoke", "gate", "stability")
+    )
     _add_run_args(run, "smoke")
     run.add_argument(
         "--out",
