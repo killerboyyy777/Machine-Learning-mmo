@@ -42,7 +42,7 @@ COMPANION_DOWNED_SECONDS = 300
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
-COMPANION_ATTACK_COOLDOWN = 0.8
+COMPANION_ATTACK_COOLDOWN = 0.65
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
