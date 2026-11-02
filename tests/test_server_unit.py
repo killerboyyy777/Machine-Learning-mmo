@@ -57,6 +57,14 @@ def config_editor_check(folder):
         with open(path, encoding="utf-8", newline="") as fh:
             return fh.read()
 
+    def write_text(path, text):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def write_bytes(path, data):
+        with open(path, "wb") as fh:
+            fh.write(data)
+
     # --- schema covers both files, both directions -------------------------
     for file_id, meta in config_schema.FILES.items():
         with open(os.path.join(ROOT, meta["path"]), encoding="utf-8") as fh:
@@ -155,9 +163,7 @@ def config_editor_check(folder):
     assert ok and changed == ["scoring.DEATH_ITEM_DROP_PCT"], (ok, changed)
     # Dropping the last entry of a section has to repair the neighbor's
     # comma; dropping the first one must not.
-    assert "DEATH_ITEM_DROP_PCT" not in json.loads(
-        open(path, encoding="utf-8").read()
-    )["scoring"]
+    assert "DEATH_ITEM_DROP_PCT" not in json.loads(read_text(path))["scoring"]
 
     for edits, fragment in (({"scoring": {"NOPE": 1}}, "unknown key"),):
         path = sandbox("server_config.json", "server_config.json")
@@ -570,6 +576,18 @@ def training_launch_check(folder):
 
 
 async def main():
+    def read_bytes(path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def write_text(path, text):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def write_bytes(path, data):
+        with open(path, "wb") as fh:
+            fh.write(data)
+
     # --- Leveling curve ---
     assert srv.xp_to_next(1) == 100
     assert srv.xp_to_next(2) == 150
@@ -635,13 +653,16 @@ async def main():
     
     # Manually trigger the regeneration logic from npc_ai_loop
     now = time.time()
-    if regen_player.logged_in and regen_player.hp < regen_player.max_hp:
-        if now - regen_player.last_regen_ts >= srv.HP_REGEN_SECONDS:
-            if now - regen_player.last_damage_ts >= srv.HP_REGEN_DAMAGE_WINDOW:
-                old_hp = regen_player.hp
-                regen_player.hp = min(regen_player.max_hp, regen_player.hp + srv.HP_REGEN_AMOUNT)
-                if regen_player.hp > old_hp:
-                    regen_player.last_regen_ts = now
+    if (
+        regen_player.logged_in
+        and regen_player.hp < regen_player.max_hp
+        and now - regen_player.last_regen_ts >= srv.HP_REGEN_SECONDS
+        and now - regen_player.last_damage_ts >= srv.HP_REGEN_DAMAGE_WINDOW
+    ):
+        old_hp = regen_player.hp
+        regen_player.hp = min(regen_player.max_hp, regen_player.hp + srv.HP_REGEN_AMOUNT)
+        if regen_player.hp > old_hp:
+            regen_player.last_regen_ts = now
     
     assert regen_player.hp == 22, f"Expected HP to be 22 after regen, got {regen_player.hp}"
     print("HP_REGEN_OK")
@@ -3062,17 +3083,14 @@ async def main():
     cfg_path = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_bool_cfg_tmp.json")
     real_cfg, real_val = srv.CONFIG_FILE, srv.AUTH_TOKEN_REQUIRED
     try:
-        with open(cfg_path, "w") as f:
-            _json.dump({"flags": {"AUTH_TOKEN_REQUIRED": "false"}}, f)
+        write_text(cfg_path, _json.dumps({"flags": {"AUTH_TOKEN_REQUIRED": "false"}}))
         srv.CONFIG_FILE = cfg_path
         srv._apply_config()
         assert srv.AUTH_TOKEN_REQUIRED is False, srv.AUTH_TOKEN_REQUIRED
-        with open(cfg_path, "w") as f:
-            _json.dump({"flags": {"AUTH_TOKEN_REQUIRED": "yes"}}, f)
+        write_text(cfg_path, _json.dumps({"flags": {"AUTH_TOKEN_REQUIRED": "yes"}}))
         srv._apply_config()
         assert srv.AUTH_TOKEN_REQUIRED is True, srv.AUTH_TOKEN_REQUIRED
-        with open(cfg_path, "w") as f:
-            _json.dump({"flags": {"AUTH_TOKEN_REQUIRED": "0"}}, f)
+        write_text(cfg_path, _json.dumps({"flags": {"AUTH_TOKEN_REQUIRED": "0"}}))
         srv._apply_config()
         assert srv.AUTH_TOKEN_REQUIRED is False, srv.AUTH_TOKEN_REQUIRED
     finally:
@@ -3083,13 +3101,12 @@ async def main():
     print("BOOL_CONFIG_OK")
 
     # unknown keys warn instead of vanishing (#241)
-    import io as _io
     import contextlib as _ctx
+    import io as _io
     cfg_path2 = _os.path.join(_os.path.dirname(srv.CONFIG_FILE), "test_unknown_cfg_tmp.json")
     real_cfg3 = srv.CONFIG_FILE
     try:
-        with open(cfg_path2, "w") as f:
-            _json.dump({"scoring": {"DUNGEON_MAX_FLOORs": 60}}, f)
+        write_text(cfg_path2, _json.dumps({"scoring": {"DUNGEON_MAX_FLOORs": 60}}))
         srv.CONFIG_FILE = cfg_path2
         buf = _io.StringIO()
         with _ctx.redirect_stdout(buf):
@@ -3107,9 +3124,9 @@ async def main():
     saved_q = (srv.QUEST_DELVER_FLOORS, srv.QUEST_DELVER_XP,
                srv.QUESTS["delver"]["floors_required"])
     try:
-        with open(cfg_path3, "w") as f:
-            _json.dump({"quests": {"QUEST_DELVER_FLOORS": 5,
-                                   "QUEST_DELVER_XP": 99}}, f)
+        write_text(cfg_path3, _json.dumps(
+            {"quests": {"QUEST_DELVER_FLOORS": 5, "QUEST_DELVER_XP": 99}}
+        ))
         srv.CONFIG_FILE = cfg_path3
         srv._apply_config()
         srv._refresh_quests()
@@ -3320,7 +3337,7 @@ async def main():
     saved_scores = {}
     for _sfx in ("", ".1", ".2"):
         _p = srv.SCORES_FILE + _sfx
-        saved_scores[_sfx] = open(_p, "rb").read() if _os.path.exists(_p) else None
+        saved_scores[_sfx] = read_bytes(_p) if _os.path.exists(_p) else None
     try:
         srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18771, squat_port, 18772
         try:
@@ -3343,8 +3360,7 @@ async def main():
                 if _os.path.exists(_p):
                     _os.remove(_p)
             else:
-                with open(_p, "wb") as f:
-                    f.write(_data)
+                write_bytes(_p, _data)
     print("STARTUP_LEAK_OK")
 
     # shutdown cancels background tasks before the final save (#244)
@@ -3352,7 +3368,7 @@ async def main():
     saved_scores2 = {}
     for _sfx in ("", ".1", ".2"):
         _p = srv.SCORES_FILE + _sfx
-        saved_scores2[_sfx] = open(_p, "rb").read() if _os.path.exists(_p) else None
+        saved_scores2[_sfx] = read_bytes(_p) if _os.path.exists(_p) else None
     srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18781, 18782, 18783
     try:
         main_task = asyncio.create_task(srv.main())
@@ -3383,8 +3399,7 @@ async def main():
                 if _os.path.exists(_p):
                     _os.remove(_p)
             else:
-                with open(_p, "wb") as f:
-                    f.write(_data)
+                write_bytes(_p, _data)
     print("SHUTDOWN_TASKS_OK")
 
     # /health reads the cached snapshot, never the live dict (#224)
