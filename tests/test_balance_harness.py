@@ -183,6 +183,18 @@ def test_derive_metrics():
     print("DERIVE_METRICS_OK")
 
 
+def test_derive_without_players_does_not_crash():
+    # A run whose samples carry no player roster (server restart mid-run,
+    # bots all offline) must still derive; last_players defaults empty.
+    samples = make_samples()
+    for sample in samples:
+        sample["state"]["players"] = []
+    derived = bal.derive(samples, LEDGER, TELEMETRY)
+    assert derived["combat"]["deaths_per_hour"] is None
+    assert derived["liveness"]["final_alive"] == 8
+    print("DERIVE_NO_PLAYERS_OK")
+
+
 def test_zone_deaths_accumulate_deltas():
     # Bot names are reused, so a run starts with lifetime counters already
     # on the books: only the growth inside the window may be scored.
@@ -549,6 +561,7 @@ def test_import_has_no_heavy_deps():
 def main():
     test_conservation_identity()
     test_derive_metrics()
+    test_derive_without_players_does_not_crash()
     test_zone_deaths_accumulate_deltas()
     test_missing_zone_counters_skip_not_fail()
     test_derive_without_ledger_skips_not_passes()

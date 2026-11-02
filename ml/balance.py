@@ -171,7 +171,7 @@ PROFILES = {
         "seeds": (700,),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -196,7 +196,7 @@ PROFILES = {
         "seeds": (700, 701, 702),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -228,7 +228,7 @@ PROFILES = {
         "seeds": (700, 701, 702),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -265,7 +265,7 @@ PROFILES = {
         "seeds": (700,),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -582,6 +582,19 @@ def derive(samples, ledger=None, telemetry=None):
     )
     ledger = ledger or {}
     telemetry = telemetry or {}
+    # The dashboard exposes cumulative player/companion damage in a
+    # "combat" block. Prefer that to a separately probed telemetry file so
+    # the share is measured even when the harness probes only snapshots.
+    if telemetry.get("companion_damage_share_pct") is None and samples:
+        combat_stats = (samples[-1].get("state") or {}).get("combat") or {}
+        player_dmg = _num(combat_stats.get("player_damage")) or 0.0
+        companion_dmg = _num(combat_stats.get("companion_damage")) or 0.0
+        total_dmg = player_dmg + companion_dmg
+        if total_dmg > 0:
+            telemetry = dict(
+                telemetry,
+                companion_damage_share_pct=round(companion_dmg / total_dmg * 100.0, 3),
+            )
 
     treasury_series = []
     reserve = None
@@ -590,6 +603,7 @@ def derive(samples, ledger=None, telemetry=None):
     trade_counts = []
     death_tracking = {}
     deaths = 0.0
+    last_players = []
     wild_deaths = 0.0
     civ_deaths = 0.0
     kills = 0.0
@@ -772,6 +786,13 @@ def derive(samples, ledger=None, telemetry=None):
     if telemetry_deaths is not None:
         deaths_per_hour = telemetry_deaths
 
+    # Fix division by zero in population_ratio
+    population_ratio = 1.0
+    if stability_agents:
+        agent_counts = [a for _, a in stability_agents if a > 0]
+        if agent_counts:
+            population_ratio = min(agent_counts) / max(agent_counts)
+    
     return {
         "treasury": {
             "reserve": reserve,
@@ -845,9 +866,7 @@ def derive(samples, ledger=None, telemetry=None):
             "economic_slope": _slope(stability_economy) if stability_economy else None,
             "level_slope": _slope(stability_avg_levels) if stability_avg_levels else None,
             "score_slope": _slope(stability_total_scores) if stability_total_scores else None,
-            "population_ratio": (
-                (min(a for _, a in stability_agents) / max(a for _, a in stability_agents)) if stability_agents else 1.0
-            ),
+            "population_ratio": population_ratio,
         },
     }
 
@@ -1410,6 +1429,10 @@ def _trim_state(state):
     quests = state.get("quests") or {}
     return {
         "server": {"players_online": (state.get("server") or {}).get("players_online")},
+        "combat": {
+            "player_damage": (state.get("combat") or {}).get("player_damage"),
+            "companion_damage": (state.get("combat") or {}).get("companion_damage"),
+        },
         "market": {
             "treasury": market.get("treasury"),
             "reserve": market.get("reserve"),

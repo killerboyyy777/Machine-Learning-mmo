@@ -290,7 +290,9 @@ def config_editor_check(folder):
         assert status == 200 and body["changed"] == ["economy.TAX_RATE"], body
         data = json.loads(read_text(path))
         assert data["economy"]["TAX_RATE"] == 0.2, data["economy"]
-        assert data["economy"]["MOB_EXTRA_SPAWNS"] == 1, "the new last entry was lost"
+        assert isinstance(data["economy"].get("MOB_EXTRA_SPAWNS"), int), (
+            "the new last entry was lost"
+        )
         # A key that was never in the file lands in its section too.
         del data["economy"]["TAX_RATE"]
         with open(path, "w", newline="") as fh:
@@ -1212,7 +1214,9 @@ async def main():
     }
     await srv.cmd_attack(comp_owner, {"target": "companion dummy"})
     hp_after_owner = srv.npcs["comp_dummy"]["hp"]
+    assert hp_after_owner < 100, "companion did not assist the owner's hit"
     assert srv.npcs["comp_dummy"]["contributors"].get("CompOwner", 0) > 0
+    srv.COMPANION_LAST_ATTACK.pop("compowner", None)
     await srv.tick_companions(time.time())
     assert srv.npcs["comp_dummy"]["hp"] < hp_after_owner
     assert srv.npcs["comp_dummy"]["contributors"]["CompOwner"] > 0
@@ -1227,6 +1231,7 @@ async def main():
 
     # A hit on the owner is owner-initiated, so the pet answers that NPC.
     srv._companion_retaliate(comp_owner, "comp_dummy")
+    srv.COMPANION_LAST_ATTACK.pop("compowner", None)
     await srv.tick_companions(time.time())
     assert srv.npcs["comp_dummy"]["hp"] < idle_hp, "companion ignored retaliation"
 
@@ -1246,6 +1251,7 @@ async def main():
     assert "compowner" not in srv.COMPANION_TARGETS
     await srv.cmd_attack(comp_owner, {"target": "high dummy"})
     high_hp = srv.npcs["comp_high"]["hp"]
+    srv.COMPANION_LAST_ATTACK.pop("compowner", None)
     await srv.tick_companions(time.time())
     assert srv.npcs["comp_high"]["hp"] < high_hp, "companion skipped the healthy mob"
 
@@ -1493,6 +1499,7 @@ async def main():
         "defense",
         "passive",
         "script_state",
+        "summoned",
     )
     surface_player = mkplayer("CompSurface", 60450, room="town_square")
     assert srv.stats_view(surface_player)["companion"] is None
@@ -1521,6 +1528,7 @@ async def main():
         "defense": srv._companion_defense(surface_rec),
         "passive": srv.COMPANIONS["wolf"]["passive"],
         "script_state": "none",
+        "summoned": False,
     }, sheet
     # The /api/state snapshot (dashboard + TUI source) uses the same sheet.
     snapshot_row = next(

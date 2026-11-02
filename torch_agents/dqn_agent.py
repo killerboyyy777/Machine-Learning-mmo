@@ -209,9 +209,11 @@ class TorchDQNAgent:
         aux_lambda: float = 0.3,  # weight for aux losses vs TD loss
         market_lambda: float = 0.1,  # weight for market auxiliary vs TD
         quest_lambda: float = 0.3,  # weight for quest auxiliary vs TD
-        intrinsic_lambda: float = 1.0,  # weight for quest exploration bonus
-        intrinsic_accept: float = 1.0,  # bonus on quest accept (per cycle)
-        intrinsic_progress: float = 2.0,  # bonus on charm craft / delver ready
+        # Exploration bonuses must stay subordinate to server score, or the
+        # policy learns to farm quest transitions instead of playing the game.
+        intrinsic_lambda: float = 0.1,  # weight for quest exploration bonus
+        intrinsic_accept: float = 0.1,  # bonus on quest accept (per cycle)
+        intrinsic_progress: float = 0.2,  # bonus on charm craft / delver ready
         rnd_lambda: float = 0.1,  # RND curiosity start weight (0 disables)
         rnd_lambda_min: float = 0.1,  # RND curiosity floor after decay
         rnd_decay_steps: int = 100000,  # linear start->floor horizon (t_step)
@@ -219,7 +221,9 @@ class TorchDQNAgent:
         rnd_dim: int = 32,  # RND embedding size
         rnd_lr: float = 1e-3,  # RND predictor learning rate
         rnd_ema: float = 0.01,  # running-stat momentum for bonus norm
-        td_norm: bool = True,  # per-batch advantage normalization (#416b)
+        # #416b normalizes the TD residual; that changes the Bellman objective,
+        # so keep it opt-in until an ablation shows it wins end-of-run score.
+        td_norm: bool = False,  # per-batch advantage normalization (#416b)
         td_clip: float = 5.0,  # clip bound on the normalized advantage
         spawn_room: str | None = None,  # walk here after login (#417)
     ):
