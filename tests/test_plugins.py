@@ -32,7 +32,7 @@ print("BUILTINS_OK")
 
 # --- config validation ---
 lin = instantiate("linear")
-assert lin.epsilon == 0.0 and lin.checkpoint is None
+assert lin.epsilon == 0.3 and lin.checkpoint is None
 lin2 = instantiate("linear", epsilon="0.2")  # coerced str -> float
 assert lin2.epsilon == 0.2
 try:

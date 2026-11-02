@@ -49,6 +49,186 @@ TOOLS = [
             "idempotentHint": False,
         },
     },
+    {
+        "name": "game_attack",
+        "title": "Attack a target",
+        "description": "Attack a target NPC in the current room.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Name of the NPC to attack.",
+                }
+            },
+            "required": ["target"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_take",
+        "title": "Take an item",
+        "description": "Take an item from the ground.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "string",
+                    "description": "Name of the item to take.",
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_rest",
+        "title": "Rest",
+        "description": "Rest to recover HP (costs gold).",
+        "inputSchema": MINIMAL,
+    },
+    {
+        "name": "game_buy",
+        "title": "Buy an item",
+        "description": "Buy an item from a merchant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "string",
+                    "description": "Name of the item to buy.",
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_sell",
+        "title": "Sell an item",
+        "description": "Sell an item to a merchant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "string",
+                    "description": "Name of the item to sell.",
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_equip",
+        "title": "Equip an item",
+        "description": "Equip an item from inventory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "string",
+                    "description": "Name of the item to equip.",
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_use",
+        "title": "Use an item",
+        "description": "Use an item from inventory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "string",
+                    "description": "Name of the item to use.",
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_craft",
+        "title": "Craft an item",
+        "description": "Craft an item using a recipe.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recipe": {
+                    "type": "string",
+                    "description": "Name of the recipe.",
+                }
+            },
+            "required": ["recipe"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "game_gather",
+        "title": "Gather",
+        "description": "Gather resources from the room.",
+        "inputSchema": MINIMAL,
+    },
+    {
+        "name": "game_heal",
+        "title": "Heal",
+        "description": "Full heal at Sister Maren's tile (costs gold).",
+        "inputSchema": MINIMAL,
+    },
+    {
+        "name": "game_drop",
+        "title": "Drop an item",
+        "description": "Drop an item from inventory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "string",
+                    "description": "Name of the item to drop.",
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "companion_script_set",
+        "title": "Set companion script",
+        "description": "Set the companion's DroneLang script.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "DroneLang script to set.",
+                }
+            },
+            "required": ["script"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "companion_script_show",
+        "title": "Show companion script",
+        "description": "Show the companion's current script.",
+        "inputSchema": MINIMAL,
+    },
+    {
+        "name": "companion_script_clear",
+        "title": "Clear companion script",
+        "description": "Clear the companion's script.",
+        "inputSchema": MINIMAL,
+    },
+    {
+        "name": "companion_status",
+        "title": "Companion status",
+        "description": "Get the companion's status.",
+        "inputSchema": MINIMAL,
+    },
 ]
 
 RESOURCES = [
@@ -165,6 +345,83 @@ class McpServer:
             envelope = await self._call(
                 "move", {"dir": direction}, expect=("room", "stats", "death")
             )
+        elif name == "game_attack":
+            target = arguments.get("target")
+            if not isinstance(target, str) or not target.strip():
+                raise RpcError(-32602, "game_attack takes a non-empty 'target'")
+            envelope = await self._call(
+                "attack", {"target": target}, expect=("room", "stats", "death")
+            )
+        elif name == "game_take":
+            item = arguments.get("item")
+            if not isinstance(item, str) or not item.strip():
+                raise RpcError(-32602, "game_take takes a non-empty 'item'")
+            envelope = await self._call(
+                "take", {"item": item}, expect=("room", "stats", "death")
+            )
+        elif name == "game_rest":
+            envelope = await self._call("rest", expect=("room", "stats", "death"))
+        elif name == "game_buy":
+            item = arguments.get("item")
+            if not isinstance(item, str) or not item.strip():
+                raise RpcError(-32602, "game_buy takes a non-empty 'item'")
+            envelope = await self._call(
+                "buy", {"item": item}, expect=("room", "stats", "death")
+            )
+        elif name == "game_sell":
+            item = arguments.get("item")
+            if not isinstance(item, str) or not item.strip():
+                raise RpcError(-32602, "game_sell takes a non-empty 'item'")
+            envelope = await self._call(
+                "sell", {"item": item}, expect=("room", "stats", "death")
+            )
+        elif name == "game_equip":
+            item = arguments.get("item")
+            if not isinstance(item, str) or not item.strip():
+                raise RpcError(-32602, "game_equip takes a non-empty 'item'")
+            envelope = await self._call(
+                "equip", {"item": item}, expect=("room", "stats", "death")
+            )
+        elif name == "game_use":
+            item = arguments.get("item")
+            if not isinstance(item, str) or not item.strip():
+                raise RpcError(-32602, "game_use takes a non-empty 'item'")
+            envelope = await self._call(
+                "use", {"item": item}, expect=("room", "stats", "death")
+            )
+        elif name == "game_craft":
+            recipe = arguments.get("recipe")
+            if not isinstance(recipe, str) or not recipe.strip():
+                raise RpcError(-32602, "game_craft takes a non-empty 'recipe'")
+            envelope = await self._call(
+                "craft", {"recipe": recipe}, expect=("room", "stats", "death")
+            )
+        elif name == "game_gather":
+            envelope = await self._call("gather", expect=("room", "stats", "death"))
+        elif name == "game_heal":
+            envelope = await self._call("heal", expect=("room", "stats", "death"))
+        elif name == "game_drop":
+            item = arguments.get("item")
+            if not isinstance(item, str) or not item.strip():
+                raise RpcError(-32602, "game_drop takes a non-empty 'item'")
+            envelope = await self._call(
+                "drop", {"item": item}, expect=("room", "stats", "death")
+            )
+        elif name == "companion_script_set":
+            script = arguments.get("script")
+            if not isinstance(script, str) or not script.strip():
+                raise RpcError(
+                    -32602, "companion_script_set takes a non-empty 'script'"
+                )
+            envelope = await self._call(
+                "companion_script_set", {"script": script}, expect=("companion",)
+            )
+        elif name == "companion_script_show":
+            envelope = await self._call("companion_script_show", expect=("companion",))
+        elif name == "companion_script_clear":
+            envelope = await self._call("companion_script_clear", expect=("companion",))
+        elif name == "companion_status":
+            envelope = await self._call("companion_status", expect=("companion",))
         else:
             raise RpcError(-32602, f"unknown tool: {name}")
         return {

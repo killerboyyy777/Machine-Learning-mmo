@@ -127,6 +127,7 @@ Usage (see the __main__ block at the bottom for a full random-agent demo):
 """
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -793,7 +794,11 @@ ACTIONS = (
         # checkpoints restart fresh.
         "quest3_accept", "quest3_turn_in", "quest4_accept", "quest4_turn_in",
         # Standing buy order (#158): escrowed bid from the market room.
-        "market_buy_order"]
+        "market_buy_order",
+        # Flee combat when hurt or outnumbered.
+        "flee",
+        # Companion playstyle (#535): acquire, summon, dismiss, inspect.
+        "companion_adopt", "companion_summon", "companion_dismiss", "companion_status"]
 )
 N_ACTIONS = len(ACTIONS)
 
@@ -806,6 +811,15 @@ STAGE2_UNLOCK = ({"gather", "quest_accept", "quest_turn_in",
 STAGE3_UNLOCK = {"market_post", "market_buy", "market_cancel", "market_expand",
                  "commission_post", "commission_list", "commission_fill",
                  "commission_cancel", "market_buy_order"}
+
+# Recipe ids the generic "craft" action may emit (kept in check so it never
+# picks an unmapped recipe like mule_deed). Simpler recipes first.
+_GENERIC_CRAFT_RECIPES = [
+    "arrows", "field_ration", "iron_arrows", "sharpening_oil",
+    "bandage", "fortitude_tonic", "reinforced_leather",
+    "greater_sharpening_oil", "ironhide_draught", "iron_plate",
+    "serpentbrand", "ancient_guardian_charm", "wardens_blade", "steel_arrows",
+]
 
 
 def flatten_obs(obs):
@@ -886,6 +900,13 @@ class TextMMOEnv:
         if spawn_room is not None and spawn_room not in srv.ROOMS:
             raise ValueError(f"spawn_room {spawn_room!r} is not a room in world.json")
         self.name = name
+        # Stable per-character token so reconnects (after death/disconnect)
+        # are not rejected by the token-takeover protection added in #557.
+        # Harness names are not human accounts; determinism from the name is
+        # enough to keep the same character authenticated across episodes.
+        self._auth_token = hashlib.sha256(
+            f"harness:{name}".encode()
+        ).hexdigest()[:32]
         self.url = url
         self.step_delay = step_delay
         self.max_steps = max_steps
@@ -954,10 +975,14 @@ class TextMMOEnv:
             # Protocol handshake (#72): server's version from the welcome
             # event (None until login lands).
             "server_version": None,
+            # Active companion sheet from the stats event (None when none).
+            "companion": None,
         }
         self._pending_reward = 0.0
+        self._login_error = None
         self._pending_xp = 0.0  # accumulated "xp" event gains (for "xp" mode)
         self._pending_levels = 0  # accumulated "level_up" events (for "xp" mode)
+        self._pending_market_list = False  # refresh market snapshot after market actions
         # Per-step death economics (#68). The server already sends the whole
         # accounting on the death event; the env read only the counter, so a
         # formula had no way to ask what a death cost.
@@ -978,7 +1003,13 @@ class TextMMOEnv:
     async def _reader(self):
         try:
             async for raw in self.ws:
-                self._apply_event(json.loads(raw))
+                try:
+                    self._apply_event(json.loads(raw))
+                except (ValueError, KeyError, TypeError, AttributeError) as e:
+                    # One malformed event must not kill the reader: json
+                    # parse and field access fail with these four only.
+                    print(f"[{self.name}] reader event error: {e}", flush=True)
+                    continue
         except websockets.ConnectionClosed:
             pass
 
@@ -1004,14 +1035,14 @@ class TextMMOEnv:
             self._state["wild"] = bool(event.get("wild", False))
             self._state["other_players"] = max(0, len(event["players"]) - 1)
         elif t == "stats":
-            self._state["hp"] = event["hp"]
-            self._state["max_hp"] = event["max_hp"]
-            self._state["gold"] = event["gold"]
-            self._state["score"] = event["score"]
+            self._state["hp"] = event.get("hp", self._state["hp"])
+            self._state["max_hp"] = event.get("max_hp", self._state["max_hp"]) or 1
+            self._state["gold"] = event.get("gold", self._state["gold"])
+            self._state["score"] = event.get("score", self._state["score"])
             self._state["variety"] = event.get("variety", 1.0) or 1.0
-            self._state["level"] = event.get("level", 1)
-            self._state["xp"] = event.get("xp", 0.0)
-            self._state["xp_to_next"] = event.get("xp_to_next", 100.0)
+            self._state["level"] = event.get("level", self._state["level"])
+            self._state["xp"] = event.get("xp", self._state["xp"])
+            self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
             self._state["party_size"] = event.get("party_size", self._state["party_size"])
             self._state["inv_names"] = event.get("inv", [])
             # The name list truncates at 20 while the cap is 24, so
@@ -1026,6 +1057,8 @@ class TextMMOEnv:
             self._state["defense"] = event.get("defense", 0)
             self._state["market_orders"] = event.get("market_orders", 0)
             self._state["market_slots"] = event.get("market_slots", self._state.get("market_slots", 3))
+            if "companion" in event:
+                self._state["companion"] = event.get("companion")
             # Quest flags ride along on every stats event (server's
             # stats_view always includes them now).
             if "quest_guard_active" in event:
@@ -1070,8 +1103,8 @@ class TextMMOEnv:
             # those can arrive at any time, not just right after our
             # own action, which is why reward is accumulated here
             # rather than only diffed inside step().
-            self._pending_reward += event["gained"]
-            self._state["score"] = event["total"]
+            self._pending_reward += event.get("gained", 0.0) or 0.0
+            self._state["score"] = event.get("total", self._state["score"])
         elif t == "market":
             self._state["market_state"] = event
             self._state["tax_rate"] = event.get("tax_rate", self._state["tax_rate"])
@@ -1104,7 +1137,9 @@ class TextMMOEnv:
             self._pending_gold_dropped += _as_float(event.get("gold_dropped"))
             self._pending_xp_lost += _as_float(event.get("xp_lost"))
         elif t == "error":
-            pass
+            text = event.get("text", "")
+            if "Login rejected" in text or "already in use" in text:
+                self._login_error = text
 
     async def _send(self, cmd, **kwargs):
         if self.ws is None:
@@ -1181,6 +1216,7 @@ class TextMMOEnv:
 
     async def reset(self):
         await self._close_ws()
+        self._login_error = None
 
         last_error = None
         for _ in range(max(1, self.connect_retries)):
@@ -1197,10 +1233,13 @@ class TextMMOEnv:
 
         self._reader_task = asyncio.create_task(self._reader())
         await self._send("login", name=self.name,
-                         protocol_version=PROTOCOL_VERSION)
+                         protocol_version=PROTOCOL_VERSION,
+                         token=self._auth_token)
         await self._send("stats")
         await self._send("market_list")
         await asyncio.sleep(self.step_delay * 2)  # let the initial snapshot land
+        if self._login_error:
+            raise ConnectionError(f"{self.name}: {self._login_error}")
 
         self._reset_episode_counters()
         self.walked_rooms = []
@@ -1219,6 +1258,17 @@ class TextMMOEnv:
         return self._build_obs()
 
     async def step(self, action_idx):
+        if not isinstance(action_idx, int):
+            raise TypeError(f"{self.name}: action_idx must be int, got {type(action_idx).__name__}")
+        if not (0 <= action_idx < N_ACTIONS):
+            raise ValueError(f"{self.name}: action index {action_idx} out of range (0..{N_ACTIONS-1})")
+        episode_done = False
+        if self._pending_market_list:
+            self._pending_market_list = False
+            try:
+                await self._send("market_list")
+            except CONNECTION_ERRORS:
+                episode_done = True
         action = ACTIONS[action_idx]
         cmd = self._action_to_cmd(action)
         gold_before = self._state["gold"]
@@ -1228,7 +1278,6 @@ class TextMMOEnv:
                         for _, akey, rkey in _QUEST_FLAG_SPECS
                         for k in (akey, rkey)}
         party_before = self._state.get("party_size", 1)
-        episode_done = False
         if cmd:
             try:
                 await self._send(**cmd)
@@ -1747,12 +1796,52 @@ class TextMMOEnv:
                 return {"cmd": "heal"}
             return None
         if action == "attack":
-            # First hostile thing only: never punch merchants, quest givers,
-            # or healers. Unknown/dynamic names (dungeon guards) count as
-            # hostile -- players ride the separate player_names list.
+            # Pick the weakest hostile we can actually beat, not the first
+            # one in the room. Without this a level-1 agent walks into a
+            # Rock Troll (90 hp / 12 atk) and dies in three rounds, which
+            # dominated early death counts and made combat unlearnable.
+            # Unknown names (dungeon guards) have no static stats, so they
+            # stay attackable: dungeons are the intended hard content.
+            defs_by_name = {
+                npc.get("name"): npc
+                for npc in (srv.WORLD.get("npcs") or {}).values()
+            }
+            player_atk = 3 + srv.LEVEL_ATK_PER_LEVEL * (max(1, s.get("level", 1)) - 1)
+            equipped = s.get("equipped")
+            if equipped:
+                equipped_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), equipped)
+                if equipped_iid:
+                    player_atk += srv.ITEM_DEFS[equipped_iid].get("damage", 0)
+            player_atk += int(s.get("buff_attack_amount", 0) or 0)
+            player_atk += min(
+                int(s.get("other_players", 0) or 0),
+                getattr(srv, "ALLY_ATTACK_BONUS_CAP", 0),
+            ) * getattr(srv, "ALLY_ATTACK_BONUS_PER_PLAYER", 0)
+            player_hp = max(
+                1, min(s.get("hp", 1) or 1, s.get("max_hp", 1) or 1)
+            )
+            player_avg = max(1.0, (1 + max(1, player_atk)) / 2.0)
+            best = None
             for name in s["npc_names"] or []:
-                if name not in NON_HOSTILE_NAMES:
-                    return {"cmd": "attack", "target": name}
+                if name in NON_HOSTILE_NAMES:
+                    continue
+                spec = defs_by_name.get(name)
+                if spec is None:
+                    # Dungeon guards are dynamic; assume a mid-tier hostile
+                    # instead of treating them as free kills.
+                    spec = {"max_hp": 60, "attack": 8}
+                npc_hp = max(1, int(spec.get("max_hp", 1) or 1))
+                npc_atk = max(1, int(spec.get("attack", 1) or 1))
+                turns_to_kill = math.ceil(npc_hp / player_avg)
+                npc_avg = max(1.0, (1 + npc_atk) / 2.0)
+                turns_to_die = math.ceil(player_hp / npc_avg)
+                # One-turn safety margin: variance kills otherwise even fights.
+                if turns_to_kill + 1 <= turns_to_die and (
+                    best is None or turns_to_kill < best[0]
+                ):
+                    best = (turns_to_kill, name)
+            if best is not None:
+                return {"cmd": "attack", "target": best[1]}
             return None
         if action == "take":
             # Loose gold piles first (fungible, no merchant trip needed, and
@@ -1856,9 +1945,23 @@ class TextMMOEnv:
                 return {"cmd": "use", "item": name}
             return None
         if action == "craft":
-            # Builds reinforced_leather; ungated here (unlike craft_charm
-            # below), so missing mats come back as a server error signal.
-            return {"cmd": "craft", "recipe": "reinforced_leather"}
+            # Pick the simplest craftable recipe we have mats for instead of
+            # always emitting reinforced_leather (a guaranteed error most
+            # steps). Missing mats -> None, so the model only sees this
+            # action when it can actually do something.
+            have = {}
+            for name in s.get("inv_names") or []:
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    have[iid] = have.get(iid, 0) + 1
+            for rid in _GENERIC_CRAFT_RECIPES:
+                recipe = srv.RECIPES.get(rid)
+                if not recipe:
+                    continue
+                need = recipe.get("inputs", {})
+                if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
+                    return {"cmd": "craft", "recipe": rid}
+            return None
         if action == "craft_charm":
             # Builds the Ancient Guardian Charm for the Town Guard quest
             # (1x Treant Bark + 1x Troll Hide + 1x Ectoplasm). Gate on mats
@@ -2084,6 +2187,7 @@ class TextMMOEnv:
             ask = best_market_ask((s.get("market_state") or {}).get("orders"),
                                   best["iid"], exclude_seller=self.name) if best else None
             price = max(1, ask - 1) if ask else max(1, cands[0][1] + 1)
+            self._pending_market_list = True
             return {"cmd": "market_post", "item": cands[0][2], "price": price}
         if action == "market_buy":
             # A full pack bounces server-side (gold never charged), so skip.
@@ -2101,6 +2205,7 @@ class TextMMOEnv:
                 cheapest = min(o.get("price", 0) for o in others)
                 if s.get("gold", 0) < cheapest:
                     return None
+            self._pending_market_list = True
             return {"cmd": "market_buy"}
         if action == "market_buy_order":
             # Standing bid from the market room only (#158): escrow the bid
@@ -2126,6 +2231,7 @@ class TextMMOEnv:
             price = max(merchant_value(iid) + 1, top.get("price", 0) - 1)
             if s.get("gold", 0) < price + broker_fee(price):
                 return None
+            self._pending_market_list = True
             return {"cmd": "market_buy_order", "item": top.get("item"), "price": price}
         if action == "market_cancel":
             # Cancel our own cheapest standing order if we have any (asks
@@ -2134,10 +2240,12 @@ class TextMMOEnv:
             if ms and ms.get("orders"):
                 mine = [o for o in ms["orders"] if o.get("seller") == self.name]
                 if mine:
+                    self._pending_market_list = True
                     return {"cmd": "market_cancel", "id": mine[0]["id"]}
             if s.get("room_id") == "market" and ms and ms.get("bids"):
                 mine_b = [b for b in ms["bids"] if b.get("buyer") == self.name]
                 if mine_b:
+                    self._pending_market_list = True
                     return {"cmd": "market_cancel", "id": mine_b[0]["id"]}
             return None
         if action == "market_list":
@@ -2154,6 +2262,7 @@ class TextMMOEnv:
             if own_open < slots:
                 return None
             if s.get("gold", 0) >= market_slot_price(slots):
+                self._pending_market_list = True
                 return {"cmd": "market_expand"}
             return None
         if action == "party_invite":
@@ -2176,6 +2285,63 @@ class TextMMOEnv:
             # Same reasoning: info must follow accept to observe the party,
             # and no snapshot tracks membership tightly enough to gate on.
             return {"cmd": "party_info"}
+        if action == "flee":
+            # Panic exit when badly wounded or outnumbered, mirroring the
+            # server's own should_flee rule so the command is not rejected.
+            hp = s.get("hp", 0)
+            max_hp = s.get("max_hp", 1) or 1
+            hostile_count = sum(
+                1 for n in (s.get("npc_names") or [])
+                if n not in NON_HOSTILE_NAMES
+            )
+            if hostile_count <= 0:
+                return None
+            threshold = getattr(srv, "FLEE_THRESHOLD", 0.25)
+            if hp < max_hp * threshold:
+                return {"cmd": "flee"}
+            party_size = max(1, int(s.get("party_size", 1) or 1))
+            companion = s.get("companion") or {}
+            friendly = 1 + (party_size - 1)
+            if companion.get("summoned"):
+                friendly += 1
+            if hostile_count > friendly:
+                return {"cmd": "flee"}
+            return None
+        if action in ("companion_adopt", "companion_summon",
+                      "companion_dismiss", "companion_status"):
+            comp = s.get("companion") or {}
+            if action == "companion_status":
+                return {"cmd": "companion", "action": "status"}
+            if action == "companion_dismiss":
+                if comp and comp.get("summoned"):
+                    return {"cmd": "companion", "action": "dismiss"}
+                return None
+            if action == "companion_summon":
+                if comp and not comp.get("summoned"):
+                    return {"cmd": "companion", "action": "summon"}
+                return None
+            # Adopt: use a deed already carried, else buy the cheap wolf pup
+            # from the merchant so a combat role can acquire a companion
+            # without depending on a boss drop.
+            if comp:
+                return None
+            inv_ids = set()
+            for name in (s.get("inv_names") or []):
+                iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
+                if iid:
+                    inv_ids.add(iid)
+            for iid, species in (
+                ("wolf_pup", "wolf"), ("mule_deed", "mule"), ("sheep_deed", "sheep")
+            ):
+                if iid in inv_ids:
+                    return {"cmd": "companion", "action": "adopt", "species": species}
+            if (MERCHANT_NAMES
+                    and any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES)
+                    and s.get("gold", 0) >= MERCHANT_PRICES.get("wolf_pup", 30)
+                    and not pack_full(s)):
+                return {"cmd": "buy",
+                        "item": srv.ITEM_DEFS.get("wolf_pup", {}).get("name", "Wolf Pup")}
+            return None
         return None
 
     def _build_obs(self):
@@ -2282,8 +2448,8 @@ class TextMMOEnv:
             "equipped_flag": equipped_flag,
             "inv_unknown_flag": inv_unknown,
             "hp_frac": s["hp"] / max(1, s["max_hp"]),
-            "gold_norm": s["gold"] / 200.0,       # arbitrary scale, tune to taste
-            "score_norm": s["score"] / 100.0,     # arbitrary scale, tune to taste
+            "gold_norm": min(s["gold"] / 200.0, 1.0),
+            "score_norm": min(s["score"] / 100.0, 1.0),
             "variety": s["variety"],
             "allies_norm": min(s["other_players"], 5) / 5.0,
             "party_norm": min(s["party_size"], PARTY_MAX_MEMBERS) / PARTY_MAX_MEMBERS,
@@ -2293,7 +2459,7 @@ class TextMMOEnv:
             "market_any": market_any,
             "tax_rate": s["tax_rate"],
             "tax_min_norm": s["tax_min"] / 10.0,
-            "own_net_norm": own_net / 200.0,   # after-tax value of our listings
+            "own_net_norm": min(own_net / 200.0, 1.0),
             "flip_margin_norm": flip_margin_norm,  # best list-over-merchant margin held
             "inv_value_norm": inv_value_norm,  # merchant value of everything carried
             "quest_active": quest_active,

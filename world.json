@@ -4,7 +4,7 @@
     "wolf": {
       "name": "Wolf",
       "base_hp": 26,
-      "base_attack": 4,
+      "base_attack": 7,
       "base_defense": 1,
       "hp_per_level": 6,
       "attack_per_level": 1,
@@ -333,7 +333,7 @@
       "loot": [],
       "gold": 0,
       "respawn_seconds": 5,
-      "shop": {"healing_herb": 5, "rusty_sword": 15, "old_shield": 8, "arrow": 2, "sheep_deed": 200}
+      "shop": {"healing_herb": 5, "rusty_sword": 10, "old_shield": 8, "arrow": 2, "wolf_pup": 10, "sheep_deed": 200}
     },
     "healer": {
       "name": "Sister Maren",
@@ -362,9 +362,9 @@
     "rat": {
       "name": "Giant Rat",
       "room": "old_shop",
-      "hp": 8,
-      "max_hp": 8,
-      "attack": 2,
+      "hp": 12,
+      "max_hp": 12,
+      "attack": 3,
       "hostile": true,
       "behavior": "idle",
       "loot": ["rat_tail"],
@@ -412,7 +412,7 @@
       "room": "graveyard",
       "hp": 25,
       "max_hp": 25,
-      "attack": 2,
+      "attack": 3,
       "hostile": true,
       "behavior": "wander",
       "loot": ["ectoplasm"],
@@ -449,7 +449,7 @@
       "hp": 12,
       "max_hp": 12,
       "attack": 2,
-      "hostile": true,
+      "hostile": false,
       "behavior": "wander",
       "loot": ["rat_tail"],
       "gold": 3,
@@ -670,6 +670,54 @@
       "loot": ["iron_ore", "wolf_pelt"],
       "gold": 22,
       "respawn_seconds": 100
+    },
+    "shore_scavenger": {
+      "name": "Shore Scavenger",
+      "room": "tideline_lighthouse",
+      "hp": 18,
+      "max_hp": 18,
+      "attack": 2,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["rat_tail", "reed_fiber", "wolf_pup"],
+      "gold": 3,
+      "respawn_seconds": 30
+    },
+    "tunnel_lurker": {
+      "name": "Tunnel Lurker",
+      "room": "sunken_tunnel",
+      "hp": 18,
+      "max_hp": 18,
+      "attack": 2,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["wolf_pelt"],
+      "gold": 4,
+      "respawn_seconds": 35
+    },
+    "gale_hound": {
+      "name": "Gale Hound",
+      "room": "summit_gatehouse",
+      "hp": 18,
+      "max_hp": 18,
+      "attack": 2,
+      "hostile": true,
+      "behavior": "wander",
+      "loot": ["wolf_pelt", "heron_feather", "wolf_pup"],
+      "gold": 4,
+      "respawn_seconds": 30
+    },
+    "howling_shade": {
+      "name": "Howling Shade",
+      "room": "howling_tunnel",
+      "hp": 18,
+      "max_hp": 18,
+      "attack": 2,
+      "hostile": true,
+      "behavior": "idle",
+      "loot": ["ectoplasm"],
+      "gold": 4,
+      "respawn_seconds": 40
     }
   },
   "items": {
@@ -877,6 +925,7 @@
     "springwater_node": {"room": "healing_spring", "item": "springwater", "min_yield": 1, "max_yield": 2, "respawn_seconds": 25, "xp": 2, "score": 1},
     "mountain_herb_node": {"room": "highland_trail", "item": "mountain_herb", "min_yield": 1, "max_yield": 3, "respawn_seconds": 30, "xp": 3, "score": 1},
     "resin_node": {"room": "pinewood_thicket", "item": "resin", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
+    "iron_ore_node": {"room": "smithy", "item": "iron_ore", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 3, "score": 1},
     "scrap_iron_node": {"room": "smithy", "item": "scrap_iron", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
     "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1},
     "glacier_frost_node": {"room": "glacier_crown", "item": "frost_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 60, "xp": 3, "score": 1},

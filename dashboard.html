@@ -1728,7 +1728,8 @@ function companionCell(c) {
   const passive = c.passive ? `, ${esc(c.passive)}` : "";
   return `${esc(c.name)} (${esc(c.species)} lv${c.level ?? 1}) ` +
     `${c.hp ?? 0}/${c.max_hp ?? 0} hp, ${c.attack ?? 0} atk, ${c.defense ?? 0} def` +
-    `${passive}, script ${esc(c.script_state || "none")}`;
+    `${passive}, script ${esc(c.script_state || "none")}` +
+    `${c.summoned ? ", summoned" : ""}`;
 }
 function renderAgents(players) {
   const rows = sortRows("agents", players, AGENT_COLS, 3, -1);

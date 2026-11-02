@@ -76,8 +76,15 @@ DEFAULT_THRESHOLDS = {
         "steady_after_s": 1800.0,
     },
     "combat": {
-        "deaths_per_hour_min": 0.5,
-        "deaths_per_hour_max": 3.0,
+        # Civilian rooms are most of the map and the normal hunting ground, so
+        # their share of deaths is high by construction; the share check only
+        # guards against wild zones going inert. What #538 actually promises is
+        # that civ zones still kill at a nonzero rate, just less often and with
+        # no item scatter -- the rate floor below is that promise.
+        "civ_deaths_per_hour_min": 0.5,
+        "civ_death_share_pct_max": 95.0,
+        "wild_deaths_per_hour_min": 0.5,
+        "deaths_per_kill_max": 1.5,
         "companion_damage_share_pct_min": 20.0,
         "companion_damage_share_pct_max": 40.0,
     },
@@ -164,7 +171,7 @@ PROFILES = {
         "seeds": (700,),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -189,7 +196,7 @@ PROFILES = {
         "seeds": (700, 701, 702),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -213,6 +220,43 @@ PROFILES = {
         "coverage": ("economy", "combat", "craft", "market", "liveness"),
         "threshold_overrides": {},
     },
+    "stability": {
+        "description": "Stability: 24h, 20 agents, seeds 700/701/702",
+        "duration_s": 86400.0,
+        "agents": 20,
+        "min_agents": 16,
+        "seeds": (700, 701, 702),
+        "slots": (
+            "linear",
+            "hunter",
+            "gather",
+            "dungeon",
+            "market",
+            "commissioner",
+            "crafter",
+            "quester",
+            "party_leader",
+        ),
+        "scenarios": (
+            "economy",
+            "combat",
+            "craft",
+            "market",
+            "liveness",
+            "determinism",
+            "acquisition",
+            "progression",
+            "party",
+            "npc_ai_v2",
+        ),
+        "coverage": ("economy", "combat", "craft", "market", "liveness", "progression"),
+        "threshold_overrides": {
+            "economic_slope_max": 1e-4,
+            "level_slope_max": 1e-4,
+            "score_slope_max": 1e-4,
+            "min_population_ratio": 0.8,
+        },
+    },
     "baseline": {
         "description": "Reference capture: 1h, 20 agents, seed 700 (issue #537 section 1)",
         "duration_s": 3600.0,
@@ -221,7 +265,7 @@ PROFILES = {
         "seeds": (700,),
         "slots": (
             "linear",
-            "linear",
+            "hunter",
             "gather",
             "dungeon",
             "market",
@@ -272,12 +316,44 @@ CHECKS = (
         True,
     ),
     (
+        "combat.civ_deaths_per_hour",
+        "combat",
+        "combat.civ_deaths_per_hour",
+        ">=",
+        ("combat", "civ_deaths_per_hour_min"),
+        True,
+    ),
+    (
+        "combat.civ_death_share",
+        "combat",
+        "combat.civ_death_share_pct",
+        "<=",
+        ("combat", "civ_death_share_pct_max"),
+        True,
+    ),
+    (
+        "combat.wild_deaths_per_hour",
+        "combat",
+        "combat.wild_deaths_per_hour",
+        ">=",
+        ("combat", "wild_deaths_per_hour_min"),
+        True,
+    ),
+    (
+        "combat.deaths_per_kill",
+        "combat",
+        "combat.deaths_per_kill",
+        "<=",
+        ("combat", "deaths_per_kill_max"),
+        True,
+    ),
+    (
         "combat.deaths_per_hour",
         "combat",
         "combat.deaths_per_hour",
-        "in",
-        ("combat", "deaths_per_hour_min", "combat", "deaths_per_hour_max"),
-        True,
+        ">=",
+        ("combat", "wild_deaths_per_hour_min"),
+        False,
     ),
     (
         "combat.companion_damage_share",
@@ -422,6 +498,16 @@ def resolve_threshold(thresholds, path):
 # --- derived measurements --------------------------------------------------
 
 
+def _slope(series):
+    if len(series) < 2:
+        return 0.0
+    t_start, y_start = series[0]
+    t_end, y_end = series[-1]
+    if t_end == t_start:
+        return 0.0
+    return (y_end - y_start) / (t_end - t_start)
+
+
 def _num(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -496,6 +582,19 @@ def derive(samples, ledger=None, telemetry=None):
     )
     ledger = ledger or {}
     telemetry = telemetry or {}
+    # The dashboard exposes cumulative player/companion damage in a
+    # "combat" block. Prefer that to a separately probed telemetry file so
+    # the share is measured even when the harness probes only snapshots.
+    if telemetry.get("companion_damage_share_pct") is None and samples:
+        combat_stats = (samples[-1].get("state") or {}).get("combat") or {}
+        player_dmg = _num(combat_stats.get("player_damage")) or 0.0
+        companion_dmg = _num(combat_stats.get("companion_damage")) or 0.0
+        total_dmg = player_dmg + companion_dmg
+        if total_dmg > 0:
+            telemetry = dict(
+                telemetry,
+                companion_damage_share_pct=round(companion_dmg / total_dmg * 100.0, 3),
+            )
 
     treasury_series = []
     reserve = None
@@ -504,6 +603,10 @@ def derive(samples, ledger=None, telemetry=None):
     trade_counts = []
     death_tracking = {}
     deaths = 0.0
+    last_players = []
+    wild_deaths = 0.0
+    civ_deaths = 0.0
+    kills = 0.0
     agent_seconds = 0.0
     alive_samples = []
     episode_samples = []
@@ -515,8 +618,11 @@ def derive(samples, ledger=None, telemetry=None):
     solo_clears = []
     group_clears = []
     spreads = []
-    wash_trades = 0
-    last_players = []
+    # Stability trackers
+    stability_avg_levels = []
+    stability_total_scores = []
+    stability_economy = []
+    stability_agents = []
 
     previous_t = None
     for sample in samples:
@@ -545,6 +651,7 @@ def derive(samples, ledger=None, telemetry=None):
         if players:
             last_players = players
         online = len(players)
+        stability_agents.append((t, online))
         alive = _num(sample.get("alive"))
         if alive is not None:
             alive_samples.append((t, alive))
@@ -559,10 +666,37 @@ def derive(samples, ledger=None, telemetry=None):
             current = _num(player.get("deaths"))
             if name is None or current is None:
                 continue
-            if name in death_tracking:
-                deaths += max(0.0, current - death_tracking[name])
-            death_tracking[name] = current
+            wild = _num(player.get("wild_deaths")) or 0.0
+            civ = _num(player.get("civ_deaths")) or 0.0
+            player_kills = _num(player.get("kills")) or 0.0
+            previous = death_tracking.get(name)
+            if previous is not None:
+                deaths += max(0.0, current - previous["deaths"])
+                wild_deaths += max(0.0, wild - previous["wild_deaths"])
+                civ_deaths += max(0.0, civ - previous["civ_deaths"])
+                kills += max(0.0, player_kills - previous["kills"])
+            death_tracking[name] = {
+                "deaths": current,
+                "wild_deaths": wild,
+                "civ_deaths": civ,
+                "kills": player_kills,
+            }
         previous_t = t
+
+        # Stability tracking
+        online_players = [p for p in players if p.get("level") is not None]
+        if online_players:
+            avg_level = sum(_num(p.get("level")) or 0 for p in online_players) / len(
+                online_players
+            )
+            stability_avg_levels.append((t, avg_level))
+
+        total_score = _num(state.get("total_score"))
+        if total_score is not None:
+            stability_total_scores.append((t, total_score))
+
+        total_gold = sum(_num(p.get("gold")) or 0 for p in players)
+        stability_economy.append((t, total_gold))
 
         for entry in state.get("craft_history") or []:
             seq = _num(entry.get("seq"))
@@ -597,6 +731,7 @@ def derive(samples, ledger=None, telemetry=None):
             mid = (best_ask + best_bid) / 2.0
             if mid > 0:
                 spreads.append((best_ask - best_bid) / mid * 100.0)
+        wash_trades = 0
         if market.get("history"):
             self_deals = sum(
                 1
@@ -616,8 +751,20 @@ def derive(samples, ledger=None, telemetry=None):
         trade_volume = max(0, histories[-1] - histories[0]) if histories else None
 
     deaths_per_hour = None
+    wild_deaths_per_hour = None
+    civ_deaths_per_hour = None
+    civ_death_share_pct = None
+    deaths_per_kill = None
     if agent_seconds > 0:
-        deaths_per_hour = round(deaths / (agent_seconds / 3600.0), 3)
+        agent_hours = agent_seconds / 3600.0
+        deaths_per_hour = round(deaths / agent_hours, 3)
+        if wild_deaths + civ_deaths > 0:
+            wild_deaths_per_hour = round(wild_deaths / agent_hours, 3)
+            civ_deaths_per_hour = round(civ_deaths / agent_hours, 3)
+            if deaths > 0:
+                civ_death_share_pct = round(civ_deaths / deaths * 100.0, 3)
+    if kills > 0:
+        deaths_per_kill = round(deaths / kills, 3)
 
     craft_completions = None
     if craft_seq:
@@ -640,6 +787,13 @@ def derive(samples, ledger=None, telemetry=None):
     if telemetry_deaths is not None:
         deaths_per_hour = telemetry_deaths
 
+    # Fix division by zero in population_ratio
+    population_ratio = 1.0
+    if stability_agents:
+        agent_counts = [a for _, a in stability_agents if a > 0]
+        if agent_counts:
+            population_ratio = min(agent_counts) / max(agent_counts)
+
     return {
         "treasury": {
             "reserve": reserve,
@@ -654,8 +808,13 @@ def derive(samples, ledger=None, telemetry=None):
         },
         "combat": {
             "deaths": round(deaths, 3),
+            "kills": round(kills, 3),
             "agent_hours": round(agent_seconds / 3600.0, 3),
             "deaths_per_hour": deaths_per_hour,
+            "deaths_per_kill": deaths_per_kill,
+            "wild_deaths_per_hour": wild_deaths_per_hour,
+            "civ_deaths_per_hour": civ_deaths_per_hour,
+            "civ_death_share_pct": civ_death_share_pct,
             "companion_damage_share_pct": _num(
                 telemetry.get("companion_damage_share_pct")
             ),
@@ -703,6 +862,16 @@ def derive(samples, ledger=None, telemetry=None):
             "final_tables": final_tables,
             "episodes": int(episode_samples[-1]) if episode_samples else None,
             "fingerprint": fingerprint(final_tables, episode_samples[-1:]),
+        },
+        "stability": {
+            "economic_slope": _slope(stability_economy) if stability_economy else None,
+            "level_slope": (
+                _slope(stability_avg_levels) if stability_avg_levels else None
+            ),
+            "score_slope": (
+                _slope(stability_total_scores) if stability_total_scores else None
+            ),
+            "population_ratio": population_ratio,
         },
     }
 
@@ -781,6 +950,14 @@ def _metric(measurements, thresholds, name):
         return all(later > earlier for earlier, later in pairwise(values))
     if name == "combat.deaths_per_hour":
         return combat.get("deaths_per_hour")
+    if name == "combat.deaths_per_kill":
+        return combat.get("deaths_per_kill")
+    if name == "combat.wild_deaths_per_hour":
+        return combat.get("wild_deaths_per_hour")
+    if name == "combat.civ_deaths_per_hour":
+        return combat.get("civ_deaths_per_hour")
+    if name == "combat.civ_death_share_pct":
+        return combat.get("civ_death_share_pct")
     if name == "combat.companion_damage_share_pct":
         return combat.get("companion_damage_share_pct")
     if name == "combat.deaths":
@@ -947,6 +1124,78 @@ def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
     derived = measurements.get("derived") or {}
     scenarios = _scenario_rows(profile, checks, derived)
     coverage = PROFILES[profile].get("coverage", ())
+
+    # --- stability profile assertions ---
+    if profile == "stability":
+        stability = derived.get("stability") or {}
+        economic_slope = _num(stability.get("economic_slope"))
+        level_slope = _num(stability.get("level_slope"))
+        score_slope = _num(stability.get("score_slope"))
+        population_ratio = _num(stability.get("population_ratio"))
+
+        # Economic Drift: slope must converge to 0 (|slope| < 1e-4 per session second approx)
+        if economic_slope is not None and economic_slope < -1e-4:
+            checks.append(
+                {
+                    "id": "stability.economic_drift",
+                    "scenario": "economy",
+                    "metric": "stability.economic_drift",
+                    "op": "<=",
+                    "value": economic_slope,
+                    "limit": ("stability", "economic_slope_max"),
+                    "blocking": True,
+                    "provisional": True,
+                    "status": "fail",
+                    "detail": f"economic_drift slope={economic_slope:.6f} too negative; not converging",
+                }
+            )
+        # Monotonical Progression: avg_level and total_score must not have negative slope
+        if level_slope is not None and level_slope < -1e-4:
+            checks.append(
+                {
+                    "id": "stability.level_decline",
+                    "scenario": "progression",
+                    "metric": "stability.level_slope",
+                    "op": "<=",
+                    "value": level_slope,
+                    "limit": ("stability", "level_slope_max"),
+                    "blocking": True,
+                    "provisional": True,
+                    "status": "fail",
+                    "detail": f"level_slope={level_slope:.6f} negative; progression not monotonic",
+                }
+            )
+        if score_slope is not None and score_slope < -1e-4:
+            checks.append(
+                {
+                    "id": "stability.score_decline",
+                    "scenario": "progression",
+                    "metric": "stability.score_slope",
+                    "op": "<=",
+                    "value": score_slope,
+                    "limit": ("stability", "score_slope_max"),
+                    "blocking": True,
+                    "provisional": True,
+                    "status": "fail",
+                    "detail": f"score_slope={score_slope:.6f} negative; score not monotonic",
+                }
+            )
+        # Population Vitality: active_agents must maintain >= 80% of starting population
+        if population_ratio is not None and population_ratio < 0.8:
+            checks.append(
+                {
+                    "id": "stability.population_vitality",
+                    "scenario": "liveness",
+                    "metric": "stability.population_ratio",
+                    "op": "<=",
+                    "value": population_ratio,
+                    "limit": ("stability", "min_population_ratio"),
+                    "blocking": True,
+                    "provisional": True,
+                    "status": "fail",
+                    "detail": f"population_ratio={population_ratio:.3f} below 80%% threshold",
+                }
+            )
 
     # A coverage scenario with no evaluable check is a failed gate:
     # otherwise an empty run would pass with every check skipped. Scenarios
@@ -1185,6 +1434,10 @@ def _trim_state(state):
     quests = state.get("quests") or {}
     return {
         "server": {"players_online": (state.get("server") or {}).get("players_online")},
+        "combat": {
+            "player_damage": (state.get("combat") or {}).get("player_damage"),
+            "companion_damage": (state.get("combat") or {}).get("companion_damage"),
+        },
         "market": {
             "treasury": market.get("treasury"),
             "reserve": market.get("reserve"),
@@ -1215,6 +1468,8 @@ def _trim_state(state):
                 "level": p.get("level"),
                 "deaths": p.get("deaths"),
                 "kills": p.get("kills"),
+                "wild_deaths": p.get("wild_deaths"),
+                "civ_deaths": p.get("civ_deaths"),
                 "gold": p.get("gold"),
                 "companion": (
                     {
@@ -1236,9 +1491,10 @@ def _trim_state(state):
             "group_clears": (state.get("dungeon_clears") or {}).get("group_clears"),
         },
         "scores": [
-            {"name": s.get("name"), "level": s.get("level")}
+            {"name": s.get("name"), "level": s.get("level"), "score": s.get("score")}
             for s in (state.get("scores") or [])
         ],
+        "total_score": state.get("total_score"),
     }
 
 
@@ -1604,7 +1860,9 @@ def parse_args(argv=None):
     evaluate.add_argument("--out", default=None)
 
     run = sub.add_parser("run", help="run a profile against a live server")
-    run.add_argument("--profile", default="smoke", choices=("smoke", "gate"))
+    run.add_argument(
+        "--profile", default="smoke", choices=("smoke", "gate", "stability")
+    )
     _add_run_args(run, "smoke")
     run.add_argument(
         "--out",

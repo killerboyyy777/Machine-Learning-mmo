@@ -6,6 +6,8 @@ Protocol is plain JSON over WebSocket. See README.md for the full list.
 """
 
 import asyncio
+import hashlib
+import hmac
 import itertools
 import json
 import os
@@ -40,6 +42,7 @@ COMPANION_DOWNED_SECONDS = 300
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
+COMPANION_ATTACK_COOLDOWN = 1.2
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
@@ -108,7 +111,16 @@ GM_PORT = 8767
 # clients keep working unchanged.
 PROTOCOL_VERSION = 2
 
-# Scoring anti-grind tuning
+# HP regeneration tuning
+HP_REGEN_AMOUNT = 2
+HP_REGEN_SECONDS = 10
+HP_REGEN_DAMAGE_WINDOW = 15
+# Zonal hostility differential (#538): a civilian room's hostiles come back
+# slower than a wild room's, so safe lands are quieter without ever being
+# free of danger. Applied when the kill schedules the respawn.
+CIV_NPC_RESPAWN_MULT = 2.0
+# Recent-action ring used by variety scoring; unbounded history would let an
+# old playstyle keep counting after the player switched.
 ACTION_WINDOW = 20
 MIN_HISTORY_FOR_VARIETY = 5
 MIN_VARIETY = 0.2
@@ -167,7 +179,7 @@ def _env_int(name, default):
         return default
 
 
-MAX_TOTAL_CONNECTIONS = _env_int("TEXTMMO_MAX_CONNECTIONS", 1000)
+MAX_TOTAL_CONNECTIONS = max(1, _env_int("TEXTMMO_MAX_CONNECTIONS", 1000))
 MAX_PLAYERS_PER_ROOM = _env_int("TEXTMMO_MAX_ROOM_PLAYERS", 12)
 OUTBOUND_QUEUE_MAX = _env_int("TEXTMMO_OUTBOUND_QUEUE", 64)
 AUTH_TOKEN_REQUIRED = str(
@@ -255,6 +267,9 @@ MARKET_ORDER_TTL_SECONDS = 86400
 # (5g) become reachable -- while keeping the 15g sword gate earned.
 # Granted once per score entry (see cmd_login), never topped up.
 STARTING_GOLD = 10
+# Login handle bound: longer (or control-char) names are rejected before
+# get_score_entry()/log_command can mint SCORES keys from client input.
+MAX_NAME_LEN = 24
 
 # Commission bounds (also overridable via server_config.json "commissions").
 # XP is minted, not escrowed: 500 ~= 10x the richest quest payout (guard,
@@ -323,6 +338,11 @@ def _apply_config():
     except (json.JSONDecodeError, OSError) as e:
         print(f"Warning: could not load {CONFIG_FILE}: {e}")
         return
+    if not isinstance(cfg, dict):
+        print(
+            f"Warning: {os.path.basename(CONFIG_FILE)}: top-level value must be an object, ignoring."
+        )
+        return
     g = globals()
     for section in cfg.values():
         if not isinstance(section, dict):
@@ -363,6 +383,7 @@ GM_HEAL_COST_PER_HP = 2
 GM_TELEPORT_COST = 50
 GM_SLAY_COST_PER_HP = 1
 GM_SLAY_MIN_COST = 10
+GM_CMD_COOLDOWN_SECONDS = 1.0
 
 
 def xp_to_next(level):
@@ -883,12 +904,10 @@ def floor_from_room(room_id):
 
 
 def all_npcs():
-    for npc in npcs.values():
-        yield npc
+    yield from npcs.values()
     for d in dungeons.values():
         for f in d.floors.values():
-            for g in f.guards:
-                yield g
+            yield from f.guards
 
 
 def npcs_in_room(room_id):
@@ -1417,6 +1436,15 @@ async def apply_death_penalty(player, gold_lost=0):
     value of any items scattered in a risk zone)."""
     entry = get_score_entry(player.name)
     entry["deaths"] += 1
+
+    # Track deaths by zone type for balance monitoring
+    room = ROOMS.get(player.room, {})
+    is_wild = room.get("wild", False)
+    if is_wild:
+        entry["wild_deaths"] = entry.get("wild_deaths", 0) + 1
+    else:
+        entry["civ_deaths"] = entry.get("civ_deaths", 0) + 1
+
     penalty = DEATH_PENALTY + DEATH_SCORE_PER_GOLD_LOST * max(0, gold_lost)
     entry["score"] = max(0.0, entry["score"] - penalty)
     record_score_point(player.name, entry["score"])
@@ -1704,6 +1732,8 @@ class Player:
     active_buffs: dict = field(default_factory=dict)
     outbound: deque = field(default_factory=lambda: deque(maxlen=OUTBOUND_QUEUE_MAX))
     outbound_event: object = None
+    last_damage_ts: float = 0.0
+    last_regen_ts: float = 0.0
 
     def __post_init__(self):
         if self.outbound_event is None:
@@ -1897,6 +1927,8 @@ def _online_player(name):
 
 COMPANION_SUMMONED = set()
 COMPANION_TARGETS = {}
+COMPANION_LAST_ATTACK = {}
+DAMAGE_STATS = {"player": 0, "companion": 0}
 
 
 def _companion_store(name, create=False):
@@ -2131,6 +2163,7 @@ def _companion_view(player):
         "defense": _companion_defense(rec),
         "passive": COMPANIONS.get(species, {}).get("passive"),
         "script_state": _companion_script_state(rec),
+        "summoned": str(player.name or "").lower() in COMPANION_SUMMONED,
     }
 
 
@@ -2181,6 +2214,11 @@ async def _companion_attack_npc(owner, rec, npc):
     max_dmg = max(0, int(npc.get("hp", 0)) - 1)
     if max_dmg <= 0:
         return
+    key = str(owner.name or "").lower()
+    now = time.time()
+    if now - COMPANION_LAST_ATTACK.get(key, 0.0) < COMPANION_ATTACK_COOLDOWN:
+        return
+    COMPANION_LAST_ATTACK[key] = now
     dmg = min(
         max_dmg,
         random.randint(
@@ -2188,6 +2226,7 @@ async def _companion_attack_npc(owner, rec, npc):
         ),
     )
     npc["hp"] -= dmg
+    DAMAGE_STATS["companion"] += dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
     if npc["hp"] <= 1:
         COMPANION_TARGETS.pop(owner.name.lower(), None)
@@ -2721,6 +2760,10 @@ async def tick_companions(now=None):
                             "text": f"{rec['name']} returns to your side.",
                         },
                     )
+            # Cleanup for players who no longer exist/quit
+            elif not _online_player(key) and (now - downed_until) > 86400:
+                del COMPANION_PLAYERS[key]
+                mark_companions_dirty()
             continue
         owner = _online_player(key)
         if not owner or key not in COMPANION_SUMMONED:
@@ -3228,6 +3271,17 @@ async def respawn_player(player):
         await sync_room(death_room)
 
 
+def _npc_respawn_at(npc, default_seconds=30):
+    """When a dead NPC comes back: civ-zone hostiles wait longer (#538)."""
+    secs = npc.get("respawn_seconds", default_seconds)
+    if not secs:
+        return None
+    room = ROOMS.get(npc.get("room"), {})
+    if not room.get("wild", False):
+        secs = secs * CIV_NPC_RESPAWN_MULT
+    return time.time() + secs
+
+
 def respawn_npc(npc):
     """Bring an NPC back to life. Dungeon guard respawn re-seals the floor."""
     npc["alive"] = True
@@ -3434,6 +3488,9 @@ async def _enter_dungeon(player):
 
 
 async def _dungeon_move_or_fail(player, d, direction):
+    if d is None:
+        await send(player, {"type": "error", "text": "That dungeon no longer exists."})
+        return
     floor_no = floor_from_room(player.room)
     f = d.floors.get(floor_no)
     if direction == "up":
@@ -3521,6 +3578,15 @@ async def cmd_login(player, msg):
     if not name:
         await send(player, {"type": "error", "text": "login requires a 'name'"})
         return
+    if len(name) > MAX_NAME_LEN or not name.isprintable():
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Invalid player name: max {MAX_NAME_LEN} chars.",
+            },
+        )
+        return
     if name.lower() == GUILD_POSTER.lower():
         # Reserved for world-posted standing bounties: a player behind
         # this name could cancel them and collect poster-side effects.
@@ -3550,19 +3616,31 @@ async def cmd_login(player, msg):
     # mutation (entry creation, token claim, bank credit) so a rejected
     # login leaves no entry or token state behind.
     dest = START_ROOM if dungeon_for_room(player.room) else player.room
+    dest_name = ROOMS.get(dest, {}).get("name", dest)
+    if not ROOMS.get(dest):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"{dest_name} is no longer reachable.",
+            },
+        )
+        return
     if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
         await send(
             player,
             {
                 "type": "error",
-                "text": f"{ROOMS[dest]['name']} is too crowded. Try again shortly.",
+                "text": f"{dest_name} is too crowded. Try again shortly.",
             },
         )
         return
     entry = get_score_entry(name)
     stored = entry.get("auth_token")
+    has_progress = bool(entry.get("starting_purse_claimed"))
     if stored:
-        if token != stored:
+        candidate = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(candidate, stored):
             await send(
                 player,
                 {
@@ -3577,8 +3655,21 @@ async def cmd_login(player, msg):
                 player, {"type": "error", "text": "This server requires a login token."}
             )
             return
+        if has_progress and not token:
+            # A name that already served a starting purse is an existing
+            # account: anonymous re-login is the name-takeover vector, so a
+            # claimed name needs a token even when the server gate is off.
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": f"The name '{name}' is protected by a token. Login rejected.",
+                },
+            )
+            return
         if token:
-            entry["auth_token"] = token
+            token_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+            entry["auth_token"] = token_hash
             mark_scores_dirty()
     if entry.get("gold_bank", 0):
         player.gold += entry["gold_bank"]
@@ -3668,7 +3759,14 @@ async def cmd_move(player, msg):
     if d:
         await _dungeon_move_or_fail(player, d, direction)
         return
-    exits = ROOMS[player.room]["exits"]
+    room_data = ROOMS.get(player.room)
+    if room_data is None:
+        await send(
+            player,
+            {"type": "error", "text": "You are in an unknown room."},
+        )
+        return
+    exits = room_data.get("exits", {})
     if direction not in exits:
         await send(
             player, {"type": "error", "text": f"You can't go '{direction}' from here."}
@@ -3764,6 +3862,7 @@ async def cmd_attack(player, msg):
         ammo_bonus = AMMO_BONUS.get(best, 0)
     dmg = random.randint(1, player.attack) + ammo_bonus
     npc["hp"] -= dmg
+    DAMAGE_STATS["player"] += dmg
     npc["contributors"][player.name] = npc["contributors"].get(player.name, 0) + dmg
     COMPANION_TARGETS[player.name.lower()] = (npc.get("id"), time.time())
     await send(player, {"type": "combat", "text": f"You hit {npc['name']} for {dmg}."})
@@ -3772,6 +3871,10 @@ async def cmd_attack(player, msg):
         {"type": "combat", "text": f"{player.name} hits {npc['name']} for {dmg}."},
         exclude=player,
     )
+    if npc.get("hp", 0) > 1 and player.name.lower() in COMPANION_SUMMONED:
+        rec = _companion_active(player.name)
+        if rec is not None and not _companion_is_downed(rec):
+            await _companion_attack_npc(player, rec, npc)
     # Same-tick double-kill guard (#195.1): two attackers' damage can
     # interleave at the sends above, so both see hp <= 0. The first block
     # to run claims the kill by flipping alive first (same sync stretch,
@@ -3781,8 +3884,7 @@ async def cmd_attack(player, msg):
     # not minted -- one payout split, never two).
     if npc["hp"] <= 0 and npc.get("alive", True):
         npc["alive"] = False
-        respawn_secs = npc.get("respawn_seconds", 30)
-        npc["respawn_at"] = time.time() + respawn_secs if respawn_secs else None
+        npc["respawn_at"] = _npc_respawn_at(npc)
         for loot_id in npc.get("loot", []):
             _add_ground(player.room, loot_id)
         contributors = npc["contributors"]
@@ -3923,6 +4025,7 @@ async def cmd_attack(player, msg):
             retaliation = max(0, retaliation - _player_damage_reduction(player))
             retaliation = _training_damage(retaliation)
             player.hp -= retaliation
+            player.last_damage_ts = time.time()
             await send(
                 player,
                 {
@@ -3990,19 +4093,18 @@ async def cmd_drop(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": "You don't have that."})
         return
+    if iid not in player.inventory:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
     try:
         amount = int(msg.get("amount", 1))
     except (TypeError, ValueError):
         amount = 1
+    amount = max(1, min(amount, player.inventory.count(iid)))
     dropped = 0
-    for _ in range(max(1, amount)):
-        if iid not in player.inventory:
-            break
+    for _ in range(amount):
         player.inventory.remove(iid)
         dropped += 1
-    if dropped <= 0:
-        await send(player, {"type": "error", "text": "You don't have that."})
-        return
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
     if player.armor == iid and iid not in player.inventory:
@@ -4045,7 +4147,11 @@ async def cmd_gather(player, msg):
         await send(player, {"type": "error", "text": _pack_full_error()})
         return
     node["available"] = False
-    node["respawn_at"] = time.time() + float(node.get("respawn_seconds", 30))
+    try:
+        respawn_seconds = float(node.get("respawn_seconds", 30))
+    except (TypeError, ValueError):
+        respawn_seconds = 30.0
+    node["respawn_at"] = time.time() + respawn_seconds
     quantity = random.randint(
         int(node.get("min_yield", 1)), int(node.get("max_yield", 1))
     )
@@ -4095,9 +4201,15 @@ async def cmd_use(player, msg):
             player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."}
         )
         return
-    player.inventory.remove(iid)
     definition = ITEM_DEFS.get(iid, {})
     effect = definition.get("buff")
+    heal = float(definition.get("heal_amount", 0))
+    if not effect and heal <= 0:
+        await send(
+            player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."}
+        )
+        return
+    player.inventory.remove(iid)
     if effect:
         category = effect["category"]
         player.active_buffs[category] = {
@@ -4211,7 +4323,10 @@ async def cmd_buy(player, msg):
     if not iid:
         await send(player, {"type": "error", "text": "The merchant doesn't sell that."})
         return
-    price = merchant["shop"][iid]
+    price = merchant["shop"].get(iid)
+    if price is None:
+        await send(player, {"type": "error", "text": "The merchant doesn't sell that."})
+        return
     if player.gold < price:
         await send(player, {"type": "error", "text": f"You need {price} gold."})
         return
@@ -4252,7 +4367,7 @@ async def cmd_sell(player, msg):
 
 def _craft_output_qty(recipe):
     try:
-        return max(1, int(recipe.get("output_qty", 1)))
+        return min(max(1, int(recipe.get("output_qty", 1))), INVENTORY_CAP)
     except (TypeError, ValueError):
         return 1
 
@@ -5351,6 +5466,7 @@ async def cmd_companion(player, msg):
         store["active"] = 0
         store["updated_at"] = time.time()
         mark_companions_dirty()
+        await send(player, stats_view(player))
         await send(
             player,
             {
@@ -5386,11 +5502,13 @@ async def cmd_companion(player, msg):
             return
         COMPANION_SUMMONED.add(key)
         await send(player, {"type": "message", "text": f"{rec['name']} joins you."})
+        await send(player, stats_view(player))
         return
     if action == "dismiss":
         COMPANION_SUMMONED.discard(key)
         COMPANION_TARGETS.pop(key, None)
         await send(player, {"type": "message", "text": f"{rec['name']} is stabled."})
+        await send(player, stats_view(player))
         return
     if action == "revive":
         now = time.time()
@@ -6990,11 +7108,7 @@ async def cmd_gm_slay(player, msg):
     if not await _spend_tax(player, cost, f"slay {npc['name']}"):
         return
     npc["alive"] = False
-    npc["respawn_at"] = (
-        time.time() + (npc.get("respawn_seconds", 60) or 60)
-        if npc.get("respawn_seconds", 60)
-        else None
-    )
+    npc["respawn_at"] = _npc_respawn_at(npc, default_seconds=60)
     for loot_id in npc.get("loot", []):
         _add_ground(npc["room"], loot_id)
     await broadcast_room(
@@ -7168,6 +7282,21 @@ GM_HANDLERS = {
 }
 
 
+def _gm_origin_ok(ws):
+    """True when the browser Origin (if any) names this machine's GM stream.
+
+    No Origin means a non-browser GM client (CLI tool); loopback Origins are
+    the operator's own dashboard. Anything else fails closed.
+    """
+    headers = getattr(getattr(ws, "request", None), "headers", None)
+    if headers is None:
+        return False
+    origin = str(headers.get("Origin") or "").strip()
+    if not origin:
+        return True
+    return _loopback_origin(origin)
+
+
 async def handle_gm_connection(ws):
     # Loopback-only gate. remote_address is a (host, port) tuple on the
     # websockets versions we run; parse defensively and fail closed.
@@ -7182,7 +7311,7 @@ async def handle_gm_connection(ws):
             host = str(peer)
     except Exception:
         host = "?"
-    if host not in ("127.0.0.1", "::1"):
+    if host not in ("127.0.0.1", "::1") or not _gm_origin_ok(ws):
         try:
             await ws.close()
         except Exception:
@@ -7190,12 +7319,19 @@ async def handle_gm_connection(ws):
         return
     player = GMStream(ws)
     writer_task = asyncio.create_task(_outbound_writer(player))
+    last_cmd_at = 0.0
     try:
         async for raw in ws:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 await send(player, {"type": "error", "text": "invalid JSON"})
+                continue
+            if not isinstance(msg, dict):
+                await send(
+                    player,
+                    {"type": "error", "text": "GM messages must be JSON objects"},
+                )
                 continue
             cmd = msg.get("cmd")
             handler = GM_HANDLERS.get(cmd)
@@ -7204,6 +7340,16 @@ async def handle_gm_connection(ws):
                     player, {"type": "error", "text": f"Unknown GM command '{cmd}'."}
                 )
                 continue
+            if time.monotonic() - last_cmd_at < GM_CMD_COOLDOWN_SECONDS:
+                await send(
+                    player,
+                    {
+                        "type": "error",
+                        "text": "GM command rate limit exceeded; slow down.",
+                    },
+                )
+                continue
+            last_cmd_at = time.monotonic()
             try:
                 await handler(player, msg)
             except Exception as e:
@@ -7329,7 +7475,7 @@ _HISTORY_MAX_SAMPLES = 120  # ~1 hour of samples at 30s intervals
 def log_command(name, cmd, msg):
     """Record one client command with a short human-readable detail."""
     if cmd == "login":
-        name = name or str(msg.get("name", ""))
+        name = str(name or msg.get("name") or "")[:MAX_NAME_LEN]
         detail = name
     elif cmd in (
         "move",
@@ -7363,6 +7509,7 @@ def log_command(name, cmd, msg):
         detail = str(msg.get("node") or msg.get("item") or "")
     else:
         detail = ""
+    detail = str(detail)[:80]
     entry = get_score_entry(name) if name and name != "<new>" else None
     lvl = entry["level"] if entry else 1
     global activity_seq
@@ -7404,7 +7551,7 @@ def _quest_snapshot():
         del quest_turnin_times[0]
     active = {qid: 0 for qid in QUESTS}
     completions = {qid: 0 for qid in QUESTS}
-    for e in SCORES.values():
+    for e in list(SCORES.values()):
         for qid in QUESTS:
             if _quest_active(e, qid):
                 active[qid] += 1
@@ -7481,6 +7628,11 @@ def _dungeon_clears_snapshot():
 
 def world_snapshot():
     rooms = []
+    player_list = list(players.values())
+    dungeon_list = list(dungeons.values())
+    market_order_list = list(market_orders)
+    market_bid_list = list(market_bids)
+    score_list = list(SCORES.values())
     for rid, r in ROOMS.items():
         rooms.append(
             {
@@ -7511,7 +7663,7 @@ def world_snapshot():
             }
         )
     online_players = []
-    for p in players.values():
+    for p in player_list:
         if not p.logged_in:
             continue
         e = get_score_entry(p.name)
@@ -7523,6 +7675,8 @@ def world_snapshot():
                 "score_history": [s for _, s in _score_history.get(p.name.lower(), [])],
                 "kills": e.get("kills", 0),
                 "deaths": e.get("deaths", 0),
+                "wild_deaths": e.get("wild_deaths", 0),
+                "civ_deaths": e.get("civ_deaths", 0),
                 "gold": p.gold,
                 "hp": p.hp,
                 "max_hp": p.max_hp,
@@ -7546,13 +7700,13 @@ def world_snapshot():
                 "score": round(e.get("score", 0), 2),
                 "level": e.get("level", 1),
             }
-            for e in SCORES.values()
+            for e in score_list
         ],
         key=lambda x: x["score"],
         reverse=True,
     )
     dungeon_views = []
-    for d in dungeons.values():
+    for d in dungeon_list:
         floors = []
         max_floor = 0
         for fno, f in sorted(d.floors.items()):
@@ -7616,7 +7770,7 @@ def world_snapshot():
             "tax_rate": TAX_RATE,
             "tax_min": TAX_MINIMUM,
             "tax_effective_pct": _realized_tax_pct(),
-            "trade_count": sum(e.get("trades_completed", 0) for e in SCORES.values()),
+            "trade_count": sum(e.get("trades_completed", 0) for e in score_list),
             "orders": [
                 {
                     "id": o["id"],
@@ -7625,7 +7779,7 @@ def world_snapshot():
                     "price": o["price"],
                     "ts": o.get("ts", 0),
                 }
-                for o in market_orders
+                for o in market_order_list
             ],
             "bids": [
                 {
@@ -7635,13 +7789,17 @@ def world_snapshot():
                     "price": b["price"],
                     "ts": b.get("ts", 0),
                 }
-                for b in market_bids
+                for b in market_bid_list
             ],
             "spread": {
-                "best_bid": max((b["price"] for b in market_bids), default=None),
-                "best_ask": min((o["price"] for o in market_orders), default=None),
+                "best_bid": max((b["price"] for b in market_bid_list), default=None),
+                "best_ask": min((o["price"] for o in market_order_list), default=None),
             },
             "history": list(market_history),
+        },
+        "combat": {
+            "player_damage": DAMAGE_STATS["player"],
+            "companion_damage": DAMAGE_STATS["companion"],
         },
         "buffs": buffs_view,
         "bosses": bosses,
@@ -7653,7 +7811,7 @@ def world_snapshot():
         "dungeon_clears": _dungeon_clears_snapshot(),
         "recipes": RECIPE_VIEWS,
         "catalog": {
-            "players": sorted([p.name for p in players.values() if p.logged_in]),
+            "players": sorted([p.name for p in player_list if p.logged_in]),
             "items": sorted([v["name"] for v in ITEM_DEFS.values()]),
             "rooms": sorted(list(ROOMS.keys())),
         },
@@ -7669,7 +7827,7 @@ def refresh_snapshot_json():
     try:
         world_snapshot_json = json.dumps(world_snapshot())
     except Exception:
-        pass
+        traceback.print_exc()
 
 
 async def dashboard_refresh_loop():
@@ -8592,6 +8750,26 @@ async def npc_ai_loop():
         prune_invites(now)
         await tick_craft_jobs(now)
         await tick_companions(now)
+        # HP regeneration for all players
+        for player in list(players.values()):
+            if player.logged_in and player.hp < player.max_hp:
+                # Check if enough time has passed since last regen
+                if now - player.last_regen_ts >= HP_REGEN_SECONDS:
+                    # Check if player hasn't taken damage recently
+                    if now - player.last_damage_ts >= HP_REGEN_DAMAGE_WINDOW:
+                        # Regenerate HP
+                        old_hp = player.hp
+                        player.hp = min(player.max_hp, player.hp + HP_REGEN_AMOUNT)
+                        if player.hp > old_hp:
+                            player.last_regen_ts = now
+                            # Optional: send regen notification to player
+                            await send(
+                                player,
+                                {
+                                    "type": "message",
+                                    "text": f"You feel revitalized and recover {player.hp - old_hp} HP.",
+                                },
+                            )
         for node in list(gather_nodes.values()):
             if (
                 not node["available"]

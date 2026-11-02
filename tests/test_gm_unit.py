@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server as srv
@@ -21,6 +22,39 @@ class FakeWS:
 
     def __init__(self):
         self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+class FakeHeaders:
+    def __init__(self, origin=None):
+        self.origin = origin
+
+    def get(self, key, default=None):
+        if str(key).lower() == "origin" and self.origin is not None:
+            return self.origin
+        return default
+
+
+class FakeGMWS:
+    def __init__(self, origin=None):
+        self.remote_address = ("127.0.0.1", 1234)
+        self.closed = False
+        self.inbox = asyncio.Queue()
+        self.ended = False
+        self.request = SimpleNamespace(headers=FakeHeaders(origin))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.ended and self.inbox.empty():
+            raise StopAsyncIteration
+        return await self.inbox.get()
+
+    async def send(self, payload):
+        self.sent = getattr(self, "sent", []) + [payload]
 
     async def close(self):
         self.closed = True
@@ -138,6 +172,65 @@ async def main():
         assert any("kicked" in m.get("text", "") for m in inbox[-2:]), inbox[-2:]
         unplayer(kickme)
         print("GM_KICK_OK")
+
+        # --- GM stream origin gate: cross-origin browser refused ------------
+        inbox.clear()
+        evil = FakeGMWS(origin="http://evil.example")
+        await srv.handle_gm_connection(evil)
+        assert evil.closed, "cross-origin GM connection must be refused"
+        assert inbox == [], f"refused GM stream must not dispatch: {inbox}"
+        print("GM_EVIL_ORIGIN_REJECTED_OK")
+
+        # --- GM stream accept paths: no origin / loopback origin --------------
+        calls = []
+
+        async def fake_gm_pong(player, msg):
+            calls.append(msg)
+            await srv.send(player, {"type": "message", "text": "GM: pong"})
+
+        real_handlers = srv.GM_HANDLERS
+        srv.GM_HANDLERS = {"gm_pong": fake_gm_pong}
+        try:
+            for origin, label in (
+                (None, "no-origin"),
+                ("http://127.0.0.1:8766", "loopback"),
+            ):
+                inbox.clear()
+                calls.clear()
+                ws = FakeGMWS(origin=origin)
+                task = asyncio.create_task(srv.handle_gm_connection(ws))
+                await asyncio.sleep(0)
+                await ws.inbox.put(json.dumps({"cmd": "gm_pong"}))
+                await ws.inbox.put(json.dumps(["not", "a", "dict"]))
+                ws.ended = True
+                await task
+                assert not ws.closed, f"{label} GM connection must be accepted"
+                assert len(calls) == 1, f"{label}: handler must run once: {calls}"
+                assert any(
+                    m.get("text") == "GM: pong" for m in inbox
+                ), f"{label}: expected handler ack: {inbox}"
+                assert any(
+                    "JSON objects" in m.get("text", "") for m in inbox
+                ), f"{label}: expected non-dict guard error: {inbox}"
+                print(f"GM_ACCEPT_{label.upper()}_OK")
+        finally:
+            srv.GM_HANDLERS = real_handlers
+
+        # --- GM stream per-connection rate limit / cooldown -------------------
+        inbox.clear()
+        calls.clear()
+        srv.GM_HANDLERS = {"gm_pong": fake_gm_pong}
+        ws = FakeGMWS(origin=None)
+        task = asyncio.create_task(srv.handle_gm_connection(ws))
+        await asyncio.sleep(0)
+        await ws.inbox.put(json.dumps({"cmd": "gm_pong"}))
+        await ws.inbox.put(json.dumps({"cmd": "gm_pong"}))
+        ws.ended = True
+        await task
+        assert len(calls) == 1, f"cooldown must drop the second GM command: {calls}"
+        assert any("rate limit" in m.get("text", "") for m in inbox), inbox
+        print("GM_RATE_LIMIT_OK")
+        srv.GM_HANDLERS = real_handlers
     finally:
         unplayer(gm)
         if rich is not None:

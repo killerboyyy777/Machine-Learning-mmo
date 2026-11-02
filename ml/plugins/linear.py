@@ -25,7 +25,7 @@ class LinearPlugin(AgentPlugin):
                 "default": None,
                 "help": "weights file (fresh zeroed policy if unset)",
             },
-            "epsilon": {"type": float, "default": 0.0, "help": "exploration rate"},
+            "epsilon": {"type": float, "default": 0.3, "help": "exploration rate"},
         }
 
     def __init__(self, **config):

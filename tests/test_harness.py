@@ -86,6 +86,41 @@ async def main():
                 current["room"] = "old_shop" if direction == "west" else "town_square"
                 await ws.send(json.dumps(room_view(current["room"])))
                 await ws.send(json.dumps(stats_view()))
+            elif cmd == "attack":
+                await ws.send(
+                    json.dumps({"type": "combat", "text": "You hit the target."})
+                )
+                await ws.send(json.dumps(stats_view()))
+            elif cmd == "take":
+                await ws.send(json.dumps({"type": "inventory", "items": []}))
+                await ws.send(json.dumps(stats_view()))
+            elif cmd in (
+                "rest",
+                "buy",
+                "sell",
+                "equip",
+                "use",
+                "craft",
+                "gather",
+                "heal",
+                "drop",
+            ):
+                await ws.send(json.dumps(stats_view()))
+            elif cmd == "companion_script_set":
+                await ws.send(json.dumps({"type": "companion", "script_set": True}))
+            elif cmd == "companion_script_show":
+                await ws.send(json.dumps({"type": "companion", "script": ""}))
+            elif cmd == "companion_script_clear":
+                await ws.send(json.dumps({"type": "companion", "script_set": False}))
+            elif cmd == "companion_status":
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "companion",
+                            "has_companion": False,
+                        }
+                    )
+                )
             else:
                 await ws.send(json.dumps({"type": "error", "text": "unknown command"}))
 
@@ -144,7 +179,26 @@ async def main():
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         )
         names = {tool["name"] for tool in listed["result"]["tools"]}
-        assert names == {"game_look", "game_move"}, names
+        expected = {
+            "game_look",
+            "game_move",
+            "game_attack",
+            "game_take",
+            "game_rest",
+            "game_buy",
+            "game_sell",
+            "game_equip",
+            "game_use",
+            "game_craft",
+            "game_gather",
+            "game_heal",
+            "game_drop",
+            "companion_script_set",
+            "companion_script_show",
+            "companion_script_clear",
+            "companion_status",
+        }
+        assert names == expected, names
         print("HARNESS_TOOLS_OK")
 
         looked = await rpc(

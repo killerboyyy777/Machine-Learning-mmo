@@ -566,13 +566,13 @@ async def main():
     # (regression: cleanup skipped on writer CancelledError leaked the
     # name lock, failing relogin with "already in use" forever)
     C = await websockets.connect(URI)
-    await send(C, {"cmd": "login", "name": "RelogProbe"})
+    await send(C, {"cmd": "login", "name": "RelogProbe", "token": "relog-probe-token"})
     got = await recv(C, timeout=5.0)
     assert any(m.get("type") == "welcome" for m in got), got
     await C.close()
     await asyncio.sleep(1.5)  # let the server run disconnect cleanup
     C2 = await websockets.connect(URI)
-    await send(C2, {"cmd": "login", "name": "RelogProbe"})
+    await send(C2, {"cmd": "login", "name": "RelogProbe", "token": "relog-probe-token"})
     got2 = await recv(C2, timeout=5.0)
     assert any(m.get("type") == "welcome" for m in got2), got2
     print("RELOGIN_OK")

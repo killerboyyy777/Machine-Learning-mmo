@@ -54,6 +54,7 @@ print("TAKE_OK")
 hostile = next(n["name"] for n in srv.WORLD["npcs"].values() if n.get("hostile"))
 env = fresh_env()
 env._state["npc_names"] = [hostile]
+env._state["equipped"] = "Rusty Sword"
 assert selected(DungeonClearerPolicy(), env) == "attack"
 print(f"ATTACK_OK ({hostile})")
 
@@ -178,6 +179,7 @@ print("COMM_POST_OK")
 env = fresh_env()
 env._state["npc_names"] = [hostile]
 env._state["open_commissions"] = []
+env._state["equipped"] = "Rusty Sword"
 assert selected(CommissionerPolicy(), env) == "attack"
 print("COMM_ATTACK_OK")
 
@@ -272,8 +274,8 @@ farm = types.SimpleNamespace(
     ),
 )
 roles = [BotRunner(i, farm).policy.name for i in range(8)]
-assert roles == ["gather", "dungeon", "market", "commissioner",
-                 "quester", "crafter", "party_leader", "gather"], roles
+assert roles == ["gather", "dungeon", "hunter", "market", "commissioner",
+                 "quester", "crafter", "party_leader"], roles
 farm.args.scripted = "dungeon"
 farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy.name == "dungeon"
@@ -298,7 +300,7 @@ assert Counter(got) == {"gather": 11, "dungeon": 4, "market": 7,
 assert parse_roles(farm.args.roles, farm.args.bots) == farm.role_list
 print("ROLES_SPLIT_OK")
 
-assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "market",
+assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "hunter", "market",
                                   "commissioner", "quester", "crafter",
                                   "party_leader"}
 print("ALL_SCRIPTED_OK")

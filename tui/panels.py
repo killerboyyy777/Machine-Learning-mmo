@@ -755,6 +755,7 @@ def _companion_cell(player):
         f"{_as_float(companion.get('attack')):.0f}atk "
         f"{_as_float(companion.get('defense')):.0f}def{passive} "
         f"script {companion.get('script_state') or 'none'}"
+        f"{' summoned' if companion.get('summoned') else ''}"
     )
 
 
