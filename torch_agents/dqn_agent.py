@@ -175,22 +175,22 @@ class TorchDQNAgent:
     The auxiliary losses shape a richer state representation for free.
 
     Key additions for market trading:
-      • Market head predicts immediate P&L from market actions
-      • Agent tracks posted/buy/cancel order counts in the observation,
+      - Market head predicts immediate P&L from market actions
+      - Agent tracks posted/buy/cancel order counts in the observation,
         plus the live tax terms and its own listings' after-tax net
-      • P&L targets use the exact server tax formula (via market_net):
+      - P&L targets use the exact server tax formula (via market_net):
         buys cost full price, filled listings net price minus tax
-      • Auxiliary market loss shapes the agent toward profitable trading
-      • Market reward signal is added to the main score reward with
+      - Auxiliary market loss shapes the agent toward profitable trading
+      - Market reward signal is added to the main score reward with
         a small weighting so it guides without overwhelming the anti-grind curve
 
     Key additions for quests (Town Guard repeatable quest):
-      • Quest head predicts imminent quest score (QUEST_REWARD_POINTS on a
+      - Quest head predicts imminent quest score (QUEST_REWARD_POINTS on a
         turn-in step, 0 otherwise), forcing the trunk to encode quest stage
-      • Observation carries quest_active / quest_ready / quest_has_charm /
+      - Observation carries quest_active / quest_ready / quest_has_charm /
         3 mat flags / quest_giver_here; see ml_env.QUESTS for the symbolic
         quest definition (giver, inputs, fixed repeatable reward)
-      • Turn-ins already pay score via the server, so the main TD target
+      - Turn-ins already pay score via the server, so the main TD target
         learns quest value directly; the quest head is auxiliary shaping
     """
 
@@ -393,16 +393,16 @@ class TorchDQNAgent:
         """One learning step: sample a minibatch from replay and perform
         a TD update with auxiliary gold/loot/market/quest prediction heads.
 
-        TD target uses shaped reward r = r_score + λi * r_intrinsic
-        + λr * r_rnd, where r_intrinsic is the quest-gated exploration
+        TD target uses shaped reward r = r_score + lambda_i * r_intrinsic
+        + lambda_r * r_rnd, where r_intrinsic is the quest-gated exploration
         bonus stored per transition. Turn-in points are NOT a separate TD
         term: they arrive inside r_score (score-delta), so adding them
         again double-counts quest chains (#378); quest_reward supervises
         the aux quest head only. Checkpoints saved before #378 learned Q
         with score+quest and read biased high -- retrain, or expect
         downward drift as the new target takes over.
-        Loss = L_TD + α * (L_gold + L_loot) + β * L_market
-        + γq * L_quest, with α/β/γq = aux/market/quest lambdas.
+        Loss = L_TD + alpha * (L_gold + L_loot) + beta * L_market
+        + gamma_q * L_quest, with alpha/beta/gamma_q = aux/market/quest lambdas.
         Returns a dict of loss components for logging."""
         # Buffer warm-up keys on a fillable minibatch (#222), not the full
         # 10k buffer: gating on replay_size meant default --steps runs
