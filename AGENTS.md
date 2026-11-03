@@ -13,8 +13,9 @@
   Never commit to master. Open PRs, never merge.
 - Prove before pushing: named suites + exit codes in the report.
 - Lint: black + ruff clean on CHANGED files (legacy exempt).
-- Never touch .github/workflows/ unasked. Never invent market buy
-  orders (sell-side only).
+- Never touch .github/workflows/ unasked. Market buy orders and standing
+  bids are real (`cmd_market_buy_order`); do not add new buy-side trading
+  to agent code unasked.
 
 ## Comments
 Do not sign your work. No `// agent-name:`, `# overlord:`, `# killerboy:` or similar signature comments anywhere in the codebase.
