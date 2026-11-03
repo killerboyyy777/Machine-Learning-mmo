@@ -54,8 +54,6 @@ COMPANION_MULE_CARRY_BONUS = 2
 COMPANION_MULE_GATHER_YIELD_BONUS = 1
 COMPANION_SHEPHERD_HEAL_MULT = 1.20
 
-# Companion DroneLang (#534): flat IF/ELSE script language for companion AI.
-# Limits: 2000 chars, 32 rules, 200 node-visit budget per tick.
 DRONELANG_MAX_CHARS = 2000
 DRONELANG_MAX_RULES = 32
 DRONELANG_MAX_VISITS = 200
@@ -111,7 +109,6 @@ GM_PORT = 8767
 # clients keep working unchanged.
 PROTOCOL_VERSION = 2
 
-# HP regeneration tuning
 HP_REGEN_AMOUNT = 2
 HP_REGEN_SECONDS = 10
 HP_REGEN_DAMAGE_WINDOW = 15
@@ -708,7 +705,7 @@ class Dungeon:
         ITEM_DEFS.setdefault(
             shard,
             {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 3 + n * 6},
-        )  # R3: +26% over S0
+        )
         for k in range(count):
             f.guards.append(
                 {
@@ -754,9 +751,9 @@ class Party:
     dungeon_id: int = None
 
 
-parties = {}  # party_id -> Party
-dungeons = {}  # dungeon_id -> Dungeon
-_commissions = {}  # commission_id -> Commission data
+parties = {}
+dungeons = {}
+_commissions = {}
 _party_counter = itertools.count(1)
 _pending_party_invites = (
     {}
@@ -1245,7 +1242,7 @@ def get_score_entry(name):
     entry.setdefault("item_bank", [])  # items won while offline/pack-full
     entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
     entry.setdefault("craft_jobs", [])  # running tick-based craft jobs (#501)
-    entry.setdefault("craft_job_seq", 0)  # last job id handed out
+    entry.setdefault("craft_job_seq", 0)
     entry.setdefault("craft_pending", [])  # finished output waiting for pack space
     entry.setdefault("tax_paid", 0.0)  # market tax they bore (seller side)
     entry.setdefault(
@@ -1552,8 +1549,6 @@ async def award_xp(name, amount, reason):
                     "reason": reason,
                 },
             )
-    # Companion progression (#533): a summoned companion earns a share of the
-    # owner's award through the same closed-form curve, capped at COMPANION_LEVEL_CAP.
     for p in players_by_name.get(name.lower(), ()):
         if p.logged_in:
             _companion_award_xp(p, amount, reason)
@@ -1754,7 +1749,7 @@ class Player:
         return self.base_attack + bonus
 
 
-players = {}  # pid -> Player
+players = {}
 name_owners = {}  # lower name -> pid
 room_members = {}  # room_id -> set of pid
 players_by_name = {}  # lower name -> list of Player
@@ -1789,9 +1784,7 @@ async def cmd_flee(player, msg):
         return
 
     # Flee Trigger check (redundant if called by agent, but good for manual cmd)
-    # Requirement 1: HP < threshold or outnumbered
     companions = _summoned_companions_in_room(room_id)
-    # Count allies
     my_allies = 0
     if player.party_id:
         party_members = parties.get(player.party_id, Party(0, 0)).member_ids
@@ -1821,7 +1814,6 @@ async def cmd_flee(player, msg):
         )
         return
 
-    # Flee Behavior (Requirement 2)
     exits = ROOMS[room_id].get("exits", {})
     if not exits:
         await send(player, {"type": "error", "text": "There is no way out!"})
@@ -1851,7 +1843,6 @@ async def cmd_flee(player, msg):
         await send(player, {"type": "error", "text": "No safe exits found."})
         return
 
-    # Execute move
     await send(player, {"type": "message", "text": f"You panic and flee {best_exit}!"})
     await cmd_move(player, {"dir": best_exit})
 
@@ -2030,7 +2021,7 @@ def _companion_award_xp(owner, amount, reason=None):
         return []
     xp = float(rec.get("xp") or 0)
     level = int(rec.get("level") or 1)
-    xp += share  # Add earned share to the pool before level-up checks
+    xp += share
     needed = xp_to_next(level)
     leveled = []
     while level < COMPANION_LEVEL_CAP and xp >= needed:
@@ -2209,8 +2200,6 @@ def _companion_assist_target(owner):
 async def _companion_attack_npc(owner, rec, npc):
     if not npc or npc.get("hp", 0) <= 0:
         return
-    # Assist stops at 1 HP so the owner's killing blow remains the only
-    # source of the existing kill-credit/loot path.
     max_dmg = max(0, int(npc.get("hp", 0)) - 1)
     if max_dmg <= 0:
         return
@@ -2335,7 +2324,7 @@ def _dronelang_tokenize(script: str):
         if ch.isspace():
             i += 1
             continue
-        if ch == "#":  # Comment to end of line
+        if ch == "#":
             while i < len(script) and script[i] != "\n":
                 i += 1
             continue
@@ -2403,7 +2392,7 @@ def _dronelang_tokenize(script: str):
                     i += 1
             if i >= len(script):
                 raise DroneLangError("Unterminated string literal")
-            i += 1  # skip closing quote
+            i += 1
             tokens.append(("STRING", script[start:i]))
             continue
         raise DroneLangError(f"Unexpected character: {ch!r}")
@@ -2486,7 +2475,6 @@ class DroneLangParser:
 
     def _parse_predicate(self):
         self._check_visit()
-        # Predicate name
         if self.current[0] != "IDENT":
             raise DroneLangError(f"Expected predicate name, got {self.current}")
         name = self.current[1]
@@ -2494,7 +2482,6 @@ class DroneLangParser:
         if name not in DRONELANG_PREDICATES:
             raise DroneLangError(f"Unknown predicate: {name}")
 
-        # Parse arguments based on predicate
         args = []
         if name in ("companion_hp_below", "owner_hp_below", "tick_mod"):
             self._expect("(")
@@ -2507,7 +2494,7 @@ class DroneLangParser:
             self._expect("(")
             if self.current[0] != "STRING":
                 raise DroneLangError(f"Expected string argument for {name}")
-            args.append(self.current[1][1:-1])  # strip quotes
+            args.append(self.current[1][1:-1])
             self._advance()
             self._expect(")")
         elif name not in ("always", "owner_in_combat", "sees_hostile", "has_target"):
@@ -2570,7 +2557,6 @@ def _dronelang_eval_predicate(owner, rec, pred, now):
     if name == "owner_hp_below":
         return owner.hp < owner.max_hp * args[0] / 100
     if name == "owner_in_combat":
-        # Owner is in combat if they have a COMPANION_TARGETS entry
         return owner.name.lower() in COMPANION_TARGETS
     if name == "owner_has_item":
         return any(
@@ -2599,7 +2585,7 @@ async def _dronelang_exec_action(owner, rec, action, now):
     args = action["args"]
 
     if name == "idle":
-        return True  # Do nothing this tick
+        return True
     if name == "follow":
         # Already following by default when summoned
         return True
@@ -2618,7 +2604,6 @@ async def _dronelang_exec_action(owner, rec, action, now):
                 return True
         return False
     if name == "gather":
-        # Gather from a node matching the name
         node_name = args[0].lower()
         for node in gather_nodes_in_room(owner.room):
             if (
@@ -2735,7 +2720,6 @@ async def dronelang_tick(owner, rec, now=None):
                 mark_companions_dirty()
                 return (False, rec["_dronelang_error"])
 
-    # No rule matched or no action taken
     rec.pop("_dronelang_error", None)
     mark_companions_dirty()
     return (False, None)
@@ -2760,7 +2744,6 @@ async def tick_companions(now=None):
                             "text": f"{rec['name']} returns to your side.",
                         },
                     )
-            # Cleanup for players who no longer exist/quit
             elif not _online_player(key) and (now - downed_until) > 86400:
                 del COMPANION_PLAYERS[key]
                 mark_companions_dirty()
@@ -2768,7 +2751,6 @@ async def tick_companions(now=None):
         owner = _online_player(key)
         if not owner or key not in COMPANION_SUMMONED:
             continue
-        # DroneLang execution (#534)
         action_taken, error = await dronelang_tick(owner, rec, now)
         if error:
             # Runtime error: log once and fall back to default-assist
@@ -2787,7 +2769,6 @@ async def tick_companions(now=None):
             if target is not None:
                 await _companion_attack_npc(owner, rec, target)
         else:
-            # Script executed an action successfully
             rec.pop("_dronelang_error_logged", None)
             mark_companions_dirty()
 
@@ -8750,19 +8731,14 @@ async def npc_ai_loop():
         prune_invites(now)
         await tick_craft_jobs(now)
         await tick_companions(now)
-        # HP regeneration for all players
         for player in list(players.values()):
             if player.logged_in and player.hp < player.max_hp:
-                # Check if enough time has passed since last regen
                 if now - player.last_regen_ts >= HP_REGEN_SECONDS:
-                    # Check if player hasn't taken damage recently
                     if now - player.last_damage_ts >= HP_REGEN_DAMAGE_WINDOW:
-                        # Regenerate HP
                         old_hp = player.hp
                         player.hp = min(player.max_hp, player.hp + HP_REGEN_AMOUNT)
                         if player.hp > old_hp:
                             player.last_regen_ts = now
-                            # Optional: send regen notification to player
                             await send(
                                 player,
                                 {
