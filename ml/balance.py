@@ -31,6 +31,13 @@ Thresholds are provisional (issue #537 section 4, owner has not confirmed
 them). Override them without editing code with ``--thresholds FILE``, a
 JSON object deep-merged over :data:`DEFAULT_THRESHOLDS`; profile overrides
 in :data:`PROFILES` only relax checks a shorter profile cannot exercise.
+
+A multi-seed profile is decided on the median seed: each thresholded metric
+is scored once against the median of its per-seed values, and the per-seed
+rows stay in the report as non-blocking evidence. The two combat death-rate
+floors also keep a hard worst-seed guard at
+:data:`WORST_SEED_DEATHS_PER_HOUR_MIN` so a quiet seed cannot be averaged
+away.
 """
 
 import argparse
@@ -106,6 +113,15 @@ DEFAULT_THRESHOLDS = {
         "enabled": True,
     },
 }
+
+# The median seed decides a multi-seed profile, but the combat death-rate
+# floors need a floor no single seed may fall below: averaging away an inert
+# world would make the gate green on a run that never fought.
+WORST_SEED_DEATHS_PER_HOUR_MIN = 0.25
+WORST_SEED_GUARD_IDS = (
+    "combat.wild_deaths_per_hour",
+    "combat.civ_deaths_per_hour",
+)
 
 # Scenario catalog. ``unlanded`` is a hard skip: the measurement does not
 # exist yet, so the scenario is reported and never silently counted as
@@ -189,7 +205,8 @@ PROFILES = {
         },
     },
     "gate": {
-        "description": "Release gate: full matrix, 4h, seeds 700/701/702",
+        "description": "Release gate: full matrix, 4h, seeds 700/701/702; "
+        "median seed decides with a 0.25/h worst-seed guard",
         "duration_s": 14400.0,
         "agents": 20,
         "min_agents": 16,
@@ -1030,8 +1047,20 @@ def _passes(value, op, limit):
     raise ValueError(f"unknown check op: {op}")
 
 
+def _limit_for(check, thresholds):
+    _, _, _, op, limit_spec, _ = check
+    if op == "is":
+        return limit_spec
+    if op == "in":
+        return [
+            resolve_threshold(thresholds, limit_spec[:2]),
+            resolve_threshold(thresholds, limit_spec[2:]),
+        ]
+    return resolve_threshold(thresholds, limit_spec)
+
+
 def _check_row(check, measurements, thresholds):
-    check_id, scenario, metric_name, op, limit_spec, blocking = check
+    check_id, scenario, metric_name, op, _, blocking = check
     value = _metric(measurements, thresholds, metric_name)
     row = {
         "id": check_id,
@@ -1042,16 +1071,7 @@ def _check_row(check, measurements, thresholds):
         "blocking": blocking,
         "provisional": True,
     }
-    if op == "is":
-        limit = limit_spec
-    elif op == "in":
-        limit = [
-            resolve_threshold(thresholds, limit_spec[:2]),
-            resolve_threshold(thresholds, limit_spec[2:]),
-        ]
-    else:
-        limit = resolve_threshold(thresholds, limit_spec)
-    row["limit"] = limit
+    row["limit"] = _limit_for(check, thresholds)
 
     if value is None:
         row["status"] = "skip"
@@ -1060,15 +1080,108 @@ def _check_row(check, measurements, thresholds):
         )
         return row
     try:
-        ok = _passes(value, op, limit)
+        ok = _passes(value, op, row["limit"])
     except (TypeError, ValueError) as exc:
         row["status"] = "fail"
         row["detail"] = f"cannot evaluate: {exc}"
         return row
     row["status"] = "pass" if ok else "fail"
     if not ok:
-        row["detail"] = f"{metric_name}={value!r} violates {op} {limit!r}"
+        row["detail"] = f"{metric_name}={value!r} violates {op} {row['limit']!r}"
     return row
+
+
+def _median_across(values, op):
+    if op == "is":
+        # Identity checks are boolean, so the median seed rule is a strict
+        # majority: an even split between a healthy and an unhealthy seed
+        # must not pass.
+        return 2 * sum(1 for value in values if value) > len(values)
+    return statistics.median(values)
+
+
+def _median_row(check, seed_rows, thresholds, seeds):
+    check_id, scenario, metric_name, op, _, blocking = check
+    values = [
+        row["value"]
+        for row in seed_rows
+        if row["status"] != "skip" and row["value"] is not None
+    ]
+    row = {
+        "id": f"{check_id}.median",
+        "scenario": scenario,
+        "metric": metric_name,
+        "op": op,
+        "value": None,
+        "limit": _limit_for(check, thresholds),
+        "blocking": blocking,
+        "provisional": True,
+        "seed": None,
+    }
+    if not values:
+        row["status"] = "skip"
+        row["detail"] = f"no seed of {seeds} produced a measurement for {metric_name}"
+        return row
+    value = _median_across(values, op)
+    ok = _passes(value, op, row["limit"])
+    row["value"] = value
+    row["status"] = "pass" if ok else "fail"
+    row["detail"] = (
+        f"median across seeds {seeds}: {metric_name}={value!r} "
+        f"{'satisfies' if ok else 'violates'} {op} {row['limit']!r}"
+    )
+    return row
+
+
+def _worst_seed_row(check, seed_rows, seeds):
+    check_id, scenario, metric_name, _, _, _ = check
+    observed = [
+        row for row in seed_rows if row["status"] != "skip" and row["value"] is not None
+    ]
+    row = {
+        "id": f"{check_id}.worst_seed",
+        "scenario": scenario,
+        "metric": metric_name,
+        "op": ">=",
+        "value": None,
+        "limit": WORST_SEED_DEATHS_PER_HOUR_MIN,
+        "blocking": True,
+        "provisional": True,
+        "seed": None,
+    }
+    if not observed:
+        row["status"] = "skip"
+        row["detail"] = (
+            f"no seed of {seeds} produced {metric_name}; " "worst-seed guard cannot run"
+        )
+        return row
+    worst = min(observed, key=lambda item: item["value"])
+    ok = worst["value"] >= WORST_SEED_DEATHS_PER_HOUR_MIN
+    row["value"] = worst["value"]
+    row["seed"] = worst.get("seed")
+    row["status"] = "pass" if ok else "fail"
+    row["detail"] = (
+        f"worst seed {worst.get('seed')}: {metric_name}={worst['value']!r} "
+        f"{'meets' if ok else 'violates'} floor "
+        f">= {WORST_SEED_DEATHS_PER_HOUR_MIN}"
+    )
+    return row
+
+
+def _aggregate_rows(runs, thresholds):
+    """One median-of-seeds row per thresholded metric, plus the guard rows."""
+    seed_rows = {}
+    for run in runs:
+        for row in run["checks"]:
+            seed_rows.setdefault(row["id"], []).append({**row, "seed": run["seed"]})
+    seeds = ", ".join(dict.fromkeys(str(run["seed"]) for run in runs))
+    rows = []
+    for check in CHECKS:
+        own = seed_rows.get(check[0], [])
+        rows.append(_median_row(check, own, thresholds, seeds))
+        if check[0] in WORST_SEED_GUARD_IDS:
+            rows.append(_worst_seed_row(check, own, seeds))
+    return rows
 
 
 def _scenario_rows(profile, checks, derived):
@@ -1316,9 +1429,19 @@ def evaluate_profile(measurements_by_run, thresholds, profile, baseline=None):
                 run["verdict"] = "FAIL" if run["summary"]["blocking_fail"] else "PASS"
 
     all_checks = []
+    # The profile verdict is decided on the medians and the worst-seed guard;
+    # a single quiet seed no longer vetoes the gate, so its threshold rows stay
+    # in the report as non-blocking evidence.
+    per_seed_ids = {check[0] for check in CHECKS}
     for run in runs:
         for check in run["checks"]:
+            if check["id"] in per_seed_ids:
+                check["blocking"] = False
+        run["summary"] = _summarize(run["checks"])
+        run["verdict"] = "FAIL" if run["summary"]["blocking_fail"] else "PASS"
+        for check in run["checks"]:
             all_checks.append({**check, "seed": run["seed"]})
+    all_checks.extend(_aggregate_rows(runs, thresholds))
     summary = _summarize(all_checks)
     summary["verdict"] = "FAIL" if summary["blocking_fail"] else "PASS"
     first_derived = (

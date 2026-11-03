@@ -435,6 +435,81 @@ def test_determinism_repeats():
     print("DETERMINISM_OK")
 
 
+# --- multi-seed decision rule ---------------------------------------------
+
+
+def _gate_entry(seed, wild, civ):
+    measurements = make_measurements(profile="gate", seed=seed, alive=16)
+    measurements["derived"]["combat"]["wild_deaths_per_hour"] = wild
+    measurements["derived"]["combat"]["civ_deaths_per_hour"] = civ
+    return {"seed": seed, "measurements": measurements}
+
+
+def test_median_seed_decides_profile():
+    # The 2026-11-03 shape: seed 701 is quiet, the other two are not.
+    report = bal.evaluate_profile(
+        [
+            _gate_entry(700, 1.102, 1.089),
+            _gate_entry(701, 0.301, 0.388),
+            _gate_entry(702, 3.534, 1.228),
+        ],
+        bal.load_thresholds(profile="gate"),
+        "gate",
+    )
+    rows = {check["id"]: check for check in report["checks"]}
+    assert report["summary"]["verdict"] == "PASS", report["summary"]
+    assert report["summary"]["blocking_fail"] == 0
+    for check_id, value in (
+        ("combat.wild_deaths_per_hour", 1.102),
+        ("combat.civ_deaths_per_hour", 1.089),
+    ):
+        median_row = rows[f"{check_id}.median"]
+        assert median_row["status"] == "pass", median_row
+        assert median_row["blocking"] is True
+        assert median_row["value"] == value
+        assert "median across seeds 700, 701, 702" in median_row["detail"]
+        assert rows[f"{check_id}.worst_seed"]["status"] == "pass"
+        quiet = [
+            check
+            for check in report["checks"]
+            if check["id"] == check_id and check.get("seed") == 701
+        ]
+        # The quiet seed stays visible as failed evidence, never as a veto.
+        assert len(quiet) == 1 and quiet[0]["status"] == "fail", quiet
+        assert quiet[0]["blocking"] is False
+        for run in report["runs"]:
+            for check in run["checks"]:
+                if check["id"] == check_id:
+                    assert check["blocking"] is False
+    json.dumps(report)
+    print("MEDIAN_AGGREGATION_OK")
+
+
+def test_worst_seed_guard_fails_profile():
+    report = bal.evaluate_profile(
+        [
+            _gate_entry(700, 1.102, 1.089),
+            _gate_entry(701, 0.2, 0.388),
+            _gate_entry(702, 3.534, 1.228),
+        ],
+        bal.load_thresholds(profile="gate"),
+        "gate",
+    )
+    rows = {check["id"]: check for check in report["checks"]}
+    assert report["summary"]["verdict"] == "FAIL"
+    assert rows["combat.wild_deaths_per_hour.median"]["status"] == "pass"
+    guard = rows["combat.wild_deaths_per_hour.worst_seed"]
+    assert guard["status"] == "fail", guard
+    assert guard["blocking"] is True
+    assert guard["value"] == 0.2
+    assert guard["seed"] == 701
+    assert "worst seed 701" in guard["detail"]
+    assert "combat.wild_deaths_per_hour.worst_seed" in report["summary"]["failing"]
+    # The civilian floor is well above the guard, so it stays green.
+    assert rows["combat.civ_deaths_per_hour.worst_seed"]["status"] == "pass"
+    print("WORST_SEED_GUARD_OK")
+
+
 # --- CLI ------------------------------------------------------------------
 
 
@@ -538,6 +613,11 @@ def test_matrix_catalog():
     assert thresholds["combat"]["civ_deaths_per_hour_min"] == 0.5
     assert thresholds["combat"]["civ_death_share_pct_max"] == 95.0
     assert thresholds["combat"]["wild_deaths_per_hour_min"] == 0.5
+    assert bal.WORST_SEED_DEATHS_PER_HOUR_MIN == 0.25
+    assert set(bal.WORST_SEED_GUARD_IDS) == {
+        "combat.wild_deaths_per_hour",
+        "combat.civ_deaths_per_hour",
+    }
     assert thresholds["combat"]["deaths_per_kill_max"] == 1.5
     assert thresholds["market"]["max_median_spread_pct"] == 25.0
     print("MATRIX_CATALOG_OK")
@@ -574,6 +654,8 @@ def main():
     test_empty_run_cannot_pass_gate()
     test_profile_overrides_and_threshold_file()
     test_determinism_repeats()
+    test_median_seed_decides_profile()
+    test_worst_seed_guard_fails_profile()
     test_cli_exit_codes()
     test_baseline_comparison()
     test_matrix_catalog()

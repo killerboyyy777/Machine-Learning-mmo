@@ -16,6 +16,9 @@ All notable changes to the text MMO engine are recorded here.
   drops, conservation counters) is reported as skipped with the reason, and
   a coverage check fails a scenario that produced no measurement. The
   nightly soak (`ml/conductor/soak.py`) is unchanged and stays liveness-only.
+- Balance gate decision rule: a multi-seed profile is scored on the median
+  seed, with the per-seed rows kept as non-blocking evidence, and the two
+  combat death-rate floors keep a 0.25/h worst-seed guard.
 - Companions (#531): one levelable companion per player, persisted in
   `companions.json` (version 1, atomic save, 5000-player bound, list-ready
   records) and driven by `companion summon|dismiss|status|revive`. A summoned
