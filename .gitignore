@@ -40,3 +40,7 @@ soak_logs/
 soak_run/
 wiki/
 dashshots/
+
+# Balance profile output (rewritten by every run, ~9 MB per seed) - never commit
+balance/measurements-*.json
+balance/gate_report_final.json
