@@ -88,16 +88,14 @@ issue #132 for the required checks list). Never bypass it for yourself.
 
 Tag-driven: `git tag vX.Y && git push origin vX.Y` runs
 `.github/workflows/release.yml`, which smoke-tests and publishes the
-GitHub release (notes auto-drafted from PR labels via release-drafter).
+GitHub release with notes generated from the merged pull requests. The
+tag also drives `.github/workflows/docker-publish.yml`, which builds the
+versioned container images.
 
 ## Labels & milestones
 
 * **Labels**: `P0`–`P3` priority, `XS`–`L` effort, `area:*` subsystem
   (auto-applied by `.github/labeler.yml` from changed paths).
-* **Version labels drive releases**: label PRs `enhancement` for a minor
-  bump (`v0.6` → `v0.7`), `bug` / `documentation` / `dependencies` for a
-  patch bump (`v0.6.0` → `v0.6.1`, the default). Anything bigger is a
-  manual major — say so in the PR and retitle the draft release by hand.
 * **Milestones** track phases (`Phase A`–`Phase F`), not priority:
   closed phases stay closed as history; in-progress work lives on a
   `phase-*`/`fix-*` branch until green, then merges to `master`.
