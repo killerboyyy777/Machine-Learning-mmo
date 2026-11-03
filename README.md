@@ -74,6 +74,11 @@ DroneLang scripts drive companion actions via
 profile against a live server, samples `/api/state` plus the loopback GM
 stream, scores a scenario matrix against explicit (provisional) PASS/FAIL
 thresholds, writes `balance/balance_report.json`, and exits nonzero on FAIL.
+A multi-seed profile is decided on the median seed: every thresholded metric
+is scored once against the median of its per-seed values, and the per-seed
+rows stay in the report as non-blocking evidence. The two combat death-rate
+floors (`combat.wild_deaths_per_hour`, `combat.civ_deaths_per_hour`) also keep
+a hard worst-seed guard of 0.25/h, so a quiet seed cannot be averaged away.
 The nightly soak (`ml/conductor/soak.py`) still owns liveness and is
 unchanged.
 
