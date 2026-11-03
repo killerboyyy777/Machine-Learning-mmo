@@ -42,6 +42,22 @@ network (`TEXTMMO_GM_HOST=0.0.0.0` so `soak` can snapshot tables) and is not
 published to the host — GM has no auth, so publish `8767` only on trusted
 machines. Protocol v2 (`PROTOCOL_VERSION = 2`; see CHANGELOG).
 
+### Prebuilt images
+
+Images are published to GitHub Container Registry, so a server needs only
+Docker:
+
+```bash
+docker run --detach --publish 8765:8765 --publish 8766:8766 \
+  --env TEXTMMO_GM_SEED=700 \
+  ghcr.io/killerboyyy777/machine-learning-mmo:edge
+# open http://localhost:8766/ (game on ws://localhost:8765)
+```
+
+`edge` is the newest build of this branch; `latest`, `0.11` and `0.11.0` are
+cut from release tags. Both are `linux/amd64` and `linux/arm64`. The GM port
+`8767` stays unpublished, as above.
+
 ## Quickstart
 
 ```bash
