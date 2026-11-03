@@ -368,7 +368,7 @@ async def evaluator(farm):
                   f"best={best:.4f} bots: {per}")
             if run is not None:
                 # fitness is the farm's own selection signal, so it is the axis
-                # worth comparing; score is what a player would recognise.
+                # worth comparing; score is what a player would recognize.
                 run.record(
                     steps=farm.steps,
                     fitness=best,

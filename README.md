@@ -84,19 +84,11 @@ and the dashboard Agents tab plus the TUI Agents panel show the same fields.
 DroneLang scripts drive companion actions via
 `companion script set|show|clear`.
 
-## Balance gate
+## Balance measurement
 
-`ml/balance.py` is the v0.11.0 release gate (#537). It runs a mixed-agent
-profile against a live server, samples `/api/state` plus the loopback GM
-stream, scores a scenario matrix against explicit (provisional) PASS/FAIL
-thresholds, writes `balance/balance_report.json`, and exits nonzero on FAIL.
-A multi-seed profile is decided on the median seed: every thresholded metric
-is scored once against the median of its per-seed values, and the per-seed
-rows stay in the report as non-blocking evidence. The two combat death-rate
-floors (`combat.wild_deaths_per_hour`, `combat.civ_deaths_per_hour`) also keep
-a hard worst-seed guard of 0.25/h, so a quiet seed cannot be averaged away.
-The nightly soak (`ml/conductor/soak.py`) still owns liveness and is
-unchanged.
+`ml/balance.py` runs a mixed-agent profile against a live server, samples
+`/api/state` plus the loopback GM stream, scores a scenario matrix against
+explicit thresholds, writes a report, and exits nonzero when a check fails.
 
 ```bash
 python3 ml/balance.py matrix                 # scenarios, profiles, skips
@@ -107,21 +99,19 @@ python3 ml/balance.py baseline --seed 700 --commit "$(git rev-parse --short HEAD
   --out balance/baseline-08f7453.json
 ```
 
-Every later scenario is compared to the stored v0.10.0 baseline, not to
-vibes:
+Every later run is compared to the stored v0.10.0 baseline:
 
 ```bash
 python3 ml/balance.py evaluate --measurements balance/measurements-smoke-700.json \
   --baseline balance/baseline-08f7453.json
 ```
 
-Thresholds are provisional until the owner confirms them (issue #537
-section 4). They live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges
-a JSON override without editing code. Scenarios that depend on unlanded work
+Thresholds live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges a
+JSON override without editing code. Scenarios that depend on unlanded work
 (NPC AI v2 #536) or missing telemetry (acquisition/drop rates #532, item and
-gold conservation, companion damage share) are reported as skipped with the
-reason, never silently passed. The coverage check still fails a scenario that
-was supposed to produce a measurement and produced none.
+gold conservation) are reported as skipped with the reason, never silently
+passed. The coverage check still fails a scenario that was expected to
+produce a measurement and produced none.
 
 ## Architecture
 
