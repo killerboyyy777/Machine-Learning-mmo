@@ -10,9 +10,6 @@
 
 websockets==17.4
 
-# NumPy — required by PyTorch (tensor conversion) and used by tooling.
-numpy==2.5.4
-
 # Rich — only for `tui/`, the ssh terminal UI that reads the same
 # `/api/state` snapshot the browser dashboard polls. Not imported by
 # server.py, ml/, torch_agents/ or the tests that don't touch the TUI:

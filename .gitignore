@@ -26,10 +26,8 @@ runs/
 *.pth
 
 # Logs, temp output and OS noise
-output.txt
 *.log
 *.tmp
-%TEMP%/
 .DS_Store
 Thumbs.db
 TODO.md
