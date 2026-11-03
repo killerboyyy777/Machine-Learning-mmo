@@ -22,6 +22,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python tests/test_server_unit.py
       - run: python tests/test_quest_grind.py
+      - run: python tests/test_snapshot_additions.py
       - run: python tests/test_conductor.py
       - run: python tests/test_reward_modes.py
       - run: python tests/test_scripted_bots.py
@@ -31,10 +32,15 @@ jobs:
       - run: python tests/test_env_reset.py
       - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
+      - run: python tests/test_tui.py
+      - run: python tests/test_harness.py
+      - run: python tests/test_snapshot_contract.py
       - run: python tests/test_scores_backup.py
       - run: python tests/test_training_loops.py
       - run: python tests/test_conductor_run.py
       - run: python tests/test_gm_unit.py
+      - run: python tests/test_farm_resume.py
+      - run: python tests/test_training_health.py
       - run: python tests/test_balance_harness.py
       - run: python tests/test_security.py
       - run: python tests/test_exploit_regressions.py

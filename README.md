@@ -6,7 +6,7 @@ A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
 loot, respawns, parties, a player market, and instanced dungeons — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
 human, a bot, and an LLM agent all look identical to the server. On top sits
-an ML stack: Gym-style env (210 obs dims, 54 actions), linear + DQN agents
+an ML stack: Gym-style env (220 obs dims, 59 actions), linear + DQN agents
 with curiosity and PBT, scripted baselines, a 50-agent conductor orchestrator,
 and deterministic eval.
 
