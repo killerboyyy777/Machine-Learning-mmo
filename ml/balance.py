@@ -20,15 +20,14 @@ Usage::
     python ml/balance.py run --profile gate
 
     # Re-score stored measurements, comparing against the v0.10.0 baseline
-    python ml/balance.py evaluate --measurements balance/measurements.json \
+    python ml/balance.py evaluate --measurements balance/measurements-gate-700.json \
         --baseline balance/baseline-08f7453.json
 
     # Capture a baseline (default: 08f7453, seed 700, 1h, 20 agents)
     python ml/balance.py baseline --seed 700 --commit 8f7453 \
         --out balance/baseline-08f7453.json
 
-Thresholds are provisional (issue #537 section 4, owner has not confirmed
-them). Override them without editing code with ``--thresholds FILE``, a
+Override the thresholds without editing code with ``--thresholds FILE``, a
 JSON object deep-merged over :data:`DEFAULT_THRESHOLDS`; profile overrides
 in :data:`PROFILES` only relax checks a shorter profile cannot exercise.
 
