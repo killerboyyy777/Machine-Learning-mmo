@@ -872,12 +872,6 @@ def prune_invites(now=None):
     return pruned
 
 
-# Live NPC indexes (static world NPCs live in `npcs`; dungeon guards live in
-# per-instance floor objects). This helper is how command/AI code sees every
-# NPC in a room regardless of where it lives.
-DUNGEON_ROOMS = frozenset()  # kept for ml_env compatibility (no static wings)
-
-
 def dungeon_for_room(room_id):
     if isinstance(room_id, str) and room_id.startswith("d_"):
         parts = room_id.split("_")
@@ -907,6 +901,9 @@ def all_npcs():
             yield from f.guards
 
 
+# Live NPC indexes (static world NPCs live in `npcs`; dungeon guards live in
+# per-instance floor objects). This helper is how command/AI code sees every
+# NPC in a room regardless of where it lives.
 def npcs_in_room(room_id):
     d = dungeon_for_room(room_id)
     if d:
