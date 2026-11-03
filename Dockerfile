@@ -21,14 +21,12 @@ RUN if [ "$INSTALL_TORCH" = "1" ]; then \
     fi
 
 # Runtime code: server (game + dashboard + GM stream), TUI + launcher,
-# configs, world, ML env + botfarm + conductor, torch agents. Tests ship too
-# so the image can run the offline suites in CI.
+# configs, world, ML env + botfarm + conductor, torch agents.
 COPY server.py dashboard.html world.json server_config.json ./
 COPY start.py ./
 COPY tui/ ./tui/
 COPY ml/ ./ml/
 COPY torch_agents/ ./torch_agents/
-COPY tests/ ./tests/
 
 RUN python -c "import rich, start, tui.app; print('DOCKER_TUI_IMPORT_OK')"
 

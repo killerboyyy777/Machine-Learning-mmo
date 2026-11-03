@@ -45,6 +45,12 @@ jobs:
       - run: python tests/test_gm_unit.py
       - run: python tests/test_farm_resume.py
       - run: python tests/test_training_health.py
+      - run: python tests/test_balance_harness.py
+      - run: python tests/test_security.py
+      - run: python tests/test_exploit_regressions.py
+      - run: python tests/test_flee.py
+      - run: python tests/test_mcp_client.py
+      - run: python tests/test_modes.py
 
   live:
     name: Live protocol + ML env (fresh server, seed 700)
