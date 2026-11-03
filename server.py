@@ -7448,7 +7448,8 @@ activity_seq = 0
 ACTIVITY_STREAM_SIZE = 500
 activity_subscribers = []
 _score_history = {}
-_dashboard_history = []  # [{ts, players_online, top_scores, market_orders, treasury, trades}]
+# [{ts, players_online, top_scores, market_orders, treasury, trades}]
+_dashboard_history = []
 _HISTORY_SAMPLE_INTERVAL = 30  # seconds between samples
 _HISTORY_MAX_SAMPLES = 120  # ~1 hour of samples at 30s intervals
 
