@@ -20,15 +20,14 @@ Usage::
     python ml/balance.py run --profile gate
 
     # Re-score stored measurements, comparing against the v0.10.0 baseline
-    python ml/balance.py evaluate --measurements balance/measurements.json \
+    python ml/balance.py evaluate --measurements balance/measurements-gate-700.json \
         --baseline balance/baseline-08f7453.json
 
     # Capture a baseline (default: 08f7453, seed 700, 1h, 20 agents)
     python ml/balance.py baseline --seed 700 --commit 8f7453 \
         --out balance/baseline-08f7453.json
 
-Thresholds are provisional (issue #537 section 4, owner has not confirmed
-them). Override them without editing code with ``--thresholds FILE``, a
+Override the thresholds without editing code with ``--thresholds FILE``, a
 JSON object deep-merged over :data:`DEFAULT_THRESHOLDS`; profile overrides
 in :data:`PROFILES` only relax checks a shorter profile cannot exercise.
 
@@ -804,7 +803,6 @@ def derive(samples, ledger=None, telemetry=None):
     if telemetry_deaths is not None:
         deaths_per_hour = telemetry_deaths
 
-    # Fix division by zero in population_ratio
     population_ratio = 1.0
     if stability_agents:
         agent_counts = [a for _, a in stability_agents if a > 0]
@@ -1246,7 +1244,6 @@ def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
         score_slope = _num(stability.get("score_slope"))
         population_ratio = _num(stability.get("population_ratio"))
 
-        # Economic Drift: slope must converge to 0 (|slope| < 1e-4 per session second approx)
         if economic_slope is not None and economic_slope < -1e-4:
             checks.append(
                 {
@@ -1262,7 +1259,6 @@ def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
                     "detail": f"economic_drift slope={economic_slope:.6f} too negative; not converging",
                 }
             )
-        # Monotonical Progression: avg_level and total_score must not have negative slope
         if level_slope is not None and level_slope < -1e-4:
             checks.append(
                 {
@@ -1293,7 +1289,6 @@ def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
                     "detail": f"score_slope={score_slope:.6f} negative; score not monotonic",
                 }
             )
-        # Population Vitality: active_agents must maintain >= 80% of starting population
         if population_ratio is not None and population_ratio < 0.8:
             checks.append(
                 {
