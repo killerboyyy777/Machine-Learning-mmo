@@ -42,6 +42,8 @@ All notable changes to the text MMO engine are recorded here.
   only unrun work on cancel, and hold finished output or refunds that exceed the
   carry cap in `craft_pending` until login/look/stats or `craft collect` can
   deliver them. One completion notice per job; no ML action changes.
+
+## 0.10.0 - TUI, modes seam, LLM harness + packaging (2026-10-21)
 - LLM harness skeleton (#489): `harness/` adds a stdio MCP server over one
   game character. The bridge logs in with protocol 2 (name + env token,
   loopback by default), serializes commands, settles on the last matching
@@ -90,6 +92,16 @@ All notable changes to the text MMO engine are recorded here.
   Rework hardening: per-event scoring fires exactly once (side-effect
   hooks never credit), bad knob types fail at construction, and a
   corrupt non-dict ledger raises instead of being silently wiped.
+- Reward DSL fixes (#68 review round 2, #435): per-episode reward
+  counters (`custom_reward_errors`, the formula `zero_divisions` tally,
+  the `formation` pulse cursor) reset with the episode instead of
+  leaking across it; a step where both the plugin hook and the formula
+  fail counts once, not twice; `steps_since_death` documents that a bare
+  0 means "episode start" while `deaths_total` is 0 and "just died"
+  otherwise; and the "did you mean" hint matches by similarity first,
+  so `delta` suggests `xp_delta` instead of `deaths`.
+
+## 0.8.0 (2026-10-06)
 - Commission double-fill race closed: `cmd_commission_fill` flips the
   bounty to terminal `completed` in the same sync stretch as the open
   check (no await between, cf. the #195.1 double-kill guard), so an
@@ -105,7 +117,6 @@ All notable changes to the text MMO engine are recorded here.
   cover it.
 - Dashboard (#429): Run comparison chart now uses honest time/steps x-axis with union of sample times (no resampling/interpolation).
 - Dashboard (#445): Preserves gaps, shows points, and keeps gaps visible (sample-mode hover includes sample index).
-
 - RND curiosity revival: the torch farm now wires RND weight +
   schedule into its defaults (`--rnd-lambda` 1.0 start present from
   step 0, `--rnd-lambda-min` 0.1 floor, `--rnd-decay-steps` 100000
@@ -185,14 +196,6 @@ All notable changes to the text MMO engine are recorded here.
   `env_reward_formula=42` stays the string `"42"` instead of being
   coerced to an int that the parser rejected, which used to kill the
   agent at startup.
-- Reward DSL fixes (#68 review round 2, #435): per-episode reward
-  counters (`custom_reward_errors`, the formula `zero_divisions` tally,
-  the `formation` pulse cursor) reset with the episode instead of
-  leaking across it; a step where both the plugin hook and the formula
-  fail counts once, not twice; `steps_since_death` documents that a bare
-  0 means "episode start" while `deaths_total` is 0 and "just died"
-  otherwise; and the "did you mean" hint matches by similarity first,
-  so `delta` suggests `xp_delta` instead of `deaths`.
 - Wild interiors (#424): a `wild` room flag, orthogonal to `shelter`, on the
   two spans that begin at the #423 indoor-B gates (north: summit gatehouse,
   howling tunnel, howling col, glacier crown, windcarved crag; south: tideline
@@ -367,6 +370,8 @@ All notable changes to the text MMO engine are recorded here.
   #395): dungeon/floor/room/snapshot item lists fall back to the raw
   id instead of raising KeyError when a dynamic id precedes its
   ITEM_DEFS registration.
+
+## 0.7.1 (2026-09-27)
 - Histories (#333): bounded craft + commission event rings (seq,
   newest-last, trimmed on append) ride the snapshot as `craft_history`
   and `commission_history`; dashboard shows Recent crafts (crafting
@@ -485,6 +490,8 @@ All notable changes to the text MMO engine are recorded here.
   id no longer crashes the per-tick `stats` view), `total_xp_to_level` now
   sums the rounded thresholds so de-leveling matches leveling exactly, and
   the item-drop comment was corrected to match the implemented behaviour.
+
+## 0.7.0 (2026-09-21)
 - Dashboard revamp 4/4: swap (#207): dashboard2.html promoted to the
   canonical dashboard.html (old file deleted with the swap; /v2 kept as
   an alias serving the same file). Covered by the test_dashboard.py
@@ -670,7 +677,7 @@ All notable changes to the text MMO engine are recorded here.
   (conductor, 6 agents/2min) and `torch-farm` profiles. `TEXTMMO_GM_HOST`
   env (default `127.0.0.1`) lets compose reach `ws://server:8767`
   internally; GM stays unpublished to the host (no auth). Protocol
-  unchanged (`PROTOCOL_VERSION = 1`).
+  unchanged (`PROTOCOL_VERSION = 1`; `2` since 0.7.1).
 - Env expressiveness (#194) + remedy/tonic quests (#183): `market_post`
   priced (undercut best ask, else merchant value + 1), `commission_post`
   parameterized from state (hostile target or `rat` default, escrow up to
@@ -713,48 +720,6 @@ All notable changes to the text MMO engine are recorded here.
   `soak_report.json` (tables, treasury, log errors, per-type rewards)
   with the verdict still liveness-based; nightly soak runs the overlay
   with mixed role slots.
-- Launcher cleanup (#178): removed redundant `torch_bot_longterm.bat`
-  (one-liner subsumed by `torch_bot.bat --steps N`) and `torch_bots.bat`
-  (N processes, one checkpoint file — the last-writer-wins race
-  `torch_farm` exists to eliminate); `start.bat` now links
-  `torch_farm.bat`.
-- Soak lifecycle fixes: churn lifetimes count completed episodes
-  (supervisor hook) instead of wall-clock ticks; wave startup sleeps
-  differential delays (50 agents in ~9s, was 212s); mixer drops dead ids
-  on task end; spawn failures log and skip instead of killing the run;
-  linear checkpoints version-stamped like torch (shared
-  `ml/versioning.py`); metrics rotation caps (`rotate_mb`/`keep_files`).
-- Server bind flags (#173): `--host`/`--port`/`--http-port`/`--gm-port`
-  (localhost training without firewall prompts; GM stays loopback-only).
-- Scores backup rotation (#166): `scores.json.1`/`.2` rotate on every
-  save; load falls back with a warning when the primary is missing or
-  corrupt.
-- Repo automation: release versioning from labels (enhancement=minor,
-  default patch), Dependabot automerge for patch/minor on green CI,
-  failure-log artifacts, test_dashboard/test_env_reset/test_eval_stats
-  wired into CI, canonical Apache-2.0 LICENSE (detected), branch
-  protection (4 green CI checks, no force-push/deletion), dependency
-  action bumps (checkout/upload-artifact/gh-release majors).
-- Dashboard Phase 2 (#128): Overview health status (Healthy/Idle),
-  market-orders trend chart (new additive history fields), 10-item
-  activity feed; canvas world map v2 (pan/zoom/click, room drawer) --
-  no quadtree/rAF at 32 nodes; rooms grid kept unvirtualized.
-- Dashboard foundation (#127): Overview tab (default landing) with
-  client-side health cards, trend charts, and recent activity; Agents /
-  Quests / Crafting / Config placeholder tabs pointing at follow-up
-  issues; per-tab rendering (hidden tabs cost no DOM churn);
-  `tests/test_dashboard.py` markup/JS consistency checks.
-- Agent plugins (#62/#152): every agent ships as an `AgentPlugin`
-  (`ml/plugins/`; built-ins `linear`, `torch`, `gather`, `dungeon`,
-  `market`, `maker`; external dirs via discovery). Supervisor passes the
-  env to 4-arg policies; conductor runs weighted multi-kind slots
-  (`soak --slot gather --slot torch:checkpoint=X`, repeat for weight)
-  with per-type status; `runners.py` kept as a thin compat layer.
-- Protocol versioning (#72): `PROTOCOL_VERSION = 1` on server and env,
-  sent on login and echoed in `welcome`; mismatches warn via
-  `version_match` in step info, old clients unaffected.
-- Eval statistics (#69): paired t-test (exact, no scipy), Cohen's d,
-  95% CI, SIGNIFICANT/INCONCLUSIVE verdicts, `--out run.json` records.
 
 ## 0.6 - conductor, agent variety, reliability, governance (2026-09-16)
 - P0 fix: trade_count double-count — each market fill now counts as one trade
@@ -1101,6 +1066,51 @@ All notable changes to the text MMO engine are recorded here.
   (4 green CI checks, no force-push/deletion), canonical Apache-2.0
   LICENSE (detected), wiki (9 guides) with README slimmed to an index.
   Repo is public.
+
+- Launcher cleanup (#178): removed redundant `torch_bot_longterm.bat`
+  (one-liner subsumed by `torch_bot.bat --steps N`) and `torch_bots.bat`
+  (N processes, one checkpoint file — the last-writer-wins race
+  `torch_farm` exists to eliminate); `start.bat` now links
+  `torch_farm.bat`.
+- Soak lifecycle fixes: churn lifetimes count completed episodes
+  (supervisor hook) instead of wall-clock ticks; wave startup sleeps
+  differential delays (50 agents in ~9s, was 212s); mixer drops dead ids
+  on task end; spawn failures log and skip instead of killing the run;
+  linear checkpoints version-stamped like torch (shared
+  `ml/versioning.py`); metrics rotation caps (`rotate_mb`/`keep_files`).
+- Server bind flags (#173): `--host`/`--port`/`--http-port`/`--gm-port`
+  (localhost training without firewall prompts; GM stays loopback-only).
+- Scores backup rotation (#166): `scores.json.1`/`.2` rotate on every
+  save; load falls back with a warning when the primary is missing or
+  corrupt.
+- Repo automation: release versioning from labels (enhancement=minor,
+  default patch), Dependabot automerge for patch/minor on green CI,
+  failure-log artifacts, test_dashboard/test_env_reset/test_eval_stats
+  wired into CI, canonical Apache-2.0 LICENSE (detected), branch
+  protection (4 green CI checks, no force-push/deletion), dependency
+  action bumps (checkout/upload-artifact/gh-release majors).
+- Dashboard Phase 2 (#128): Overview health status (Healthy/Idle),
+  market-orders trend chart (new additive history fields), 10-item
+  activity feed; canvas world map v2 (pan/zoom/click, room drawer) --
+  no quadtree/rAF at 32 nodes; rooms grid kept unvirtualized.
+- Dashboard foundation (#127): Overview tab (default landing) with
+  client-side health cards, trend charts, and recent activity; Agents /
+  Quests / Crafting / Config placeholder tabs pointing at follow-up
+  issues; per-tab rendering (hidden tabs cost no DOM churn);
+  `tests/test_dashboard.py` markup/JS consistency checks.
+- Agent plugins (#62/#152): every agent ships as an `AgentPlugin`
+  (`ml/plugins/`; built-ins `linear`, `torch`, `gather`, `dungeon`,
+  `market`, `maker` (retired in 0.7.1); external dirs via discovery).
+  Supervisor passes the env to 4-arg policies; conductor runs weighted
+  multi-kind slots (`soak --slot gather --slot torch:checkpoint=X`, repeat
+  for weight) with per-type status; `runners.py` kept as a thin compat
+  layer.
+- Protocol versioning (#72): `PROTOCOL_VERSION = 1` on server and env,
+  sent on login and echoed in `welcome`; mismatches warn via
+  `version_match` in step info, old clients unaffected. (The constant
+  moved to `2` in 0.7.1, additively.)
+- Eval statistics (#69): paired t-test (exact, no scipy), Cohen's d,
+  95% CI, SIGNIFICANT/INCONCLUSIVE verdicts, `--out run.json` records.
 
 ## 0.5 — parties, instanced dungeons, player market, GM mode, leveling (2026-09-14)
 
