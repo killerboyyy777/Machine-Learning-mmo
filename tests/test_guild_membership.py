@@ -72,7 +72,10 @@ async def main():
             inbox.clear()
             await srv.cmd_help(aria, {})
             help_text = inbox[-1]["text"]
-            assert "guild [create|info|leave|disband]" in help_text, help_text
+            assert (
+                "guild [create|info|invite|join|leave|kick|promote|demote|disband]"
+                in help_text
+            ), help_text
             print("SURFACE_OK")
 
             # --- create writes founder + leader and the index --------------
@@ -362,7 +365,8 @@ async def main():
             inbox.clear()
             await srv.cmd_guild(ring, {"action": "vault"})
             assert texts(inbox)[-1] == (
-                "Unknown guild action 'vault'. Use create, info, leave, or disband."
+                "Unknown guild action 'vault'. Use create, info, invite, join, "
+                "leave, kick, promote, demote, or disband."
             )
             print("UNKNOWN_ACTION_OK")
         finally:

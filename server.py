@@ -898,7 +898,7 @@ async def prune_market_orders(now=None):
 
 
 def prune_invites(now=None):
-    """Drop unanswered party invites older than PARTY_INVITE_TTL_SECONDS."""
+    """Drop unanswered party and guild invites past their TTLs."""
     global _last_invite_prune
     now = now if now is not None else time.time()
     if now - _last_invite_prune < 60:
@@ -908,6 +908,10 @@ def prune_invites(now=None):
     for pid, inv in list(_pending_party_invites.items()):
         if now - (inv or {}).get("ts", now) > PARTY_INVITE_TTL_SECONDS:
             del _pending_party_invites[pid]
+            pruned += 1
+    for name_key, inv in list(_pending_guild_invites.items()):
+        if now - _guild_ts((inv or {}).get("ts")) > GUILD_INVITE_TTL_SECONDS:
+            del _pending_guild_invites[name_key]
             pruned += 1
     return pruned
 
@@ -5636,6 +5640,39 @@ def _guild_rank_order(rank):
         return len(GUILD_RANKS)
 
 
+GUILD_VERB_MIN_RANK = {
+    "invite": "officer",
+    "kick": "officer",
+    "promote": "leader",
+    "demote": "leader",
+    "disband": "leader",
+}
+
+
+def _guild_allows(guild, name, action):
+    """One rank gate for every guild verb; the matrix lives only here.
+
+    `action` is a verb, or "kick:<target rank>" when the target's rank decides
+    the answer. A kick must outrank its target, which is why nobody can kick
+    the leader and only the leader can kick an officer.
+    """
+    if not isinstance(guild, dict):
+        return False
+    verb, _, target_rank = str(action or "").partition(":")
+    minimum = GUILD_VERB_MIN_RANK.get(verb)
+    if minimum is None:
+        return False
+    row = (guild.get("members") or {}).get(str(name or "").lower())
+    if not isinstance(row, dict):
+        return False
+    actor = _guild_rank_order(row.get("rank"))
+    if actor > _guild_rank_order(minimum):
+        return False
+    if verb == "kick":
+        return actor < _guild_rank_order(target_rank)
+    return True
+
+
 def _guild_by_name_key(name_key):
     for record in GUILDS.values():
         if record.get("name_key") == name_key:
@@ -5663,6 +5700,22 @@ def _guild_display_name(name_key):
         if shown:
             return shown
     return str(name_key or "")
+
+
+def _guild_known_character(raw):
+    """Canonical name for an online player or a remembered character, else None."""
+    wanted = str(raw or "").strip()
+    if not wanted:
+        return None
+    online = _online_player(wanted)
+    if online is not None:
+        return online.name
+    entry = SCORES.get(wanted.lower())
+    if isinstance(entry, dict):
+        shown = str(entry.get("display_name") or "").strip()
+        if shown:
+            return shown
+    return None
 
 
 def _guild_reserved_keys():
@@ -5948,8 +6001,7 @@ async def _cmd_guild_disband(player, msg):
     if record is None:
         await send(player, {"type": "error", "text": "You are not in a guild."})
         return
-    row = (record.get("members") or {}).get(player.name.lower()) or {}
-    if row.get("rank") != "leader":
+    if not _guild_allows(record, player.name, "disband"):
         await send(
             player,
             {"type": "error", "text": "Only the guild leader can disband a guild."},
@@ -5965,6 +6017,358 @@ async def _cmd_guild_disband(player, msg):
     await send(player, stats_view(player))
 
 
+async def _cmd_guild_invite(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    if not _guild_allows(record, player.name, "invite"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    "Only guild leaders and officers can invite. "
+                    "Ask your leader to send it."
+                ),
+            },
+        )
+        return
+    raw = str(msg.get("target") or "").strip()
+    target_name = _guild_known_character(raw)
+    if target_name is None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"No character named '{raw}' exists. Check the spelling.",
+            },
+        )
+        return
+    target_key = target_name.lower()
+    shown = _guild_display_name(target_key)
+    other = _guild_for_member(target_name)
+    if other is not None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"{shown} is already in {other['name']}. "
+                    "Ask them to leave it first."
+                ),
+            },
+        )
+        return
+    if len(record.get("members") or {}) >= GUILD_MAX_MEMBERS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"{record['name']} is full ({GUILD_MAX_MEMBERS} members). "
+                    "Kick someone first."
+                ),
+            },
+        )
+        return
+    now = time.time()
+    pending = _pending_guild_invites.get(target_key)
+    if pending and now - _guild_ts(pending.get("ts")) <= GUILD_INVITE_TTL_SECONDS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"{shown} already has a pending guild invitation. "
+                    "Wait for it to expire or be accepted."
+                ),
+            },
+        )
+        return
+    _pending_guild_invites[target_key] = {
+        "guild_id": record.get("id"),
+        "ts": now,
+        "inviter": player.name,
+    }
+    await send(player, {"type": "message", "text": f"Invitation sent to {shown}."})
+    target = _online_player(target_key)
+    if target is not None:
+        await send(
+            target,
+            {
+                "type": "message",
+                "text": (
+                    f"{_guild_display_name(player.name.lower())} invites you to "
+                    f"join {record['name']}. Send guild join to accept."
+                ),
+            },
+        )
+
+
+async def _cmd_guild_join(player, msg):
+    key = player.name.lower()
+    current = _guild_for_member(player.name)
+    if current is not None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"You are already in {current['name']}. Leave it first.",
+            },
+        )
+        return
+    inv = _pending_guild_invites.get(key)
+    if not inv:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "No pending guild invitation. Ask a member to invite you.",
+            },
+        )
+        return
+    # The sweeper runs on a 60s tick; a join must not trust it to be awake.
+    if time.time() - _guild_ts(inv.get("ts")) > GUILD_INVITE_TTL_SECONDS:
+        _pending_guild_invites.pop(key, None)
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "That guild invitation expired. Ask for a fresh one.",
+            },
+        )
+        return
+    record = GUILDS.get(inv.get("guild_id"))
+    if record is None:
+        _pending_guild_invites.pop(key, None)
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "That guild no longer exists. Ask for a new invite.",
+            },
+        )
+        return
+    wanted = str(msg.get("name") or "").strip().lower()
+    if wanted and wanted != record.get("name_key"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"Your pending invitation is for {record['name']}. "
+                    f"Use guild join {record['name']}."
+                ),
+            },
+        )
+        return
+    if len(record.get("members") or {}) >= GUILD_MAX_MEMBERS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"{record['name']} is full ({GUILD_MAX_MEMBERS} members). "
+                    "Ask a leader to free a seat."
+                ),
+            },
+        )
+        return
+    record.setdefault("members", {})[key] = {
+        "rank": "member",
+        "joined_ts": time.time(),
+    }
+    GUILD_BY_MEMBER[key] = record.get("id")
+    _pending_guild_invites.pop(key, None)
+    mark_guilds_dirty()
+    await send(
+        player,
+        {"type": "message", "text": f"You join {record['name']} as a member."},
+    )
+
+
+async def _cmd_guild_kick(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    key = player.name.lower()
+    raw = str(msg.get("target") or "").strip()
+    target_key = raw.lower()
+    members = record.get("members") or {}
+    row = members.get(target_key)
+    if not isinstance(row, dict):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"No one in {record['name']} is named '{raw}'. "
+                    "Check the roster with guild info."
+                ),
+            },
+        )
+        return
+    if target_key == key:
+        await send(
+            player,
+            {"type": "error", "text": "You cannot kick yourself. Use guild leave."},
+        )
+        return
+    rank = row.get("rank")
+    if not _guild_allows(record, player.name, f"kick:{rank}"):
+        if rank == "leader":
+            text = "Nobody can kick the guild leader. Ask them to disband instead."
+        elif rank == "officer":
+            text = "Only the guild leader can remove an officer."
+        else:
+            text = "Only guild leaders and officers can remove members."
+        await send(player, {"type": "error", "text": text})
+        return
+    shown = _guild_display_name(target_key)
+    members.pop(target_key, None)
+    if GUILD_BY_MEMBER.get(target_key) == record.get("id"):
+        del GUILD_BY_MEMBER[target_key]
+    _pending_guild_invites.pop(target_key, None)
+    mark_guilds_dirty()
+    await send(
+        player,
+        {"type": "message", "text": f"You remove {shown} from {record['name']}."},
+    )
+    target = _online_player(target_key)
+    if target is not None:
+        await send(
+            target,
+            {
+                "type": "message",
+                "text": (
+                    f"{_guild_display_name(key)} removes you from {record['name']}."
+                ),
+            },
+        )
+
+
+async def _cmd_guild_promote(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    raw = str(msg.get("target") or "").strip()
+    target_key = raw.lower()
+    row = (record.get("members") or {}).get(target_key)
+    if not isinstance(row, dict):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"No one in {record['name']} is named '{raw}'. "
+                    "Check the roster with guild info."
+                ),
+            },
+        )
+        return
+    if not _guild_allows(record, player.name, "promote"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Only the guild leader can promote a member.",
+            },
+        )
+        return
+    if row.get("rank") == "leader":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "The leader cannot be promoted. Use guild leave to hand over.",
+            },
+        )
+        return
+    if row.get("rank") != "member":
+        shown = _guild_display_name(target_key)
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"{shown} is already an officer of {record['name']}.",
+            },
+        )
+        return
+    shown = _guild_display_name(target_key)
+    row["rank"] = "officer"
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": f"{shown} is now an officer of {record['name']}.",
+        },
+    )
+
+
+async def _cmd_guild_demote(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    raw = str(msg.get("target") or "").strip()
+    target_key = raw.lower()
+    row = (record.get("members") or {}).get(target_key)
+    if not isinstance(row, dict):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"No one in {record['name']} is named '{raw}'. "
+                    "Check the roster with guild info."
+                ),
+            },
+        )
+        return
+    if not _guild_allows(record, player.name, "demote"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Only the guild leader can demote an officer.",
+            },
+        )
+        return
+    if row.get("rank") == "leader":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "The leader cannot be demoted. Use guild leave to hand over.",
+            },
+        )
+        return
+    if row.get("rank") != "officer":
+        shown = _guild_display_name(target_key)
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"{shown} is already a member of {record['name']}.",
+            },
+        )
+        return
+    shown = _guild_display_name(target_key)
+    row["rank"] = "member"
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": f"{shown} is back to member of {record['name']}.",
+        },
+    )
+
+
 async def cmd_guild(player, msg):
     action = str(msg.get("action") or "info").strip().lower()
     if action == "create":
@@ -5973,8 +6377,23 @@ async def cmd_guild(player, msg):
     if action == "info":
         await _cmd_guild_info(player, msg)
         return
+    if action == "invite":
+        await _cmd_guild_invite(player, msg)
+        return
+    if action == "join":
+        await _cmd_guild_join(player, msg)
+        return
     if action == "leave":
         await _cmd_guild_leave(player, msg)
+        return
+    if action == "kick":
+        await _cmd_guild_kick(player, msg)
+        return
+    if action == "promote":
+        await _cmd_guild_promote(player, msg)
+        return
+    if action == "demote":
+        await _cmd_guild_demote(player, msg)
         return
     if action == "disband":
         await _cmd_guild_disband(player, msg)
@@ -5985,7 +6404,8 @@ async def cmd_guild(player, msg):
             "type": "error",
             "text": (
                 f"Unknown guild action '{action}'. "
-                "Use create, info, leave, or disband."
+                "Use create, info, invite, join, leave, kick, promote, demote, "
+                "or disband."
             ),
         },
     )
@@ -6262,7 +6682,7 @@ async def cmd_help(player, msg):
                 "Commands: login look move attack take gather drop equip use rest heal buy sell "
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
-                "guild [create|info|leave|disband] "
+                "guild [create|info|invite|join|leave|kick|promote|demote|disband] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "
