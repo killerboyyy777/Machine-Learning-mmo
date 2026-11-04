@@ -14,6 +14,7 @@ env/
 scores.json*
 companions.json*
 guilds.json*
+intel.json*
 
 # ML / Torch training checkpoints (local training progress, never commit)
 ml/ml_weights.json
