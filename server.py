@@ -1582,6 +1582,9 @@ INTEL_VALUES = {
     "traffic": ("0", "1-3", "4-8", "9-12"),
 }
 INTEL_SUBJECT_KINDS = frozenset({"hostile", "npc_death", "node"})
+# Death notes come from the death paths only: a member reporting a kill would
+# let the pool mint the evidence it is supposed to record.
+INTEL_SERVER_KINDS = frozenset({"npc_death", "player_death"})
 INTEL_SOURCES = frozenset({"sensor"})
 
 INTEL_STATS = {
@@ -1722,6 +1725,87 @@ def _intel_compact(rows):
         kept = [r for r in kept if r["seq"] not in drop]
     rows[:] = kept
     return before - len(kept)
+
+
+def _intel_append(guild, observer, room, kind, subject, value, now=None):
+    """Record one observation, coalescing a repeat inside the window.
+
+    A repeat of the same (guild, observer, room, kind, subject) refreshes the
+    stored row instead of appending, so a bot re-scanning its own room cannot
+    spend its guild's share on duplicates. Returns the row, or None when the
+    payload is not recordable.
+    """
+    global INTEL_SEQ
+    now = time.time() if now is None else now
+    try:
+        guild = int(guild)
+    except (TypeError, ValueError):
+        return None
+    observer = str(observer or "").strip().lower()
+    room = str(room or "")
+    if guild <= 0 or not observer or room not in ROOMS:
+        return None
+    if kind not in INTEL_KINDS:
+        return None
+    if value is not None:
+        value = str(value)
+    if value not in INTEL_VALUES[kind]:
+        return None
+    subject = str(subject).strip() if subject is not None else None
+    if kind in INTEL_SUBJECT_KINDS:
+        if not subject:
+            return None
+    else:
+        subject = None
+    matches = [
+        r
+        for r in INTEL_ROWS
+        if r["guild"] == guild
+        and r["observer"] == observer
+        and r["room"] == room
+        and r["kind"] == kind
+        and r["subject"] == subject
+        and now - r["ts"] <= INTEL_COALESCE_SECONDS
+    ]
+    row = max(matches, key=_intel_age_key) if matches else None
+    if row is None:
+        INTEL_SEQ += 1
+        # v1 stores only what the server itself read: sensor rows at 100.
+        row = {
+            "seq": INTEL_SEQ,
+            "ts": now,
+            "guild": guild,
+            "observer": observer,
+            "room": room,
+            "kind": kind,
+            "subject": subject,
+            "value": value,
+            "confidence": 100,
+            "source": "sensor",
+            "repeats": 1,
+            "first_ts": now,
+        }
+        INTEL_ROWS.append(row)
+    else:
+        row["ts"] = now
+        row["value"] = value
+        row["confidence"] = 100
+        row["repeats"] += 1
+    INTEL_STATS["observations_logged"] += 1
+    INTEL_STATS["entries_expired"] += _intel_prune(INTEL_ROWS, now)
+    INTEL_STATS["entries_evicted"] += _intel_compact(INTEL_ROWS)
+    mark_intel_dirty()
+    return row
+
+
+def _intel_drop_guild(guild):
+    """Drop one guild's whole pool: a recharter can reuse its id."""
+    before = len(INTEL_ROWS)
+    INTEL_ROWS[:] = [r for r in INTEL_ROWS if r["guild"] != guild]
+    dropped = before - len(INTEL_ROWS)
+    if dropped:
+        mark_intel_dirty()
+    return dropped
 
 
 def _intel_snapshot():
@@ -2211,6 +2295,7 @@ NO_BUFF_TICK = frozenset(
         "who",
         "leaderboard",
         "help",
+        "intel",
         "commission_list",
         "party_info",
         "market_list",
@@ -3843,6 +3928,14 @@ async def respawn_player(player):
             _add_ground(death_room, iid)
 
     item_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) for iid in dropped_items)
+
+    # Intel is guild-scoped, so a guildless death records nothing.
+    guild = _guild_for_member(player.name)
+    if guild is not None:
+        _intel_append(
+            guild.get("id"), player.name, death_room, "player_death", None, None
+        )
+
     await apply_death_penalty(
         player, dropped + lost + _sheltered_gold(player.name) + item_value
     )
@@ -4506,6 +4599,18 @@ async def cmd_attack(player, msg):
     if npc["hp"] <= 0 and npc.get("alive", True):
         npc["alive"] = False
         npc["respawn_at"] = _npc_respawn_at(npc)
+        # Guildless kills and dungeon kills (d_* rooms are not ROOMS keys)
+        # write no note: intel is guild-scoped and world-room-only.
+        killer_guild = _guild_for_member(player.name)
+        if killer_guild is not None:
+            _intel_append(
+                killer_guild.get("id"),
+                player.name,
+                player.room,
+                "npc_death",
+                npc["id"],
+                None,
+            )
         loot = npc.get("loot", [])
         companion_loot = any(i in COMPANION_ITEMS for i in loot)
         _note_acquisition("boss", attempts=1, earned=companion_loot)
@@ -6284,6 +6389,7 @@ def _guild_dissolve(record, now):
     GUILDS.pop(record.get("id"), None)
     _guild_index_drop(record)
     _guild_add_tombstone(record, now)
+    _intel_drop_guild(record.get("id"))
     mark_guilds_dirty()
 
 
@@ -7227,6 +7333,106 @@ async def cmd_guild(player, msg):
     )
 
 
+def _intel_traffic_bucket(room):
+    count = len(players_in_room(room))
+    if count <= 0:
+        return "0"
+    if count <= 3:
+        return "1-3"
+    if count <= 8:
+        return "4-8"
+    return "9-12"
+
+
+def _intel_scan(player):
+    """Observations the caller can make from their own room.
+
+    Only what the room view already publishes: hostile presence, nodes that
+    are ready, and a traffic bucket. No hp, loot, gold or player name.
+    """
+    room = player.room
+    found = [
+        ("hostile", npc["id"], "alive")
+        for npc in npcs_in_room(room)
+        if npc.get("hostile")
+    ]
+    found += [("node", node["id"], "ready") for node in gather_nodes_in_room(room)]
+    found.append(("traffic", None, _intel_traffic_bucket(room)))
+    return found
+
+
+async def _intel_refuse(player, text):
+    INTEL_STATS["observations_refused"] += 1
+    await send(player, {"type": "error", "text": text})
+
+
+async def _cmd_intel_log(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await _intel_refuse(player, "You are not in a guild. Join one to share intel.")
+        return
+    if player.room not in ROOMS:
+        await _intel_refuse(player, f"No room '{player.room}' in the world.")
+        return
+    room_arg = str(msg.get("room") or "").strip()
+    if room_arg:
+        await _intel_refuse(
+            player, f"You can only log the room you stand in, not '{room_arg}'."
+        )
+        return
+    kind = str(msg.get("kind") or "").strip().lower()
+    if kind and kind not in INTEL_KINDS:
+        await _intel_refuse(
+            player,
+            f"Unknown intel kind '{kind}'. Use hostile, npc_death, "
+            "player_death, node, or traffic.",
+        )
+        return
+    if kind in INTEL_SERVER_KINDS:
+        await _intel_refuse(
+            player, f"{kind} notes are recorded by the server when they happen."
+        )
+        return
+    subject = str(msg.get("subject") or "").strip()
+    value = str(msg.get("value") or "").strip()
+    found = [
+        obs
+        for obs in _intel_scan(player)
+        if (not kind or obs[0] == kind)
+        and (not subject or obs[1] == subject)
+        and (not value or obs[2] == value)
+    ]
+    room_name = ROOMS[player.room]["name"]
+    if not found:
+        await _intel_refuse(player, f"Nothing in {room_name} matches that.")
+        return
+    logged = 0
+    for obs_kind, obs_subject, obs_value in found:
+        row = _intel_append(
+            record.get("id"), player.name, player.room, obs_kind, obs_subject, obs_value
+        )
+        if row is not None:
+            logged += 1
+    await send(
+        player,
+        {
+            "type": "intel",
+            "action": "log",
+            "room": player.room,
+            "logged": logged,
+            "text": f"Logged {logged} observation(s) from {room_name}.",
+        },
+    )
+
+
+async def cmd_intel(player, msg):
+    action = str(msg.get("action") or "log").strip().lower()
+    if action != "log":
+        await _intel_refuse(player, f"Unknown intel action '{action}'. Use log.")
+        return
+    await _cmd_intel_log(player, msg)
+
+
 async def cmd_inventory(player, msg):
     await send(
         player,
@@ -7499,6 +7705,7 @@ async def cmd_help(player, msg):
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
                 "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit] "
+                "intel [log] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "
@@ -9291,6 +9498,7 @@ HANDLERS = {
     "commission_fill": cmd_commission_fill,
     "commission_cancel": cmd_commission_cancel,
     "guild": cmd_guild,
+    "intel": cmd_intel,
 }
 
 SCORE_ARG_EXTRACTORS = {
