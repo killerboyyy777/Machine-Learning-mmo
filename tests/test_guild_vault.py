@@ -124,13 +124,13 @@ async def main():
             help_text = inbox[-1]["text"]
             assert (
                 "guild [create|info|invite|join|leave|kick|promote|demote|"
-                "disband|vault]" in help_text
+                "disband|vault|audit]" in help_text
             ), help_text
             inbox.clear()
-            await srv.cmd_guild(aria, {"action": "audit"})
+            await srv.cmd_guild(aria, {"action": "frobnicate"})
             assert texts(inbox)[-1] == (
-                "Unknown guild action 'audit'. Use create, info, invite, join, "
-                "leave, kick, promote, demote, disband, or vault."
+                "Unknown guild action 'frobnicate'. Use create, info, invite, join, "
+                "leave, kick, promote, demote, disband, vault, or audit."
             )
             inbox.clear()
             await srv.cmd_guild(aria, {"action": "vault", "op": "bogus"})
@@ -562,8 +562,11 @@ async def main():
             assert (
                 aria.gold + bram.gold + cid.gold + dune.gold + vault_gold(choir) == 1700
             )
-            assert srv.GUILD_AUDIT_ENTRIES_WRITTEN == 0
-            assert len(srv.guild_feed) == 0
+            # Every successful vault op above wrote exactly one entry and every
+            # refusal wrote none, so the counter matches the record.
+            assert srv.GUILD_AUDIT_ENTRIES_WRITTEN == len(choir["audit"]) > 0
+            assert srv.GUILD_AUDIT_ENTRIES_WRITTEN <= srv.GUILD_AUDIT_CAP
+            assert 0 < len(srv.guild_feed) <= 50
             print("INDEX_INVARIANT_OK")
         finally:
             for pl in players:
