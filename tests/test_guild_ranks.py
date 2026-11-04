@@ -89,14 +89,14 @@ async def main():
             await srv.cmd_help(aria, {})
             help_text = inbox[-1]["text"]
             assert (
-                "guild [create|info|invite|join|leave|kick|promote|demote|disband]"
+                "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault]"
                 in help_text
             ), help_text
             inbox.clear()
-            await srv.cmd_guild(aria, {"action": "vault"})
+            await srv.cmd_guild(aria, {"action": "audit"})
             assert texts(inbox)[-1] == (
-                "Unknown guild action 'vault'. Use create, info, invite, join, "
-                "leave, kick, promote, demote, or disband."
+                "Unknown guild action 'audit'. Use create, info, invite, join, "
+                "leave, kick, promote, demote, disband, or vault."
             )
             assert srv.guild_telemetry()["invites_pending"] == 0
             print("SURFACE_OK")

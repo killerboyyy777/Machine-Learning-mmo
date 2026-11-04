@@ -323,6 +323,8 @@ GUILD_MAX_GUILDS = 200
 GUILD_AUDIT_CAP = 500
 GUILD_INVITE_TTL_SECONDS = 300
 GUILD_VAULT_ITEM_CAP = 64
+GUILD_OFFICER_DAILY_GOLD = 100
+GUILD_OFFICER_DAILY_ITEMS = 3
 GUILD_NAME_MIN = 3
 GUILD_NAME_MAX = MAX_NAME_LEN
 GUILD_TOMBSTONE_CAP = 200
@@ -1850,12 +1852,14 @@ NO_BUFF_TICK = frozenset(
 
 def _command_ticks_buffs(cmd, msg):
     """Pure gate for buff consumption (unit-testable without dispatch)."""
-    action = str((msg or {}).get("action") or "").lower()
+    msg = msg or {}
+    action = str(msg.get("action") or "").lower()
     return (
         cmd not in NO_BUFF_TICK
         and not (cmd == "quest" and action == "list")
         and not (cmd == "craft" and action == "status")
         and not (cmd == "guild" and action in ("", "info"))
+        and not (cmd == "guild" and action == "vault" and not msg.get("op"))
     )
 
 
@@ -5616,6 +5620,9 @@ async def cmd_commission_cancel(player, msg):
 GUILD_HALL_CHARTER_TEXT = (
     "Guild charters are signed at the Adventurers Guild hall (south of Artisan Row)."
 )
+GUILD_VAULT_HALL_TEXT = (
+    "Guild vaults are opened at the Adventurers Guild hall (south of Artisan Row)."
+)
 GUILD_TOMBSTONE_SECONDS = 30 * 24 * 3600
 
 
@@ -5646,6 +5653,8 @@ GUILD_VERB_MIN_RANK = {
     "promote": "leader",
     "demote": "leader",
     "disband": "leader",
+    "deposit": "member",
+    "withdraw": "officer",
 }
 
 
@@ -6369,6 +6378,289 @@ async def _cmd_guild_demote(player, msg):
     )
 
 
+def _guild_utc_day(now=None):
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() if now is None else now))
+
+
+def _guild_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _guild_gold_amount(raw):
+    """Whole gold amounts only; bools and floats are never amounts."""
+    if isinstance(raw, (bool, float)):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _guild_member_rank(record, name):
+    row = (record.get("members") or {}).get(str(name or "").lower())
+    return row.get("rank") if isinstance(row, dict) else None
+
+
+def _guild_withdrawn_today(record, now):
+    """Officer daily counters; a new UTC date key resets them, not a timer."""
+    state = record.get("withdrawn_today")
+    if not isinstance(state, dict):
+        state = {}
+    day = _guild_utc_day(now)
+    if state.get("day") != day:
+        state = {"day": day, "gold": 0, "items": 0}
+        record["withdrawn_today"] = state
+        mark_guilds_dirty()
+    return state
+
+
+async def _cmd_guild_vault_status(player):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    gold = _guild_int(record.get("vault_gold"))
+    items = [i for i in record.get("vault_items") or [] if isinstance(i, str)]
+    text = f"{record['name']} vault: {gold} gold, {len(items)} item(s)."
+    rank = _guild_member_rank(record, player.name)
+    if rank == "member":
+        text += " Only guild leaders and officers may withdraw."
+    elif rank == "officer":
+        state = record.get("withdrawn_today")
+        if isinstance(state, dict) and state.get("day") == _guild_utc_day():
+            text += (
+                f" Withdrawn today: {_guild_int(state.get('gold'))}"
+                f"/{GUILD_OFFICER_DAILY_GOLD} gold, "
+                f"{_guild_int(state.get('items'))}"
+                f"/{GUILD_OFFICER_DAILY_ITEMS} items."
+            )
+    await send(player, {"type": "message", "text": text})
+
+
+async def _guild_vault_deposit_gold(player, record, raw):
+    global GUILD_VAULT_GOLD_IN_TOTAL
+    amount = _guild_gold_amount(raw)
+    if amount is None or amount <= 0:
+        await send(
+            player,
+            {"type": "error", "text": "Enter a whole amount of gold above zero."},
+        )
+        return
+    held = _guild_int(player.gold)
+    if amount > held:
+        await send(player, {"type": "error", "text": f"You only have {held} gold."})
+        return
+    record["vault_gold"] = _guild_int(record.get("vault_gold")) + amount
+    player.gold = held - amount
+    GUILD_VAULT_GOLD_IN_TOTAL += amount
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"You deposit {amount} gold. "
+                f"The vault holds {record['vault_gold']} gold."
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+async def _guild_vault_withdraw_gold(player, record, raw):
+    global GUILD_VAULT_GOLD_OUT_TOTAL
+    amount = _guild_gold_amount(raw)
+    if amount is None or amount <= 0:
+        await send(
+            player,
+            {"type": "error", "text": "Enter a whole amount of gold above zero."},
+        )
+        return
+    stored = _guild_int(record.get("vault_gold"))
+    if amount > stored:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"The guild vault holds only {stored} gold.",
+            },
+        )
+        return
+    if _guild_member_rank(record, player.name) == "officer":
+        state = _guild_withdrawn_today(record, time.time())
+        used = _guild_int(state.get("gold"))
+        if used + amount > GUILD_OFFICER_DAILY_GOLD:
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": (
+                        "Officers may withdraw at most "
+                        f"{GUILD_OFFICER_DAILY_GOLD} gold per day "
+                        f"(asked {amount}). It resets at midnight UTC."
+                    ),
+                },
+            )
+            return
+        state["gold"] = used + amount
+    # INV-1: decrement the vault and credit the purse in one synchronous block;
+    # credit_gold would await and could bank an offline player instead.
+    record["vault_gold"] = stored - amount
+    player.gold = _guild_int(player.gold) + amount
+    GUILD_VAULT_GOLD_OUT_TOTAL += amount
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"You withdraw {amount} gold. "
+                f"The vault holds {record['vault_gold']} gold."
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+async def _guild_vault_deposit_item(player, record, raw):
+    iid = find_item_by_name(_unequipped_inventory(player), raw)
+    if not iid:
+        await send(player, {"type": "error", "text": "You don't have that."})
+        return
+    vault_items = record.get("vault_items")
+    if not isinstance(vault_items, list):
+        vault_items = []
+        record["vault_items"] = vault_items
+    if len(vault_items) >= GUILD_VAULT_ITEM_CAP:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"The guild vault is full ({GUILD_VAULT_ITEM_CAP} items).",
+            },
+        )
+        return
+    player.inventory.remove(iid)
+    vault_items.append(iid)
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"You deposit {_iname(iid)}. "
+                f"The vault holds {len(vault_items)} item(s)."
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+async def _guild_vault_withdraw_item(player, record, raw):
+    vault_items = record.get("vault_items")
+    if not isinstance(vault_items, list):
+        vault_items = []
+        record["vault_items"] = vault_items
+    iid = find_item_by_name([i for i in vault_items if isinstance(i, str)], raw)
+    if not iid:
+        await send(
+            player,
+            {"type": "error", "text": "The guild vault holds no such item."},
+        )
+        return
+    if _guild_member_rank(record, player.name) == "officer":
+        state = _guild_withdrawn_today(record, time.time())
+        used = _guild_int(state.get("items"))
+        if used + 1 > GUILD_OFFICER_DAILY_ITEMS:
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": (
+                        "Officers may withdraw at most "
+                        f"{GUILD_OFFICER_DAILY_ITEMS} items per day "
+                        "(asked 1). It resets at midnight UTC."
+                    ),
+                },
+            )
+            return
+        state["items"] = used + 1
+    vault_items.remove(iid)
+    in_pack = _deliver_item_or_bank(player, iid)
+    mark_guilds_dirty()
+    text = f"You withdraw {_iname(iid)}."
+    if not in_pack:
+        text += " Your pack is full, so it is waiting in your item bank."
+    text += f" The vault holds {len(vault_items)} item(s)."
+    await send(player, {"type": "message", "text": text})
+    await send(player, stats_view(player))
+
+
+async def _cmd_guild_vault(player, msg):
+    op = str(msg.get("op") or "").strip().lower()
+    if not op:
+        await _cmd_guild_vault_status(player)
+        return
+    if op not in ("deposit", "withdraw"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Unknown vault action '{op}'. Use deposit or withdraw.",
+            },
+        )
+        return
+    if not await _guild_hall_gate(player, GUILD_VAULT_HALL_TEXT):
+        return
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    if not _guild_allows(record, player.name, op):
+        if op == "withdraw":
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": (
+                        "Only guild leaders and officers can withdraw from "
+                        "the vault. Ask your leader for a promotion."
+                    ),
+                },
+            )
+        else:
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": "Only guild members can deposit into the vault.",
+                },
+            )
+        return
+    has_gold = "gold" in msg
+    has_item = "item" in msg
+    if not has_gold and not has_item:
+        await send(
+            player,
+            {"type": "error", "text": "Choose gold or an item to move."},
+        )
+        return
+    if has_gold:
+        if op == "deposit":
+            await _guild_vault_deposit_gold(player, record, msg.get("gold"))
+        else:
+            await _guild_vault_withdraw_gold(player, record, msg.get("gold"))
+        return
+    raw_item = str(msg.get("item") or "").strip()
+    if op == "deposit":
+        await _guild_vault_deposit_item(player, record, raw_item)
+    else:
+        await _guild_vault_withdraw_item(player, record, raw_item)
+
+
 async def cmd_guild(player, msg):
     action = str(msg.get("action") or "info").strip().lower()
     if action == "create":
@@ -6398,6 +6690,9 @@ async def cmd_guild(player, msg):
     if action == "disband":
         await _cmd_guild_disband(player, msg)
         return
+    if action == "vault":
+        await _cmd_guild_vault(player, msg)
+        return
     await send(
         player,
         {
@@ -6405,7 +6700,7 @@ async def cmd_guild(player, msg):
             "text": (
                 f"Unknown guild action '{action}'. "
                 "Use create, info, invite, join, leave, kick, promote, demote, "
-                "or disband."
+                "disband, or vault."
             ),
         },
     )
@@ -6682,7 +6977,7 @@ async def cmd_help(player, msg):
                 "Commands: login look move attack take gather drop equip use rest heal buy sell "
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
-                "guild [create|info|invite|join|leave|kick|promote|demote|disband] "
+                "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "
