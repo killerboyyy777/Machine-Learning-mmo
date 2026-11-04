@@ -2,10 +2,16 @@
 
 All notable changes to the text MMO engine are recorded here.
 
-## Unreleased
+## 0.11.0 - Living bot world (2026-11-04)
+- Release gate (#567): the three-seed 12h gate passed on the release build --
+  seeds 700/701/702, 20 agents, 14400s each, 54 checks pass and none fail.
+  Median across seeds: wild 0.864 deaths/hour and civilian 0.639/hour against
+  the 0.5 floors (worst seed 0.789 and 0.626 against the 0.25 guard), deaths
+  per kill 0.255, companion damage share 33.93%, 613 crafts, 520 market trades,
+  18 agents minimum alive, treasury band 0.0% around the 500 reserve.
 - Balance gate harness (#537): `ml/balance.py` adds the release-gate
   scenario matrix (economy, combat, craft, market, liveness, plus observed
-  progression/party) with explicit provisional thresholds from issue #537:
+  progression/party) with explicit thresholds from issue #537:
   zero item/gold conservation drift, treasury band and reserve sink,
   deaths/hour, companion damage share, craft refund/input loss, median
   spread, trade volume and wash trades, same-seed determinism, and liveness.
