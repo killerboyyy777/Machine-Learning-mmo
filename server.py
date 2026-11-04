@@ -10632,6 +10632,77 @@ AGGRO_RANGE = 1
 # ---------------------------------------------------------------------------
 
 
+def _npc_tick_context(npc):
+    room_id = npc["room"]
+    return {
+        "targets": players_in_room(room_id),
+        "companions": (_summoned_companions_in_room(room_id) if npc["hostile"] else []),
+    }
+
+
+def npc_think(npc, ctx, now):
+    """Decide one tick's action without touching I/O or the clock."""
+    if not npc.get("alive", False) or not npc.get("hostile"):
+        return None
+    targets = ctx.get("targets") or []
+    companions = ctx.get("companions") or []
+    if not targets and not companions:
+        return None
+    if companions and random.random() < COMPANION_AGGRO_SHARE:
+        owner, _rec = random.choice(companions)
+        return {
+            "kind": "attack",
+            "target": owner.id,
+            "dmg": random.randint(1, npc["attack"]),
+            "companion": True,
+        }
+    if not targets:
+        return None
+    victim = random.choice(targets)
+    dmg = random.randint(1, npc["attack"])
+    dmg = max(0, dmg - _player_damage_reduction(victim))
+    dmg = _training_damage(dmg)
+    return {"kind": "attack", "target": victim.id, "dmg": dmg, "companion": None}
+
+
+async def npc_apply(npc, intent, ctx, now):
+    """Execute one intent; all send/broadcast/mutation for it lives here."""
+    if not intent or intent.get("kind") != "attack":
+        return
+    target_id = intent["target"]
+    dmg = intent["dmg"]
+    if intent.get("companion"):
+        for owner, rec in ctx.get("companions") or ():
+            if owner.id == target_id:
+                await _damage_companion(owner, rec, dmg, npc["name"], now, npc["id"])
+                return
+        return
+    victim = next((p for p in (ctx.get("targets") or ()) if p.id == target_id), None)
+    if victim is None:
+        return
+    victim.hp -= dmg
+    # Retaliation (#544 owner call A): a hit on the owner is an
+    # owner-initiated fight, so the pet may answer it.
+    _companion_retaliate(victim, npc["id"], now)
+    await send(
+        victim,
+        {
+            "type": "combat",
+            "text": f"{npc['name']} attacks you for {dmg}.",
+        },
+    )
+    await broadcast_room(
+        npc["room"],
+        {
+            "type": "combat",
+            "text": f"{npc['name']} attacks {victim.name} for {dmg}.",
+        },
+        exclude=victim,
+    )
+    if victim.hp <= 0:
+        await respawn_player(victim)
+
+
 async def npc_ai_loop():
     while True:
         await asyncio.sleep(NPC_TICK_SECONDS)
@@ -10676,47 +10747,11 @@ async def npc_ai_loop():
                     )
                     await sync_room(npc["room"])
                 continue
+            ctx = _npc_tick_context(npc)
+            intent = npc_think(npc, ctx, now)
+            await npc_apply(npc, intent, ctx, now)
             room_id = npc["room"]
-            targets = players_in_room(room_id)
-            companions = _summoned_companions_in_room(room_id) if npc["hostile"] else []
-            if npc["hostile"] and (targets or companions):
-                if companions and random.random() < COMPANION_AGGRO_SHARE:
-                    owner, rec = random.choice(companions)
-                    await _damage_companion(
-                        owner,
-                        rec,
-                        random.randint(1, npc["attack"]),
-                        npc["name"],
-                        now,
-                        npc["id"],
-                    )
-                elif targets:
-                    victim = random.choice(targets)
-                    dmg = random.randint(1, npc["attack"])
-                    dmg = max(0, dmg - _player_damage_reduction(victim))
-                    dmg = _training_damage(dmg)
-                    victim.hp -= dmg
-                    # Retaliation (#544 owner call A): a hit on the owner is an
-                    # owner-initiated fight, so the pet may answer it.
-                    _companion_retaliate(victim, npc["id"], now)
-                    await send(
-                        victim,
-                        {
-                            "type": "combat",
-                            "text": f"{npc['name']} attacks you for {dmg}.",
-                        },
-                    )
-                    await broadcast_room(
-                        room_id,
-                        {
-                            "type": "combat",
-                            "text": f"{npc['name']} attacks {victim.name} for {dmg}.",
-                        },
-                        exclude=victim,
-                    )
-                    if victim.hp <= 0:
-                        await respawn_player(victim)
-            elif (
+            if (
                 not npc["hostile"]
                 and npc.get("behavior") == "wander"
                 and random.random() < 0.1
