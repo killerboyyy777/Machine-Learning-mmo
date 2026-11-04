@@ -379,6 +379,7 @@
     "wolf": {
       "name": "Grey Wolf",
       "room": "forest_edge",
+      "archetype": "stalker",
       "hp": 18,
       "max_hp": 18,
       "attack": 2,
@@ -499,6 +500,7 @@
     "timber_wolf": {
       "name": "Timber Wolf",
       "room": "pinewood_thicket",
+      "archetype": "stalker",
       "hp": 30,
       "max_hp": 30,
       "attack": 6,
@@ -535,6 +537,7 @@
     "mountain_lion": {
       "name": "Mountain Lion",
       "room": "highland_trail",
+      "archetype": "stalker",
       "hp": 40,
       "max_hp": 40,
       "attack": 7,
@@ -631,6 +634,7 @@
     "crag_stalker": {
       "name": "Crag Stalker",
       "room": "windcarved_crag",
+      "archetype": "stalker",
       "hp": 85,
       "max_hp": 85,
       "attack": 11,
