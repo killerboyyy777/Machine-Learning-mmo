@@ -725,6 +725,10 @@
       "respawn_seconds": 40
     }
   },
+  "npc_archetypes": {
+    "stalker": {"aggro_radius": 1, "leash_radius": 3},
+    "skirmisher": {"flee_below_pct": 25}
+  },
   "items": {
     "rusty_sword": {"name": "Rusty Sword", "type": "weapon", "damage": 4},
     "old_shield": {"name": "Old Shield", "type": "offhand", "defense": 1, "value": 8},

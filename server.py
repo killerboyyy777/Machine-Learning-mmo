@@ -465,6 +465,22 @@ ROOMS = WORLD["rooms"]
 ITEM_DEFS = WORLD["items"]
 START_ROOM = WORLD["start_room"]
 
+# Archetype defaults (#536) live here, not in world.json, so an absent key is
+# baseline and world data cannot move a default by accident. A template names
+# a preset with `archetype`; npc_archetypes carries only sparse overrides.
+NPC_ARCHETYPE_DEFAULTS = {
+    "archetype": None,
+    "aggro_radius": 0,
+    "leash_radius": 0,
+    "leash_heal": True,
+    "flee_below_pct": 0,
+    "flee_to": None,
+    "patrol": [],
+    "pack": 0,
+    "retaliate_only": False,
+    "prefer": "random",
+}
+
 # The dungeon entrance is a dynamic exit on the graveyard (the ML env rebuilds
 # its action space from these rooms on import, so it sees "enter" too).
 ROOMS[DUNGEON_ENTRANCE_ROOM].setdefault("exits", {}).setdefault(
@@ -558,6 +574,9 @@ def _sync_extra_spawns():
                         "alive": True,
                         "respawn_at": None,
                         "contributors": {},
+                        "state": "IDLE",
+                        "spawn_room": tmpl["room"],
+                        "target": None,
                     }
 
 
@@ -747,6 +766,9 @@ class Dungeon:
                     "alive": True,
                     "respawn_at": None,
                     "contributors": {},
+                    "state": "IDLE",
+                    "spawn_room": room_id,
+                    "target": None,
                     "dungeon_id": self.id,
                 }
             )
@@ -779,6 +801,9 @@ class Dungeon:
                     "alive": True,
                     "respawn_at": None,
                     "contributors": {},
+                    "state": "IDLE",
+                    "spawn_room": room_id,
+                    "target": None,
                     "dungeon_id": self.id,
                 }
             )
@@ -3835,7 +3860,9 @@ def _npc_respawn_at(npc, default_seconds=30):
     secs = npc.get("respawn_seconds", default_seconds)
     if not secs:
         return None
-    room = ROOMS.get(npc.get("room"), {})
+    # The multiplier follows the spawn room, not where the mob stands now, so
+    # a later leash into a civilian room cannot inflate the respawn timer.
+    room = ROOMS.get(npc.get("spawn_room") or npc.get("room"), {})
     if not room.get("wild", False):
         secs = secs * CIV_NPC_RESPAWN_MULT
     return time.time() + secs
@@ -8797,6 +8824,9 @@ async def cmd_gm_boss(player, msg):
         "alive": True,
         "respawn_at": None,
         "contributors": {},
+        "state": "IDLE",
+        "spawn_room": room,
+        "target": None,
     }
     await sync_room(room)
     await send(
