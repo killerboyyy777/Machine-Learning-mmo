@@ -110,6 +110,18 @@ DEFAULT_THRESHOLDS = {
         # still proves the boss kill path reached the counter.
         "min_drop_rate": 0.0,
     },
+    "guilds": {
+        # Probe floors, not balance floors: each seed founds a charter and
+        # moves gold through the vault, so a zero here means the measurement
+        # broke, not that the world was quiet.
+        "min_guilds": 1,
+        "min_members": 2,
+        "min_vault_gold_in": 1,
+        "min_vault_gold_out": 1,
+        "min_vault_items": 1,
+        "min_audit_entries": 6,
+        "max_conservation_drift": 0.0,
+    },
     "liveness": {
         "min_agents": 10,
     },
@@ -131,6 +143,11 @@ WORST_SEED_GUARD_IDS = (
 # exist yet, so the scenario is reported and never silently counted as
 # passing. ``observed_only`` scenarios collect what the server exposes and
 # carry no thresholds (they feed the release-notes table instead).
+
+# The guild probe can only skip against a server built before its surface; the
+# gate guard turns that skip into a failure while this build ships the verb.
+GUILD_SURFACE_ISSUE = "#588"
+
 SCENARIOS = {
     "economy": {
         "title": "Sources vs sinks, treasury convergence, market sink",
@@ -159,6 +176,10 @@ SCENARIOS = {
     "acquisition": {
         "title": "Drop rate, craft cost, shop price vs time-to-earn",
         "issue": "#532",
+    },
+    "guilds": {
+        "title": "Charter, membership, vault movement, audit log",
+        "issue": "#588",
     },
     "progression": {
         "title": "XP/hour, level curve, quest completion rate",
@@ -234,6 +255,7 @@ PROFILES = {
             "market",
             "determinism",
             "liveness",
+            "guilds",
             "npc_ai_v2",
         ),
         "coverage": (
@@ -241,6 +263,7 @@ PROFILES = {
             "combat",
             "craft",
             "acquisition",
+            "guilds",
             "market",
             "liveness",
         ),
@@ -458,6 +481,56 @@ CHECKS = (
         ("acquisition", "min_drop_rate"),
         True,
     ),
+    ("guilds.count", "guilds", "guilds.count", ">=", ("guilds", "min_guilds"), True),
+    (
+        "guilds.members",
+        "guilds",
+        "guilds.members",
+        ">=",
+        ("guilds", "min_members"),
+        True,
+    ),
+    (
+        "guilds.vault_gold_in",
+        "guilds",
+        "guilds.vault_gold_in",
+        ">=",
+        ("guilds", "min_vault_gold_in"),
+        True,
+    ),
+    (
+        "guilds.vault_gold_out",
+        "guilds",
+        "guilds.vault_gold_out",
+        ">=",
+        ("guilds", "min_vault_gold_out"),
+        True,
+    ),
+    (
+        "guilds.vault_items",
+        "guilds",
+        "guilds.vault_items",
+        ">=",
+        ("guilds", "min_vault_items"),
+        True,
+    ),
+    (
+        "guilds.audit_entries",
+        "guilds",
+        "guilds.audit_entries",
+        ">=",
+        ("guilds", "min_audit_entries"),
+        True,
+    ),
+    (
+        "guilds.conservation",
+        "guilds",
+        "guilds.conservation_drift",
+        "<=",
+        ("guilds", "max_conservation_drift"),
+        True,
+    ),
+    ("guilds.gold_conserved", "guilds", "guilds.gold_conserved", "is", True, True),
     (
         "liveness.min_agents",
         "liveness",
@@ -603,6 +676,53 @@ def _refund_excess(ledger):
     return round(max(0.0, refunded - escrowed), 6)
 
 
+def _guild_telemetry(samples):
+    """Peak guild snapshot plus the probe's own ledger.
+
+    Not the last sample: the probe disbands its charter, so the final read
+    always shows an empty guild world. The measurement lives in the sample
+    taken while the vault still held gold and an item. ``guild_probe`` is
+    client-side evidence -- the server publishes vault totals, never the
+    per-op purse deltas the conservation identity needs.
+    """
+    best, best_key, probe = {}, None, {}
+    for sample in samples:
+        state = sample.get("state") or {}
+        guilds = state.get("guilds")
+        if not isinstance(guilds, dict) or not guilds:
+            guilds = (sample.get("tables") or {}).get("guilds")
+        if isinstance(guilds, dict) and guilds:
+            key = (
+                _num(guilds.get("count")) or 0.0,
+                _num(guilds.get("members_total")) or 0.0,
+                _num(guilds.get("audit_entries_written")) or 0.0,
+            )
+            if best_key is None or key >= best_key:
+                best, best_key = guilds, key
+        candidate = state.get("guild_probe")
+        if isinstance(candidate, dict) and candidate:
+            probe = candidate
+    return {"guilds": best, "guild_probe": probe}
+
+
+def _vault_drift(stats):
+    """vault_gold_in_total - vault_gold_out_total - vault_gold_total."""
+    gold_in = _num(stats.get("vault_gold_in_total"))
+    gold_out = _num(stats.get("vault_gold_out_total"))
+    held = _num(stats.get("vault_gold_total"))
+    if gold_in is None or gold_out is None or held is None:
+        return None
+    return round(gold_in - gold_out - held, 3)
+
+
+def _guild_skip_reason(probe):
+    if probe.get("skipped"):
+        return f"{GUILD_SURFACE_ISSUE} {probe['skipped']}"
+    if probe.get("error"):
+        return f"guild probe failed: {probe['error']}"
+    return ""
+
+
 def _telemetry(samples):
     """Telemetry block from the last sample's state (GM tables as fallback).
 
@@ -627,11 +747,14 @@ def _telemetry(samples):
     if attempts and earned is not None:
         drop_rate = round(earned / attempts, 4)
     shop = sources.get("shop") or {}
+    guilds = _guild_telemetry(samples)
     return {
         "drop_rate": drop_rate,
         "craft_cost_ratio": _num(acquisition.get("craft_cost_ratio")),
         "shop_time_to_earn_s": _num(shop.get("first_earn_s")),
         "acquisition": acquisition,
+        "guilds": guilds["guilds"],
+        "guild_probe": guilds["guild_probe"],
     }
 
 
@@ -649,6 +772,8 @@ def derive(samples, ledger=None, telemetry=None):
     ledger = ledger or {}
     telemetry = telemetry or {}
     acquisition_stats = telemetry.get("acquisition") or {}
+    guild_stats = telemetry.get("guilds") or {}
+    guild_probe = telemetry.get("guild_probe") or {}
     # The dashboard exposes cumulative player/companion damage in a
     # "combat" block. Prefer that to a separately probed telemetry file so
     # the share is measured even when the harness probes only snapshots.
@@ -922,6 +1047,21 @@ def derive(samples, ledger=None, telemetry=None):
             "adoptions": acquisition_stats.get("adoptions") or {},
             "not_in_build": acquisition_stats.get("not_in_build") or {},
         },
+        "guilds": {
+            "count": _num(guild_stats.get("count")),
+            "members": _num(guild_stats.get("members_total")),
+            "audit_entries": _num(guild_stats.get("audit_entries")),
+            "audit_entries_written": _num(guild_stats.get("audit_entries_written")),
+            "vault_gold_in": _num(guild_stats.get("vault_gold_in_total")),
+            "vault_gold_out": _num(guild_stats.get("vault_gold_out_total")),
+            "vault_gold_held": _num(guild_stats.get("vault_gold_total")),
+            "vault_items": _num(guild_stats.get("vault_items_total")),
+            "invites_pending": _num(guild_stats.get("invites_pending")),
+            "conservation_drift": _vault_drift(guild_stats),
+            "gold_conserved": guild_probe.get("gold_conserved"),
+            "steps": _num(guild_probe.get("steps")),
+            "skip_reason": _guild_skip_reason(guild_probe),
+        },
         "liveness": {
             "min_alive": _min_alive(alive_samples),
             "final_alive": int(alive_samples[-1][1]) if alive_samples else None,
@@ -986,6 +1126,7 @@ def _metric(measurements, thresholds, name):
     progression = derived.get("progression") or {}
     party = derived.get("party") or {}
     acquisition = derived.get("acquisition") or {}
+    guilds = derived.get("guilds") or {}
     determinism = derived.get("determinism") or {}
 
     if name == "conservation.items_drift":
@@ -1073,6 +1214,23 @@ def _metric(measurements, thresholds, name):
         return acquisition.get("craft_cost_ratio")
     if name == "acquisition.shop_time_to_earn_s":
         return acquisition.get("shop_time_to_earn_s")
+    if name == "guilds.count":
+        return guilds.get("count")
+    if name == "guilds.members":
+        return guilds.get("members")
+    if name == "guilds.vault_gold_in":
+        return guilds.get("vault_gold_in")
+    if name == "guilds.vault_gold_out":
+        return guilds.get("vault_gold_out")
+    if name == "guilds.vault_items":
+        return guilds.get("vault_items")
+    if name == "guilds.audit_entries":
+        return guilds.get("audit_entries")
+    if name == "guilds.conservation_drift":
+        value = guilds.get("conservation_drift")
+        return abs(value) if value is not None else None
+    if name == "guilds.gold_conserved":
+        return guilds.get("gold_conserved")
     if name == "economy.tax_effective_pct":
         return economy.get("tax_effective_pct")
     if name == "economy.sunk_lifetime":
@@ -1266,9 +1424,13 @@ def _scenario_rows(profile, checks, derived):
                 checks=len(own),
             )
         elif own:
+            # A probe records why it produced nothing (absent verb, crash);
+            # that reason is the useful one, not the generic check detail.
+            block = derived.get(name)
+            hint = block.get("skip_reason") if isinstance(block, dict) else None
             row.update(
                 status="skipped",
-                reason=own[0].get("detail", "no evaluable measurement"),
+                reason=hint or own[0].get("detail", "no evaluable measurement"),
                 evaluated=0,
                 checks=len(own),
             )
@@ -1611,6 +1773,10 @@ def _trim_state(state):
             "companion_damage": (state.get("combat") or {}).get("companion_damage"),
         },
         "acquisition": state.get("acquisition") or {},
+        # Client-side evidence from the guild probe: the server publishes vault
+        # totals, never the per-op purse deltas the conservation identity needs.
+        "guilds": state.get("guilds") or {},
+        "guild_probe": state.get("guild_probe") or {},
         "market": {
             "treasury": market.get("treasury"),
             "reserve": market.get("reserve"),
@@ -1677,8 +1843,9 @@ def _gm_snapshot(gm_url):
     return gm_tables_snapshot(gm_url)
 
 
-async def _sample(cond, http_url, gm_url, started):
-    state = await asyncio.to_thread(fetch_state, http_url)
+async def _sample(cond, http_url, gm_url, started, state=None):
+    if state is None:
+        state = await asyncio.to_thread(fetch_state, http_url)
     tables = await _gm_snapshot(gm_url)
     status = cond.status()
     by_type = status.get("by_type") or {}
@@ -1704,6 +1871,40 @@ async def _sample_loop(cond, http_url, gm_url, interval, stop, started):
         except TimeoutError:
             pass
     return samples
+
+
+async def _guild_sample(args, cond, seed, started):
+    """Run the guild probe and turn it into one sample of the run.
+
+    The probe's peak /api/state read lands here, so the guild rows travel the
+    same trim -> telemetry -> derive path as every other counter. A probe that
+    raises leaves no snapshot behind: the scenario then has no measurement and
+    the gate fails it instead of scoring an empty world.
+    """
+    from ml.guild_probe import run_guild_probe
+
+    try:
+        probe = await run_guild_probe(args.url, args.http_url, seed, fetch_state)
+    except Exception as exc:  # noqa: BLE001 - a probe crash must fail the gate
+        probe = {"error": f"{type(exc).__name__}: {exc}"}
+    for problem in probe.get("problems") or []:
+        print(f"[balance] guild probe problem: {problem}", flush=True)
+    print(
+        f"[balance] guild probe: guild={probe.get('guild')} steps={probe.get('steps')} "
+        f"gold_conserved={probe.get('gold_conserved')} "
+        f"skipped={probe.get('skipped') or '-'} error={probe.get('error') or '-'}",
+        flush=True,
+    )
+    snapshot = probe.pop("state", None)
+    if not isinstance(snapshot, dict) or not snapshot:
+        snapshot = await asyncio.to_thread(fetch_state, args.http_url)
+    snapshot = dict(snapshot)
+    snapshot["guild_probe"] = probe
+    try:
+        return await _sample(cond, args.http_url, args.gm_url, started, state=snapshot)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"[balance] guild sample failed: {exc}", flush=True)
+        return await _sample(cond, args.http_url, args.gm_url, started)
 
 
 def _slots(profile, args):
@@ -1763,6 +1964,8 @@ async def collect(args, profile, seed):
     finally:
         stop.set()
     samples = await sampler
+    if "guilds" in spec["scenarios"]:
+        samples.append(await _guild_sample(args, cond, seed, started))
     try:
         samples.append(await _sample(cond, args.http_url, args.gm_url, started))
     except (urllib.error.URLError, OSError, ValueError) as exc:
