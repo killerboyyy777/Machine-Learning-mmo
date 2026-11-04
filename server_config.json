@@ -41,6 +41,16 @@
     "COMMISSION_TTL_SECONDS": 3600
   },
 
+  "guilds": {
+    "GUILD_MAX_MEMBERS": 20,
+    "GUILD_MAX_GUILDS": 200,
+    "GUILD_AUDIT_CAP": 500,
+    "GUILD_INVITE_TTL_SECONDS": 300,
+    "GUILD_VAULT_ITEM_CAP": 64,
+    "GUILD_NAME_MIN": 3,
+    "GUILD_NAME_MAX": 24
+  },
+
   "leveling": {
     "XP_BASE": 100,
     "XP_GROWTH": 1.5,
