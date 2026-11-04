@@ -584,6 +584,71 @@ ACQUISITION_NOT_IN_BUILD = {
     "quest": "no quest rewards a companion deed (world.json item table)"
 }
 
+# Lifetime NPC AI v2 counters (#589). Process globals like ACQUISITION_STATS:
+# they reset with the world and never touch SCORES. `since` is the epoch of the
+# first event (or the first measured combat tick), so a mid-run server restart
+# cannot silently clamp deltas to zero.
+NPC_AI_STATS = {
+    "since": 0.0,
+    "aggro_acquired": 0,
+    "target_switched": 0,
+    "target_cleared": 0,
+    "leash_broken": 0,
+    "flee_started": 0,
+    "flee_succeeded": 0,
+    "time_in_combat_s": 0.0,
+}
+
+# The events the #536 state machine may emit, minus the ones this spec does not
+# count: "leash_returned" fires when a leash walk reaches home but is not one of
+# the #589 counters, so it is intentionally dropped here.
+NPC_AI_EVENT_KEYS = frozenset(
+    (
+        "aggro_acquired",
+        "target_switched",
+        "target_cleared",
+        "leash_broken",
+        "flee_started",
+        "flee_succeeded",
+    )
+)
+
+
+def _npc_ai_note(event):
+    if event in NPC_AI_EVENT_KEYS:
+        if NPC_AI_STATS["since"] == 0.0:
+            NPC_AI_STATS["since"] = time.time()
+        NPC_AI_STATS[event] += 1
+
+
+def _npc_ai_engaged_time(npcs, elapsed):
+    """Player-facing combat seconds for one inter-tick window, elapsed * engaged.
+
+    Only npcs whose state machine is actively fighting (AGGRO or CHASING)
+    contribute, so the measure tracks real fight activity rather than roam or
+    leash-walk time; dead npcs are skipped. Accrues into the stats directly;
+    the tick loop calls this for each window and reads nothing back.
+    """
+    if elapsed <= 0:
+        return 0.0
+    engaged = sum(
+        1
+        for npc in npcs
+        if npc.get("alive") and npc.get("state") in ("AGGRO", "CHASING")
+    )
+    if not engaged:
+        return 0.0
+    if NPC_AI_STATS["since"] == 0.0:
+        NPC_AI_STATS["since"] = time.time()
+    NPC_AI_STATS["time_in_combat_s"] += engaged * elapsed
+    return engaged * elapsed
+
+
+def _npc_ai_snapshot():
+    stats = dict(NPC_AI_STATS)
+    stats["time_in_combat_s"] = round(stats["time_in_combat_s"], 3)
+    return stats
+
 
 def _note_acquisition(source, earned=False, attempts=0):
     stats = ACQUISITION_STATS["sources"][source]
@@ -9484,6 +9549,7 @@ async def cmd_gm_tables(player, msg):
             "players_online": len(players),
             "guilds": guild_telemetry(),
             "acquisition": _acquisition_snapshot(),
+            "npc_ai": _npc_ai_snapshot(),
             "intel": _intel_snapshot(),
         },
     )
@@ -10124,6 +10190,7 @@ def world_snapshot():
             "companion_damage": DAMAGE_STATS["companion"],
         },
         "acquisition": _acquisition_snapshot(),
+        "npc_ai": _npc_ai_snapshot(),
         "intel": _intel_snapshot(),
         "buffs": buffs_view,
         "bosses": bosses,
@@ -11378,6 +11445,9 @@ async def npc_apply(npc, intent, ctx, now):
     """Execute one intent; all send/broadcast/mutation for it lives here."""
     if not intent:
         return
+    # #589 counters record transitions when their intents are executed, so a
+    # think that never reached apply (dead npc, dropped tick) does not count.
+    _npc_ai_note(intent.get("event"))
     kind = intent.get("kind")
     if kind == "move":
         dest = intent.get("to")
@@ -11435,9 +11505,13 @@ async def npc_apply(npc, intent, ctx, now):
 
 
 async def npc_ai_loop():
+    prev_ai_tick = None
     while True:
         await asyncio.sleep(NPC_TICK_SECONDS)
         now = time.time()
+        if prev_ai_tick is not None:
+            _npc_ai_engaged_time(list(all_npcs()), now - prev_ai_tick)
+        prev_ai_tick = now
         prune_commissions(now)
         tick_standing_bounties(now)
         await prune_market_orders(now)

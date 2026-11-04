@@ -128,6 +128,10 @@ DEFAULT_THRESHOLDS = {
     "determinism": {
         "enabled": True,
     },
+    "npc_ai_v2": {
+        "min_aggro_acquired": 1,
+        "max_flee_delta": 0.0,
+    },
 }
 
 # The median seed decides a multi-seed profile, but the combat death-rate
@@ -196,8 +200,6 @@ SCENARIOS = {
     "npc_ai_v2": {
         "title": "Aggro/leash/flee rates, deaths per room",
         "issue": "#536",
-        "unlanded": "#536 NPC AI v2 phase 2 not landed: aggro/leash/flee "
-        "mechanics and their telemetry are absent",
     },
 }
 
@@ -266,6 +268,7 @@ PROFILES = {
             "guilds",
             "market",
             "liveness",
+            "npc_ai_v2",
         ),
         "threshold_overrides": {},
     },
@@ -539,6 +542,30 @@ CHECKS = (
         ("liveness", "min_agents"),
         True,
     ),
+    (
+        "npc_ai_v2.telemetry_present",
+        "npc_ai_v2",
+        "npc_ai_v2.telemetry_present",
+        "is",
+        True,
+        True,
+    ),
+    (
+        "npc_ai_v2.aggro_acquired",
+        "npc_ai_v2",
+        "npc_ai_v2.aggro_acquired",
+        ">=",
+        ("npc_ai_v2", "min_aggro_acquired"),
+        True,
+    ),
+    (
+        "npc_ai_v2.flee_consistency",
+        "npc_ai_v2",
+        "npc_ai_v2.flee_delta",
+        "<=",
+        ("npc_ai_v2", "max_flee_delta"),
+        True,
+    ),
 )
 
 # Metrics that are recorded but have no threshold in issue #537 section 4.
@@ -739,6 +766,11 @@ def _telemetry(samples):
         acquisition = tables.get("acquisition")
     if not isinstance(acquisition, dict):
         acquisition = {}
+    npc_ai = state.get("npc_ai")
+    if not isinstance(npc_ai, dict):
+        npc_ai = tables.get("npc_ai")
+    if not isinstance(npc_ai, dict):
+        npc_ai = {}
     sources = acquisition.get("sources") or {}
     boss = sources.get("boss") or {}
     attempts = _num(boss.get("attempts"))
@@ -755,6 +787,7 @@ def _telemetry(samples):
         "acquisition": acquisition,
         "guilds": guilds["guilds"],
         "guild_probe": guilds["guild_probe"],
+        "npc_ai": npc_ai,
     }
 
 
@@ -985,6 +1018,14 @@ def derive(samples, ledger=None, telemetry=None):
         if agent_counts:
             population_ratio = min(agent_counts) / max(agent_counts)
 
+    npc_ai_stats = telemetry.get("npc_ai") or {}
+    npc_ai_since = _num(npc_ai_stats.get("since"))
+    npc_ai_flee_started = _num(npc_ai_stats.get("flee_started"))
+    npc_ai_flee_succeeded = _num(npc_ai_stats.get("flee_succeeded"))
+    npc_ai_flee_delta = None
+    if npc_ai_flee_started is not None and npc_ai_flee_succeeded is not None:
+        npc_ai_flee_delta = round(npc_ai_flee_succeeded - npc_ai_flee_started, 3)
+
     return {
         "treasury": {
             "reserve": reserve,
@@ -1046,6 +1087,18 @@ def derive(samples, ledger=None, telemetry=None):
             "sources": acquisition_stats.get("sources") or {},
             "adoptions": acquisition_stats.get("adoptions") or {},
             "not_in_build": acquisition_stats.get("not_in_build") or {},
+        },
+        "npc_ai_v2": {
+            "telemetry_present": bool(npc_ai_since and npc_ai_since > 0),
+            "since": npc_ai_since,
+            "aggro_acquired": _num(npc_ai_stats.get("aggro_acquired")),
+            "target_switched": _num(npc_ai_stats.get("target_switched")),
+            "target_cleared": _num(npc_ai_stats.get("target_cleared")),
+            "leash_broken": _num(npc_ai_stats.get("leash_broken")),
+            "flee_started": npc_ai_flee_started,
+            "flee_succeeded": npc_ai_flee_succeeded,
+            "flee_delta": npc_ai_flee_delta,
+            "time_in_combat_s": _num(npc_ai_stats.get("time_in_combat_s")),
         },
         "guilds": {
             "count": _num(guild_stats.get("count")),
@@ -1127,6 +1180,7 @@ def _metric(measurements, thresholds, name):
     party = derived.get("party") or {}
     acquisition = derived.get("acquisition") or {}
     guilds = derived.get("guilds") or {}
+    npc_ai_v2 = derived.get("npc_ai_v2") or {}
     determinism = derived.get("determinism") or {}
 
     if name == "conservation.items_drift":
@@ -1231,6 +1285,17 @@ def _metric(measurements, thresholds, name):
         return abs(value) if value is not None else None
     if name == "guilds.gold_conserved":
         return guilds.get("gold_conserved")
+    if name == "npc_ai_v2.telemetry_present":
+        # Absent block is None (so the scenario is a skipped coverage gap),
+        # not False: an empty run must fail coverage.npc_ai_v2, not a
+        # telemetry check with no data behind it.
+        if not npc_ai_v2:
+            return None
+        return bool(npc_ai_v2.get("telemetry_present"))
+    if name == "npc_ai_v2.aggro_acquired":
+        return npc_ai_v2.get("aggro_acquired")
+    if name == "npc_ai_v2.flee_delta":
+        return npc_ai_v2.get("flee_delta")
     if name == "economy.tax_effective_pct":
         return economy.get("tax_effective_pct")
     if name == "economy.sunk_lifetime":
@@ -1773,6 +1838,7 @@ def _trim_state(state):
             "companion_damage": (state.get("combat") or {}).get("companion_damage"),
         },
         "acquisition": state.get("acquisition") or {},
+        "npc_ai": state.get("npc_ai") or {},
         # Client-side evidence from the guild probe: the server publishes vault
         # totals, never the per-op purse deltas the conservation identity needs.
         "guilds": state.get("guilds") or {},
