@@ -23,7 +23,7 @@ import server as srv
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
     WORLD = json.load(fh)
 
-# --- archetype data: defaults, presets, every hostile still baseline ---
+# --- archetype data: four stalkers, every other template baseline ---
 assert srv.NPC_ARCHETYPE_DEFAULTS == {
     "archetype": None,
     "aggro_radius": 0,
@@ -41,16 +41,65 @@ assert WORLD["npc_archetypes"] == {
     "skirmisher": {"flee_below_pct": 25},
 }
 
-hostiles = {nid: t for nid, t in WORLD["npcs"].items() if t.get("hostile")}
-assert hostiles, "world has no hostile templates"
-for nid, tmpl in hostiles.items():
-    assert "archetype" not in tmpl, nid
-    resolved = dict(srv.NPC_ARCHETYPE_DEFAULTS)
-    resolved.update(WORLD["npc_archetypes"].get(tmpl.get("archetype", ""), {}))
-    resolved.update(
-        {key: tmpl[key] for key in srv.NPC_ARCHETYPE_DEFAULTS if key in tmpl}
-    )
-    assert resolved == srv.NPC_ARCHETYPE_DEFAULTS, nid
+STALKERS = {"wolf", "timber_wolf", "mountain_lion", "crag_stalker"}
+assigned = {nid for nid, t in WORLD["npcs"].items() if t.get("archetype")}
+assert assigned == STALKERS, assigned
+for nid, tmpl in WORLD["npcs"].items():
+    resolved = srv._npc_archetype(tmpl)
+    if nid in STALKERS:
+        assert resolved["archetype"] == "stalker", nid
+        assert resolved["aggro_radius"] == 1, nid
+        assert resolved["leash_radius"] == 3, nid
+        assert srv._npc_state_machine_active(resolved), nid
+    else:
+        assert resolved == srv.NPC_ARCHETYPE_DEFAULTS, nid
+        assert not srv._npc_state_machine_active(resolved), nid
+
+saved_npcs = srv.npcs
+saved_extra = srv.MOB_EXTRA_SPAWNS
+try:
+    srv.npcs = {}
+    srv.MOB_EXTRA_SPAWNS = 1
+    srv._sync_extra_spawns()
+    extras = [npc for nid, npc in srv.npcs.items() if "__x" in nid]
+    assert extras, "no extra spawns built"
+    for npc in extras:
+        base = npc["id"].split("__x")[0]
+        resolved = srv._npc_archetype(npc)
+        assert resolved["archetype"] == ("stalker" if base in STALKERS else None), npc[
+            "id"
+        ]
+        assert srv._npc_state_machine_active(resolved) == (base in STALKERS), npc["id"]
+finally:
+    srv.npcs = saved_npcs
+    srv.MOB_EXTRA_SPAWNS = saved_extra
+
+dungeon = srv.Dungeon(party_id=1)
+guards = []
+for floor_no in (1, srv.DUNGEON_MAX_FLOOR):
+    guards.extend(dungeon.floor(floor_no).guards)
+assert any(g["name"] == "The Warden of the Deep" for g in guards)
+for guard in guards:
+    assert srv._npc_archetype(guard) == srv.NPC_ARCHETYPE_DEFAULTS, guard["id"]
+    assert not srv._npc_state_machine_active(srv._npc_archetype(guard)), guard["id"]
+
+saved_npcs = srv.npcs
+saved_treasury = srv.tax_treasury
+saved_dirty = srv._scores_dirty
+try:
+    srv.npcs = {}
+    srv.tax_treasury = 1000.0
+    gm = srv.Player(ws=None, id=9050, name="ArchetypeDataGM", logged_in=True)
+    asyncio.run(srv.cmd_gm_boss(gm, {"room": "graveyard", "strength": 1}))
+    bosses = [n for n in srv.npcs.values() if str(n["id"]).startswith("boss_")]
+    assert bosses, "no GM boss built"
+    for boss in bosses:
+        assert srv._npc_archetype(boss) == srv.NPC_ARCHETYPE_DEFAULTS, boss["id"]
+        assert not srv._npc_state_machine_active(srv._npc_archetype(boss)), boss["id"]
+finally:
+    srv.npcs = saved_npcs
+    srv.tax_treasury = saved_treasury
+    srv._scores_dirty = saved_dirty
 print("ARCHETYPE_DATA_OK")
 
 # --- construction path 1: static npcs loader ---
