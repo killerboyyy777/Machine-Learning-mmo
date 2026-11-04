@@ -156,7 +156,10 @@ async def main():
             assert texts(inbox)[-1] == "You are not in a guild."
             inbox.clear()
             await srv.cmd_guild(aria, {"action": "invite", "target": "Nobody"})
-            assert texts(inbox)[-1] == "No character named 'Nobody' exists."
+            assert (
+                texts(inbox)[-1]
+                == "No character named 'Nobody' exists. Check the spelling."
+            )
             inbox.clear()
             await srv.cmd_guild(aria, {"action": "invite", "target": "Faye"})
             invite = srv._pending_guild_invites["faye"]
@@ -333,7 +336,10 @@ async def main():
             assert "bram" not in srv.GUILD_BY_MEMBER
             inbox.clear()
             await srv.cmd_guild(aria, {"action": "kick", "target": "Ghost"})
-            assert texts(inbox)[-1] == "No one in Iron Choir is named 'Ghost'."
+            assert texts(inbox)[-1] == (
+                "No one in Iron Choir is named 'Ghost'. "
+                "Check the roster with guild info."
+            )
             inbox.clear()
             await srv.cmd_guild(dune, {"action": "kick", "target": "Aria"})
             assert texts(inbox)[-1] == "You are not in a guild."
