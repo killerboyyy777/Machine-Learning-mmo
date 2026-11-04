@@ -23,7 +23,7 @@ s = srv.world_snapshot()
 # --- top level: additive subset, extras allowed ---
 need(s, {"server", "rooms", "players", "scores", "activity", "market",
           "buffs", "bosses", "dungeons", "quests", "recipes",
-          "commissions", "catalog", "history", "craft_history",
+          "commissions", "guilds", "catalog", "history", "craft_history",
           "commission_history"}, "snapshot")
 
 # --- server block: header stats, ports, uptime ticker seed ---
@@ -117,6 +117,47 @@ assert len(s["commissions"]) <= 100, "commissions snapshot uncapped"
 
 # --- catalog datalists ---
 need(s["catalog"], {"players", "items", "rooms"}, "catalog")
+
+# --- guilds (#588): aggregate counters + the audit feed, and nothing
+# guild-private: per-guild vaults, rosters and audit bodies stay behind
+# `guild info` because /api/state has no auth ---
+need(
+    s["guilds"],
+    {
+        "count",
+        "members_total",
+        "online_members",
+        "largest",
+        "vault_gold_total",
+        "vault_items_total",
+        "invites_pending",
+        "audit_entries",
+        "audit_entries_written",
+        "vault_gold_in_total",
+        "vault_gold_out_total",
+        "history",
+    },
+    "guilds",
+)
+for key in (
+    "count",
+    "members_total",
+    "online_members",
+    "largest",
+    "vault_gold_total",
+    "vault_items_total",
+    "invites_pending",
+    "audit_entries",
+    "audit_entries_written",
+    "vault_gold_in_total",
+    "vault_gold_out_total",
+):
+    assert isinstance(s["guilds"][key], int), f"guilds.{key} not an int"
+    assert s["guilds"][key] >= 0, f"guilds.{key} is negative"
+assert isinstance(s["guilds"]["history"], list), "guilds.history is not a list"
+assert len(s["guilds"]["history"]) <= 20, len(s["guilds"]["history"])
+for line in s["guilds"]["history"]:
+    assert isinstance(line, str), f"guild history line {line!r} is not a string"
 
 # --- history samples (may be empty on fresh boot) ---
 for h in s["history"]:
