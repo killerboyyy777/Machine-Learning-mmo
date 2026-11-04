@@ -166,6 +166,9 @@
            border-radius: var(--r-sm); padding: 8px; margin-top: 10px; font-size: var(--fs-sm); }
   #gmlog .row { padding: 2px 0; border-bottom: 1px dotted var(--border); }
   #gmlog .row:last-child { border-bottom: none; }
+  #guildFeed { max-height: 320px; overflow-y: auto; }
+  #guildFeed .row { padding: 2px 0; border-bottom: 1px dotted var(--border); }
+  #guildFeed .row:last-child { border-bottom: none; }
   .gmcred { display: flex; gap: 12px; flex-wrap: wrap; color: var(--dim); }
   .gmcred b { color: var(--text); }
   .buy { color: #79c0ff; font-weight: bold; } .sell { color: #ffb454; font-weight: bold; }
@@ -230,6 +233,7 @@
   <div class="tab" data-tab="agents">Agents</div>
   <div class="tab" data-tab="quests">Quests</div>
   <div class="tab" data-tab="crafting">Crafting</div>
+  <div class="tab" data-tab="guilds">Guilds</div>
   <div class="tab" data-tab="config">Config</div>
   <div class="tab" data-tab="runs">Runs</div>
   <div class="tab" data-tab="gm">GM</div>
@@ -506,6 +510,28 @@
       <tbody id="recipeRows"></tbody>
     </table></div>
     <p class="empty" id="noRecipes" style="display:none">No recipes match.</p>
+  </div>
+</div>
+
+<div id="view-guilds" class="tabview">
+  <div class="panel">
+    <h2>Guilds <span class="legend">aggregate only: rosters and per-guild vaults stay behind guild info</span></h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="guild-count">-</div><div class="l">chartered</div></div>
+      <div class="stat"><div class="v" id="guild-members">-</div><div class="l">members</div></div>
+      <div class="stat"><div class="v" id="guild-online">-</div><div class="l">members online</div></div>
+      <div class="stat"><div class="v" id="guild-largest">-</div><div class="l">largest roster</div></div>
+      <div class="stat"><div class="v" id="guild-vault-gold">-</div><div class="l">vault gold</div></div>
+      <div class="stat"><div class="v" id="guild-vault-items">-</div><div class="l">vault items</div></div>
+      <div class="stat"><div class="v" id="guild-invites">-</div><div class="l">pending invites</div></div>
+      <div class="stat"><div class="v" id="guild-audit">-</div><div class="l">audit entries written</div></div>
+    </div>
+    <p class="empty" id="noGuilds" style="display:none">No guilds chartered yet.</p>
+  </div>
+  <div class="panel">
+    <h2>Guild activity <span class="legend">newest first</span></h2>
+    <div id="guildFeed"></div>
+    <p class="empty" id="noGuildFeed" style="display:none">No guild activity yet.</p>
   </div>
 </div>
 
@@ -1847,6 +1873,28 @@ function renderCommissions(commissions) {
   $("noCommissions").style.display = rows.length ? "none" : "";
 }
 
+function renderGuilds(g) {
+  // Guild totals + the audit feed (#588). The block stays aggregate on
+  // purpose: per-guild vault gold, rosters and audit bodies are what
+  // `guild info` shows members, and /api/state has no auth.
+  const gs = g || {};
+  $("guild-count").textContent = gs.count ?? 0;
+  $("guild-members").textContent = gs.members_total ?? 0;
+  $("guild-online").textContent = gs.online_members ?? 0;
+  $("guild-largest").textContent = gs.largest ?? 0;
+  $("guild-vault-gold").textContent = gs.vault_gold_total ?? 0;
+  $("guild-vault-items").textContent = gs.vault_items_total ?? 0;
+  $("guild-invites").textContent = gs.invites_pending ?? 0;
+  $("guild-audit").textContent = gs.audit_entries_written ?? 0;
+  // The ring is oldest-first; the panel reads newest-first like every
+  // other feed.
+  const hist = (gs.history || []).slice().reverse();
+  setHTML("guildFeed", hist.map(line =>
+    `<div class="row">${esc(line)}</div>`).join(""));
+  $("noGuilds").style.display = (gs.count ?? 0) ? "none" : "";
+  $("noGuildFeed").style.display = hist.length ? "none" : "";
+}
+
 function renderQuests(q) {
   const qs = q || {};
   const active = qs.active || {}, completions = qs.completions || {};
@@ -2581,6 +2629,7 @@ const TAB_SECTIONS = {
     ["commission history", s => renderCommHistory(s.commission_history || [])],
   ],
   crafting: [["crafting", s => renderCrafting(s.rooms || [], s.market || {}, s.activity || [], s.recipes || [], s.craft_history || [])]],
+  guilds: [["guilds", s => renderGuilds(s.guilds || {})]],
   // The editor has its own endpoint and its own state (an in-progress draft
   // must survive a snapshot poll), so it renders on tab entry, not per tick.
   config: [],

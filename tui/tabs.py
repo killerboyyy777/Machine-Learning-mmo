@@ -22,6 +22,7 @@ TABS = (
     ("agents", "Agents"),
     ("quests", "Quests"),
     ("crafting", "Crafting"),
+    ("guilds", "Guilds"),
     ("config", "Config"),
     ("runs", "Runs"),
     ("gm", "GM"),
