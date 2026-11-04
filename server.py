@@ -5817,6 +5817,7 @@ def _guild_index_drop(record):
 
 async def _guild_return_vault(player, record):
     """Empty the vault into the leader: pack first, item bank when full."""
+    global GUILD_VAULT_GOLD_OUT_TOTAL
     items = [i for i in record.get("vault_items") or [] if isinstance(i, str)]
     gold = int(record.get("vault_gold", 0) or 0)
     record["vault_items"] = []
@@ -5825,6 +5826,8 @@ async def _guild_return_vault(player, record):
         _deliver_item_or_bank(player, iid)
     if gold > 0:
         await credit_gold(player.name, gold)
+        # The ledger counts vault exits, so a disband return is an out too.
+        GUILD_VAULT_GOLD_OUT_TOTAL += gold
     return gold, len(items)
 
 
