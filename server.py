@@ -1851,6 +1851,7 @@ def _command_ticks_buffs(cmd, msg):
         cmd not in NO_BUFF_TICK
         and not (cmd == "quest" and action == "list")
         and not (cmd == "craft" and action == "status")
+        and not (cmd == "guild" and action in ("", "info"))
     )
 
 
@@ -5600,6 +5601,396 @@ async def cmd_commission_cancel(player, msg):
     await send(player, stats_view(player))
 
 
+# ---------------------------------------------------------------------------
+# Player guilds (#588): membership lifecycle
+# ---------------------------------------------------------------------------
+# Charter and disband are hall acts like commission post/fill; info and leave
+# are bookkeeping and stay global. A guild is never leaderless and never loses
+# its name to an instant recharter: succession runs before the leave commits,
+# and a dissolved name sits in tombstones until the cooldown expires.
+
+GUILD_HALL_CHARTER_TEXT = (
+    "Guild charters are signed at the Adventurers Guild hall (south of Artisan Row)."
+)
+GUILD_TOMBSTONE_SECONDS = 30 * 24 * 3600
+
+
+async def _guild_hall_gate(player, text):
+    if player.room == GUILD_ROOM:
+        return True
+    await send(player, {"type": "error", "text": text})
+    return False
+
+
+def _guild_ts(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _guild_rank_order(rank):
+    try:
+        return GUILD_RANKS.index(rank)
+    except ValueError:
+        return len(GUILD_RANKS)
+
+
+def _guild_by_name_key(name_key):
+    for record in GUILDS.values():
+        if record.get("name_key") == name_key:
+            return record
+    return None
+
+
+def _guild_for_name(name):
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    return _guild_by_name_key(key)
+
+
+def _guild_for_member(name):
+    gid = GUILD_BY_MEMBER.get(str(name or "").lower())
+    return GUILDS.get(gid) if gid is not None else None
+
+
+def _guild_display_name(name_key):
+    # Reads SCORES directly: the read paths must never mint an entry.
+    entry = SCORES.get(str(name_key or "").lower())
+    if isinstance(entry, dict):
+        shown = str(entry.get("display_name") or "").strip()
+        if shown:
+            return shown
+    return str(name_key or "")
+
+
+def _guild_reserved_keys():
+    keys = {GUILD_POSTER.lower(), "guild"}
+    keys.update(record.get("name_key") for record in GUILDS.values())
+    for entry in SCORES.values():
+        if not isinstance(entry, dict):
+            continue
+        shown = str(entry.get("display_name") or "").strip().lower()
+        if shown:
+            keys.add(shown)
+    return keys
+
+
+def _guild_name_error(raw):
+    name = str(raw or "").strip()
+    if (
+        len(name) < GUILD_NAME_MIN
+        or len(name) > GUILD_NAME_MAX
+        or not name.isprintable()
+    ):
+        return (
+            name,
+            f"Guild names are {GUILD_NAME_MIN}-{GUILD_NAME_MAX} printable characters.",
+        )
+    return name, None
+
+
+def _guild_sweep_tombstones(now):
+    live = [
+        t
+        for t in GUILD_TOMBSTONES
+        if now - _guild_ts(t.get("disbanded_ts")) < GUILD_TOMBSTONE_SECONDS
+    ]
+    GUILD_TOMBSTONES[:] = live[-GUILD_TOMBSTONE_CAP:]
+
+
+def _guild_tombstoned(name_key, now):
+    for stone in GUILD_TOMBSTONES:
+        if stone.get("name_key") != name_key:
+            continue
+        if now - _guild_ts(stone.get("disbanded_ts")) < GUILD_TOMBSTONE_SECONDS:
+            return True
+    return False
+
+
+def _guild_add_tombstone(record, now):
+    _guild_sweep_tombstones(now)
+    GUILD_TOMBSTONES.append(
+        {
+            "name": record.get("name"),
+            "name_key": record.get("name_key"),
+            "disbanded_ts": now,
+        }
+    )
+    del GUILD_TOMBSTONES[:-GUILD_TOMBSTONE_CAP]
+
+
+def _guild_successor(members, leaving_key):
+    """Next leader: earliest-joined officer, else earliest-joined member."""
+    pool = [
+        (key, row)
+        for key, row in members.items()
+        if key != leaving_key and isinstance(row, dict)
+    ]
+    for rank in ("officer", "member"):
+        ranked = [item for item in pool if item[1].get("rank") == rank]
+        if not ranked:
+            continue
+        ranked.sort(key=lambda item: (_guild_ts(item[1].get("joined_ts")), item[0]))
+        return ranked[0][0]
+    return None
+
+
+def _guild_index_drop(record):
+    gid = record.get("id")
+    for key in list(record.get("members") or {}):
+        if GUILD_BY_MEMBER.get(key) == gid:
+            del GUILD_BY_MEMBER[key]
+
+
+async def _guild_return_vault(player, record):
+    """Empty the vault into the leader: pack first, item bank when full."""
+    items = [i for i in record.get("vault_items") or [] if isinstance(i, str)]
+    gold = int(record.get("vault_gold", 0) or 0)
+    record["vault_items"] = []
+    record["vault_gold"] = 0
+    for iid in items:
+        _deliver_item_or_bank(player, iid)
+    if gold > 0:
+        await credit_gold(player.name, gold)
+    return gold, len(items)
+
+
+def _guild_vault_text(gold, items):
+    return f"({gold} gold, {items} item(s))"
+
+
+def _guild_dissolve(record, now):
+    GUILDS.pop(record.get("id"), None)
+    _guild_index_drop(record)
+    _guild_add_tombstone(record, now)
+    mark_guilds_dirty()
+
+
+def _guild_info_payload(player, record, online):
+    members = record.get("members") or {}
+    leader_key = next(
+        (key for key, row in members.items() if row.get("rank") == "leader"), ""
+    )
+    payload = {
+        "type": "guild",
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "founder": record.get("founder"),
+        "created_ts": record.get("created_ts"),
+        "leader": (
+            _guild_display_name(leader_key) if leader_key else record.get("founder")
+        ),
+        "member_count": len(members),
+        "online_members": sum(1 for key in members if key in online),
+    }
+    if player.name.lower() not in members:
+        return payload
+    roster = sorted(
+        members.items(),
+        key=lambda item: (
+            _guild_rank_order(item[1].get("rank")),
+            _guild_ts(item[1].get("joined_ts")),
+            item[0],
+        ),
+    )
+    payload["members"] = [
+        {
+            "name": _guild_display_name(key),
+            "rank": row.get("rank"),
+            "joined_ts": row.get("joined_ts"),
+            "online": key in online,
+        }
+        for key, row in roster
+    ]
+    payload["vault_gold"] = int(record.get("vault_gold", 0) or 0)
+    payload["vault_items"] = len(record.get("vault_items") or [])
+    return payload
+
+
+async def _cmd_guild_create(player, msg):
+    if not await _guild_hall_gate(player, GUILD_HALL_CHARTER_TEXT):
+        return
+    current = _guild_for_member(player.name)
+    if current is not None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"You are already in {current['name']}. Leave it first.",
+            },
+        )
+        return
+    name, error = _guild_name_error(msg.get("name"))
+    if error:
+        await send(player, {"type": "error", "text": error})
+        return
+    name_key = name.lower()
+    # A live guild is reported as taken, not reserved: the reserved table also
+    # covers live names, and "taken" is the message that tells the player why.
+    if _guild_by_name_key(name_key) is not None:
+        await send(
+            player, {"type": "error", "text": f"The guild name '{name}' is taken."}
+        )
+        return
+    now = time.time()
+    if _guild_tombstoned(name_key, now):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"The guild name '{name}' was disbanded recently "
+                    "and cannot be reused yet."
+                ),
+            },
+        )
+        return
+    if name_key in _guild_reserved_keys():
+        await send(
+            player, {"type": "error", "text": f"The guild name '{name}' is reserved."}
+        )
+        return
+    if len(GUILDS) >= GUILD_MAX_GUILDS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"The world already has {GUILD_MAX_GUILDS} guilds. "
+                    "Try again once one disbands."
+                ),
+            },
+        )
+        return
+    gid = max(GUILDS) + 1 if GUILDS else 1
+    record = new_guild_record(gid, name, player.name, now)
+    GUILDS[gid] = record
+    GUILD_BY_MEMBER[player.name.lower()] = gid
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": f"Guild {record['name']} founded. You are its leader.",
+        },
+    )
+
+
+async def _cmd_guild_info(player, msg):
+    wanted = str(msg.get("name") or "").strip()
+    record = _guild_for_name(wanted) if wanted else _guild_for_member(player.name)
+    if record is None:
+        if wanted:
+            await send(player, {"type": "error", "text": f"No guild named '{wanted}'."})
+        else:
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": "You are not in a guild. Use guild info <name> to look one up.",
+                },
+            )
+        return
+    online = {p.name.lower() for p in players.values() if p.logged_in and p.name}
+    await send(player, _guild_info_payload(player, record, online))
+
+
+async def _cmd_guild_leave(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    key = player.name.lower()
+    gid = record.get("id")
+    name = record.get("name")
+    members = record.setdefault("members", {})
+    row = members.get(key) or {}
+    if row.get("rank") != "leader":
+        members.pop(key, None)
+        if GUILD_BY_MEMBER.get(key) == gid:
+            del GUILD_BY_MEMBER[key]
+        mark_guilds_dirty()
+        await send(player, {"type": "message", "text": f"You leave {name}."})
+        return
+    heir = _guild_successor(members, key)
+    if heir is None:
+        gold, items = await _guild_return_vault(player, record)
+        _guild_dissolve(record, time.time())
+        text = f"{name} had no members left and is dissolved."
+        if gold or items:
+            text += f" Its vault {_guild_vault_text(gold, items)} is returned to you."
+        await send(player, {"type": "message", "text": text})
+        await send(player, stats_view(player))
+        return
+    members[heir]["rank"] = "leader"
+    members.pop(key, None)
+    if GUILD_BY_MEMBER.get(key) == gid:
+        del GUILD_BY_MEMBER[key]
+    mark_guilds_dirty()
+    await send(player, {"type": "message", "text": f"You leave {name}."})
+    heir_player = _online_player(heir)
+    if heir_player is not None:
+        await send(
+            heir_player,
+            {
+                "type": "message",
+                "text": f"{heir_player.name} is now the leader of {name}.",
+            },
+        )
+
+
+async def _cmd_guild_disband(player, msg):
+    if not await _guild_hall_gate(player, GUILD_HALL_CHARTER_TEXT):
+        return
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    row = (record.get("members") or {}).get(player.name.lower()) or {}
+    if row.get("rank") != "leader":
+        await send(
+            player,
+            {"type": "error", "text": "Only the guild leader can disband a guild."},
+        )
+        return
+    name = record.get("name")
+    gold, items = await _guild_return_vault(player, record)
+    _guild_dissolve(record, time.time())
+    text = f"{name} is disbanded."
+    if gold or items:
+        text += f" Its vault {_guild_vault_text(gold, items)} is returned to you."
+    await send(player, {"type": "message", "text": text})
+    await send(player, stats_view(player))
+
+
+async def cmd_guild(player, msg):
+    action = str(msg.get("action") or "info").strip().lower()
+    if action == "create":
+        await _cmd_guild_create(player, msg)
+        return
+    if action == "info":
+        await _cmd_guild_info(player, msg)
+        return
+    if action == "leave":
+        await _cmd_guild_leave(player, msg)
+        return
+    if action == "disband":
+        await _cmd_guild_disband(player, msg)
+        return
+    await send(
+        player,
+        {
+            "type": "error",
+            "text": (
+                f"Unknown guild action '{action}'. "
+                "Use create, info, leave, or disband."
+            ),
+        },
+    )
+
+
 async def cmd_inventory(player, msg):
     await send(
         player,
@@ -5871,6 +6262,7 @@ async def cmd_help(player, msg):
                 "Commands: login look move attack take gather drop equip use rest heal buy sell "
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
+                "guild [create|info|leave|disband] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "
@@ -7657,6 +8049,7 @@ HANDLERS = {
     "commission_list": cmd_commission_list,
     "commission_fill": cmd_commission_fill,
     "commission_cancel": cmd_commission_cancel,
+    "guild": cmd_guild,
 }
 
 SCORE_ARG_EXTRACTORS = {
