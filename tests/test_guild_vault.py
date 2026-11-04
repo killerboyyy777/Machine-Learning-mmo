@@ -568,6 +568,44 @@ async def main():
             assert srv.GUILD_AUDIT_ENTRIES_WRITTEN <= srv.GUILD_AUDIT_CAP
             assert 0 < len(srv.guild_feed) <= 50
             print("INDEX_INVARIANT_OK")
+
+            # --- a disband return lands in the ledger as an out ----------
+            in_before = srv.GUILD_VAULT_GOLD_IN_TOTAL
+            out_before = srv.GUILD_VAULT_GOLD_OUT_TOTAL
+            total_before = srv.guild_telemetry()["vault_gold_total"]
+            eira = mkplayer("Eira", 70405, gold=1000)
+            players.append(eira)
+            bell = make_guild("Silent Bell", [("eira", "leader", 10.0)])
+            inbox.clear()
+            await srv.cmd_guild(eira, {"action": "vault", "op": "deposit", "gold": 400})
+            assert vault_gold(bell) == 400
+            inbox.clear()
+            await srv.cmd_guild(
+                eira, {"action": "vault", "op": "withdraw", "gold": 150}
+            )
+            assert vault_gold(bell) == 250
+            assert srv.GUILD_VAULT_GOLD_IN_TOTAL == in_before + 400
+            out_before_disband = srv.GUILD_VAULT_GOLD_OUT_TOTAL
+            returned = vault_gold(bell)
+            assert returned > 0
+            inbox.clear()
+            await srv.cmd_guild(eira, {"action": "disband"})
+            assert texts(inbox)[0] == (
+                "Silent Bell is disbanded. Its vault (250 gold, 0 item(s)) "
+                "is returned to you."
+            )
+            assert eira.gold == 1000
+            assert bell["vault_gold"] == 0
+            assert srv.GUILD_VAULT_GOLD_OUT_TOTAL == out_before_disband + returned
+            assert srv.GUILD_VAULT_GOLD_OUT_TOTAL - out_before == 150 + returned
+            telemetry = srv.guild_telemetry()
+            assert (
+                telemetry["vault_gold_in_total"] - telemetry["vault_gold_out_total"]
+                == telemetry["vault_gold_total"]
+            ), telemetry
+            assert telemetry["vault_gold_total"] == total_before
+            index_ok()
+            print("DISBAND_LEDGER_OK")
         finally:
             for pl in players:
                 unplayer(pl)
