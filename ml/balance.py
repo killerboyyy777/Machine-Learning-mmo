@@ -105,6 +105,11 @@ DEFAULT_THRESHOLDS = {
         "min_trade_volume": 1,
         "max_wash_trades": 0,
     },
+    "acquisition": {
+        # Provisional measurement floor, not a balance floor: a measured zero
+        # still proves the boss kill path reached the counter.
+        "min_drop_rate": 0.0,
+    },
     "liveness": {
         "min_agents": 10,
     },
@@ -154,8 +159,6 @@ SCENARIOS = {
     "acquisition": {
         "title": "Drop rate, craft cost, shop price vs time-to-earn",
         "issue": "#532",
-        "unlanded": "#532 only exposes adopt deeds: no drop-rate or "
-        "time-to-earn counters in /api/state or gm_tables",
     },
     "progression": {
         "title": "XP/hour, level curve, quest completion rate",
@@ -172,8 +175,8 @@ SCENARIOS = {
     "npc_ai_v2": {
         "title": "Aggro/leash/flee rates, deaths per room",
         "issue": "#536",
-        "unlanded": "#536 NPC AI v2 not landed: no aggro/leash/flee "
-        "telemetry to score",
+        "unlanded": "#536 NPC AI v2 phase 2 not landed: aggro/leash/flee "
+        "mechanics and their telemetry are absent",
     },
 }
 
@@ -233,7 +236,14 @@ PROFILES = {
             "liveness",
             "npc_ai_v2",
         ),
-        "coverage": ("economy", "combat", "craft", "market", "liveness"),
+        "coverage": (
+            "economy",
+            "combat",
+            "craft",
+            "acquisition",
+            "market",
+            "liveness",
+        ),
         "threshold_overrides": {},
     },
     "stability": {
@@ -441,6 +451,14 @@ CHECKS = (
         True,
     ),
     (
+        "acquisition.drop_rate",
+        "acquisition",
+        "acquisition.drop_rate",
+        ">=",
+        ("acquisition", "min_drop_rate"),
+        True,
+    ),
+    (
         "liveness.min_agents",
         "liveness",
         "liveness.min_alive",
@@ -585,6 +603,38 @@ def _refund_excess(ledger):
     return round(max(0.0, refunded - escrowed), 6)
 
 
+def _telemetry(samples):
+    """Telemetry block from the last sample's state (GM tables as fallback).
+
+    Same source of truth as the companion damage share folded in below: the
+    counters are lifetime server globals, so the last sample is the final read.
+    """
+    if not samples:
+        return {}
+    sample = samples[-1]
+    state = sample.get("state") or {}
+    tables = sample.get("tables") or {}
+    acquisition = state.get("acquisition")
+    if not isinstance(acquisition, dict):
+        acquisition = tables.get("acquisition")
+    if not isinstance(acquisition, dict):
+        acquisition = {}
+    sources = acquisition.get("sources") or {}
+    boss = sources.get("boss") or {}
+    attempts = _num(boss.get("attempts"))
+    earned = _num(boss.get("earned"))
+    drop_rate = None
+    if attempts and earned is not None:
+        drop_rate = round(earned / attempts, 4)
+    shop = sources.get("shop") or {}
+    return {
+        "drop_rate": drop_rate,
+        "craft_cost_ratio": _num(acquisition.get("craft_cost_ratio")),
+        "shop_time_to_earn_s": _num(shop.get("first_earn_s")),
+        "acquisition": acquisition,
+    }
+
+
 def derive(samples, ledger=None, telemetry=None):
     """Fold raw samples into the metric contract the checks consume.
 
@@ -598,6 +648,7 @@ def derive(samples, ledger=None, telemetry=None):
     )
     ledger = ledger or {}
     telemetry = telemetry or {}
+    acquisition_stats = telemetry.get("acquisition") or {}
     # The dashboard exposes cumulative player/companion damage in a
     # "combat" block. Prefer that to a separately probed telemetry file so
     # the share is measured even when the harness probes only snapshots.
@@ -867,6 +918,9 @@ def derive(samples, ledger=None, telemetry=None):
             "drop_rate": _num(telemetry.get("drop_rate")),
             "craft_cost_ratio": _num(telemetry.get("craft_cost_ratio")),
             "shop_time_to_earn_s": _num(telemetry.get("shop_time_to_earn_s")),
+            "sources": acquisition_stats.get("sources") or {},
+            "adoptions": acquisition_stats.get("adoptions") or {},
+            "not_in_build": acquisition_stats.get("not_in_build") or {},
         },
         "liveness": {
             "min_alive": _min_alive(alive_samples),
@@ -1556,6 +1610,7 @@ def _trim_state(state):
             "player_damage": (state.get("combat") or {}).get("player_damage"),
             "companion_damage": (state.get("combat") or {}).get("companion_damage"),
         },
+        "acquisition": state.get("acquisition") or {},
         "market": {
             "treasury": market.get("treasury"),
             "reserve": market.get("reserve"),
@@ -1731,7 +1786,7 @@ async def collect(args, profile, seed):
             "python": sys.version.split()[0],
         },
         "samples": samples,
-        "derived": derive(samples),
+        "derived": derive(samples, telemetry=_telemetry(samples)),
         "conductor": {
             "alive": status["registry"]["alive"],
             "by_type": status.get("by_type") or {},

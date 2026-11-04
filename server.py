@@ -479,6 +479,31 @@ COMPANION_ADOPT_DEEDS = {
     "sheep": ("sheep_deed", "a sheep deed", "sheep"),
 }
 
+COMPANION_ITEMS = frozenset(iid for iid, _, _ in COMPANION_ADOPT_DEEDS.values())
+
+# Lifetime acquisition counters (#589). Process globals, never SCORES: the
+# score file survives a restart, and these must reset with the world.
+ACQUISITION_STATS = {
+    "sources": {
+        name: {"earned": 0, "attempts": 0, "first_earn_at": None}
+        for name in ("boss", "craft", "shop", "adopt")
+    },
+    "adoptions": {"earned": 0, "gm": 0},
+}
+
+ACQUISITION_NOT_IN_BUILD = {
+    "quest": "no quest rewards a companion deed (world.json item table)"
+}
+
+
+def _note_acquisition(source, earned=False, attempts=0):
+    stats = ACQUISITION_STATS["sources"][source]
+    stats["attempts"] += attempts
+    if earned:
+        stats["earned"] += 1
+        if stats["first_earn_at"] is None:
+            stats["first_earn_at"] = time.time()
+
 
 def _sync_extra_spawns():
     """Rebuild hostile extra-spawn instances from MOB_EXTRA_SPAWNS.
@@ -3863,7 +3888,10 @@ async def cmd_attack(player, msg):
     if npc["hp"] <= 0 and npc.get("alive", True):
         npc["alive"] = False
         npc["respawn_at"] = _npc_respawn_at(npc)
-        for loot_id in npc.get("loot", []):
+        loot = npc.get("loot", [])
+        companion_loot = any(i in COMPANION_ITEMS for i in loot)
+        _note_acquisition("boss", attempts=1, earned=companion_loot)
+        for loot_id in loot:
             _add_ground(player.room, loot_id)
         contributors = npc["contributors"]
         # Quest-NPC kills pay no gold, ever (unreachable via player attacks
@@ -4305,6 +4333,8 @@ async def cmd_buy(player, msg):
     if price is None:
         await send(player, {"type": "error", "text": "The merchant doesn't sell that."})
         return
+    if iid in COMPANION_ITEMS:
+        _note_acquisition("shop", attempts=1)
     if player.gold < price:
         await send(player, {"type": "error", "text": f"You need {price} gold."})
         return
@@ -4313,6 +4343,8 @@ async def cmd_buy(player, msg):
         return
     player.gold -= price
     player.inventory.append(iid)
+    if iid in COMPANION_ITEMS:
+        _note_acquisition("shop", earned=True)
     await send(
         player, {"type": "message", "text": f"You buy {_iname(iid)} for {price} gold."}
     )
@@ -4456,6 +4488,7 @@ async def _record_craft_completion(
     )
     while len(craft_feed) > CRAFT_FEED_SIZE:
         del craft_feed[0]
+    _note_acquisition("craft", attempts=1, earned=result in COMPANION_ITEMS)
 
 
 async def _craft_quest_hint(entry, result, player=None):
@@ -5397,6 +5430,7 @@ async def cmd_companion(player, msg):
                 },
             )
             return
+        _note_acquisition("adopt", attempts=1)
         # The deed is only checked here and spent once the store has accepted
         # the adoption: spending it earlier lost the deed when the companion
         # table was full.
@@ -5444,6 +5478,8 @@ async def cmd_companion(player, msg):
         store["active"] = 0
         store["updated_at"] = time.time()
         mark_companions_dirty()
+        _note_acquisition("adopt", earned=True)
+        ACQUISITION_STATS["adoptions"]["earned"] += 1
         await send(player, stats_view(player))
         await send(
             player,
@@ -7179,6 +7215,7 @@ async def cmd_gm_tables(player, msg):
             "treasury": round(tax_treasury, 2),
             "treasury_lifetime": round(tax_collected_lifetime, 2),
             "players_online": len(players),
+            "acquisition": _acquisition_snapshot(),
         },
     )
 
@@ -7229,6 +7266,7 @@ async def cmd_gm_companion_grant(player, msg):
     store["active"] = 0
     store["updated_at"] = time.time()
     mark_companions_dirty()
+    ACQUISITION_STATS["adoptions"]["gm"] += 1
     if target:
         await send(
             target,
@@ -7523,6 +7561,40 @@ def record_score_point(name, score):
         del hist[0]
 
 
+def _companion_craft_cost_ratio():
+    """Cheapest companion recipe's input value over the deed's own value."""
+    ratios = []
+    for recipe in RECIPES.values():
+        result = recipe.get("result")
+        value = ITEM_DEFS.get(result, {}).get("value", 0)
+        if result not in COMPANION_ITEMS or value <= 0:
+            continue
+        cost = sum(
+            ITEM_DEFS.get(iid, {}).get("value", 0) * qty
+            for iid, qty in (recipe.get("inputs") or {}).items()
+        )
+        ratios.append(cost / value)
+    return round(min(ratios), 3) if ratios else None
+
+
+def _acquisition_snapshot():
+    sources = {}
+    for name, stats in ACQUISITION_STATS["sources"].items():
+        first = stats.get("first_earn_at")
+        sources[name] = {
+            "earned": stats["earned"],
+            "attempts": stats["attempts"],
+            "first_earn_at": round(first, 3) if first else None,
+            "first_earn_s": round(first - START_TIME, 1) if first else None,
+        }
+    return {
+        "sources": sources,
+        "adoptions": dict(ACQUISITION_STATS["adoptions"]),
+        "craft_cost_ratio": _companion_craft_cost_ratio(),
+        "not_in_build": dict(ACQUISITION_NOT_IN_BUILD),
+    }
+
+
 def _quest_snapshot():
     """Dashboard quest panel: catalog, live active counts, lifetime turn-ins."""
     now = time.time()
@@ -7780,6 +7852,7 @@ def world_snapshot():
             "player_damage": DAMAGE_STATS["player"],
             "companion_damage": DAMAGE_STATS["companion"],
         },
+        "acquisition": _acquisition_snapshot(),
         "buffs": buffs_view,
         "bosses": bosses,
         "dungeons": dungeon_views,

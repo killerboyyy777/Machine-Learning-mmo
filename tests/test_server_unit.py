@@ -4470,6 +4470,105 @@ async def main():
         assert empty["runs"] == [] and empty["fields"] == [] and not empty.get("error")
     print("RUNS_INDEX_OK")
 
+    # --- Acquisition counters (#589): each source moves by an exact delta ---
+    acq_saved = {
+        "sources": {
+            name: dict(stats)
+            for name, stats in srv.ACQUISITION_STATS["sources"].items()
+        },
+        "adoptions": dict(srv.ACQUISITION_STATS["adoptions"]),
+    }
+    try:
+
+        def acq(source):
+            return dict(srv.ACQUISITION_STATS["sources"][source])
+
+        hunter = mkplayer("AcqHunter", 60090, room="town_square")
+        hunter.base_attack = 50
+        srv.npcs["acq_dummy"] = {
+            "id": "acq_dummy",
+            "name": "Acq Dummy",
+            "room": "town_square",
+            "hp": 1,
+            "max_hp": 20,
+            "attack": 0,
+            "hostile": True,
+            "behavior": "idle",
+            "loot": ["wolf_pup"],
+            "gold": 0,
+            "respawn_seconds": 60,
+            "alive": True,
+            "respawn_at": None,
+            "contributors": {},
+        }
+        boss0 = acq("boss")
+        await srv.cmd_attack(hunter, {"target": "acq dummy"})
+        boss1 = acq("boss")
+        assert boss1["attempts"] == boss0["attempts"] + 1, boss1
+        assert boss1["earned"] == boss0["earned"] + 1, boss1
+        assert boss1["first_earn_at"] is not None
+        srv.room_items["town_square"].remove("wolf_pup")
+        del srv.npcs["acq_dummy"]
+        unplayer(hunter)
+        print("ACQ_BOSS_OK")
+
+        crafter = mkplayer("AcqCrafter", 60091, room="town_square")
+        crafter.inventory.extend(
+            ["reinforced_leather", "field_ration", "field_ration", "iron_ore"]
+        )
+        craft0 = acq("craft")
+        await srv.cmd_craft(crafter, {"recipe": "mule deed"})
+        craft1 = acq("craft")
+        assert craft1["attempts"] == craft0["attempts"] + 1, craft1
+        assert craft1["earned"] == craft0["earned"] + 1, craft1
+        assert "mule_deed" in crafter.inventory
+        unplayer(crafter)
+        print("ACQ_CRAFT_OK")
+
+        buyer = mkplayer("AcqBuyer", 60092, room="market")
+        buyer.gold = 0
+        shop0 = acq("shop")
+        await srv.cmd_buy(buyer, {"item": "wolf pup"})
+        shop1 = acq("shop")
+        assert shop1["attempts"] == shop0["attempts"] + 1, shop1
+        assert shop1["earned"] == shop0["earned"], shop1
+        buyer.gold = 10
+        await srv.cmd_buy(buyer, {"item": "wolf pup"})
+        shop2 = acq("shop")
+        assert shop2["attempts"] == shop1["attempts"] + 1, shop2
+        assert shop2["earned"] == shop1["earned"] + 1, shop2
+        unplayer(buyer)
+        print("ACQ_SHOP_OK")
+
+        adopter = mkplayer("AcqAdopter", 60093, room="town_square")
+        adopt0 = acq("adopt")
+        adoptions0 = dict(srv.ACQUISITION_STATS["adoptions"])
+        await srv.cmd_companion(adopter, {"action": "adopt", "species": "wolf"})
+        adopt1 = acq("adopt")
+        assert adopt1["attempts"] == adopt0["attempts"] + 1, adopt1
+        assert adopt1["earned"] == adopt0["earned"], adopt1
+        adopter.inventory.append("wolf_pup")
+        await srv.cmd_companion(adopter, {"action": "adopt", "species": "wolf"})
+        adopt2 = acq("adopt")
+        assert adopt2["attempts"] == adopt1["attempts"] + 1, adopt2
+        assert adopt2["earned"] == adopt1["earned"] + 1, adopt2
+        assert srv.ACQUISITION_STATS["adoptions"]["earned"] == adoptions0["earned"] + 1
+        assert srv.ACQUISITION_STATS["adoptions"]["gm"] == adoptions0["gm"]
+        srv.COMPANION_PLAYERS.pop("acqadopter", None)
+        unplayer(adopter)
+        print("ACQ_ADOPT_OK")
+
+        snap = srv._acquisition_snapshot()
+        assert snap["sources"]["boss"]["earned"] == boss1["earned"]
+        assert snap["adoptions"]["gm"] == adoptions0["gm"]
+        assert snap["craft_cost_ratio"] == 0.92
+        assert snap["not_in_build"]["quest"]
+        print("ACQ_SNAPSHOT_OK")
+    finally:
+        for name, stats in acq_saved["sources"].items():
+            srv.ACQUISITION_STATS["sources"][name].update(stats)
+        srv.ACQUISITION_STATS["adoptions"].update(acq_saved["adoptions"])
+
     # --- Config editor for server_config.json + ml_config.json (#63) ------
     with tempfile.TemporaryDirectory() as folder:
         config_editor_check(folder)

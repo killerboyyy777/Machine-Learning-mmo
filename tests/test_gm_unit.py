@@ -156,6 +156,7 @@ async def main():
             assert tab["commissions_open"] >= 1 and tab["market_orders"] >= 1
             assert tab["pending_invites"] >= 1 and tab["dungeon_gold_keys"] >= 1
             assert "treasury" in tab and "treasury_lifetime" in tab
+            assert tab["acquisition"]["sources"]["boss"]["attempts"] >= 0
         finally:
             srv._commissions.pop(cid, None)
             srv.market_orders[:] = [o for o in srv.market_orders if o["id"] != 424242]
@@ -172,6 +173,22 @@ async def main():
         assert any("kicked" in m.get("text", "") for m in inbox[-2:]), inbox[-2:]
         unplayer(kickme)
         print("GM_KICK_OK")
+
+        # --- GM companion grant is tagged, never counted as an earned adopt ----
+        grant = mkplayer("GrantTarget", 40004)
+        acq0 = dict(srv.ACQUISITION_STATS["adoptions"])
+        adopt0 = dict(srv.ACQUISITION_STATS["sources"]["adopt"])
+        try:
+            await srv.cmd_gm_companion_grant(
+                gm, {"player": "GrantTarget", "species": "mule"}
+            )
+            assert srv.ACQUISITION_STATS["adoptions"]["gm"] == acq0["gm"] + 1
+            assert srv.ACQUISITION_STATS["adoptions"]["earned"] == acq0["earned"]
+            assert srv.ACQUISITION_STATS["sources"]["adopt"] == adopt0
+        finally:
+            srv.COMPANION_PLAYERS.pop("granttarget", None)
+            unplayer(grant)
+        print("GM_COMPANION_GRANT_TAGGED_OK")
 
         # --- GM stream origin gate: cross-origin browser refused ------------
         inbox.clear()

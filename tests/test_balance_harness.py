@@ -312,6 +312,7 @@ def test_evaluate_pass_and_schema():
         "combat.deaths_per_kill",
         "combat.deaths_per_hour",
         "craft.completions",
+        "acquisition.drop_rate",
         "market.median_spread",
         "liveness.min_agents",
     ):
@@ -375,6 +376,81 @@ def test_empty_run_cannot_pass_gate():
     # observed/skipped instead of failing coverage on a 10-minute run.
     assert "coverage.economy" not in failing
     print("EMPTY_RUN_FAILS_OK")
+
+
+def test_gate_coverage_guard():
+    # Every scenario the gate claims to cover must fail on an empty run.
+    # Without this, a scenario can silently drop out of coverage and the
+    # gate passes on absence of evidence (#589).
+    empty = {"meta": {"profile": "gate", "seed": 700}, "samples": [], "derived": {}}
+    report = bal.evaluate_run(empty, bal.load_thresholds(profile="gate"), "gate", 700)
+    failing = _failing(report)
+    for scenario in bal.PROFILES["gate"]["coverage"]:
+        assert f"coverage.{scenario}" in failing, (scenario, failing)
+    # The one remaining hard skip names the ticket that would land it.
+    row = next(r for r in report["scenarios"] if r["name"] == "npc_ai_v2")
+    assert row["status"] == "skipped"
+    assert "#536" in row["reason"] and "phase 2" in row["reason"], row
+    print("GATE_COVERAGE_GUARD_OK")
+
+
+def test_acquisition_telemetry_survives_trim_and_derive():
+    # A counter added to /api/state must reach derive() through _trim_state;
+    # the trim is the silent-drop site this test pins down.
+    samples = make_samples()
+    acquisition = {
+        "sources": {
+            "boss": {
+                "earned": 3,
+                "attempts": 6,
+                "first_earn_at": 123.0,
+                "first_earn_s": 45.0,
+            },
+            "craft": {
+                "earned": 1,
+                "attempts": 4,
+                "first_earn_at": 200.0,
+                "first_earn_s": 300.0,
+            },
+            "shop": {
+                "earned": 1,
+                "attempts": 2,
+                "first_earn_at": 400.0,
+                "first_earn_s": 900.0,
+            },
+            "adopt": {
+                "earned": 2,
+                "attempts": 3,
+                "first_earn_at": 500.0,
+                "first_earn_s": 1200.0,
+            },
+        },
+        "adoptions": {"earned": 2, "gm": 0},
+        "craft_cost_ratio": 0.92,
+        "not_in_build": {"quest": "no quest rewards a companion deed"},
+    }
+    samples[-1]["state"]["acquisition"] = acquisition
+    trimmed = bal._trim_state(samples[-1]["state"])
+    assert trimmed["acquisition"] == acquisition
+    telemetry = bal._telemetry(samples)
+    assert telemetry["drop_rate"] == 0.5
+    assert telemetry["craft_cost_ratio"] == 0.92
+    assert telemetry["shop_time_to_earn_s"] == 900.0
+    derived = bal.derive(samples, LEDGER, telemetry)
+    assert derived["acquisition"]["drop_rate"] == 0.5
+    assert derived["acquisition"]["sources"]["boss"]["earned"] == 3
+    assert derived["acquisition"]["adoptions"]["gm"] == 0
+    assert derived["acquisition"]["not_in_build"]["quest"]
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": derived},
+        bal.load_thresholds(profile="gate"),
+        "gate",
+        700,
+    )
+    rows = {row["id"]: row for row in report["checks"]}
+    assert rows["acquisition.drop_rate"]["status"] == "pass"
+    assert "coverage.acquisition" not in _failing(report)
+    print("ACQUISITION_TELEMETRY_OK")
 
 
 def test_profile_overrides_and_threshold_file():
@@ -442,6 +518,7 @@ def _gate_entry(seed, wild, civ):
     measurements = make_measurements(profile="gate", seed=seed, alive=16)
     measurements["derived"]["combat"]["wild_deaths_per_hour"] = wild
     measurements["derived"]["combat"]["civ_deaths_per_hour"] = civ
+    measurements["derived"]["acquisition"]["drop_rate"] = 1.0
     return {"seed": seed, "measurements": measurements}
 
 
@@ -606,7 +683,8 @@ def test_matrix_catalog():
     # Scenarios that depend on unlanded work are declared, never dropped.
     assert bal.SCENARIOS["npc_ai_v2"]["unlanded"]
     assert "#536" in bal.SCENARIOS["npc_ai_v2"]["unlanded"]
-    assert bal.SCENARIOS["acquisition"]["unlanded"]
+    assert "unlanded" not in bal.SCENARIOS["acquisition"]
+    assert "acquisition" in bal.PROFILES["gate"]["coverage"]
     assert bal.SCENARIOS["progression"]["observed_only"]
     thresholds = bal.load_thresholds(profile="gate")
     assert thresholds["liveness"]["min_agents"] == 16
@@ -652,6 +730,8 @@ def main():
     test_evaluate_pass_and_schema()
     test_evaluate_fail_paths()
     test_empty_run_cannot_pass_gate()
+    test_gate_coverage_guard()
+    test_acquisition_telemetry_survives_trim_and_derive()
     test_profile_overrides_and_threshold_file()
     test_determinism_repeats()
     test_median_seed_decides_profile()
