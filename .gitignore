@@ -13,6 +13,7 @@ env/
 # one careless git add -A must never commit world state.
 scores.json*
 companions.json*
+guilds.json*
 
 # ML / Torch training checkpoints (local training progress, never commit)
 ml/ml_weights.json
