@@ -10875,15 +10875,20 @@ def _npc_think_state(npc, ctx, now, cfg):
         goal = _npc_home(npc)
         if state == "FLEEING" and cfg.get("flee_to"):
             goal = cfg["flee_to"]
-        if here != goal:
+        if here == goal:
+            return {
+                "kind": "state",
+                "state": "IDLE",
+                "target": None,
+                "heal": bool(cfg["leash_heal"]),
+                "event": "flee_succeeded" if state == "FLEEING" else "leash_returned",
+            }
+        if state == "FLEEING" or cfg["leash_radius"] <= 0:
             return None
-        return {
-            "kind": "state",
-            "state": "IDLE",
-            "target": None,
-            "heal": bool(cfg["leash_heal"]),
-            "event": "flee_succeeded" if state == "FLEEING" else "leash_returned",
-        }
+        path = _room_path(here, goal, _npc_blocked_rooms(npc))
+        if not path:
+            return None
+        return {"kind": "move", "to": path[0], "state": "LEASHING", "target": None}
 
     # Flee fires before the swing (design section 7).
     if (
@@ -10912,7 +10917,7 @@ def _npc_think_state(npc, ctx, now, cfg):
 
     if cfg["leash_radius"] > 0:
         home_hops = _room_hops(_npc_home(npc), here)
-        if home_hops is None or home_hops > cfg["leash_radius"]:
+        if home_hops is None or home_hops >= cfg["leash_radius"]:
             return _npc_leash_intent()
 
     victim = _npc_target_state(npc, cfg)
