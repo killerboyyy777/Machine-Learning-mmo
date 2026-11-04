@@ -51,6 +51,15 @@
     "GUILD_NAME_MAX": 24
   },
 
+  "intel": {
+    "INTEL_TTL_SECONDS": 21600,
+    "INTEL_MAX_ENTRIES": 4000,
+    "INTEL_MAX_PER_GUILD": 200,
+    "INTEL_MAX_PER_OBSERVER": 24,
+    "INTEL_COALESCE_SECONDS": 300,
+    "INTEL_LIVE_SECONDS": 60
+  },
+
   "leveling": {
     "XP_BASE": 100,
     "XP_GROWTH": 1.5,
