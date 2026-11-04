@@ -28,6 +28,9 @@ import websockets
 WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
 SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
 COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
+# Guilds keep their own file: scores.json is a 5s flush of ephemeral entries
+# with no version gate, while a guild and its vault must survive a rollback.
+GUILDS_FILE = join(dirname(abspath(__file__)), "guilds.json")
 
 NPC_TICK_SECONDS = 3
 # Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
@@ -312,6 +315,18 @@ BOUNTY_UNDELVED_KILLS = 2
 BOUNTY_UNDELVED_PAYOUT_GOLD = 12
 BOUNTY_UNDELVED_PAYOUT_XP = 15
 STANDING_TICK_SECONDS = 60
+
+# --- Player guilds (#588) ---------------------------------------------------
+GUILD_VERSION = 1
+GUILD_MAX_MEMBERS = 20
+GUILD_MAX_GUILDS = 200
+GUILD_AUDIT_CAP = 500
+GUILD_INVITE_TTL_SECONDS = 300
+GUILD_VAULT_ITEM_CAP = 64
+GUILD_NAME_MIN = 3
+GUILD_NAME_MAX = MAX_NAME_LEN
+GUILD_TOMBSTONE_CAP = 200
+GUILD_SAVE_SECONDS = 5.0
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -1243,6 +1258,229 @@ async def companions_save_loop():
         await asyncio.sleep(COMPANION_SAVE_SECONDS)
         if _companions_dirty and save_companions():
             _companions_dirty = False
+
+
+GUILD_RANKS = ("leader", "officer", "member")
+
+
+def new_guild_record(guild_id, name, founder, created_ts=None):
+    ts = time.time() if created_ts is None else float(created_ts)
+    name = str(name).strip()
+    founder = str(founder).strip()
+    return {
+        "id": int(guild_id),
+        "name": name,
+        "name_key": name.lower(),
+        "founder": founder,
+        "created_ts": ts,
+        "members": {founder.lower(): {"rank": "leader", "joined_ts": ts}},
+        "vault_gold": 0,
+        "vault_items": [],
+        "audit": [],
+        "withdrawn_today": {"day": "", "gold": 0, "items": 0},
+    }
+
+
+def _normalize_guild_record(guild_id, rec):
+    if not isinstance(rec, dict):
+        return None
+    name = str(rec.get("name") or "").strip()
+    if not name:
+        return None
+    try:
+        created_ts = float(rec.get("created_ts", 0) or 0)
+    except (TypeError, ValueError):
+        created_ts = 0.0
+    members = {}
+    raw_members = rec.get("members")
+    if isinstance(raw_members, dict):
+        for key, row in raw_members.items():
+            if not isinstance(row, dict):
+                continue
+            rank = str(row.get("rank") or "member")
+            if rank not in GUILD_RANKS:
+                rank = "member"
+            try:
+                joined_ts = float(row.get("joined_ts", 0) or 0)
+            except (TypeError, ValueError):
+                joined_ts = 0.0
+            members[str(key).lower()] = {"rank": rank, "joined_ts": joined_ts}
+    try:
+        vault_gold = max(0, int(rec.get("vault_gold", 0) or 0))
+    except (TypeError, ValueError):
+        vault_gold = 0
+    vault_items = [i for i in rec.get("vault_items") or [] if isinstance(i, str)]
+    audit = [e for e in rec.get("audit") or [] if isinstance(e, dict)]
+    withdrawn = rec.get("withdrawn_today")
+    if not isinstance(withdrawn, dict):
+        withdrawn = {}
+    try:
+        withdrawn_gold = max(0, int(withdrawn.get("gold", 0) or 0))
+    except (TypeError, ValueError):
+        withdrawn_gold = 0
+    try:
+        withdrawn_items = max(0, int(withdrawn.get("items", 0) or 0))
+    except (TypeError, ValueError):
+        withdrawn_items = 0
+    return {
+        "id": int(guild_id),
+        "name": name,
+        "name_key": name.lower(),
+        "founder": str(rec.get("founder") or "").strip(),
+        "created_ts": created_ts,
+        "members": members,
+        "vault_gold": vault_gold,
+        "vault_items": vault_items,
+        "audit": audit,
+        "withdrawn_today": {
+            "day": str(withdrawn.get("day") or ""),
+            "gold": withdrawn_gold,
+            "items": withdrawn_items,
+        },
+    }
+
+
+def _rebuild_guild_index():
+    # Membership lives in the guild record; this index is derived state,
+    # rebuilt from the records and never persisted on its own.
+    GUILD_BY_MEMBER.clear()
+    for guild_id in sorted(GUILDS):
+        for name_key in GUILDS[guild_id].get("members") or {}:
+            GUILD_BY_MEMBER.setdefault(name_key, guild_id)
+
+
+GUILDS_FILE_BLOCKED = False
+
+
+def load_guilds(path=None):
+    global GUILDS_FILE_BLOCKED
+    path = path or GUILDS_FILE
+    for candidate in (path, path + ".1"):
+        try:
+            with open(candidate) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: could not load {os.path.basename(candidate)}: {e}")
+            continue
+        if not isinstance(data, dict) or data.get("version") != GUILD_VERSION:
+            if candidate == path:
+                GUILDS_FILE_BLOCKED = True
+            print(
+                f"Warning: {os.path.basename(candidate)} version is not "
+                f"{GUILD_VERSION}; not loaded"
+            )
+            return {}, []
+        if candidate != path:
+            print(
+                f"Warning: {os.path.basename(path)} missing/corrupt, "
+                f"recovered from {os.path.basename(candidate)}"
+            )
+        guilds = {}
+        raw_guilds = data.get("guilds")
+        if isinstance(raw_guilds, dict):
+            for key, rec in raw_guilds.items():
+                try:
+                    guild_id = int(key)
+                except (TypeError, ValueError):
+                    continue
+                record = _normalize_guild_record(guild_id, rec)
+                if record is not None:
+                    guilds[guild_id] = record
+        raw_tombstones = data.get("tombstones")
+        tombstones = (
+            [t for t in raw_tombstones if isinstance(t, dict)]
+            if isinstance(raw_tombstones, list)
+            else []
+        )
+        return guilds, tombstones
+    return {}, []
+
+
+def save_guilds(path=None):
+    if path is None and GUILDS_FILE_BLOCKED:
+        return False
+    path = path or GUILDS_FILE
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(
+                {
+                    "version": GUILD_VERSION,
+                    "guilds": GUILDS,
+                    "tombstones": GUILD_TOMBSTONES,
+                },
+                f,
+            )
+        if os.path.exists(path):
+            os.replace(path, path + ".1")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+GUILDS, GUILD_TOMBSTONES = load_guilds()
+GUILD_BY_MEMBER = {}
+_rebuild_guild_index()
+
+_guilds_dirty = False
+
+
+def mark_guilds_dirty():
+    global _guilds_dirty
+    _guilds_dirty = True
+
+
+async def guilds_save_loop():
+    global _guilds_dirty
+    while True:
+        await asyncio.sleep(GUILD_SAVE_SECONDS)
+        if _guilds_dirty and save_guilds():
+            _guilds_dirty = False
+
+
+GUILD_VAULT_GOLD_IN_TOTAL = 0
+GUILD_VAULT_GOLD_OUT_TOTAL = 0
+GUILD_AUDIT_ENTRIES_WRITTEN = 0
+guild_feed = deque(maxlen=50)
+_pending_guild_invites = {}
+
+
+def guild_telemetry():
+    online = {p.name.lower() for p in players.values() if p.logged_in and p.name}
+    members_total = 0
+    online_members = 0
+    largest = 0
+    vault_gold_total = 0
+    vault_items_total = 0
+    audit_entries = 0
+    for record in GUILDS.values():
+        members = record.get("members") or {}
+        members_total += len(members)
+        online_members += sum(1 for key in members if key in online)
+        largest = max(largest, len(members))
+        vault_gold_total += int(record.get("vault_gold", 0) or 0)
+        vault_items_total += len(record.get("vault_items") or [])
+        audit_entries += len(record.get("audit") or [])
+    return {
+        "count": len(GUILDS),
+        "members_total": members_total,
+        "online_members": online_members,
+        "largest": largest,
+        "vault_gold_total": vault_gold_total,
+        "vault_items_total": vault_items_total,
+        "invites_pending": len(_pending_guild_invites),
+        "audit_entries": audit_entries,
+        "vault_gold_in_total": GUILD_VAULT_GOLD_IN_TOTAL,
+        "vault_gold_out_total": GUILD_VAULT_GOLD_OUT_TOTAL,
+        "audit_entries_written": GUILD_AUDIT_ENTRIES_WRITTEN,
+    }
 
 
 def get_score_entry(name):
@@ -7215,6 +7453,7 @@ async def cmd_gm_tables(player, msg):
             "treasury": round(tax_treasury, 2),
             "treasury_lifetime": round(tax_collected_lifetime, 2),
             "players_online": len(players),
+            "guilds": guild_telemetry(),
             "acquisition": _acquisition_snapshot(),
         },
     )
@@ -7858,6 +8097,7 @@ def world_snapshot():
         "dungeons": dungeon_views,
         "quests": _quest_snapshot(),
         "commissions": _commission_snapshot(),
+        "guilds": {**guild_telemetry(), "history": list(guild_feed)[-20:]},
         "craft_history": list(craft_feed)[-20:],
         "commission_history": list(comm_feed)[-20:],
         "dungeon_clears": _dungeon_clears_snapshot(),
@@ -9119,6 +9359,7 @@ async def main():
                 asyncio.create_task(
                     _run_resilient("companions_save", companions_save_loop)
                 ),
+                asyncio.create_task(_run_resilient("guilds_save", guilds_save_loop)),
                 asyncio.create_task(
                     _run_resilient("dashboard_snapshot", dashboard_refresh_loop)
                 ),
@@ -9149,6 +9390,7 @@ async def main():
     finally:
         save_scores()
         save_companions()
+        save_guilds()
         print("Scores saved. Bye.", flush=True)
 
 
