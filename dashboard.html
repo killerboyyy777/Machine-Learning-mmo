@@ -1162,9 +1162,9 @@ function themePalette() {
     : {blue: "#79c0ff", purple: "#d2a8ff", amber: "#ffb454",
        series: ["#79c0ff", "#d2a8ff", "#ffb454", "#7ee787", "#ff9ecb", "#c9d1d9"]};
 }
-// One colour per compared run. The series list is longer than the old
+// One color per compared run. The series list is longer than the old
 // three-key palette because the Runs tab draws one line per run; past its
-// length colours repeat, which the legend disambiguates by name.
+// length colors repeat, which the legend disambiguates by name.
 function seriesColor(i) {
   const s = themePalette().series;
   return s[((i % s.length) + s.length) % s.length];
