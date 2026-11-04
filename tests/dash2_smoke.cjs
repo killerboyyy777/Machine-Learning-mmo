@@ -241,6 +241,38 @@ const cHtml = els["commissions"]._html;
 if (cHtml.indexOf("#2") > cHtml.indexOf("#1")) { failed++; console.error("FAIL commissions not newest-first"); }
 if (!cHtml.includes(">open<") || !cHtml.includes("wolf")) { failed++; console.error("FAIL commissions content"); }
 if (!cHtml.includes(" ago</td>")) { failed++; console.error("FAIL commissions posted-age missing"); }
+// ---- Guilds tab (#588) -----------------------------------------------
+// A fresh world ships an all-zero block and an empty ring: the cards must
+// read 0 and both empty-state lines must show.
+vm.runInContext("renderGuilds", sandbox)({
+  count: 0, members_total: 0, online_members: 0, largest: 0,
+  vault_gold_total: 0, vault_items_total: 0, invites_pending: 0,
+  audit_entries: 0, audit_entries_written: 0, history: [],
+});
+if (els["guild-count"]._text !== "0" || els["guild-vault-gold"]._text !== "0") {
+  failed++; console.error("FAIL guild cards on a fresh world");
+}
+if (els["guildFeed"]._html !== "" || els["noGuildFeed"].style.display !== "" ||
+    els["noGuilds"].style.display !== "") {
+  failed++; console.error("FAIL guild empty state");
+}
+// A populated block: totals read, ring shown newest-first.
+vm.runInContext("renderGuilds", sandbox)({
+  count: 1, members_total: 3, online_members: 2, largest: 3,
+  vault_gold_total: 120, vault_items_total: 4, invites_pending: 1,
+  audit_entries: 9, audit_entries_written: 9,
+  history: ["Iron Choir: #1 12:00 Aria founded the guild.",
+            "Iron Choir: #2 12:01 Aria deposited 50 gold."],
+});
+if (els["guild-count"]._text !== "1" || els["guild-vault-gold"]._text !== "120") {
+  failed++; console.error("FAIL guild totals");
+}
+if (els["guildFeed"]._html.indexOf("#2") > els["guildFeed"]._html.indexOf("#1")) {
+  failed++; console.error("FAIL guild feed not newest-first");
+}
+if (els["noGuilds"].style.display !== "none" || els["noGuildFeed"].style.display !== "none") {
+  failed++; console.error("FAIL guild empty state stayed visible");
+}
 // Hover hooks: drive the stored setCursor fns with a fake cursor.
 // Trend chart: idx 1 shows "value @ time", null restores current.
 const ovU = vm.runInContext("charts['ovPlayers']", sandbox);
@@ -599,7 +631,7 @@ if (geoFail) { console.error(`GEO_FAIL (${geoFail})`); process.exit(1); }
   console.log(`GEO_OK (north-up, deterministic, no overlap at tile ${TW}x${TH})`);
 
   if (failed) { console.error("PROVE_FAIL (" + failed + ")"); process.exit(1); }
-  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+hover+theme+runs+config)");
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config)");
 }
 
 configCase().then(geoCase).catch(e => {

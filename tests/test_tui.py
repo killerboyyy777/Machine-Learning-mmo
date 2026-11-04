@@ -6,10 +6,10 @@ bar (ids, labels, order, default) including the section list, the
 snapshot client turns a real HTTP response into a dict and every failure
 mode into SnapshotError, the poller keeps the last good snapshot through
 an outage, the Overview/World/Players/Market/Dungeon/Agents/Quests/
-Crafting/Config/Runs/GM panels (TUI-1 through TUI-4) render the
-dashboard's fields, every tab has a real panel, and the app shell routes
-keys, repaints only when the screen changed, and loads tabs whose data
-rides a separate endpoint.
+Crafting/Guilds/Config/Runs/GM panels (TUI-1 through TUI-4, plus the
+#588 Guilds surface) render the dashboard's fields, every tab has a real
+panel, and the app shell routes keys, repaints only when the screen
+changed, and loads tabs whose data rides a separate endpoint.
 
 The rich-dependent half is skipped (not failed) when rich is absent, so
 a websockets-only checkout still gets the contract half. One check is
@@ -268,6 +268,23 @@ def snapshot_fixture():
                 "result": "Ancient Guardian Charm",
             }
         ],
+        "guilds": {
+            "count": 1,
+            "members_total": 3,
+            "online_members": 2,
+            "largest": 3,
+            "vault_gold_total": 120,
+            "vault_items_total": 4,
+            "invites_pending": 1,
+            "audit_entries": 9,
+            "audit_entries_written": 9,
+            "vault_gold_in_total": 150,
+            "vault_gold_out_total": 30,
+            "history": [
+                "Iron Choir: #1 12:00 Aria founded the guild.",
+                "Iron Choir: #2 12:01 Aria deposited 50 gold.",
+            ],
+        },
         "catalog": {
             "players": ["a", "b"],
             "items": ["Pine Resin", "Healing Herb"],
@@ -792,6 +809,23 @@ def test_panels_crafting():
     print("CRAFTING_OK")
 
 
+def test_panels_guilds():
+    """Guilds panel (#588): aggregate totals, vault holdings, audit feed."""
+    snap = snapshot_fixture()
+    text = _plain(render_panel("guilds", snap, rows=5))
+    assert "not ported" not in text, "guilds panel should be implemented"
+    for heading in ("Guilds", "Guild activity"):
+        assert heading in text, heading
+    assert "chartered" in text and "vault gold" in text and "vault items" in text
+    assert "120" in text, "vault gold total missing"
+    assert "Iron Choir" in text
+    # The ring is oldest-first; the panel reads newest-first.
+    assert text.index("#2") < text.index("#1"), text
+    empty = _plain(render_panel("guilds", {}, rows=3))
+    assert "no guilds chartered yet" in empty and "no guild activity yet" in empty
+    print("GUILDS_OK")
+
+
 def test_panels_gm():
     """GM panel (TUI-4): treasury cards + catalog sizes and values."""
     snap = snapshot_fixture()
@@ -1076,6 +1110,7 @@ def main():
         test_panels_agents()
         test_panels_quests()
         test_panels_crafting()
+        test_panels_guilds()
         test_panels_gm()
         test_panels_config()
         test_panels_runs()
@@ -1091,6 +1126,7 @@ def main():
         print("AGENTS_OK skipped (rich not installed)")
         print("QUESTS_OK skipped (rich not installed)")
         print("CRAFTING_OK skipped (rich not installed)")
+        print("GUILDS_OK skipped (rich not installed)")
         print("GM_OK skipped (rich not installed)")
         print("CONFIG_OK skipped (rich not installed)")
         print("RUNS_OK skipped (rich not installed)")
