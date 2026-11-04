@@ -343,6 +343,14 @@ INTEL_MAX_PER_OBSERVER = 24
 INTEL_COALESCE_SECONDS = 300
 INTEL_LIVE_SECONDS = 60
 INTEL_SAVE_SECONDS = 5.0
+# Read-side bounds. The bucket edges at 300s and 1800s are labels, not caps:
+# they say how much to trust a row, they never drop one.
+INTEL_FRESH_SECONDS = 300
+INTEL_RECENT_SECONDS = 1800
+INTEL_QUERY_DEFAULT_N = 10
+INTEL_QUERY_MAX_N = 50
+INTEL_QUERY_DEFAULT_MAX_AGE = 1800
+INTEL_QUERY_CACHE_MAX = 64
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -1586,6 +1594,8 @@ INTEL_SUBJECT_KINDS = frozenset({"hostile", "npc_death", "node"})
 # let the pool mint the evidence it is supposed to record.
 INTEL_SERVER_KINDS = frozenset({"npc_death", "player_death"})
 INTEL_SOURCES = frozenset({"sensor"})
+INTEL_NO_GUILD = "You are not in a guild. Join one to share intel."
+INTEL_KIND_HINT = "Use hostile, npc_death, player_death, node, or traffic."
 
 INTEL_STATS = {
     "observations_logged": 0,
@@ -1921,12 +1931,21 @@ def save_intel(path=None):
 INTEL_ROWS = []
 INTEL_SEQ = 0
 
+# Read memo: filter tuple -> {"built": epoch, "rows": [row, ...]}. It holds
+# row references, so an age is always recomputed from `ts` and a coalesce is
+# visible without a rebuild. Every pool mutation goes through
+# mark_intel_dirty(), which drops the whole memo, so a hit cannot serve a row
+# the pool has since evicted; the INTEL_LIVE_SECONDS bound is the backstop
+# for anything that mutates INTEL_ROWS without passing through it.
+INTEL_QUERY_CACHE = {}
+
 _intel_dirty = False
 
 
 def mark_intel_dirty():
     global _intel_dirty
     _intel_dirty = True
+    INTEL_QUERY_CACHE.clear()
 
 
 async def intel_save_loop():
@@ -7361,6 +7380,118 @@ def _intel_scan(player):
     return found
 
 
+def _intel_age_label(age_s):
+    if age_s < 60:
+        return f"{int(age_s)}s ago"
+    if age_s < 3600:
+        return f"{int(age_s // 60)}m ago"
+    return f"{int(age_s // 3600)}h ago"
+
+
+def _intel_window_label(seconds):
+    if seconds >= 3600:
+        return f"{int(seconds) // 3600}h"
+    if seconds >= 60:
+        return f"{int(seconds) // 60}m"
+    return f"{int(seconds)}s"
+
+
+def _intel_subject_label(subject):
+    return str(subject).replace("_", " ").strip().title()
+
+
+def _intel_bucket(age_s, live):
+    """Section 8 label. `live` needs a guild mate in the room, not a young
+    row: a young sighting nobody stands in is only fresh."""
+    if live:
+        return "live"
+    if age_s <= INTEL_FRESH_SECONDS:
+        return "fresh"
+    if age_s <= INTEL_RECENT_SECONDS:
+        return "recent"
+    return "old"
+
+
+def _intel_room_has_guildmate(guild, room):
+    return any(
+        GUILD_BY_MEMBER.get(p.name.lower()) == guild for p in players_in_room(room)
+    )
+
+
+def _intel_row_view(row, guild, now):
+    """One row as a reader sees it: no observer, no guild, no seq."""
+    age = max(0, int(now - row["ts"]))
+    live = age <= INTEL_LIVE_SECONDS and _intel_room_has_guildmate(guild, row["room"])
+    return {
+        "room": row["room"],
+        "kind": row["kind"],
+        "subject": row["subject"],
+        "value": row["value"],
+        "confidence": row["confidence"],
+        "repeats": row["repeats"],
+        "ts": round(row["ts"], 3),
+        "age_s": age,
+        "age_label": _intel_age_label(age),
+        "bucket": _intel_bucket(age, live),
+        "live": live,
+    }
+
+
+def _intel_row_line(view):
+    parts = [view["age_label"].rjust(7), view["bucket"].ljust(7), view["kind"]]
+    if view["subject"]:
+        parts.append(_intel_subject_label(view["subject"]))
+    # A single-valued kind (hostile alive, node ready) adds nothing, so only
+    # the bucketed traffic value is spelled out.
+    if len(INTEL_VALUES[view["kind"]]) > 1 and view["value"]:
+        parts.append(str(view["value"]))
+    if view["repeats"] > 1:
+        parts.append(f"(seen {view['repeats']} times)")
+    return "  " + "  ".join(parts)
+
+
+def _intel_query_cache_key(guild, room, kind, subject):
+    return (guild, room, kind, subject)
+
+
+def _intel_query_rows(guild, room, kind, subject, now):
+    """One guild's rows for one filter tuple, newest first, memoised.
+
+    The memo is keyed by the filter tuple and expires after INTEL_LIVE_SECONDS;
+    an expired entry is dropped and counted as a miss rather than served, so
+    the counters can only say "hit" when a pool scan was really skipped.
+    """
+    key = _intel_query_cache_key(guild, room, kind, subject)
+    entry = INTEL_QUERY_CACHE.get(key)
+    if entry is not None and now - entry["built"] <= INTEL_LIVE_SECONDS:
+        INTEL_STATS["cache_hits"] += 1
+        return entry["rows"]
+    INTEL_QUERY_CACHE.pop(key, None)
+    INTEL_STATS["cache_misses"] += 1
+    rows = [
+        r
+        for r in INTEL_ROWS
+        if r["guild"] == guild
+        and r["room"] == room
+        and (kind is None or r["kind"] == kind)
+        and (subject is None or r["subject"] == subject)
+    ]
+    rows.sort(key=_intel_age_key, reverse=True)
+    INTEL_QUERY_CACHE[key] = {"built": now, "rows": rows}
+    if len(INTEL_QUERY_CACHE) > INTEL_QUERY_CACHE_MAX:
+        oldest = min(INTEL_QUERY_CACHE, key=lambda k: INTEL_QUERY_CACHE[k]["built"])
+        INTEL_QUERY_CACHE.pop(oldest, None)
+    return rows
+
+
+def _intel_query_int(raw, default, low, high):
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
 async def _intel_refuse(player, text):
     INTEL_STATS["observations_refused"] += 1
     await send(player, {"type": "error", "text": text})
@@ -7369,7 +7500,7 @@ async def _intel_refuse(player, text):
 async def _cmd_intel_log(player, msg):
     record = _guild_for_member(player.name)
     if record is None:
-        await _intel_refuse(player, "You are not in a guild. Join one to share intel.")
+        await _intel_refuse(player, INTEL_NO_GUILD)
         return
     if player.room not in ROOMS:
         await _intel_refuse(player, f"No room '{player.room}' in the world.")
@@ -7382,11 +7513,7 @@ async def _cmd_intel_log(player, msg):
         return
     kind = str(msg.get("kind") or "").strip().lower()
     if kind and kind not in INTEL_KINDS:
-        await _intel_refuse(
-            player,
-            f"Unknown intel kind '{kind}'. Use hostile, npc_death, "
-            "player_death, node, or traffic.",
-        )
+        await _intel_refuse(player, f"Unknown intel kind '{kind}'. {INTEL_KIND_HINT}")
         return
     if kind in INTEL_SERVER_KINDS:
         await _intel_refuse(
@@ -7425,12 +7552,75 @@ async def _cmd_intel_log(player, msg):
     )
 
 
-async def cmd_intel(player, msg):
-    action = str(msg.get("action") or "log").strip().lower()
-    if action != "log":
-        await _intel_refuse(player, f"Unknown intel action '{action}'. Use log.")
+async def _cmd_intel_query(player, msg):
+    # Ruling 18.7: a member may read rows for a room they are not standing in
+    # only because /api/state already publishes every room's players, NPC
+    # health, items and gold. The snapshot is the wallhack baseline, so this
+    # gate holds while that snapshot stays public: if it is ever restricted,
+    # the visited-room gate must land in the same commit, not a follow-up.
+    record = _guild_for_member(player.name)
+    if record is None:
+        # A refused read is not an answered query, so it moves nothing:
+        # observations_refused counts refused write attempts.
+        await send(player, {"type": "error", "text": INTEL_NO_GUILD})
         return
-    await _cmd_intel_log(player, msg)
+    room = str(msg.get("room") or "").strip() or player.room
+    if room not in ROOMS:
+        await send(player, {"type": "error", "text": f"No room '{room}' in the world."})
+        return
+    kind = str(msg.get("kind") or "").strip().lower()
+    if kind and kind not in INTEL_KINDS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Unknown intel kind '{kind}'. {INTEL_KIND_HINT}",
+            },
+        )
+        return
+    subject = str(msg.get("subject") or "").strip() or None
+    limit = _intel_query_int(msg.get("n"), INTEL_QUERY_DEFAULT_N, 1, INTEL_QUERY_MAX_N)
+    max_age = _intel_query_int(
+        msg.get("max_age"), INTEL_QUERY_DEFAULT_MAX_AGE, 1, INTEL_TTL_SECONDS
+    )
+    now = time.time()
+    guild = record.get("id")
+    rows = _intel_query_rows(guild, room, kind or None, subject, now)
+    selected = [r for r in rows if now - r["ts"] <= max_age][:limit]
+    views = [_intel_row_view(r, guild, now) for r in selected]
+    INTEL_STATS["queries_served"] += 1
+    room_name = ROOMS[room]["name"]
+    if views:
+        lines = [f"Intel for {room_name} ({len(views)} sightings, newest first):"]
+        lines += [_intel_row_line(v) for v in views]
+    else:
+        lines = [f"No intel for {room_name} within {_intel_window_label(max_age)}."]
+    await send(
+        player,
+        {
+            "type": "intel",
+            "action": "query",
+            "room": room,
+            "kind": kind or None,
+            "subject": subject,
+            "max_age": max_age,
+            "limit": limit,
+            "count": len(views),
+            "rows": views,
+            "text": "\n".join(lines),
+        },
+    )
+
+
+async def cmd_intel(player, msg):
+    action = str(msg.get("action") or "query").strip().lower()
+    if action == "log":
+        await _cmd_intel_log(player, msg)
+        return
+    if action == "query":
+        await _cmd_intel_query(player, msg)
+        return
+    await _intel_refuse(player, f"Unknown intel action '{action}'. Use log or query.")
 
 
 async def cmd_inventory(player, msg):
@@ -7705,7 +7895,7 @@ async def cmd_help(player, msg):
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
                 "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit] "
-                "intel [log] "
+                "intel [log|query] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "

@@ -132,7 +132,7 @@ async def main():
             assert srv._command_ticks_buffs("intel", {}) is False
             inbox.clear()
             await srv.cmd_help(aria, {})
-            assert "intel [log]" in inbox[-1]["text"], inbox[-1]["text"]
+            assert "intel [log|query]" in inbox[-1]["text"], inbox[-1]["text"]
             assert set(srv._intel_snapshot()["counters"]) == {
                 "observations_logged",
                 "observations_refused",
@@ -162,10 +162,10 @@ async def main():
             # --- refusals name what exists and never write a row ----------
             refused = srv.INTEL_STATS["observations_refused"]
             inbox.clear()
-            await srv.cmd_intel(aria, {"action": "query"})
-            assert texts(inbox) == ["Unknown intel action 'query'. Use log."], texts(
-                inbox
-            )
+            await srv.cmd_intel(aria, {"action": "watch"})
+            assert texts(inbox) == [
+                "Unknown intel action 'watch'. Use log or query."
+            ], texts(inbox)
             inbox.clear()
             await srv.cmd_intel(aria, {"action": "log", "kind": "market"})
             expected = (
