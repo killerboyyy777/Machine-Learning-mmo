@@ -25,6 +25,7 @@ AUDIT_KEYS = [
     "target",
     "amount",
     "item",
+    "items",
     "rank_from",
     "rank_to",
     "gold_after",
@@ -152,6 +153,7 @@ async def main():
             assert first["actor"] == "Zed"
             assert first["action"] == "create"
             assert first["target"] is None
+            assert first["item"] is None and first["items"] is None
             assert first["gold_after"] == 0
             assert isinstance(first["ts"], float) and first["ts"] > 0
             assert scratch["audit"] == [first]
@@ -165,6 +167,21 @@ async def main():
             assert second["gold_after"] == 40
             assert srv.GUILD_AUDIT_ENTRIES_WRITTEN == 2
             print("WRITER_OK")
+
+            # --- seq is one past the highest usable seq, junk tail or not --
+            tail = srv.new_guild_record(902, "Tail Guild", "Zed")
+            tail["audit"] = [
+                {"seq": 7, "action": "create"},
+                {"seq": 3, "action": "join"},
+                "junk",
+                12,
+            ]
+            assert srv._guild_audit(tail, "Zed", "join")["seq"] == 8, tail["audit"]
+            tail["audit"] = ["junk", None, {}]
+            assert srv._guild_audit(tail, "Zed", "join")["seq"] == 1
+            tail["audit"] = []
+            assert srv._guild_audit(tail, "Zed", "join")["seq"] == 1
+            print("SEQ_TAIL_OK")
 
             # --- create writes exactly one entry --------------------------
             srv._guilds_dirty = False
@@ -382,6 +399,7 @@ async def main():
                         "target": None,
                         "amount": None,
                         "item": None,
+                        "items": None,
                         "rank_from": None,
                         "rank_to": None,
                         "gold_after": 0,
@@ -485,8 +503,12 @@ async def main():
             assert rows[0]["action"] == "disband"
             assert rows[0]["actor"] == "Aria"
             assert rows[0]["amount"] == 120, rows[0]
-            assert rows[0]["item"] == 2, rows[0]
+            assert rows[0]["item"] is None, rows[0]
+            assert rows[0]["items"] == 2, rows[0]
             assert rows[0]["gold_after"] == 0, rows[0]
+            assert srv._guild_audit_line(rows[0]).endswith(
+                "disbanded the guild (120 gold, 2 item(s))."
+            ), rows[0]
             assert gid not in srv.GUILDS
             index_ok()
             print("DISBAND_OK")
@@ -514,7 +536,8 @@ async def main():
             rows = added(watch, before)
             assert [row["action"] for row in rows] == ["leave", "disband"], rows
             assert rows[1]["amount"] == 30, rows[1]
-            assert rows[1]["item"] == 0, rows[1]
+            assert rows[1]["item"] is None, rows[1]
+            assert rows[1]["items"] == 0, rows[1]
             assert rows[1]["gold_after"] == 0, rows[1]
             assert watch["id"] not in srv.GUILDS
             index_ok()

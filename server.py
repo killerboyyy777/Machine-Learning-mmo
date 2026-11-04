@@ -5861,8 +5861,10 @@ def _guild_audit_line(entry):
         moved = "deposited" if action == "deposit_item" else "withdrew"
         said = f"{moved} {_iname(str(item or ''))}"
     elif action == "disband":
-        # A disband returns the whole vault, so item holds the count, not an id.
-        said = f"disbanded the guild ({amount} gold, {_guild_int(item)} item(s))"
+        said = (
+            f"disbanded the guild ({amount} gold, "
+            f"{_guild_int(entry.get('items'))} item(s))"
+        )
     return f"#{_guild_int(entry.get('seq'))} {stamp} {actor} {said}."
 
 
@@ -5873,6 +5875,7 @@ def _guild_audit(
     target=None,
     amount=None,
     item=None,
+    items=None,
     rank_from=None,
     rank_to=None,
 ):
@@ -5887,9 +5890,11 @@ def _guild_audit(
     if not isinstance(entries, list):
         entries = []
         record["audit"] = entries
+    # Highest seq wins: a malformed or truncated tail must not restart at 1.
     seq = 1
-    if entries and isinstance(entries[-1], dict):
-        seq = _guild_int(entries[-1].get("seq")) + 1
+    for row in entries:
+        if isinstance(row, dict):
+            seq = max(seq, _guild_int(row.get("seq")) + 1)
     entry = {
         "seq": seq,
         "ts": time.time(),
@@ -5898,6 +5903,7 @@ def _guild_audit(
         "target": target,
         "amount": amount,
         "item": item,
+        "items": items,
         "rank_from": rank_from,
         "rank_to": rank_to,
         "gold_after": _guild_int(record.get("vault_gold")),
@@ -6068,7 +6074,7 @@ async def _cmd_guild_leave(player, msg):
     if heir is None:
         _guild_audit(record, player.name, "leave")
         gold, items = await _guild_return_vault(player, record)
-        _guild_audit(record, player.name, "disband", amount=gold, item=items)
+        _guild_audit(record, player.name, "disband", amount=gold, items=items)
         _guild_dissolve(record, time.time())
         text = f"{name} had no members left and is dissolved."
         if gold or items:
@@ -6118,7 +6124,7 @@ async def _cmd_guild_disband(player, msg):
         return
     name = record.get("name")
     gold, items = await _guild_return_vault(player, record)
-    _guild_audit(record, player.name, "disband", amount=gold, item=items)
+    _guild_audit(record, player.name, "disband", amount=gold, items=items)
     _guild_dissolve(record, time.time())
     text = f"{name} is disbanded."
     if gold or items:
