@@ -481,6 +481,40 @@ NPC_ARCHETYPE_DEFAULTS = {
     "prefer": "random",
 }
 
+NPC_STATES = ("IDLE", "AGGRO", "CHASING", "LEASHING", "FLEEING")
+
+# Owner ruling (#536 design section 14.3): one global flee cap, not a
+# per-archetype table, so a stray 90 in world data cannot make a mob run at
+# nearly full health. Clamped on read.
+NPC_FLEE_PCT_CAP = 35
+
+# A hostile may never enter one of these unless it is that mob's own
+# spawn_room (section 14.4 is spawn-aware). Rooms where a mob already stands
+# are never a violation and nothing here evicts them.
+NPC_SHELTER_ROOMS = frozenset(
+    rid for rid, room in ROOMS.items() if room.get("shelter") or rid == START_ROOM
+)
+
+
+def _npc_archetype(npc):
+    """Resolved archetype fields: defaults, then the preset, then the npc.
+
+    npcs copy their template, so a template key reaches the live npc and wins
+    over its preset. The flee cap is applied last on every read.
+    """
+    cfg = dict(NPC_ARCHETYPE_DEFAULTS)
+    preset = WORLD.get("npc_archetypes", {}).get(npc.get("archetype"))
+    if preset:
+        cfg.update(preset)
+    cfg.update({key: npc[key] for key in NPC_ARCHETYPE_DEFAULTS if key in npc})
+    try:
+        pct = int(cfg.get("flee_below_pct") or 0)
+    except (TypeError, ValueError):
+        pct = 0
+    cfg["flee_below_pct"] = max(0, min(NPC_FLEE_PCT_CAP, pct))
+    return cfg
+
+
 # The dungeon entrance is a dynamic exit on the graveyard (the ML env rebuilds
 # its action space from these rooms on import, so it sees "enter" too).
 ROOMS[DUNGEON_ENTRANCE_ROOM].setdefault("exits", {}).setdefault(
@@ -3969,6 +4003,7 @@ def respawn_npc(npc):
     npc["contributors"] = {}
     npc["state"] = "IDLE"
     npc["target"] = None
+    npc["engaged_since"] = None
     rid = npc["room"]
     d = dungeon_for_room(rid)
     if d:
@@ -10842,16 +10877,269 @@ AGGRO_RANGE = 1
 
 def _npc_tick_context(npc):
     room_id = npc["room"]
-    return {
+    ctx = {
         "targets": players_in_room(room_id),
         "companions": (_summoned_companions_in_room(room_id) if npc["hostile"] else []),
     }
+    radius = _npc_archetype(npc)["aggro_radius"]
+    if radius > 0:
+        vicinity = []
+        for rid in _rooms_within_hops(room_id, radius):
+            vicinity.extend(players_in_room(rid))
+        ctx["vicinity"] = vicinity
+    return ctx
+
+
+def _room_path(start, goal, blocked=()):
+    """Shortest exit path from start to goal, excluding blocked rooms.
+
+    Returns the rooms to walk through (goal last) or None. Leash distance is
+    hops over ROOMS[...]["exits"], never coordinates (design section 6).
+    """
+    if start == goal:
+        return []
+    if start not in ROOMS or goal not in ROOMS:
+        return None
+    blocked = set(blocked)
+    parents = {start: None}
+    queue = deque([start])
+    while queue:
+        rid = queue.popleft()
+        for dest in ROOMS.get(rid, {}).get("exits", {}).values():
+            if dest in parents or dest not in ROOMS or dest in blocked:
+                continue
+            parents[dest] = rid
+            if dest == goal:
+                path = [goal]
+                while parents[path[-1]] is not None:
+                    path.append(parents[path[-1]])
+                path.reverse()
+                return path[1:]
+            queue.append(dest)
+    return None
+
+
+def _room_hops(start, goal, blocked=()):
+    path = _room_path(start, goal, blocked)
+    return None if path is None else len(path)
+
+
+def _rooms_within_hops(room_id, radius):
+    seen = {room_id}
+    frontier = [room_id]
+    for _step in range(max(0, int(radius))):
+        nxt = []
+        for rid in frontier:
+            for dest in ROOMS.get(rid, {}).get("exits", {}).values():
+                if dest in seen or dest not in ROOMS:
+                    continue
+                seen.add(dest)
+                nxt.append(dest)
+        frontier = nxt
+    return seen
+
+
+def _npc_home(npc):
+    return npc.get("spawn_room") or npc["room"]
+
+
+def _npc_blocked_rooms(npc):
+    """Rooms this hostile may not walk into, minus its own spawn room."""
+    return NPC_SHELTER_ROOMS - {_npc_home(npc)}
+
+
+def _npc_can_enter(npc, room_id):
+    if not npc.get("hostile"):
+        return True
+    return room_id == _npc_home(npc) or room_id not in NPC_SHELTER_ROOMS
+
+
+def _npc_state_machine_active(cfg):
+    """Every transition hangs off one non-zero field, so baseline stays a no-op."""
+    return (
+        cfg["aggro_radius"] > 0 or cfg["leash_radius"] > 0 or cfg["flee_below_pct"] > 0
+    )
+
+
+def _npc_candidates(ctx):
+    """Live acquisition pool: the npc's room first, then the aggro vicinity."""
+    pool = {}
+    for source in ("targets", "vicinity"):
+        for player in ctx.get(source) or ():
+            if not player.logged_in or player.hp <= 0:
+                continue
+            pool.setdefault(player.id, player)
+    return list(pool.values())
+
+
+def _npc_pick_target(npc, candidates, cfg):
+    if not candidates:
+        return None
+    prefer = cfg.get("prefer") or "random"
+    if prefer == "weakest":
+        return min(candidates, key=lambda p: (p.hp, p.id))
+    if prefer == "nearest":
+        here = npc["room"]
+
+        def _key(player):
+            hops = _room_hops(here, player.room)
+            return (float("inf") if hops is None else hops, player.hp, player.id)
+
+        return min(candidates, key=_key)
+    return random.choice(candidates)
+
+
+def _npc_swing(npc, victim, state, event=None):
+    dmg = random.randint(1, npc["attack"])
+    dmg = max(0, dmg - _player_damage_reduction(victim))
+    dmg = _training_damage(dmg)
+    intent = {
+        "kind": "attack",
+        "target": victim.id,
+        "dmg": dmg,
+        "companion": None,
+        "state": state,
+    }
+    if event:
+        intent["event"] = event
+    return intent
+
+
+def _npc_leash_intent():
+    return {
+        "kind": "state",
+        "state": "LEASHING",
+        "target": None,
+        "event": "leash_broken",
+    }
+
+
+def _npc_lost_target(npc, ctx, cfg):
+    """Replace a stale target when one is in reach, else drop it."""
+    here = npc["room"]
+    pool = [p for p in _npc_candidates(ctx) if p.room == here]
+    replacement = _npc_pick_target(npc, pool, cfg)
+    if replacement is not None:
+        return _npc_swing(npc, replacement, "AGGRO", "target_switched")
+    if cfg["leash_radius"] > 0:
+        home_hops = _room_hops(_npc_home(npc), npc["room"])
+        if home_hops:
+            return _npc_leash_intent()
+    return {
+        "kind": "state",
+        "state": "IDLE",
+        "target": None,
+        "event": "target_cleared",
+    }
+
+
+def _npc_target_state(npc, cfg):
+    """Stale-target validation in the design section 5 order.
+
+    (1) still in players and logged in, (2) hp > 0 (npc_apply re-checks it
+    immediately before damage), (3) reachable within aggro_radius. A radius-0
+    mob's target is valid only in the same room.
+    """
+    target_id = npc.get("target")
+    if target_id is None:
+        return None
+    victim = players.get(target_id)
+    if victim is None or not victim.logged_in:
+        return None
+    if victim.hp <= 0:
+        return None
+    hops = _room_hops(npc["room"], victim.room)
+    if hops is None or hops > cfg["aggro_radius"]:
+        return None
+    return victim
+
+
+def _npc_chase_intent(npc, victim, ctx, cfg, event=None):
+    path = _room_path(npc["room"], victim.room, _npc_blocked_rooms(npc))
+    next_room = path[0] if path else None
+    if next_room is None:
+        return _npc_lost_target(npc, ctx, cfg)
+    if cfg["leash_radius"] > 0:
+        next_home = _room_hops(_npc_home(npc), next_room)
+        if next_home is None or next_home > cfg["leash_radius"]:
+            return _npc_leash_intent()
+    intent = {
+        "kind": "move",
+        "to": next_room,
+        "state": "CHASING",
+        "target": victim.id,
+    }
+    if event:
+        intent["event"] = event
+    return intent
+
+
+def _npc_think_state(npc, ctx, now, cfg):
+    """One transition of the archetype state machine; never mutates the npc."""
+    state = npc.get("state") or "IDLE"
+    here = npc["room"]
+
+    if state in ("LEASHING", "FLEEING"):
+        goal = _npc_home(npc)
+        if state == "FLEEING" and cfg.get("flee_to"):
+            goal = cfg["flee_to"]
+        if here != goal:
+            return None
+        return {
+            "kind": "state",
+            "state": "IDLE",
+            "target": None,
+            "heal": bool(cfg["leash_heal"]),
+            "event": "flee_succeeded" if state == "FLEEING" else "leash_returned",
+        }
+
+    # Flee fires before the swing (design section 7).
+    if (
+        cfg["flee_below_pct"] > 0
+        and npc["hp"] <= npc["max_hp"] * cfg["flee_below_pct"] / 100
+    ):
+        return {
+            "kind": "state",
+            "state": "FLEEING",
+            "target": None,
+            "event": "flee_started",
+        }
+
+    if state == "IDLE":
+        if cfg["retaliate_only"]:
+            return None
+        victim = _npc_pick_target(npc, _npc_candidates(ctx), cfg)
+        if victim is None:
+            return None
+        if victim.room == here:
+            return _npc_swing(npc, victim, "AGGRO", "aggro_acquired")
+        return _npc_chase_intent(npc, victim, ctx, cfg, "aggro_acquired")
+
+    if state not in ("AGGRO", "CHASING"):
+        return None
+
+    if cfg["leash_radius"] > 0:
+        home_hops = _room_hops(_npc_home(npc), here)
+        if home_hops is None or home_hops > cfg["leash_radius"]:
+            return _npc_leash_intent()
+
+    victim = _npc_target_state(npc, cfg)
+    if victim is None:
+        return _npc_lost_target(npc, ctx, cfg)
+    if victim.room == here:
+        return _npc_swing(npc, victim, "AGGRO")
+    return _npc_chase_intent(npc, victim, ctx, cfg)
 
 
 def npc_think(npc, ctx, now):
     """Decide one tick's action without touching I/O or the clock."""
     if not npc.get("alive", False) or not npc.get("hostile"):
         return None
+    cfg = _npc_archetype(npc)
+    if _npc_state_machine_active(cfg):
+        return _npc_think_state(npc, ctx, now, cfg)
+    # Baseline: the pre-#536 tick, same RNG calls in the same order, and no
+    # state transition at all while every archetype field is zero.
     targets = ctx.get("targets") or []
     companions = ctx.get("companions") or []
     if not targets and not companions:
@@ -10873,10 +11161,45 @@ def npc_think(npc, ctx, now):
     return {"kind": "attack", "target": victim.id, "dmg": dmg, "companion": None}
 
 
+def _npc_apply_state(npc, intent, now):
+    """Write the state fields an intent carries. Baseline intents carry none."""
+    state = intent.get("state")
+    if state is None:
+        return
+    if intent.get("heal"):
+        npc["hp"] = npc["max_hp"]
+        npc["contributors"] = {}
+    npc["state"] = state
+    if "target" in intent:
+        npc["target"] = intent["target"]
+    if state == "AGGRO":
+        if npc.get("engaged_since") is None:
+            npc["engaged_since"] = now
+    elif state == "IDLE":
+        npc["engaged_since"] = None
+
+
 async def npc_apply(npc, intent, ctx, now):
     """Execute one intent; all send/broadcast/mutation for it lives here."""
-    if not intent or intent.get("kind") != "attack":
+    if not intent:
         return
+    kind = intent.get("kind")
+    if kind == "move":
+        dest = intent.get("to")
+        origin = npc["room"]
+        if dest not in ROOMS or dest == origin or not _npc_can_enter(npc, dest):
+            return
+        npc["room"] = dest
+        _npc_apply_state(npc, intent, now)
+        await sync_room(origin)
+        await sync_room(dest)
+        return
+    if kind == "state":
+        _npc_apply_state(npc, intent, now)
+        return
+    if kind != "attack":
+        return
+    _npc_apply_state(npc, intent, now)
     target_id = intent["target"]
     dmg = intent["dmg"]
     if intent.get("companion"):
@@ -10887,6 +11210,11 @@ async def npc_apply(npc, intent, ctx, now):
         return
     victim = next((p for p in (ctx.get("targets") or ()) if p.id == target_id), None)
     if victim is None:
+        return
+    # respawn_player awaits before it moves the victim out, so a later npc_apply
+    # in the same tick can still see the corpse in the room. Damage must not
+    # land twice.
+    if victim.hp <= 0:
         return
     victim.hp -= dmg
     # Retaliation (#544 owner call A): a hit on the owner is an
