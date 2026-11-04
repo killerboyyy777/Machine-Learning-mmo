@@ -164,6 +164,20 @@ SERVER_SCHEMA = {
         "GUILD_NAME_MIN": _i(1, 64, "Shortest guild name, in characters."),
         "GUILD_NAME_MAX": _i(1, 64, "Longest guild name, in characters."),
     },
+    "intel": {
+        "INTEL_TTL_SECONDS": _i(
+            60, 604800, "Seconds a logged sighting stays queryable."
+        ),
+        "INTEL_MAX_ENTRIES": _i(1, 100000, "Sightings the pool keeps world-wide."),
+        "INTEL_MAX_PER_GUILD": _i(1, 100000, "Sightings one guild may hold."),
+        "INTEL_MAX_PER_OBSERVER": _i(1, 100000, "Sightings one character may hold."),
+        "INTEL_COALESCE_SECONDS": _i(
+            0, 86400, "Identical sightings inside this window replace a row."
+        ),
+        "INTEL_LIVE_SECONDS": _i(
+            1, 3600, "Age ceiling, in seconds, for the live label."
+        ),
+    },
     "leveling": {
         "XP_BASE": _i(1, 1000000, "XP required for level 2."),
         "XP_GROWTH": _f(1.0, 10.0, "XP curve multiplier per level."),

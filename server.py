@@ -31,6 +31,8 @@ COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
 # Guilds keep their own file: scores.json is a 5s flush of ephemeral entries
 # with no version gate, while a guild and its vault must survive a rollback.
 GUILDS_FILE = join(dirname(abspath(__file__)), "guilds.json")
+# Intel keeps one too: bot-cadence appends must never rewrite the vault file.
+INTEL_FILE = join(dirname(abspath(__file__)), "intel.json")
 
 NPC_TICK_SECONDS = 3
 # Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
@@ -331,6 +333,16 @@ GUILD_NAME_MIN = 3
 GUILD_NAME_MAX = MAX_NAME_LEN
 GUILD_TOMBSTONE_CAP = 200
 GUILD_SAVE_SECONDS = 5.0
+
+# --- Shared intel pool (#504) -----------------------------------------------
+INTEL_VERSION = 1
+INTEL_TTL_SECONDS = 21600
+INTEL_MAX_ENTRIES = 4000
+INTEL_MAX_PER_GUILD = 200
+INTEL_MAX_PER_OBSERVER = 24
+INTEL_COALESCE_SECONDS = 300
+INTEL_LIVE_SECONDS = 60
+INTEL_SAVE_SECONDS = 5.0
 
 XP_BASE = 100
 XP_GROWTH = 1.5
@@ -1521,6 +1533,294 @@ def guild_telemetry():
         "vault_gold_out_total": GUILD_VAULT_GOLD_OUT_TOTAL,
         "audit_entries_written": GUILD_AUDIT_ENTRIES_WRITTEN,
     }
+
+
+# --- Shared intel pool (#504) -----------------------------------------------
+# Verified sightings a guild's members log from their own room. A row is
+# scoped to the guild that holds it and never carries an observer identity
+# out: /api/state has no auth, so only aggregates leave through it.
+INTEL_KINDS = ("hostile", "npc_death", "player_death", "node", "traffic")
+INTEL_VALUES = {
+    "hostile": ("alive",),
+    "npc_death": (None,),
+    "player_death": (None,),
+    "node": ("ready",),
+    "traffic": ("0", "1-3", "4-8", "9-12"),
+}
+INTEL_SUBJECT_KINDS = frozenset({"hostile", "npc_death", "node"})
+INTEL_SOURCES = frozenset({"sensor"})
+
+INTEL_STATS = {
+    "observations_logged": 0,
+    "observations_refused": 0,
+    "queries_served": 0,
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "entries_evicted": 0,
+    "entries_expired": 0,
+}
+
+
+def _intel_age_key(row):
+    return (row["ts"], row["seq"])
+
+
+def _normalize_intel_row(rec):
+    """One stored row, or None when it cannot be served as intel.
+
+    Tolerant like _normalize_guild_record: missing optional fields take
+    defaults and unknown keys are dropped, while a row whose room, kind,
+    value or source is not recognised is discarded rather than repaired.
+    """
+    if not isinstance(rec, dict):
+        return None
+    now = time.time()
+    try:
+        seq = int(rec.get("seq"))
+        ts = float(rec.get("ts"))
+    except (TypeError, ValueError):
+        return None
+    # A NaN timestamp fails the chained compare, so it is dropped like a
+    # future one instead of sorting into every age gauge as zero.
+    if seq <= 0 or not 0 < ts <= now:
+        return None
+    room = str(rec.get("room") or "")
+    if room not in ROOMS:
+        return None
+    kind = str(rec.get("kind") or "")
+    if kind not in INTEL_KINDS:
+        return None
+    value = rec.get("value")
+    if value is not None:
+        value = str(value)
+    if value not in INTEL_VALUES[kind]:
+        return None
+    subject = rec.get("subject")
+    subject = str(subject).strip() if subject is not None else None
+    if kind in INTEL_SUBJECT_KINDS:
+        if not subject:
+            return None
+    else:
+        subject = None  # these kinds carry no subject, so a name cannot leak
+    try:
+        guild = int(rec.get("guild"))
+    except (TypeError, ValueError):
+        return None
+    if guild <= 0:
+        return None
+    observer = str(rec.get("observer") or "").strip().lower()
+    if not observer:
+        return None
+    source = str(rec.get("source") or "")
+    if source not in INTEL_SOURCES:
+        return None
+    try:
+        confidence = max(0, min(100, int(rec.get("confidence", 0))))
+    except (TypeError, ValueError):
+        confidence = 0
+    try:
+        repeats = max(1, int(rec.get("repeats", 1)))
+    except (TypeError, ValueError):
+        repeats = 1
+    try:
+        first_ts = float(rec.get("first_ts", ts))
+    except (TypeError, ValueError):
+        first_ts = ts
+    if not 0 < first_ts <= ts:
+        first_ts = ts
+    return {
+        "seq": seq,
+        "ts": ts,
+        "guild": guild,
+        "observer": observer,
+        "room": room,
+        "kind": kind,
+        "subject": subject,
+        "value": value,
+        "confidence": confidence,
+        "source": source,
+        "repeats": repeats,
+        "first_ts": first_ts,
+    }
+
+
+def _intel_over_cap(rows, field, cap):
+    """Seqs of the oldest rows that put each `field` group over `cap`."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[field], []).append(row)
+    drop = set()
+    for group in groups.values():
+        excess = len(group) - cap
+        if excess > 0:
+            for row in sorted(group, key=_intel_age_key)[:excess]:
+                drop.add(row["seq"])
+    return drop
+
+
+def _intel_prune(rows, now=None):
+    """Drop rows past INTEL_TTL_SECONDS in place; returns how many expired."""
+    now = time.time() if now is None else now
+    keep = [r for r in rows if now - r["ts"] <= INTEL_TTL_SECONDS]
+    expired = len(rows) - len(keep)
+    rows[:] = keep
+    return expired
+
+
+def _intel_compact(rows):
+    """Enforce the observer, guild and world caps in place; returns evictions.
+
+    World eviction drops the oldest row of the guild holding the most rows
+    (tie: lowest id), so no guild can push another guild's rows out.
+    """
+    before = len(rows)
+    drop = _intel_over_cap(rows, "observer", INTEL_MAX_PER_OBSERVER)
+    drop |= _intel_over_cap(
+        [r for r in rows if r["seq"] not in drop], "guild", INTEL_MAX_PER_GUILD
+    )
+    kept = [r for r in rows if r["seq"] not in drop]
+    while len(kept) > INTEL_MAX_ENTRIES:
+        per_guild = {}
+        for row in kept:
+            per_guild.setdefault(row["guild"], []).append(row)
+        gid = min(per_guild, key=lambda g: (-len(per_guild[g]), g))
+        drop.add(min(per_guild[gid], key=_intel_age_key)["seq"])
+        kept = [r for r in kept if r["seq"] not in drop]
+    rows[:] = kept
+    return before - len(kept)
+
+
+def _intel_snapshot():
+    """Counters and age gauges for /api/state and the GM tables.
+
+    `since` is the process start epoch: a restart zeroes the counters, so a
+    harness that groups samples across one would compute a negative delta
+    (npc-ai-v2-design.md section 8).
+    """
+    now = time.time()
+    ages = sorted(max(0.0, now - row["ts"]) for row in INTEL_ROWS)
+    median = None
+    if ages:
+        middle = len(ages) // 2
+        median = ages[middle]
+        if not len(ages) % 2:
+            median = (ages[middle - 1] + ages[middle]) / 2
+    return {
+        "since": START_TIME,
+        "counters": dict(INTEL_STATS),
+        "ages": {
+            "oldest_age_s": round(ages[-1], 1) if ages else None,
+            "median_age_s": round(median, 1) if median is not None else None,
+        },
+    }
+
+
+INTEL_FILE_BLOCKED = False
+
+
+def load_intel(path=None):
+    """(rows, seq) from intel.json, else from its single rotated generation.
+
+    A file whose version is not INTEL_VERSION is left untouched and blocks
+    saving, so a rollback can still read what a newer build wrote.
+    """
+    global INTEL_FILE_BLOCKED
+    path = path or INTEL_FILE
+    for candidate in (path, path + ".1"):
+        try:
+            with open(candidate) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: could not load {os.path.basename(candidate)}: {e}")
+            continue
+        if not isinstance(data, dict) or data.get("version") != INTEL_VERSION:
+            if candidate == path:
+                INTEL_FILE_BLOCKED = True
+            print(
+                f"Warning: {os.path.basename(candidate)} version is not "
+                f"{INTEL_VERSION}; not loaded"
+            )
+            return [], 0
+        if candidate != path:
+            print(
+                f"Warning: {os.path.basename(path)} missing/corrupt, "
+                f"recovered from {os.path.basename(candidate)}"
+            )
+        rows = []
+        seen = set()
+        raw_rows = data.get("observations")
+        if isinstance(raw_rows, list):
+            for rec in raw_rows:
+                row = _normalize_intel_row(rec)
+                if row is None or row["seq"] in seen:
+                    continue
+                seen.add(row["seq"])
+                rows.append(row)
+        try:
+            file_seq = max(0, int(data.get("seq", 0)))
+        except (TypeError, ValueError):
+            file_seq = 0
+        seq = max([file_seq] + [row["seq"] for row in rows])
+        # Load-time trimming moves no counters: a restart must not read as a
+        # cap event or an expiry in the telemetry deltas.
+        _intel_prune(rows)
+        _intel_compact(rows)
+        return rows, seq
+    return [], 0
+
+
+def save_intel(path=None):
+    if path is None and INTEL_FILE_BLOCKED:
+        return False
+    path = path or INTEL_FILE
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(
+                {
+                    "version": INTEL_VERSION,
+                    "seq": INTEL_SEQ,
+                    "observations": INTEL_ROWS,
+                },
+                f,
+            )
+        if os.path.exists(path):
+            os.replace(path, path + ".1")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+# Filled by the load at the module bottom, after _apply_config(), so the
+# first prune and compact use the configured caps rather than the defaults.
+INTEL_ROWS = []
+INTEL_SEQ = 0
+
+_intel_dirty = False
+
+
+def mark_intel_dirty():
+    global _intel_dirty
+    _intel_dirty = True
+
+
+async def intel_save_loop():
+    global _intel_dirty
+    while True:
+        await asyncio.sleep(INTEL_SAVE_SECONDS)
+        expired = _intel_prune(INTEL_ROWS)
+        INTEL_STATS["entries_expired"] += expired
+        if expired:
+            mark_intel_dirty()
+        if _intel_dirty and save_intel():
+            _intel_dirty = False
 
 
 def get_score_entry(name):
@@ -7371,6 +7671,7 @@ except ImportError:
 _apply_config()
 _sync_extra_spawns()
 _refresh_quests()
+INTEL_ROWS, INTEL_SEQ = load_intel()
 
 
 def quest_delver_ready(entry):
@@ -8751,6 +9052,7 @@ async def cmd_gm_tables(player, msg):
             "players_online": len(players),
             "guilds": guild_telemetry(),
             "acquisition": _acquisition_snapshot(),
+            "intel": _intel_snapshot(),
         },
     )
 
@@ -9389,6 +9691,7 @@ def world_snapshot():
             "companion_damage": DAMAGE_STATS["companion"],
         },
         "acquisition": _acquisition_snapshot(),
+        "intel": _intel_snapshot(),
         "buffs": buffs_view,
         "bosses": bosses,
         "dungeons": dungeon_views,
@@ -10657,6 +10960,7 @@ async def main():
                     _run_resilient("companions_save", companions_save_loop)
                 ),
                 asyncio.create_task(_run_resilient("guilds_save", guilds_save_loop)),
+                asyncio.create_task(_run_resilient("intel_save", intel_save_loop)),
                 asyncio.create_task(
                     _run_resilient("dashboard_snapshot", dashboard_refresh_loop)
                 ),
@@ -10688,6 +10992,7 @@ async def main():
         save_scores()
         save_companions()
         save_guilds()
+        save_intel()
         print("Scores saved. Bye.", flush=True)
 
 
