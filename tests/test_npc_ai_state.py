@@ -2,10 +2,9 @@
 
 Run from the repo root:  python tests/test_npc_ai_state.py
 
-No world template carries an archetype yet, so every transition here is driven
-by a synthetic npc and the last block asserts the live world still resolves all
-of its hostiles to baseline. The parity and golden suites are the proof that
-the world itself did not move.
+Transitions here are driven by a synthetic npc; the only live templates with a
+state machine are the four stalkers. The parity and golden suites are the proof
+that the rest of the world did not move.
 """
 
 import asyncio
@@ -104,8 +103,10 @@ try:
         assert npc["target"] is None, npc["target"]
         assert npc["room"] == "forest_edge", npc["room"]
     assert npc["hp"] == 40, npc["hp"]
-    for live in list(srv.npcs.values()):
-        assert not srv._npc_state_machine_active(srv._npc_archetype(live)), live["id"]
+    stalkers = {"wolf", "timber_wolf", "mountain_lion", "crag_stalker"}
+    for nid, live in srv.npcs.items():
+        active = srv._npc_state_machine_active(srv._npc_archetype(live))
+        assert active == (nid.split("__x")[0] in stalkers), nid
 finally:
     _restore(saved)
 print("BASELINE_IDLE_OK")
