@@ -2,6 +2,18 @@
 
 All notable changes to the text MMO engine are recorded here.
 
+## Unreleased
+- Player guilds + shared vault (#588): `guild
+  create|info|invite|join|leave|kick|promote|demote|disband|vault|audit`
+  charters a persisted roster on a leader/officer/member ladder with a
+  300s invite TTL, deterministic leader succession, and charter, disband
+  and vault actions gated at the Adventurers Guild hall. Members share a
+  gold and item vault whose balances live only in `guilds.json`, and every
+  mutation appends to a per-guild audit log capped at 500 entries.
+  `/api/state` publishes aggregate counts only, and the dashboard plus the
+  TUI gain a Guilds panel with membership, vault totals and recent guild
+  activity.
+
 ## 0.11.0 - Living bot world (2026-11-04)
 - Release gate (#567): the three-seed 12h gate passed on the release build --
   seeds 700/701/702, 20 agents, 14400s each, 54 checks pass and none fail.

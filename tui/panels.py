@@ -3,13 +3,14 @@
 One function per dashboard tab, dispatched by tab id. Overview is the
 TUI-1 proving panel; World, Players and Market land in TUI-2 (#491);
 Dungeon, Agents, Quests and Crafting land in TUI-3 (#492); Config, Runs
-and GM land in TUI-4 (#493). Each mirrors the matching dashboard
-renderers -- health/trend/activity for Overview, rooms/history/activity
-for World, performance/scores/tracker for Players, treasury/book/trades/
-by-item for Market, buffs/bosses/clears/instances for Dungeon,
-roster/action feed for Agents, catalog/commissions for Quests,
-recipes/history/supply/flow for Crafting, sections/overrides for Config,
-run index/metrics for Runs, treasury/catalog for GM.
+and GM land in TUI-4 (#493); Guilds lands with the #588 surfaces. Each
+mirrors the matching dashboard renderers -- health/trend/activity for
+Overview, rooms/history/activity for World, performance/scores/tracker
+for Players, treasury/book/trades/by-item for Market,
+buffs/bosses/clears/instances for Dungeon, roster/action feed for
+Agents, catalog/commissions for Quests, recipes/history/supply/flow for
+Crafting, guild totals/audit feed for Guilds, sections/overrides for
+Config, run index/metrics for Runs, treasury/catalog for GM.
 
 Snapshot-backed panels read /api/state. Config and Runs need their own
 one-shot payloads (/api/config, /api/runs), passed as `extras` because
@@ -98,6 +99,8 @@ def render_panel(tab, snapshot, rows=ACTIVITY_ROWS, extras=None):
         return render_quests(snapshot, rows)
     if tab == "crafting":
         return render_crafting(snapshot, rows)
+    if tab == "guilds":
+        return render_guilds(snapshot, rows)
     if tab == "config":
         return render_config(snapshot, rows, extras.get("config"))
     if tab == "runs":
@@ -1183,6 +1186,53 @@ def _command_flow(snapshot):
     )
     grid.add_row(*[Text(label, style="dim") for label, _ in FLOW_COMMANDS])
     return grid
+
+
+# --- guilds --------------------------------------------------------------
+def render_guilds(snapshot, rows=ACTIVITY_ROWS):
+    """Guilds tab: aggregate totals, vault holdings, recent audit feed.
+
+    Aggregate only, like /api/state itself: per-guild vault figures and
+    rosters are member-only behind `guild info`, so no panel can show them.
+    """
+    guilds = snapshot.get("guilds") or {}
+    return Group(
+        Text("Guilds", style="bold"),
+        _guild_cards(guilds),
+        Text(""),
+        Text("Guild activity", style="bold"),
+        _guild_feed(guilds, rows),
+    )
+
+
+def _guild_cards(guilds):
+    if not guilds:
+        return Text("no guilds chartered yet", style="dim italic")
+    cards = (
+        ("chartered", str(int(_as_float(guilds.get("count"))))),
+        ("members", str(int(_as_float(guilds.get("members_total"))))),
+        ("online", str(int(_as_float(guilds.get("online_members"))))),
+        ("largest", str(int(_as_float(guilds.get("largest"))))),
+        ("vault gold", str(int(_as_float(guilds.get("vault_gold_total"))))),
+        ("vault items", str(int(_as_float(guilds.get("vault_items_total"))))),
+        ("invites", str(int(_as_float(guilds.get("invites_pending"))))),
+        ("audit entries", str(int(_as_float(guilds.get("audit_entries_written"))))),
+    )
+    grid = Table.grid(padding=(0, 2))
+    for _ in range(CARD_COLUMNS):
+        grid.add_column(justify="right")
+    for start in range(0, len(cards), CARD_COLUMNS):
+        chunk = cards[start : start + CARD_COLUMNS]
+        grid.add_row(*[Text(value, style="bold") for _, value in chunk])
+        grid.add_row(*[Text(label, style="dim") for label, _ in chunk])
+    return grid
+
+
+def _guild_feed(guilds, rows=ACTIVITY_ROWS):
+    feed = [line for line in (guilds.get("history") or []) if isinstance(line, str)]
+    if not feed:
+        return Text("no guild activity yet", style="dim italic")
+    return Group(*[Text(line) for line in reversed(feed[-rows:])])
 
 
 # --- gm ------------------------------------------------------------------
