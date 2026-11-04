@@ -114,13 +114,68 @@ LEDGER = {
 
 TELEMETRY = {"companion_damage_share_pct": 25.0}
 
+# What the guild probe leaves in /api/state while its vault still holds gold
+# and an item: deposit 6, withdraw 2, six audit entries, two members.
+GUILD_PEAK = {
+    "count": 1,
+    "members_total": 2,
+    "online_members": 2,
+    "largest": 2,
+    "vault_gold_total": 4,
+    "vault_items_total": 1,
+    "invites_pending": 0,
+    "audit_entries": 6,
+    "vault_gold_in_total": 6,
+    "vault_gold_out_total": 2,
+    "audit_entries_written": 6,
+}
+GUILD_PROBE = {
+    "guild": "Probe Guild 700001234",
+    "item": "Iron Ore",
+    "steps": 15,
+    "gold_conserved": True,
+    "problems": [],
+    "skipped": "",
+    "error": "",
+}
+
+
+def with_guilds(samples, peak=None, probe=None, empty_after=False):
+    """Add the probe's peak sample, the way ``collect`` does."""
+    sample = copy.deepcopy(samples[-1])
+    sample["t"] = round(sample["t"] + 10.0, 1)
+    sample["state"]["guilds"] = dict(GUILD_PEAK if peak is None else peak)
+    sample["state"]["guild_probe"] = dict(GUILD_PROBE if probe is None else probe)
+    samples.append(sample)
+    if empty_after:
+        # The probe disbands, so the last sample always shows an empty world.
+        final = copy.deepcopy(sample)
+        final["t"] = round(sample["t"] + 10.0, 1)
+        final["state"]["guilds"] = {
+            "count": 0,
+            "members_total": 0,
+            "online_members": 0,
+            "largest": 0,
+            "vault_gold_total": 0,
+            "vault_items_total": 0,
+            "invites_pending": 0,
+            "audit_entries": 0,
+            "vault_gold_in_total": 6,
+            "vault_gold_out_total": 6,
+            "audit_entries_written": 8,
+        }
+        samples.append(final)
+    return samples
+
 
 def make_measurements(profile="smoke", seed=700, alive=8):
-    samples = make_samples(alive=alive)
+    samples = with_guilds(make_samples(alive=alive))
+    telemetry = dict(TELEMETRY)
+    telemetry.update(bal._telemetry(samples))
     return {
         "meta": {"profile": profile, "seed": seed, "agents": 10, "duration_s": 2400},
         "samples": samples,
-        "derived": bal.derive(samples, LEDGER, TELEMETRY),
+        "derived": bal.derive(samples, LEDGER, telemetry),
     }
 
 
@@ -453,6 +508,102 @@ def test_acquisition_telemetry_survives_trim_and_derive():
     print("ACQUISITION_TELEMETRY_OK")
 
 
+def test_guilds_telemetry_survives_trim_and_derive():
+    # The same pin as acquisition, plus the peak rule: the probe disbands, so
+    # the last sample is an empty world and must not be the one that counts.
+    samples = with_guilds(make_samples(), empty_after=True)
+    trimmed = bal._trim_state(samples[-2]["state"])
+    assert trimmed["guilds"] == GUILD_PEAK
+    assert trimmed["guild_probe"]["gold_conserved"] is True
+    telemetry = bal._telemetry(samples)
+    assert telemetry["guilds"]["count"] == 1
+    assert telemetry["guilds"]["vault_gold_out_total"] == 2
+    derived = bal.derive(samples, LEDGER, dict(TELEMETRY, **telemetry))
+    guilds = derived["guilds"]
+    assert guilds["count"] == 1
+    assert guilds["members"] == 2
+    assert guilds["vault_gold_in"] == 6
+    assert guilds["vault_gold_out"] == 2
+    assert guilds["vault_gold_held"] == 4
+    assert guilds["vault_items"] == 1
+    assert guilds["audit_entries"] == 6
+    assert guilds["conservation_drift"] == 0
+    assert guilds["gold_conserved"] is True
+    assert guilds["skip_reason"] == ""
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": derived},
+        bal.load_thresholds(profile="gate"),
+        "gate",
+        700,
+    )
+    rows = {row["id"]: row for row in report["checks"]}
+    for check_id in (
+        "guilds.count",
+        "guilds.members",
+        "guilds.vault_gold_in",
+        "guilds.vault_gold_out",
+        "guilds.vault_items",
+        "guilds.audit_entries",
+        "guilds.conservation",
+        "guilds.gold_conserved",
+    ):
+        assert rows[check_id]["status"] == "pass", (check_id, rows[check_id])
+    assert "coverage.guilds" not in _failing(report)
+    print("GUILDS_TELEMETRY_OK")
+
+
+def test_guild_absence_and_zero_world_fail_gate():
+    # A covered scenario that ships but measures nothing must fail, never skip
+    # (#589): null, an explicitly skipped probe, and a zero world all FAIL.
+    thresholds = bal.load_thresholds(profile="gate")
+    null = bal.derive(make_samples(), LEDGER, {})
+    assert null["guilds"]["count"] is None
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": null}, thresholds, "gate", 700
+    )
+    failing = _failing(report)
+    assert "coverage.guilds" in failing, failing
+    row = next(r for r in report["scenarios"] if r["name"] == "guilds")
+    assert row["status"] == "skipped", row
+
+    # The probe reports the absent #588 surface; the gate still fails, and the
+    # scenario says which ticket would land it.
+    skip = bal.derive(
+        make_samples(),
+        LEDGER,
+        {"guild_probe": {"skipped": "guilds not in this build"}},
+    )
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": skip}, thresholds, "gate", 700
+    )
+    assert "coverage.guilds" in _failing(report)
+    row = next(r for r in report["scenarios"] if r["name"] == "guilds")
+    assert row["status"] == "skipped", row
+    assert bal.GUILD_SURFACE_ISSUE in row["reason"], row
+
+    # A chartered but empty world moves no gold: the floors fail, not skip.
+    zero = dict(
+        GUILD_PEAK,
+        count=0,
+        members_total=0,
+        vault_gold_total=0,
+        vault_items_total=0,
+        vault_gold_in_total=0,
+        vault_gold_out_total=0,
+        audit_entries=0,
+    )
+    samples = with_guilds(make_samples(), peak=zero)
+    telemetry = bal._telemetry(samples)
+    derived = bal.derive(samples, LEDGER, dict(TELEMETRY, **telemetry))
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": derived}, thresholds, "gate", 700
+    )
+    failing = _failing(report)
+    for check_id in ("guilds.count", "guilds.vault_gold_in", "guilds.audit_entries"):
+        assert check_id in failing, (check_id, failing)
+    print("GUILDS_ABSENCE_FAILS_OK")
+
+
 def test_profile_overrides_and_threshold_file():
     short = make_measurements()
     short["meta"]["duration_s"] = 600
@@ -732,6 +883,8 @@ def main():
     test_empty_run_cannot_pass_gate()
     test_gate_coverage_guard()
     test_acquisition_telemetry_survives_trim_and_derive()
+    test_guilds_telemetry_survives_trim_and_derive()
+    test_guild_absence_and_zero_world_fail_gate()
     test_profile_overrides_and_threshold_file()
     test_determinism_repeats()
     test_median_seed_decides_profile()
