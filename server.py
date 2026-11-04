@@ -321,6 +321,8 @@ GUILD_VERSION = 1
 GUILD_MAX_MEMBERS = 20
 GUILD_MAX_GUILDS = 200
 GUILD_AUDIT_CAP = 500
+GUILD_AUDIT_SHOW_DEFAULT = 10
+GUILD_AUDIT_SHOW_MAX = 50
 GUILD_INVITE_TTL_SECONDS = 300
 GUILD_VAULT_ITEM_CAP = 64
 GUILD_OFFICER_DAILY_GOLD = 100
@@ -1287,6 +1289,13 @@ def new_guild_record(guild_id, name, founder, created_ts=None):
     }
 
 
+def _guild_audit_trim(entries):
+    """Newest GUILD_AUDIT_CAP entries only; anything that is not a row is junk."""
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, dict)][-GUILD_AUDIT_CAP:]
+
+
 def _normalize_guild_record(guild_id, rec):
     if not isinstance(rec, dict):
         return None
@@ -1316,7 +1325,7 @@ def _normalize_guild_record(guild_id, rec):
     except (TypeError, ValueError):
         vault_gold = 0
     vault_items = [i for i in rec.get("vault_items") or [] if isinstance(i, str)]
-    audit = [e for e in rec.get("audit") or [] if isinstance(e, dict)]
+    audit = _guild_audit_trim(rec.get("audit"))
     withdrawn = rec.get("withdrawn_today")
     if not isinstance(withdrawn, dict):
         withdrawn = {}
@@ -1858,7 +1867,7 @@ def _command_ticks_buffs(cmd, msg):
         cmd not in NO_BUFF_TICK
         and not (cmd == "quest" and action == "list")
         and not (cmd == "craft" and action == "status")
-        and not (cmd == "guild" and action in ("", "info"))
+        and not (cmd == "guild" and action in ("", "info", "audit"))
         and not (cmd == "guild" and action == "vault" and not msg.get("op"))
     )
 
@@ -5823,6 +5832,89 @@ def _guild_vault_text(gold, items):
     return f"({gold} gold, {items} item(s))"
 
 
+_GUILD_AUDIT_WORDS = {
+    "create": "founded the guild",
+    "join": "joined the guild",
+    "leave": "left the guild",
+    "invite": "invited {target}",
+    "kick": "removed {target}",
+    "promote": "promoted {target} to officer",
+    "demote": "demoted {target} to member",
+    "succession": "handed leadership to {target}",
+}
+
+
+def _guild_audit_line(entry):
+    """One readable line per entry: the log is a list, never a JSON dump."""
+    stamp = time.strftime("%H:%M:%S", time.localtime(_guild_ts(entry.get("ts"))))
+    actor = str(entry.get("actor") or "world")
+    action = str(entry.get("action") or "?")
+    target = str(entry.get("target") or "")
+    amount = _guild_int(entry.get("amount"))
+    item = entry.get("item")
+    words = _GUILD_AUDIT_WORDS.get(action)
+    said = words.format(target=target) if words else action
+    if action in ("deposit_gold", "withdraw_gold"):
+        moved = "deposited" if action == "deposit_gold" else "withdrew"
+        said = f"{moved} {amount} gold"
+    elif action in ("deposit_item", "withdraw_item"):
+        moved = "deposited" if action == "deposit_item" else "withdrew"
+        said = f"{moved} {_iname(str(item or ''))}"
+    elif action == "disband":
+        said = (
+            f"disbanded the guild ({amount} gold, "
+            f"{_guild_int(entry.get('items'))} item(s))"
+        )
+    return f"#{_guild_int(entry.get('seq'))} {stamp} {actor} {said}."
+
+
+def _guild_audit(
+    record,
+    actor,
+    action,
+    target=None,
+    amount=None,
+    item=None,
+    items=None,
+    rank_from=None,
+    rank_to=None,
+):
+    """The only writer of a guild's audit list (INV-6).
+
+    Appends one entry, drops the oldest past GUILD_AUDIT_CAP and returns it.
+    Mutation sites mark the guilds dirty themselves; this helper never does,
+    so a refused command cannot dirty the file through it.
+    """
+    global GUILD_AUDIT_ENTRIES_WRITTEN
+    entries = record.get("audit")
+    if not isinstance(entries, list):
+        entries = []
+        record["audit"] = entries
+    # Highest seq wins: a malformed or truncated tail must not restart at 1.
+    seq = 1
+    for row in entries:
+        if isinstance(row, dict):
+            seq = max(seq, _guild_int(row.get("seq")) + 1)
+    entry = {
+        "seq": seq,
+        "ts": time.time(),
+        "actor": str(actor or "world"),
+        "action": str(action or ""),
+        "target": target,
+        "amount": amount,
+        "item": item,
+        "items": items,
+        "rank_from": rank_from,
+        "rank_to": rank_to,
+        "gold_after": _guild_int(record.get("vault_gold")),
+    }
+    entries.append(entry)
+    del entries[:-GUILD_AUDIT_CAP]
+    GUILD_AUDIT_ENTRIES_WRITTEN += 1
+    guild_feed.append(f"{record.get('name')}: {_guild_audit_line(entry)}")
+    return entry
+
+
 def _guild_dissolve(record, now):
     GUILDS.pop(record.get("id"), None)
     _guild_index_drop(record)
@@ -5930,6 +6022,7 @@ async def _cmd_guild_create(player, msg):
     record = new_guild_record(gid, name, player.name, now)
     GUILDS[gid] = record
     GUILD_BY_MEMBER[player.name.lower()] = gid
+    _guild_audit(record, player.name, "create")
     mark_guilds_dirty()
     await send(
         player,
@@ -5971,6 +6064,7 @@ async def _cmd_guild_leave(player, msg):
     row = members.get(key) or {}
     if row.get("rank") != "leader":
         members.pop(key, None)
+        _guild_audit(record, player.name, "leave")
         if GUILD_BY_MEMBER.get(key) == gid:
             del GUILD_BY_MEMBER[key]
         mark_guilds_dirty()
@@ -5978,7 +6072,9 @@ async def _cmd_guild_leave(player, msg):
         return
     heir = _guild_successor(members, key)
     if heir is None:
+        _guild_audit(record, player.name, "leave")
         gold, items = await _guild_return_vault(player, record)
+        _guild_audit(record, player.name, "disband", amount=gold, items=items)
         _guild_dissolve(record, time.time())
         text = f"{name} had no members left and is dissolved."
         if gold or items:
@@ -5986,8 +6082,18 @@ async def _cmd_guild_leave(player, msg):
         await send(player, {"type": "message", "text": text})
         await send(player, stats_view(player))
         return
+    heir_rank = members[heir].get("rank")
     members[heir]["rank"] = "leader"
     members.pop(key, None)
+    _guild_audit(record, player.name, "leave")
+    _guild_audit(
+        record,
+        player.name,
+        "succession",
+        target=_guild_display_name(heir),
+        rank_from=heir_rank,
+        rank_to="leader",
+    )
     if GUILD_BY_MEMBER.get(key) == gid:
         del GUILD_BY_MEMBER[key]
     mark_guilds_dirty()
@@ -6018,6 +6124,7 @@ async def _cmd_guild_disband(player, msg):
         return
     name = record.get("name")
     gold, items = await _guild_return_vault(player, record)
+    _guild_audit(record, player.name, "disband", amount=gold, items=items)
     _guild_dissolve(record, time.time())
     text = f"{name} is disbanded."
     if gold or items:
@@ -6100,6 +6207,8 @@ async def _cmd_guild_invite(player, msg):
         "ts": now,
         "inviter": player.name,
     }
+    _guild_audit(record, player.name, "invite", target=shown)
+    mark_guilds_dirty()
     await send(player, {"type": "message", "text": f"Invitation sent to {shown}."})
     target = _online_player(target_key)
     if target is not None:
@@ -6190,6 +6299,7 @@ async def _cmd_guild_join(player, msg):
     }
     GUILD_BY_MEMBER[key] = record.get("id")
     _pending_guild_invites.pop(key, None)
+    _guild_audit(record, player.name, "join")
     mark_guilds_dirty()
     await send(
         player,
@@ -6240,6 +6350,7 @@ async def _cmd_guild_kick(player, msg):
     if GUILD_BY_MEMBER.get(target_key) == record.get("id"):
         del GUILD_BY_MEMBER[target_key]
     _pending_guild_invites.pop(target_key, None)
+    _guild_audit(record, player.name, "kick", target=shown, rank_from=rank)
     mark_guilds_dirty()
     await send(
         player,
@@ -6308,6 +6419,14 @@ async def _cmd_guild_promote(player, msg):
         return
     shown = _guild_display_name(target_key)
     row["rank"] = "officer"
+    _guild_audit(
+        record,
+        player.name,
+        "promote",
+        target=shown,
+        rank_from="member",
+        rank_to="officer",
+    )
     mark_guilds_dirty()
     await send(
         player,
@@ -6368,6 +6487,14 @@ async def _cmd_guild_demote(player, msg):
         return
     shown = _guild_display_name(target_key)
     row["rank"] = "member"
+    _guild_audit(
+        record,
+        player.name,
+        "demote",
+        target=shown,
+        rank_from="officer",
+        rank_to="member",
+    )
     mark_guilds_dirty()
     await send(
         player,
@@ -6456,6 +6583,7 @@ async def _guild_vault_deposit_gold(player, record, raw):
     record["vault_gold"] = _guild_int(record.get("vault_gold")) + amount
     player.gold = held - amount
     GUILD_VAULT_GOLD_IN_TOTAL += amount
+    _guild_audit(record, player.name, "deposit_gold", amount=amount)
     mark_guilds_dirty()
     await send(
         player,
@@ -6511,6 +6639,7 @@ async def _guild_vault_withdraw_gold(player, record, raw):
     record["vault_gold"] = stored - amount
     player.gold = _guild_int(player.gold) + amount
     GUILD_VAULT_GOLD_OUT_TOTAL += amount
+    _guild_audit(record, player.name, "withdraw_gold", amount=amount)
     mark_guilds_dirty()
     await send(
         player,
@@ -6545,6 +6674,7 @@ async def _guild_vault_deposit_item(player, record, raw):
         return
     player.inventory.remove(iid)
     vault_items.append(iid)
+    _guild_audit(record, player.name, "deposit_item", amount=1, item=iid)
     mark_guilds_dirty()
     await send(
         player,
@@ -6590,6 +6720,7 @@ async def _guild_vault_withdraw_item(player, record, raw):
         state["items"] = used + 1
     vault_items.remove(iid)
     in_pack = _deliver_item_or_bank(player, iid)
+    _guild_audit(record, player.name, "withdraw_item", amount=1, item=iid)
     mark_guilds_dirty()
     text = f"You withdraw {_iname(iid)}."
     if not in_pack:
@@ -6661,6 +6792,28 @@ async def _cmd_guild_vault(player, msg):
         await _guild_vault_withdraw_item(player, record, raw_item)
 
 
+async def _cmd_guild_audit(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    count = _guild_int(msg.get("n"), GUILD_AUDIT_SHOW_DEFAULT)
+    count = max(1, min(GUILD_AUDIT_SHOW_MAX, count))
+    entries = [e for e in record.get("audit") or [] if isinstance(e, dict)]
+    if not entries:
+        await send(
+            player,
+            {"type": "message", "text": f"{record['name']} has no recorded events."},
+        )
+        return
+    # Oldest entry first on disk; the reader wants the newest first.
+    lines = [_guild_audit_line(entry) for entry in reversed(entries[-count:])]
+    await send(
+        player,
+        {"type": "message", "text": "Guild audit, newest first:\n" + "\n".join(lines)},
+    )
+
+
 async def cmd_guild(player, msg):
     action = str(msg.get("action") or "info").strip().lower()
     if action == "create":
@@ -6693,6 +6846,9 @@ async def cmd_guild(player, msg):
     if action == "vault":
         await _cmd_guild_vault(player, msg)
         return
+    if action == "audit":
+        await _cmd_guild_audit(player, msg)
+        return
     await send(
         player,
         {
@@ -6700,7 +6856,7 @@ async def cmd_guild(player, msg):
             "text": (
                 f"Unknown guild action '{action}'. "
                 "Use create, info, invite, join, leave, kick, promote, demote, "
-                "disband, or vault."
+                "disband, vault, or audit."
             ),
         },
     )
@@ -6977,7 +7133,7 @@ async def cmd_help(player, msg):
                 "Commands: login look move attack take gather drop equip use rest heal buy sell "
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
-                "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault] "
+                "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "
