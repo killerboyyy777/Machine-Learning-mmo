@@ -4564,6 +4564,18 @@ async def cmd_attack(player, msg):
     if npc["hp"] <= 0 and npc.get("alive", True):
         npc["alive"] = False
         npc["respawn_at"] = _npc_respawn_at(npc)
+        # Guildless kills and dungeon kills (d_* rooms are not ROOMS keys)
+        # write no note: intel is guild-scoped and world-room-only.
+        killer_guild = _guild_for_member(player.name)
+        if killer_guild is not None:
+            _intel_append(
+                killer_guild.get("id"),
+                player.name,
+                player.room,
+                "npc_death",
+                npc["id"],
+                None,
+            )
         loot = npc.get("loot", [])
         companion_loot = any(i in COMPANION_ITEMS for i in loot)
         _note_acquisition("boss", attempts=1, earned=companion_loot)

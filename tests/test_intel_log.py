@@ -441,6 +441,58 @@ async def main():
             assert srv.INTEL_STATS["observations_logged"] == n_log
             print("DEATH_NOTE_OK")
 
+            # --- a kill writes a npc_death note to the killer's own pool --
+            clear_pool()
+            move(aria, "graveyard")
+            ghost = srv.find_npc_in_room("graveyard", "ghost")
+            assert ghost is not None, "graveyard lost its ghost"
+            ghost_id = ghost["id"]
+            ghost_saved = (ghost["hp"], ghost["alive"])
+            n_log = srv.INTEL_STATS["observations_logged"]
+            ghost["hp"] = 1
+            inbox.clear()
+            await srv.cmd_attack(aria, {"target": "ghost"})
+            kills = [r for r in srv.INTEL_ROWS if r["kind"] == "npc_death"]
+            assert len(kills) == 1, kills
+            kill_note = kills[0]
+            assert kill_note["guild"] == gid, "the note must land in the killer's guild"
+            assert kill_note["observer"] == "aria", "the player who landed the blow"
+            assert kill_note["room"] == "graveyard"
+            assert kill_note["subject"] == ghost_id
+            assert kill_note["value"] is None
+            assert kill_note["source"] == "sensor" and kill_note["confidence"] == 100
+            assert srv.INTEL_STATS["observations_logged"] == n_log + 1
+            assert ghost["alive"] is False and ghost["respawn_at"] > time.time()
+            # a second swing at the corpse is refused and moves no counter
+            n_log = srv.INTEL_STATS["observations_logged"]
+            inbox.clear()
+            await srv.cmd_attack(aria, {"target": "ghost"})
+            assert texts(inbox) == ["No 'ghost' here to attack."], texts(inbox)
+            assert srv.INTEL_STATS["observations_logged"] == n_log
+            assert len(srv.INTEL_ROWS) == 1
+            # a guildless killer writes nothing at all
+            move(cid, "old_shop")
+            rat = srv.find_npc_in_room("old_shop", "rat")
+            assert rat is not None, "old_shop lost its rat"
+            rat_saved = (rat["hp"], rat["alive"])
+            rat["hp"] = 1
+            n_log = srv.INTEL_STATS["observations_logged"]
+            inbox.clear()
+            await srv.cmd_attack(cid, {"target": "rat"})
+            assert rat["alive"] is False, texts(inbox)
+            assert not [r for r in srv.INTEL_ROWS if r["observer"] == "cid"]
+            assert srv.INTEL_STATS["observations_logged"] == n_log
+            assert len(srv.INTEL_ROWS) == 1
+            for npc, hp, alive in (
+                (ghost, ghost_saved[0], ghost_saved[1]),
+                (rat, rat_saved[0], rat_saved[1]),
+            ):
+                npc["hp"] = hp
+                npc["alive"] = alive
+                npc["respawn_at"] = None
+                npc["contributors"] = {}
+            print("NPC_DEATH_OK")
+
             # --- disband drops that guild's pool and nothing else ---------
             clear_pool(
                 [
