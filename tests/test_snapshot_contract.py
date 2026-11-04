@@ -24,7 +24,7 @@ s = srv.world_snapshot()
 need(s, {"server", "rooms", "players", "scores", "activity", "market",
           "buffs", "bosses", "dungeons", "quests", "recipes",
           "commissions", "guilds", "catalog", "history", "craft_history",
-          "commission_history"}, "snapshot")
+          "commission_history", "intel"}, "snapshot")
 
 # --- server block: header stats, ports, uptime ticker seed ---
 need(s["server"], {"ws_port", "gm_port", "uptime", "start_ts",
@@ -158,6 +158,28 @@ assert isinstance(s["guilds"]["history"], list), "guilds.history is not a list"
 assert len(s["guilds"]["history"]) <= 20, len(s["guilds"]["history"])
 for line in s["guilds"]["history"]:
     assert isinstance(line, str), f"guild history line {line!r} is not a string"
+
+# --- intel pool (#504): counters and age gauges only. Rows, observers and
+# anything per-player stay out: /api/state has no auth ---
+need(s["intel"], {"since", "counters", "ages"}, "intel")
+need(
+    s["intel"]["counters"],
+    {
+        "observations_logged",
+        "observations_refused",
+        "queries_served",
+        "cache_hits",
+        "cache_misses",
+        "entries_evicted",
+        "entries_expired",
+    },
+    "intel.counters",
+)
+need(s["intel"]["ages"], {"oldest_age_s", "median_age_s"}, "intel.ages")
+assert isinstance(s["intel"]["since"], (int, float)), "intel.since is not a number"
+for key, value in s["intel"]["counters"].items():
+    assert isinstance(value, int), f"intel.counters.{key} is not an int"
+    assert value >= 0, f"intel.counters.{key} is negative"
 
 # --- history samples (may be empty on fresh boot) ---
 for h in s["history"]:

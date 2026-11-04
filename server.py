@@ -1549,12 +1549,15 @@ def _normalize_intel_row(rec):
     """
     if not isinstance(rec, dict):
         return None
+    now = time.time()
     try:
         seq = int(rec.get("seq"))
         ts = float(rec.get("ts"))
     except (TypeError, ValueError):
         return None
-    if seq <= 0 or ts != ts or ts > time.time():
+    # A NaN timestamp fails the chained compare, so it is dropped like a
+    # future one instead of sorting into every age gauge as zero.
+    if seq <= 0 or not 0 < ts <= now:
         return None
     room = str(rec.get("room") or "")
     if room not in ROOMS:
@@ -1598,7 +1601,7 @@ def _normalize_intel_row(rec):
         first_ts = float(rec.get("first_ts", ts))
     except (TypeError, ValueError):
         first_ts = ts
-    if first_ts != first_ts or first_ts > ts:
+    if not 0 < first_ts <= ts:
         first_ts = ts
     return {
         "seq": seq,
