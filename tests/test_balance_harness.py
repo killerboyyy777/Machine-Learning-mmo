@@ -54,6 +54,16 @@ def make_samples(alive=8, final_deaths=(2, 2), craft_seq=(3,)):
         "craft_history": [],
         "dungeon_clears": {"solo_clears": 0, "group_clears": 0},
         "scores": [],
+        "npc_ai": {
+            "since": 1000.0,
+            "aggro_acquired": 5,
+            "target_switched": 2,
+            "target_cleared": 1,
+            "leash_broken": 1,
+            "flee_started": 2,
+            "flee_succeeded": 1,
+            "time_in_combat_s": 12.5,
+        },
     }
 
     def sample(
@@ -442,10 +452,11 @@ def test_gate_coverage_guard():
     failing = _failing(report)
     for scenario in bal.PROFILES["gate"]["coverage"]:
         assert f"coverage.{scenario}" in failing, (scenario, failing)
-    # The one remaining hard skip names the ticket that would land it.
+    # npc_ai_v2 landed with #536 and measures in the gate now; on an empty
+    # run it is still skipped for lack of telemetry, and the guard names that.
     row = next(r for r in report["scenarios"] if r["name"] == "npc_ai_v2")
     assert row["status"] == "skipped"
-    assert "#536" in row["reason"] and "phase 2" in row["reason"], row
+    assert "no measurement" in row["reason"], row
     print("GATE_COVERAGE_GUARD_OK")
 
 
@@ -506,6 +517,45 @@ def test_acquisition_telemetry_survives_trim_and_derive():
     assert rows["acquisition.drop_rate"]["status"] == "pass"
     assert "coverage.acquisition" not in _failing(report)
     print("ACQUISITION_TELEMETRY_OK")
+
+
+def test_npc_ai_telemetry_survives_trim_and_derive():
+    # The same pin for the NPC AI v2 counters: they must reach derive() from
+    # a sample state just like acquisition's do, or the gate measures zero.
+    samples = make_samples()
+    npc_ai = {
+        "since": 1000.0,
+        "aggro_acquired": 5,
+        "target_switched": 2,
+        "target_cleared": 1,
+        "leash_broken": 1,
+        "flee_started": 2,
+        "flee_succeeded": 1,
+        "time_in_combat_s": 12.5,
+    }
+    samples[-1]["state"]["npc_ai"] = npc_ai
+    trimmed = bal._trim_state(samples[-1]["state"])
+    assert trimmed["npc_ai"] == npc_ai
+    telemetry = bal._telemetry(samples)
+    assert telemetry["npc_ai"]["aggro_acquired"] == 5
+    derived = bal.derive(samples, LEDGER, telemetry)
+    npc_ai_v2 = derived["npc_ai_v2"]
+    assert npc_ai_v2["telemetry_present"] is True
+    assert npc_ai_v2["aggro_acquired"] == 5
+    assert npc_ai_v2["leash_broken"] == 1
+    assert npc_ai_v2["flee_delta"] == -1.0
+    report = bal.evaluate_run(
+        {"meta": {}, "samples": [], "derived": derived},
+        bal.load_thresholds(profile="gate"),
+        "gate",
+        700,
+    )
+    rows = {row["id"]: row for row in report["checks"]}
+    assert rows["npc_ai_v2.telemetry_present"]["status"] == "pass"
+    assert rows["npc_ai_v2.aggro_acquired"]["status"] == "pass"
+    assert rows["npc_ai_v2.flee_consistency"]["status"] == "pass"
+    assert "coverage.npc_ai_v2" not in _failing(report)
+    print("NPC_AI_TELEMETRY_OK")
 
 
 def test_guilds_telemetry_survives_trim_and_derive():
@@ -670,6 +720,20 @@ def _gate_entry(seed, wild, civ):
     measurements["derived"]["combat"]["wild_deaths_per_hour"] = wild
     measurements["derived"]["combat"]["civ_deaths_per_hour"] = civ
     measurements["derived"]["acquisition"]["drop_rate"] = 1.0
+    # npc_ai_v2 measures in the gate now (#589): give each seed a passing
+    # telemetry block or the coverage guard fails it on absence of evidence.
+    measurements["derived"]["npc_ai_v2"] = {
+        "telemetry_present": True,
+        "since": 1000.0,
+        "aggro_acquired": 5,
+        "target_switched": 2,
+        "target_cleared": 1,
+        "leash_broken": 1,
+        "flee_started": 2,
+        "flee_succeeded": 1,
+        "flee_delta": -1.0,
+        "time_in_combat_s": 12.5,
+    }
     return {"seed": seed, "measurements": measurements}
 
 
@@ -831,9 +895,11 @@ def test_matrix_catalog():
     smoke = bal.PROFILES["smoke"]
     assert smoke["duration_s"] == 600.0
     assert smoke["agents"] == 10
-    # Scenarios that depend on unlanded work are declared, never dropped.
-    assert bal.SCENARIOS["npc_ai_v2"]["unlanded"]
-    assert "#536" in bal.SCENARIOS["npc_ai_v2"]["unlanded"]
+    # Declared scenarios are never dropped; landed ones leave the unlanded
+    # placeholder catalog and move into gate coverage.
+    assert "npc_ai_v2" in bal.SCENARIOS
+    assert "npc_ai_v2" in bal.PROFILES["gate"]["coverage"]
+    assert "unlanded" not in bal.SCENARIOS["npc_ai_v2"]
     assert "unlanded" not in bal.SCENARIOS["acquisition"]
     assert "acquisition" in bal.PROFILES["gate"]["coverage"]
     assert bal.SCENARIOS["progression"]["observed_only"]
@@ -883,6 +949,7 @@ def main():
     test_empty_run_cannot_pass_gate()
     test_gate_coverage_guard()
     test_acquisition_telemetry_survives_trim_and_derive()
+    test_npc_ai_telemetry_survives_trim_and_derive()
     test_guilds_telemetry_survives_trim_and_derive()
     test_guild_absence_and_zero_world_fail_gate()
     test_profile_overrides_and_threshold_file()
