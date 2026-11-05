@@ -23,7 +23,9 @@ import server as srv
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
     WORLD = json.load(fh)
 
-# --- archetype data: four stalkers, every other template baseline ---
+# --- archetype data: leashing confined to the wild crag stalker, every other
+# template baseline; civ-boundary wolves stay aggressive (see #536 design:
+# leash opt-in, never in civ or apex rooms, so the civ death floor holds). ---
 assert srv.NPC_ARCHETYPE_DEFAULTS == {
     "archetype": None,
     "aggro_radius": 0,
@@ -41,7 +43,7 @@ assert WORLD["npc_archetypes"] == {
     "skirmisher": {"flee_below_pct": 25},
 }
 
-STALKERS = {"wolf", "timber_wolf", "mountain_lion", "crag_stalker"}
+STALKERS = {"crag_stalker"}
 assigned = {nid for nid, t in WORLD["npcs"].items() if t.get("archetype")}
 assert assigned == STALKERS, assigned
 for nid, tmpl in WORLD["npcs"].items():

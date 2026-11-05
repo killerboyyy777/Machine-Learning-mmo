@@ -17,7 +17,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import server as srv
 
-STALKERS = {"wolf", "timber_wolf", "mountain_lion", "crag_stalker"}
+# Leash is confined to the wild crag stalker; civ-boundary wolves stay
+# aggressive (the #536 design pins that a civil death floor needs steady
+# pressure, and leashing gutted it on gate seed 702).
+STALKERS = {"crag_stalker"}
 
 
 def _npc(**fields):
