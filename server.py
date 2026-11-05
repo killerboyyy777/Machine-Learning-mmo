@@ -1682,7 +1682,7 @@ def _normalize_intel_row(rec):
 
     Tolerant like _normalize_guild_record: missing optional fields take
     defaults and unknown keys are dropped, while a row whose room, kind,
-    value or source is not recognised is discarded rather than repaired.
+    value or source is not recognized is discarded rather than repaired.
     """
     if not isinstance(rec, dict):
         return None
@@ -7520,7 +7520,7 @@ def _intel_query_cache_key(guild, room, kind, subject):
 
 
 def _intel_query_rows(guild, room, kind, subject, now):
-    """One guild's rows for one filter tuple, newest first, memoised.
+    """One guild's rows for one filter tuple, newest first, memoized.
 
     The memo is keyed by the filter tuple and expires after INTEL_LIVE_SECONDS;
     an expired entry is dropped and counted as a miss rather than served, so
