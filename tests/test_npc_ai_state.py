@@ -2,9 +2,9 @@
 
 Run from the repo root:  python tests/test_npc_ai_state.py
 
-Transitions here are driven by a synthetic npc; the only live templates with a
-state machine are the four stalkers. The parity and golden suites are the proof
-that the rest of the world did not move.
+Transitions here are driven by a synthetic npc; the only live template with a
+state machine is the wild crag stalker. The parity and golden suites are the
+proof that the rest of the world did not move.
 """
 
 import asyncio
@@ -103,7 +103,9 @@ try:
         assert npc["target"] is None, npc["target"]
         assert npc["room"] == "forest_edge", npc["room"]
     assert npc["hp"] == 40, npc["hp"]
-    stalkers = {"wolf", "timber_wolf", "mountain_lion", "crag_stalker"}
+    # Leashing is confined to the wild crag stalker; the civ-boundary wolves
+    # stay on the baseline aggressive loop so the civil death floor holds.
+    stalkers = {"crag_stalker"}
     for nid, live in srv.npcs.items():
         active = srv._npc_state_machine_active(srv._npc_archetype(live))
         assert active == (nid.split("__x")[0] in stalkers), nid
