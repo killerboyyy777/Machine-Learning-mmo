@@ -379,6 +379,7 @@
     "wolf": {
       "name": "Grey Wolf",
       "room": "forest_edge",
+      "archetype": "hunter",
       "hp": 18,
       "max_hp": 18,
       "attack": 2,
@@ -499,6 +500,7 @@
     "timber_wolf": {
       "name": "Timber Wolf",
       "room": "pinewood_thicket",
+      "archetype": "hunter",
       "hp": 30,
       "max_hp": 30,
       "attack": 6,
@@ -535,6 +537,7 @@
     "mountain_lion": {
       "name": "Mountain Lion",
       "room": "highland_trail",
+      "archetype": "hunter",
       "hp": 40,
       "max_hp": 40,
       "attack": 7,
@@ -728,6 +731,7 @@
   },
   "npc_archetypes": {
     "stalker": {"aggro_radius": 1, "leash_radius": 3},
+    "hunter": {"aggro_radius": 1},
     "skirmisher": {"flee_below_pct": 25}
   },
   "items": {

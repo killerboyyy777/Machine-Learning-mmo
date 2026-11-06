@@ -2,10 +2,11 @@
 
 Run from the repo root:  python tests/test_npc_leash.py
 
-The four stalker templates chase on aggro_radius and walk home one hop per tick
-once they reach leash_radius hops from spawn_room. LEASHING never attacks, never
-enters shelter (except its own home), and heals to full on arrival. Guards,
-the Warden and GM bosses keep leash_radius 0 and never take a leash step.
+The wild crag stalker chases on aggro_radius and walks home one hop per tick
+once it reaches leash_radius hops from spawn_room; the three civil hunters
+chase but never leash. LEASHING never attacks, never enters shelter (except its
+own home), and heals to full on arrival. Guards, the Warden and GM bosses keep
+leash_radius 0 and never take a leash step.
 """
 
 import asyncio
@@ -17,10 +18,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import server as srv
 
-# Leash is confined to the wild crag stalker; civ-boundary wolves stay
-# aggressive (the #536 design pins that a civil death floor needs steady
-# pressure, and leashing gutted it on gate seed 702).
+# Leash is confined to the wild crag stalker; the three civil-boundary hunters
+# chase without leashing so the civil death floor gets steady pressure without
+# the retreat that gutted gate seed 702.
 STALKERS = {"crag_stalker"}
+HUNTERS = {"wolf", "timber_wolf", "mountain_lion"}
 
 
 def _npc(**fields):
@@ -90,23 +92,30 @@ def _register(*victims):
         srv.add_member(victim)
 
 
-# --- exactly four templates resolve to the stalker preset ---
+# --- the wild crag stalker leashes; the civil hunters do not ---
 saved = _save()
 try:
     assert srv.WORLD["npc_archetypes"]["stalker"] == {
         "aggro_radius": 1,
         "leash_radius": 3,
     }
+    assert srv.WORLD["npc_archetypes"]["hunter"] == {"aggro_radius": 1}
     assigned = {nid for nid, tmpl in srv.WORLD["npcs"].items() if tmpl.get("archetype")}
-    assert assigned == STALKERS, assigned
+    assert assigned == STALKERS | HUNTERS, assigned
     for nid in STALKERS:
         cfg = srv._npc_archetype(srv.WORLD["npcs"][nid])
         assert cfg["archetype"] == "stalker", nid
         assert cfg["aggro_radius"] == 1, (nid, cfg)
         assert cfg["leash_radius"] == 3, (nid, cfg)
         assert srv._npc_state_machine_active(cfg), nid
+    for nid in HUNTERS:
+        cfg = srv._npc_archetype(srv.WORLD["npcs"][nid])
+        assert cfg["archetype"] == "hunter", nid
+        assert cfg["aggro_radius"] == 1, (nid, cfg)
+        assert cfg["leash_radius"] == 0, (nid, cfg)
+        assert srv._npc_state_machine_active(cfg), nid
     for nid, tmpl in srv.WORLD["npcs"].items():
-        if nid in STALKERS:
+        if nid in STALKERS or nid in HUNTERS:
             continue
         assert not tmpl.get("archetype"), nid
         assert not srv._npc_state_machine_active(srv._npc_archetype(tmpl)), nid

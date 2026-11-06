@@ -23,9 +23,9 @@ import server as srv
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
     WORLD = json.load(fh)
 
-# --- archetype data: leashing confined to the wild crag stalker, every other
-# template baseline; civ-boundary wolves stay aggressive (see #536 design:
-# leash opt-in, never in civ or apex rooms, so the civ death floor holds). ---
+# --- archetype data: leashing confined to the wild crag stalker; the three
+# civil-boundary hunters keep aggro acquisition but never leash, so the civil
+# death floor holds without the seed-702 leash retreat. ---
 assert srv.NPC_ARCHETYPE_DEFAULTS == {
     "archetype": None,
     "aggro_radius": 0,
@@ -40,18 +40,30 @@ assert srv.NPC_ARCHETYPE_DEFAULTS == {
 }
 assert WORLD["npc_archetypes"] == {
     "stalker": {"aggro_radius": 1, "leash_radius": 3},
+    "hunter": {"aggro_radius": 1},
     "skirmisher": {"flee_below_pct": 25},
 }
 
 STALKERS = {"crag_stalker"}
-assigned = {nid for nid, t in WORLD["npcs"].items() if t.get("archetype")}
-assert assigned == STALKERS, assigned
+HUNTERS = {"wolf", "timber_wolf", "mountain_lion"}
+assigned = {
+    nid: t.get("archetype") for nid, t in WORLD["npcs"].items() if t.get("archetype")
+}
+assert assigned == {
+    **{nid: "stalker" for nid in STALKERS},
+    **{nid: "hunter" for nid in HUNTERS},
+}, assigned
 for nid, tmpl in WORLD["npcs"].items():
     resolved = srv._npc_archetype(tmpl)
     if nid in STALKERS:
         assert resolved["archetype"] == "stalker", nid
         assert resolved["aggro_radius"] == 1, nid
         assert resolved["leash_radius"] == 3, nid
+        assert srv._npc_state_machine_active(resolved), nid
+    elif nid in HUNTERS:
+        assert resolved["archetype"] == "hunter", nid
+        assert resolved["aggro_radius"] == 1, nid
+        assert resolved["leash_radius"] == 0, nid
         assert srv._npc_state_machine_active(resolved), nid
     else:
         assert resolved == srv.NPC_ARCHETYPE_DEFAULTS, nid
@@ -68,10 +80,13 @@ try:
     for npc in extras:
         base = npc["id"].split("__x")[0]
         resolved = srv._npc_archetype(npc)
-        assert resolved["archetype"] == ("stalker" if base in STALKERS else None), npc[
-            "id"
-        ]
-        assert srv._npc_state_machine_active(resolved) == (base in STALKERS), npc["id"]
+        expected = (
+            "stalker" if base in STALKERS else "hunter" if base in HUNTERS else None
+        )
+        assert resolved["archetype"] == expected, npc["id"]
+        assert srv._npc_state_machine_active(resolved) == (
+            base in STALKERS or base in HUNTERS
+        ), npc["id"]
 finally:
     srv.npcs = saved_npcs
     srv.MOB_EXTRA_SPAWNS = saved_extra
