@@ -51,14 +51,9 @@ COMPANION_ATTACK_COOLDOWN = 0.65
 # A pet may chew through at most this share of one NPC's max HP; the owner has
 # to land the rest. A pack_fervor wolf hits harder than a bare-handed level-1
 # owner, so without the cap the gate's companion damage share sits near 50%
-# instead of its 20-40% band (#590).
-COMPANION_ASSIST_DAMAGE_CAP_FRAC = 0.5
-# The pet is a piece of equipment the owner brings, not an independent source
-# of damage: total companion assist is capped per owner at this share of that
-# owner's own cmd_attack damage. That directly bounds the gate's aggregate
-# share (pet/(player+pet)) even on seeds where fights drag and the owner's
-# own damage collapses, which a per-mob ceiling cannot do (#590).
-COMPANION_ASSIST_OWNER_SHARE = 0.6
+# instead of its 20-40% band. Lowered from 0.5 after seed 700 overshot the
+# band at 59%; the owner-relative cap was tried and reverted (#590).
+COMPANION_ASSIST_DAMAGE_CAP_FRAC = 0.35
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
@@ -2736,11 +2731,6 @@ def _online_player(name):
 COMPANION_SUMMONED = set()
 COMPANION_TARGETS = {}
 COMPANION_LAST_ATTACK = {}
-# Per-owner running companion damage, keyed by owner name lower, so the pet
-# is bounded against the owner's own cmd_attack damage (#590).
-COMPANION_OWNER_ASSIST = {}
-# Per-owner running cmd_attack damage, the equipment budget base (#590).
-COMPANION_OWNER_PLAYER_DMG = {}
 DAMAGE_STATS = {"player": 0, "companion": 0}
 
 
@@ -3031,16 +3021,7 @@ async def _companion_attack_npc(owner, rec, npc):
         return
     spent = int((npc.get("companion_damage") or {}).get(key, 0))
     cap = int(npc.get("max_hp", npc.get("hp", 1)) * COMPANION_ASSIST_DAMAGE_CAP_FRAC)
-    mob_allowed = cap - spent
-    # Equipment budget: the pet may add at most OWNER_SHARE of what the owner
-    # has actually landed, cumulatively, so it scales with the owner instead
-    # of being an independent DPS source. This is what actually holds the
-    # gate's aggregate pet/(player+pet) share inside its band on slow seeds.
-    owned = int(COMPANION_OWNER_PLAYER_DMG.get(key, 0))
-    owner_allowed = int(
-        owned * COMPANION_ASSIST_OWNER_SHARE
-    ) - COMPANION_OWNER_ASSIST.get(key, 0)
-    allowed = min(mob_allowed, owner_allowed)
+    allowed = cap - spent
     if allowed <= 0:
         # Cap spent: drop the assist target so the pet stops re-stamping
         # itself armed and leaves the rest of the bar to the owner.
@@ -3056,7 +3037,6 @@ async def _companion_attack_npc(owner, rec, npc):
     )
     npc["hp"] -= dmg
     npc.setdefault("companion_damage", {})[key] = spent + dmg
-    COMPANION_OWNER_ASSIST[key] = COMPANION_OWNER_ASSIST.get(key, 0) + dmg
     DAMAGE_STATS["companion"] += dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
     if npc["hp"] <= 1:
@@ -4698,9 +4678,6 @@ async def cmd_attack(player, msg):
     dmg = random.randint(1, player.attack) + ammo_bonus
     npc["hp"] -= dmg
     DAMAGE_STATS["player"] += dmg
-    COMPANION_OWNER_PLAYER_DMG[player.name.lower()] = (
-        COMPANION_OWNER_PLAYER_DMG.get(player.name.lower(), 0) + dmg
-    )
     npc["contributors"][player.name] = npc["contributors"].get(player.name, 0) + dmg
     COMPANION_TARGETS[player.name.lower()] = (npc.get("id"), time.time())
     await send(player, {"type": "combat", "text": f"You hit {npc['name']} for {dmg}."})
