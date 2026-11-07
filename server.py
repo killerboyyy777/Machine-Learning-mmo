@@ -48,6 +48,11 @@ COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
 COMPANION_ATTACK_COOLDOWN = 0.65
+# A pet may chew through at most this share of one NPC's max HP; the owner has
+# to land the rest. A pack_fervor wolf hits harder than a bare-handed level-1
+# owner, so without the cap the gate's companion damage share sits near 50%
+# instead of its 20-40% band (#590).
+COMPANION_ASSIST_DAMAGE_CAP_FRAC = 0.5
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
@@ -3013,14 +3018,24 @@ async def _companion_attack_npc(owner, rec, npc):
     now = time.time()
     if now - COMPANION_LAST_ATTACK.get(key, 0.0) < COMPANION_ATTACK_COOLDOWN:
         return
+    spent = int((npc.get("companion_damage") or {}).get(key, 0))
+    cap = int(npc.get("max_hp", npc.get("hp", 1)) * COMPANION_ASSIST_DAMAGE_CAP_FRAC)
+    allowed = cap - spent
+    if allowed <= 0:
+        # Cap spent: drop the assist target so the pet stops re-stamping
+        # itself armed and leaves the rest of the bar to the owner.
+        COMPANION_TARGETS.pop(key, None)
+        return
     COMPANION_LAST_ATTACK[key] = now
     dmg = min(
         max_dmg,
+        allowed,
         random.randint(
             1, int(_companion_attack_power(rec) * _companion_attack_mult(rec))
         ),
     )
     npc["hp"] -= dmg
+    npc.setdefault("companion_damage", {})[key] = spent + dmg
     DAMAGE_STATS["companion"] += dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
     if npc["hp"] <= 1:
@@ -4085,6 +4100,7 @@ def respawn_npc(npc):
     npc["hp"] = npc["max_hp"]
     npc["respawn_at"] = None
     npc["contributors"] = {}
+    npc["companion_damage"] = {}
     npc["state"] = "IDLE"
     npc["target"] = None
     npc["engaged_since"] = None
@@ -4784,6 +4800,7 @@ async def cmd_attack(player, msg):
         if str(npc["id"]).startswith("boss_"):
             npcs.pop(npc["id"], None)
         npc["contributors"] = {}
+        npc["companion_damage"] = {}
         await sync_room(player.room)
         if check_dungeon_clear(player.room):
             floor_no = floor_from_room(player.room)
@@ -11431,6 +11448,7 @@ def _npc_apply_state(npc, intent, now):
     if intent.get("heal"):
         npc["hp"] = npc["max_hp"]
         npc["contributors"] = {}
+        npc["companion_damage"] = {}
     npc["state"] = state
     if "target" in intent:
         npc["target"] = intent["target"]
