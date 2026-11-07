@@ -3,10 +3,11 @@
 Run from the repo root:  python tests/test_npc_leash.py
 
 The wild crag stalker chases on aggro_radius and walks home one hop per tick
-once it reaches leash_radius hops from spawn_room; the three civil hunters
-chase but never leash. LEASHING never attacks, never enters shelter (except its
-own home), and heals to full on arrival. Guards, the Warden and GM bosses keep
-leash_radius 0 and never take a leash step.
+once it reaches leash_radius hops from spawn_room. The three civil hunters
+chase the same way with a one-hop leash, so they cannot follow a role across
+the map (the gate graveyard farm). LEASHING never attacks, never enters
+shelter (except its own home), and heals to full on arrival. Guards, the
+Warden and GM bosses keep leash_radius 0 and never take a leash step.
 """
 
 import asyncio
@@ -18,9 +19,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import server as srv
 
-# Leash is confined to the wild crag stalker; the three civil-boundary hunters
-# chase without leashing so the civil death floor gets steady pressure without
-# the retreat that gutted gate seed 702.
+# Both archetypes leash; the hunters get a single hop so a wolf cannot chase a
+# role into the graveyard and farm it there.
 STALKERS = {"crag_stalker"}
 HUNTERS = {"wolf", "timber_wolf", "mountain_lion"}
 
@@ -99,7 +99,10 @@ try:
         "aggro_radius": 1,
         "leash_radius": 3,
     }
-    assert srv.WORLD["npc_archetypes"]["hunter"] == {"aggro_radius": 1}
+    assert srv.WORLD["npc_archetypes"]["hunter"] == {
+        "aggro_radius": 1,
+        "leash_radius": 1,
+    }
     assigned = {nid for nid, tmpl in srv.WORLD["npcs"].items() if tmpl.get("archetype")}
     assert assigned == STALKERS | HUNTERS, assigned
     for nid in STALKERS:
@@ -112,7 +115,7 @@ try:
         cfg = srv._npc_archetype(srv.WORLD["npcs"][nid])
         assert cfg["archetype"] == "hunter", nid
         assert cfg["aggro_radius"] == 1, (nid, cfg)
-        assert cfg["leash_radius"] == 0, (nid, cfg)
+        assert cfg["leash_radius"] == 1, (nid, cfg)
         assert srv._npc_state_machine_active(cfg), nid
     for nid, tmpl in srv.WORLD["npcs"].items():
         if nid in STALKERS or nid in HUNTERS:
@@ -420,3 +423,42 @@ try:
 finally:
     _restore(saved)
 print("STALKERS_NEVER_STRANDED_OK")
+
+
+# --- and the one-hop hunters can walk home from every room they can reach ---
+saved = _save()
+try:
+    for nid in HUNTERS:
+        home = srv.WORLD["npcs"][nid]["room"]
+        cfg = srv._npc_archetype(srv.WORLD["npcs"][nid])
+        blocked = srv.NPC_SHELTER_ROOMS - {home}
+        start = None
+        for rid in srv._rooms_within_hops(home, cfg["leash_radius"]):
+            if rid == home or rid in srv.NPC_SHELTER_ROOMS:
+                continue
+            if srv._room_path(home, rid, blocked) is None:
+                continue
+            back = srv._room_path(rid, home, blocked)
+            assert back is not None and back[-1] == home, (nid, rid)
+            if start is None or len(back) > len(srv._room_path(start, home, blocked)):
+                start = rid
+        assert start is not None, nid
+        npc = _npc(
+            id=f"{nid}_walker",
+            archetype="hunter",
+            room=start,
+            spawn_room=home,
+            state="LEASHING",
+        )
+        for tick in range(12):
+            if npc["room"] == home:
+                break
+            intent = srv.npc_think(npc, _ctx(), float(tick))
+            assert intent["kind"] == "move", (nid, npc["room"], intent)
+            dest = intent["to"]
+            assert dest not in srv.NPC_SHELTER_ROOMS or dest == home, (nid, dest)
+            asyncio.run(srv.npc_apply(npc, intent, _ctx(), float(tick)))
+        assert npc["room"] == home, (nid, npc["room"], home)
+finally:
+    _restore(saved)
+print("HUNTERS_NEVER_STRANDED_OK")
