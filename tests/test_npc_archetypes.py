@@ -23,9 +23,9 @@ import server as srv
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
     WORLD = json.load(fh)
 
-# --- archetype data: leashing confined to the wild crag stalker; the three
-# civil-boundary hunters keep aggro acquisition but never leash, so the civil
-# death floor holds without the seed-702 leash retreat. ---
+# --- archetype data: the wild crag stalker and the three civil-boundary
+# hunters all leash. The hunter leash is one hop, so a wolf cannot follow a
+# role across the map into the graveyard and farm it there. ---
 assert srv.NPC_ARCHETYPE_DEFAULTS == {
     "archetype": None,
     "aggro_radius": 0,
@@ -40,7 +40,7 @@ assert srv.NPC_ARCHETYPE_DEFAULTS == {
 }
 assert WORLD["npc_archetypes"] == {
     "stalker": {"aggro_radius": 1, "leash_radius": 3},
-    "hunter": {"aggro_radius": 1},
+    "hunter": {"aggro_radius": 1, "leash_radius": 1},
     "skirmisher": {"flee_below_pct": 25},
 }
 
@@ -63,7 +63,7 @@ for nid, tmpl in WORLD["npcs"].items():
     elif nid in HUNTERS:
         assert resolved["archetype"] == "hunter", nid
         assert resolved["aggro_radius"] == 1, nid
-        assert resolved["leash_radius"] == 0, nid
+        assert resolved["leash_radius"] == 1, nid
         assert srv._npc_state_machine_active(resolved), nid
     else:
         assert resolved == srv.NPC_ARCHETYPE_DEFAULTS, nid

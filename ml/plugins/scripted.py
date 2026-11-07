@@ -422,6 +422,13 @@ class DungeonPlugin(ScriptedPolicy):
     def plan(self, env, mask):
         s = env._state
         yield self._heal_first(env, mask)
+        # The dungeon entrance is itself a hostile room (the graveyard ghost),
+        # so the flee rule below pushed the role back out every time it
+        # arrived: it ping-ponged at the door and never cleared a floor.
+        if not s.get("is_dungeon") and self._in_room(
+            env, self._dungeon_entrance_room()
+        ):
+            yield self._first_valid(env, ("move_enter", "move_down"), mask)
         yield self._flee_unwinnable(env, mask)
         # Companion playstyle: acquire and summon before descending so the
         # pet contributes damage instead of sitting as dead content.
