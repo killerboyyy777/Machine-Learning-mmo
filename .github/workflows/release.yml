@@ -14,6 +14,8 @@ jobs:
   release:
     name: Publish GitHub release for tag
     runs-on: ubuntu-latest
+    env:
+      PROFILE_DISPATCH_TOKEN: ${{ secrets.PROFILE_DISPATCH_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -51,3 +53,16 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+      - name: Refresh agent profile metrics
+        # The profile repo rebuilds its metrics on a daily cron; a release is
+        # when the gate numbers actually change, so nudge it now instead of
+        # waiting for midnight. No token skips the step, and a rejected token
+        # only warns -- a stale profile must not turn a good release red.
+        if: env.PROFILE_DISPATCH_TOKEN != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.PROFILE_DISPATCH_TOKEN }}
+        run: |
+          gh api --method POST \
+            /repos/killerboyyy777-agent/killerboyyy777-agent/actions/workflows/metrics.yml/dispatches \
+            -f ref=main
