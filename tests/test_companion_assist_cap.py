@@ -7,6 +7,10 @@ same hostile the owner just swung at, for at most COMPANION_ASSIST_SWING_FRAC
 of that swing's damage, so companion damage stays below
 SWING_FRAC/(1+SWING_FRAC) = 37.5% of the gate's player+companion total -- even
 on slow seeds where an owner is dead or afk, the pet stalls with them.
+
+A level-1 owner swings for 1-3, and int(1 * 0.6) is 0, so the fraction is
+banked across swings rather than floored per hit; over many small swings the
+pet still lands SWING_FRAC of the owner's damage.
 """
 
 import asyncio
@@ -29,7 +33,9 @@ srv.sync_room = _noop
 S = srv.COMPANION_ASSIST_SWING_FRAC
 assert 0 < S < 1, S
 
-WOLF = {"name": "Wolf", "species": "wolf", "level": 1, "hp": 26, "max_hp": 26}
+
+def _wolf():
+    return {"name": "Wolf", "species": "wolf", "level": 1, "hp": 26, "max_hp": 26}
 
 
 def _npc(max_hp):
@@ -58,46 +64,56 @@ def _owner():
     )
 
 
-def _swing(owner, npc, swing_dmg):
+def _swing(owner, rec, npc, swing_dmg):
     before = npc["hp"]
-    asyncio.run(srv._companion_attack_npc(owner, WOLF, npc, swing_dmg=swing_dmg))
+    asyncio.run(srv._companion_attack_npc(owner, rec, npc, swing_dmg=swing_dmg))
     return before - npc["hp"]
 
 
 owner = _owner()
+
+# A swing of 30 funds int(30*S)=18, capped by the credit burst, and the wolf
+# rolls randint(1,5), so the pet lands at least 1 and never more than the
+# swing fraction.
+rec = _wolf()
 npc = _npc(50)
 player_before = srv.DAMAGE_STATS["player"]
-companion_before = srv.DAMAGE_STATS["companion"]
-
-# A swing of 30 funds at most int(30*S)=18; the wolf rolls randint(1,7) so the
-# pet lands between 1 and 18, and never passes the swing fraction.
-dealt = _swing(owner, npc, 30)
+dealt = _swing(owner, rec, npc, 30)
 assert 1 <= dealt <= int(30 * S), dealt
 assert npc["hp"] == 50 - dealt, npc["hp"]
+assert npc["contributors"][owner.name] == dealt
 print("RIDES_SWING_OK", dealt)
 
-# The standing bound holds for any swing magnitude: pet <= swing*S.
+# The bound holds for any single swing, whatever its magnitude.
 for swing in (4, 9, 40):
     fresh = _npc(100)
-    pet = _swing(owner, fresh, swing)
-    assert 0 <= pet <= int(swing * S), (swing, pet)
+    pet = _swing(owner, _wolf(), fresh, swing)
+    assert 1 <= pet <= int(swing * S), (swing, pet)
 print("SWING_BOUND_OK")
 
-# A bare tick (no owner swing, swing_dmg=0) deals nothing: the pet has no clock.
+# No owner swing, no damage -- the pet has no clock of its own.
 stalled = _npc(50)
-assert _swing(owner, stalled, 0) == 0
+assert _swing(owner, _wolf(), stalled, 0) == 0
 assert stalled["hp"] == 50
 print("NO_FREE_ATTACK_OK")
 
-# The owner's own damage is untouched by the pet/companion cap.
+# The owner's own damage is untouched by the pet.
 assert srv.DAMAGE_STATS["player"] == player_before
-assert npc["contributors"][owner.name] == dealt
 print("OWNER_DAMAGE_UNTOUCHED_OK")
 
 # The pet never steals the killing blow: it stops at 1 HP.
 killing = _npc(5)
-pet = _swing(owner, killing, 4)
+_swing(owner, _wolf(), killing, 4)
 assert killing["hp"] >= 1, killing["hp"]
 print("LEAVES_KILLING_BLOW_OK")
+
+# Small swings are banked, not floored away: ten 1-damage swings must land
+# about 0.6 of the owner's 10 damage, not zero.
+banked = _npc(500)
+rec = _wolf()
+total = sum(_swing(owner, rec, banked, 1) for _ in range(10))
+assert 4 <= total <= 7, total
+assert abs(total - 10 * S) <= 2, total
+print("SMALL_SWINGS_ACCUMULATE_OK", total)
 
 print("COMPANION_ASSIST_CAP_OK")

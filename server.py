@@ -55,6 +55,10 @@ COMPANION_ATTACK_COOLDOWN = 0.65
 # on slow seeds where the owner is dead or afk -- the failure that no per-mob%
 # ceiling or lifetime owner budget could hold (#590).
 COMPANION_ASSIST_SWING_FRAC = 0.6
+# Level-1 owners swing for 1-3 and int(1 * 0.6) is 0, so flooring every swing
+# starves the pet under the gate's 20% band; it banks the remainder instead.
+# The cap bounds the burst a pet can carry into its first swing after a pause.
+COMPANION_ASSIST_SWING_CREDIT_CAP = 2.0
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
@@ -3016,12 +3020,23 @@ async def _companion_attack_npc(owner, rec, npc, swing_dmg=0):
     max_dmg = max(0, int(npc.get("hp", 0)) - 1)
     if max_dmg <= 0:
         return
+    if swing_dmg <= 0:
+        # No owner swing, no pet damage: banking credit must not fund a
+        # later tick into an attack of its own (#590).
+        return
     # The pet rides the owner's own swing: it adds at most this fraction of the
     # swing the owner just landed, on the same hostile. It has no clock of its
     # own, so a dead or afk owner stops the pet too -- keeping the gate's
-    # companion share under 0.6/1.6 = 37.5% (#590).
-    allowed = int(swing_dmg * COMPANION_ASSIST_SWING_FRAC)
+    # companion share under 0.6/1.6 = 37.5% (#590). The credit carries the
+    # fractional remainder: int(1 * 0.6) is 0 and level-1 owners swing for 1-3,
+    # so flooring each swing would starve the pet below the gate's 20% floor.
+    credit = float(rec.get("swing_credit", 0.0)) + swing_dmg * (
+        COMPANION_ASSIST_SWING_FRAC
+    )
+    credit = min(credit, COMPANION_ASSIST_SWING_CREDIT_CAP)
+    allowed = int(credit)
     if allowed <= 0:
+        rec["swing_credit"] = credit
         return
     dmg = min(
         max_dmg,
@@ -3030,6 +3045,7 @@ async def _companion_attack_npc(owner, rec, npc, swing_dmg=0):
             1, int(_companion_attack_power(rec) * _companion_attack_mult(rec))
         ),
     )
+    rec["swing_credit"] = credit - dmg
     npc["hp"] -= dmg
     DAMAGE_STATS["companion"] += dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
@@ -7853,12 +7869,14 @@ async def cmd_companion(player, msg):
             )
             return
         COMPANION_SUMMONED.add(key)
+        rec.pop("swing_credit", None)
         await send(player, {"type": "message", "text": f"{rec['name']} joins you."})
         await send(player, stats_view(player))
         return
     if action == "dismiss":
         COMPANION_SUMMONED.discard(key)
         COMPANION_TARGETS.pop(key, None)
+        rec.pop("swing_credit", None)
         await send(player, {"type": "message", "text": f"{rec['name']} is stabled."})
         await send(player, stats_view(player))
         return
