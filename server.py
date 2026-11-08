@@ -48,13 +48,13 @@ COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
 COMPANION_ATTACK_COOLDOWN = 0.65
-# A pet may chew through at most this share of one NPC's max HP; the owner has
-# to land the rest. A pack_fervor wolf hits harder than a bare-handed level-1
-# owner, so without the cap the gate's companion damage share sits near 50%
-# instead of its 20-40% band. Lowered from 0.5 after seed 700 overshot the
-# band at 59%; tuned to 0.36 to keep both companion share and deaths-per-kill
-# in band on seed 700; the owner-relative cap was tried and reverted (#590).
-COMPANION_ASSIST_DAMAGE_CAP_FRAC = 0.36
+# The pet rides the owner's own attack swing: it hits the same hostile once
+# per owner swing, for at most this fraction of that swing's damage. It never
+# free-attacks on its own clock, so companion damage stays below
+# SWING_FRAC/(1+SWING_FRAC) = 37.5% of the gate's player+companion total even
+# on slow seeds where the owner is dead or afk -- the failure that no per-mob%
+# ceiling or lifetime owner budget could hold (#590).
+COMPANION_ASSIST_SWING_FRAC = 0.6
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
@@ -3010,25 +3010,19 @@ def _companion_assist_target(owner):
     return None
 
 
-async def _companion_attack_npc(owner, rec, npc):
+async def _companion_attack_npc(owner, rec, npc, swing_dmg=0):
     if not npc or npc.get("hp", 0) <= 0:
         return
     max_dmg = max(0, int(npc.get("hp", 0)) - 1)
     if max_dmg <= 0:
         return
-    key = str(owner.name or "").lower()
-    now = time.time()
-    if now - COMPANION_LAST_ATTACK.get(key, 0.0) < COMPANION_ATTACK_COOLDOWN:
-        return
-    spent = int((npc.get("companion_damage") or {}).get(key, 0))
-    cap = int(npc.get("max_hp", npc.get("hp", 1)) * COMPANION_ASSIST_DAMAGE_CAP_FRAC)
-    allowed = cap - spent
+    # The pet rides the owner's own swing: it adds at most this fraction of the
+    # swing the owner just landed, on the same hostile. It has no clock of its
+    # own, so a dead or afk owner stops the pet too -- keeping the gate's
+    # companion share under 0.6/1.6 = 37.5% (#590).
+    allowed = int(swing_dmg * COMPANION_ASSIST_SWING_FRAC)
     if allowed <= 0:
-        # Cap spent: drop the assist target so the pet stops re-stamping
-        # itself armed and leaves the rest of the bar to the owner.
-        COMPANION_TARGETS.pop(key, None)
         return
-    COMPANION_LAST_ATTACK[key] = now
     dmg = min(
         max_dmg,
         allowed,
@@ -3037,7 +3031,6 @@ async def _companion_attack_npc(owner, rec, npc):
         ),
     )
     npc["hp"] -= dmg
-    npc.setdefault("companion_damage", {})[key] = spent + dmg
     DAMAGE_STATS["companion"] += dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
     if npc["hp"] <= 1:
@@ -3587,7 +3580,9 @@ async def tick_companions(now=None):
             if target is not None:
                 await _companion_attack_npc(owner, rec, target)
         elif not action_taken:
-            # No script or no rule matched: default-assist behavior
+            # No script or no rule matched: default-assist behavior. The pet
+            # deals nothing here (swing_dmg defaults to 0); it only rides the
+            # owner's own attack swing (#590), so a dead or afk owner stops it.
             target = _companion_assist_target(owner)
             if target is not None:
                 await _companion_attack_npc(owner, rec, target)
@@ -4102,7 +4097,6 @@ def respawn_npc(npc):
     npc["hp"] = npc["max_hp"]
     npc["respawn_at"] = None
     npc["contributors"] = {}
-    npc["companion_damage"] = {}
     npc["state"] = "IDLE"
     npc["target"] = None
     npc["engaged_since"] = None
@@ -4690,7 +4684,7 @@ async def cmd_attack(player, msg):
     if npc.get("hp", 0) > 1 and player.name.lower() in COMPANION_SUMMONED:
         rec = _companion_active(player.name)
         if rec is not None and not _companion_is_downed(rec):
-            await _companion_attack_npc(player, rec, npc)
+            await _companion_attack_npc(player, rec, npc, swing_dmg=dmg)
     # Same-tick double-kill guard (#195.1): two attackers' damage can
     # interleave at the sends above, so both see hp <= 0. The first block
     # to run claims the kill by flipping alive first (same sync stretch,
@@ -4802,7 +4796,6 @@ async def cmd_attack(player, msg):
         if str(npc["id"]).startswith("boss_"):
             npcs.pop(npc["id"], None)
         npc["contributors"] = {}
-        npc["companion_damage"] = {}
         await sync_room(player.room)
         if check_dungeon_clear(player.room):
             floor_no = floor_from_room(player.room)
@@ -11450,7 +11443,6 @@ def _npc_apply_state(npc, intent, now):
     if intent.get("heal"):
         npc["hp"] = npc["max_hp"]
         npc["contributors"] = {}
-        npc["companion_damage"] = {}
     npc["state"] = state
     if "target" in intent:
         npc["target"] = intent["target"]

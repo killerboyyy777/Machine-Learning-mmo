@@ -1,10 +1,12 @@
-"""Companion assist damage cap (#590).
+"""Companion assist rides the owner's swing (#590).
 
 Run from the repo root:  python tests/test_companion_assist_cap.py
 
-A pet may land at most COMPANION_ASSIST_DAMAGE_CAP_FRAC of one NPC's max HP;
-the owner has to finish the bar. The cap is per NPC per pet, so a resummoned or
-respawned mob resets it, and player damage is never counted against it.
+A summoned pet never free-attacks on its own clock. It lands one hit on the
+same hostile the owner just swung at, for at most COMPANION_ASSIST_SWING_FRAC
+of that swing's damage, so companion damage stays below
+SWING_FRAC/(1+SWING_FRAC) = 37.5% of the gate's player+companion total -- even
+on slow seeds where an owner is dead or afk, the pet stalls with them.
 """
 
 import asyncio
@@ -24,8 +26,8 @@ srv.send = _noop
 srv.broadcast_room = _noop
 srv.sync_room = _noop
 
-FRAC = srv.COMPANION_ASSIST_DAMAGE_CAP_FRAC
-assert 0 < FRAC < 1, FRAC
+S = srv.COMPANION_ASSIST_SWING_FRAC
+assert 0 < S < 1, S
 
 WOLF = {"name": "Wolf", "species": "wolf", "level": 1, "hp": 26, "max_hp": 26}
 
@@ -56,57 +58,46 @@ def _owner():
     )
 
 
-def _pet_damage(owner, npc, hits=40):
-    dealt = 0
-    for _ in range(hits):
-        before = npc["hp"]
-        srv.COMPANION_LAST_ATTACK.pop(owner.name.lower(), None)
-        asyncio.run(srv._companion_attack_npc(owner, WOLF, npc))
-        dealt += before - npc["hp"]
-    return dealt
+def _swing(owner, npc, swing_dmg):
+    before = npc["hp"]
+    asyncio.run(srv._companion_attack_npc(owner, WOLF, npc, swing_dmg=swing_dmg))
+    return before - npc["hp"]
 
 
 owner = _owner()
-npc = _npc(40)
+npc = _npc(50)
 player_before = srv.DAMAGE_STATS["player"]
 companion_before = srv.DAMAGE_STATS["companion"]
 
-dealt = _pet_damage(owner, npc)
-assert dealt == int(40 * FRAC), (dealt, int(40 * FRAC))
-assert npc["hp"] == 40 - dealt, npc["hp"]
-assert npc["hp"] > 1, npc["hp"]
-print("PET_STOPS_AT_CAP_OK", dealt)
+# A swing of 30 funds at most int(30*S)=18; the wolf rolls randint(1,7) so the
+# pet lands between 1 and 18, and never passes the swing fraction.
+dealt = _swing(owner, npc, 30)
+assert 1 <= dealt <= int(30 * S), dealt
+assert npc["hp"] == 50 - dealt, npc["hp"]
+print("RIDES_SWING_OK", dealt)
 
-# A further burst lands nothing: the pet is capped out on this mob.
-assert _pet_damage(owner, npc, hits=10) == 0
-assert npc["hp"] == 40 - dealt
-assert owner.name.lower() not in srv.COMPANION_TARGETS
-print("CAPPED_PET_DISARMS_OK")
+# The standing bound holds for any swing magnitude: pet <= swing*S.
+for swing in (4, 9, 40):
+    fresh = _npc(100)
+    pet = _swing(owner, fresh, swing)
+    assert 0 <= pet <= int(swing * S), (swing, pet)
+print("SWING_BOUND_OK")
 
-# The owner's own damage is untouched by the cap and can still finish the mob.
+# A bare tick (no owner swing, swing_dmg=0) deals nothing: the pet has no clock.
+stalled = _npc(50)
+assert _swing(owner, stalled, 0) == 0
+assert stalled["hp"] == 50
+print("NO_FREE_ATTACK_OK")
+
+# The owner's own damage is untouched by the pet/companion cap.
 assert srv.DAMAGE_STATS["player"] == player_before
-assert srv.DAMAGE_STATS["companion"] - companion_before == dealt
 assert npc["contributors"][owner.name] == dealt
 print("OWNER_DAMAGE_UNTOUCHED_OK")
 
-# Small mobs still take pet damage: the cap floors to at least zero, never
-# above half, and leaves at least one point for the killing blow.
-small = _npc(3)
-small_dealt = _pet_damage(owner, small, hits=10)
-assert small_dealt == int(3 * FRAC), small_dealt
-assert small["hp"] >= 2, small["hp"]
-print("SMALL_MOB_CAP_OK", small_dealt)
-
-# Respawn and the leash heal both clear the tally, so a fresh bar is fresh.
-srv.respawn_npc(npc)
-assert npc["companion_damage"] == {}, npc.get("companion_damage")
-assert npc["hp"] == npc["max_hp"]
-assert _pet_damage(owner, npc, hits=40) == int(40 * FRAC)
-print("RESPAWN_RESETS_CAP_OK")
-
-npc["companion_damage"] = {owner.name.lower(): 99}
-srv._npc_apply_state(npc, {"state": "IDLE", "heal": True}, 0.0)
-assert npc["companion_damage"] == {}, npc.get("companion_damage")
-print("HEAL_RESETS_CAP_OK")
+# The pet never steals the killing blow: it stops at 1 HP.
+killing = _npc(5)
+pet = _swing(owner, killing, 4)
+assert killing["hp"] >= 1, killing["hp"]
+print("LEAVES_KILLING_BLOW_OK")
 
 print("COMPANION_ASSIST_CAP_OK")
