@@ -49,16 +49,18 @@ COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
 COMPANION_ATTACK_COOLDOWN = 0.65
 # The pet rides the owner's own attack swing: it hits the same hostile once
-# per owner swing, for at most this fraction of that swing's damage. It never
-# free-attacks on its own clock, so companion damage stays below
-# SWING_FRAC/(1+SWING_FRAC) = 37.5% of the gate's player+companion total even
-# on slow seeds where the owner is dead or afk -- the failure that no per-mob%
-# ceiling or lifetime owner budget could hold (#590).
-COMPANION_ASSIST_SWING_FRAC = 0.6
-# Level-1 owners swing for 1-3 and int(1 * 0.6) is 0, so flooring every swing
-# starves the pet under the gate's 20% band; it banks the remainder instead.
-# The cap bounds the burst a pet can carry into its first swing after a pause.
-COMPANION_ASSIST_SWING_CREDIT_CAP = 2.0
+# per owner swing, for at most this fraction of that swing's damage, and it
+# never free-attacks on its own clock -- the failure that no per-mob% ceiling
+# or lifetime owner budget could hold (#590). The gate divides by the whole
+# server's player damage while only some agents own a pet, so the share is
+# S*k/(1+S*k) for k = pet owners' slice of player damage (0.175-0.26 on seed
+# 700); 1.6 lands that near 22-29% rather than S/(1+S).
+COMPANION_ASSIST_SWING_FRAC = 1.6
+# Level-1 owners swing for 1-3 and int(1 * S) floors to 0, so flooring every
+# swing starves the pet under the gate's 20% band; it banks the remainder
+# instead. The cap bounds what a pause can carry into the next swing to
+# roughly one strike, so a downed or idle spell cannot fund a burst.
+COMPANION_ASSIST_SWING_CREDIT_CAP = 8.0
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
