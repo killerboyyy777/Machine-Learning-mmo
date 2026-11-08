@@ -52,9 +52,9 @@ COMPANION_ATTACK_COOLDOWN = 0.65
 # to land the rest. A pack_fervor wolf hits harder than a bare-handed level-1
 # owner, so without the cap the gate's companion damage share sits near 50%
 # instead of its 20-40% band. Lowered from 0.5 after seed 700 overshot the
-# band at 59%; tuned to 0.39 to keep both companion share and deaths-per-kill
+# band at 59%; tuned to 0.36 to keep both companion share and deaths-per-kill
 # in band on seed 700; the owner-relative cap was tried and reverted (#590).
-COMPANION_ASSIST_DAMAGE_CAP_FRAC = 0.39
+COMPANION_ASSIST_DAMAGE_CAP_FRAC = 0.36
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
