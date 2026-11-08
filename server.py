@@ -41,11 +41,6 @@ NPC_TICK_SECONDS = 3
 # healer) never duplicate. All combat/respawn paths are id-keyed, so extra
 # instances just work; name-targeting hits the first alive match.
 MOB_EXTRA_SPAWNS = 1
-# Civ rooms cap their extra hostiles here. They hold one instance while wild
-# rooms hold MOB_EXTRA_SPAWNS + 1, which made the gate's civ death rate a
-# quarter of its wild rate by construction rather than by intent (#590:
-# wild 1.39/h at four instances, civ 0.41/h at one).
-MOB_EXTRA_SPAWNS_CIV = 1
 COMPANION_SAVE_SECONDS = 5.0
 COMPANION_MAX_PLAYERS = 5000
 COMPANION_DOWNED_SECONDS = 300
@@ -683,9 +678,6 @@ def _sync_extra_spawns():
     Called after every _apply_config() pass (module bottom + --config
     re-apply): without this, an operator MOB_EXTRA_SPAWNS value would
     silently miss because npcs builds at import before the config pass.
-    Civ rooms (no `wild` flag) take at most MOB_EXTRA_SPAWNS_CIV extras, so
-    their hostile population is set on purpose instead of falling out of the
-    wild multiplier.
     Startup-only: never call mid-game (it drops live extra instances).
     """
     for xid in [nid for nid in npcs if "__x" in nid]:
@@ -693,22 +685,19 @@ def _sync_extra_spawns():
     want = max(0, int(MOB_EXTRA_SPAWNS))
     if want > 0:
         for nid, tmpl in WORLD["npcs"].items():
-            if not tmpl.get("hostile"):
-                continue
-            room = ROOMS.get(tmpl.get("room"), {})
-            extra = want if room.get("wild") else min(want, MOB_EXTRA_SPAWNS_CIV)
-            for i in range(1, extra + 1):
-                xid = f"{nid}__x{i}"
-                npcs[xid] = {
-                    **tmpl,
-                    "id": xid,
-                    "alive": True,
-                    "respawn_at": None,
-                    "contributors": {},
-                    "state": "IDLE",
-                    "spawn_room": tmpl["room"],
-                    "target": None,
-                }
+            if tmpl.get("hostile") and ROOMS.get(tmpl.get("room"), {}).get("wild"):
+                for i in range(1, want + 1):
+                    xid = f"{nid}__x{i}"
+                    npcs[xid] = {
+                        **tmpl,
+                        "id": xid,
+                        "alive": True,
+                        "respawn_at": None,
+                        "contributors": {},
+                        "state": "IDLE",
+                        "spawn_room": tmpl["room"],
+                        "target": None,
+                    }
 
 
 RECIPES = WORLD.get("recipes", {})

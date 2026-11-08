@@ -144,33 +144,6 @@ finally:
     srv.MOB_EXTRA_SPAWNS = saved_extra
 print("EXTRA_SPAWN_NORMALISED_OK")
 
-# --- construction path 2b: civ rooms cap their extra hostiles ---
-# Wild rooms carry the full MOB_EXTRA_SPAWNS; a civ room gets MOB_EXTRA_SPAWNS_CIV
-# so its death rate is a stated choice rather than a side effect of the wild
-# multiplier (#590: civ 0.41/h at one instance against wild 1.39/h at four).
-saved_npcs = srv.npcs
-saved_extra = srv.MOB_EXTRA_SPAWNS
-saved_civ = srv.MOB_EXTRA_SPAWNS_CIV
-try:
-    srv.npcs = {}
-    srv.MOB_EXTRA_SPAWNS = 3
-    srv.MOB_EXTRA_SPAWNS_CIV = 1
-    srv._sync_extra_spawns()
-
-    def _extras_of(nid):
-        return [k for k in srv.npcs if k.split("__x")[0] == nid]
-
-    assert srv.ROOMS["deep_forest"].get("wild"), "fixture: deep_forest is wild"
-    assert not srv.ROOMS["forest_edge"].get("wild"), "fixture: forest_edge is civ"
-    assert len(_extras_of("treant")) == 3, _extras_of("treant")
-    assert len(_extras_of("wolf")) == 1, _extras_of("wolf")
-    assert not _extras_of("guard"), _extras_of("guard")
-finally:
-    srv.npcs = saved_npcs
-    srv.MOB_EXTRA_SPAWNS = saved_extra
-    srv.MOB_EXTRA_SPAWNS_CIV = saved_civ
-print("EXTRA_SPAWN_ROOM_CLASS_OK")
-
 # --- construction path 3: dungeon guards and the Warden ---
 dungeon = srv.Dungeon(party_id=1)
 for floor_no in (1, srv.DUNGEON_MAX_FLOOR):
