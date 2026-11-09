@@ -43,7 +43,10 @@ NPC_TICK_SECONDS = 3
 MOB_EXTRA_SPAWNS = 1
 COMPANION_SAVE_SECONDS = 5.0
 COMPANION_MAX_PLAYERS = 5000
-COMPANION_DOWNED_SECONDS = 300
+# The pet only rides the owner's swing, so its contribution is uptime: five
+# minutes out per downing left it riding ~20% of swings and the gate measured
+# 8.2% companion damage share against a 20% floor (#590).
+COMPANION_DOWNED_SECONDS = 60
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 COMPANION_AGGRO_SHARE = 0.25
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
@@ -3108,7 +3111,7 @@ async def _damage_companion(owner, rec, amount, source_name, now=None, source_id
             {
                 "type": "message",
                 "text": f"{rec['name']} is downed and retreats. Revive costs {cost} gold, "
-                f"or it returns in {COMPANION_DOWNED_SECONDS // 60} minutes.",
+                f"or it returns in {COMPANION_DOWNED_SECONDS} seconds.",
             },
         )
         await broadcast_room(

@@ -1299,7 +1299,8 @@ async def main():
     assert rec["downed_until"] >= down_at + srv.COMPANION_DOWNED_SECONDS - 1
     await srv.cmd_companion(comp_owner, {"action": "status"})
     assert inbox[-1]["downed"] is True
-    assert inbox[-1]["revive_cost"] == 50
+    downed_minutes = max(1, -(-srv.COMPANION_DOWNED_SECONDS // 60))
+    assert inbox[-1]["revive_cost"] == downed_minutes * srv.COMPANION_REVIVE_GOLD_PER_MINUTE
 
     rec["downed_until"] = time.time() + 61
     comp_owner.gold = 100
