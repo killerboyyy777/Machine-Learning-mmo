@@ -56,9 +56,9 @@ COMPANION_ATTACK_COOLDOWN = 0.65
 # never free-attacks on its own clock -- the failure that no per-mob% ceiling
 # or lifetime owner budget could hold (#590). The gate divides by the whole
 # server's player damage while only some agents own a pet, so the share is
-# S*k/(1+S*k) for k = pet owners' slice of player damage (0.175-0.26 on seed
-# 700); 1.6 lands that near 22-29% rather than S/(1+S).
-COMPANION_ASSIST_SWING_FRAC = 1.6
+# S*k/(1+S*k) for k = pet owners' slice of player damage (0.144 measured at
+# four hours on seed 700); 2.4 lands that near 23% rather than S/(1+S).
+COMPANION_ASSIST_SWING_FRAC = 2.4
 # Level-1 owners swing for 1-3 and int(1 * S) floors to 0, so flooring every
 # swing starves the pet under the gate's 20% band; it banks the remainder
 # instead. The cap bounds what a pause can carry into the next swing to
@@ -69,7 +69,10 @@ COMPANION_ASSIST_SWING_CREDIT_CAP = 8.0
 COMPANION_XP_SHARE = 0.25
 COMPANION_LEVEL_CAP = 10
 # Companion passives (#533): wolf pack_fervor, mule carry_beast, sheep gentle_blessing.
-COMPANION_WOLF_ATTACK_MULT = 1.10
+# The assist caps one hit by a roll of randint(1, 7 * this). At 1.10 that roll
+# tops out at 7 (mean 4) and binds before the swing credit does, so raising
+# COMPANION_ASSIST_SWING_FRAC alone stopped buying damage (#590).
+COMPANION_WOLF_ATTACK_MULT = 1.30
 COMPANION_WOLF_XP_MULT = 1.10
 COMPANION_MULE_CARRY_BONUS = 2
 COMPANION_MULE_GATHER_YIELD_BONUS = 1
