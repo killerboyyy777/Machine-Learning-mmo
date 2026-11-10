@@ -44,7 +44,7 @@ jobs:
 
       - name: Image tags and labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.image }}
           # Automatic latest is off; latest is attached to release tags below so
