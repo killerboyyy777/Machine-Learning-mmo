@@ -686,7 +686,7 @@ async def main():
     wild_wait = (
         srv._npc_respawn_at({"room": wild_room, "respawn_seconds": 30}) - time.time()
     )
-    assert 29.0 <= wild_wait <= 31.0, wild_wait
+    assert abs(wild_wait - 30.0 * srv.WILD_NPC_RESPAWN_MULT) < 1.5, wild_wait
     assert abs(civ_wait - 30.0 * srv.CIV_NPC_RESPAWN_MULT) < 1.5, civ_wait
     print("CIV_RESPAWN_DIFFERENTIAL_OK")
 

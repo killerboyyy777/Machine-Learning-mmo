@@ -48,7 +48,10 @@ COMPANION_MAX_PLAYERS = 5000
 # 8.2% companion damage share against a 20% floor (#590).
 COMPANION_DOWNED_SECONDS = 60
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
-COMPANION_AGGRO_SHARE = 0.25
+# A pet soaking a quarter of every hostile attack kept players alive that the
+# gate's death floors need: at 0.25 the four-hour civ and wild rates sat near
+# 0.35/agent-hour against a 0.5 floor (#590). The pet still pulls some heat.
+COMPANION_AGGRO_SHARE = 0.10
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
 COMPANION_ATTACK_COOLDOWN = 0.65
 # The pet rides the owner's own attack swing: it hits the same hostile once
@@ -136,10 +139,13 @@ PROTOCOL_VERSION = 2
 HP_REGEN_AMOUNT = 2
 HP_REGEN_SECONDS = 10
 HP_REGEN_DAMAGE_WINDOW = 15
-# Zonal hostility differential (#538): a civilian room's hostiles come back
-# slower than a wild room's, so safe lands are quieter without ever being
-# free of danger. Applied when the kill schedules the respawn.
-CIV_NPC_RESPAWN_MULT = 2.0
+# Zonal respawn differential. It used to slow a civilian room's hostiles to
+# half a wild room's rate (#538), which left the gate's civ death floor at
+# 0.351/agent-hour against a 0.5 floor while wild sat at 0.363 -- both zones
+# needed the same lift, so civ loses the penalty and wild respawns a quarter
+# faster. Applied when the kill schedules the respawn.
+CIV_NPC_RESPAWN_MULT = 1.0
+WILD_NPC_RESPAWN_MULT = 0.75
 # Recent-action ring used by variety scoring; unbounded history would let an
 # old playstyle keep counting after the player switched.
 ACTION_WINDOW = 20
@@ -4110,7 +4116,9 @@ def _npc_respawn_at(npc, default_seconds=30):
     # The multiplier follows the spawn room, not where the mob stands now, so
     # a later leash into a civilian room cannot inflate the respawn timer.
     room = ROOMS.get(npc.get("spawn_room") or npc.get("room"), {})
-    if not room.get("wild", False):
+    if room.get("wild", False):
+        secs = secs * WILD_NPC_RESPAWN_MULT
+    else:
         secs = secs * CIV_NPC_RESPAWN_MULT
     return time.time() + secs
 

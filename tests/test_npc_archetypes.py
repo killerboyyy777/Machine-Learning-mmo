@@ -179,11 +179,11 @@ print("GM_BOSS_NORMALISED_OK")
 # --- respawn timing reads spawn_room, not the current room ---
 civ_room = next(r for r, v in srv.ROOMS.items() if not v.get("wild"))
 wild_room = next(r for r, v in srv.ROOMS.items() if v.get("wild"))
-assert srv.CIV_NPC_RESPAWN_MULT > 1.0
+assert srv.CIV_NPC_RESPAWN_MULT > 0 and srv.WILD_NPC_RESPAWN_MULT > 0
 wild_home = srv._npc_respawn_at(
     {"room": civ_room, "spawn_room": wild_room, "respawn_seconds": 30}
 ) - (time.time())
-assert 29.0 <= wild_home <= 31.0, wild_home
+assert abs(wild_home - 30.0 * srv.WILD_NPC_RESPAWN_MULT) < 1.5, wild_home
 civ_home = srv._npc_respawn_at(
     {"room": wild_room, "spawn_room": civ_room, "respawn_seconds": 30}
 ) - (time.time())

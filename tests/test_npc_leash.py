@@ -380,7 +380,7 @@ try:
         srv._npc_respawn_at({"room": civ, "spawn_room": wild, "respawn_seconds": 30})
         - time.time()
     )
-    assert 29.0 <= wild_home <= 31.0, wild_home
+    assert abs(wild_home - 30.0 * srv.WILD_NPC_RESPAWN_MULT) < 1.5, wild_home
     civ_home = (
         srv._npc_respawn_at({"room": wild, "spawn_room": civ, "respawn_seconds": 30})
         - time.time()
