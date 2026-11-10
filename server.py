@@ -2753,6 +2753,12 @@ COMPANION_SUMMONED = set()
 COMPANION_TARGETS = {}
 COMPANION_LAST_ATTACK = {}
 DAMAGE_STATS = {"player": 0, "companion": 0}
+# Who last hurt a player, and every death this process has seen. The gate's
+# death floors are an aggregate; without the killer and the room there is no
+# way to tell a one-tick wild stack from a slow bleed in the town square.
+LAST_HIT = {}
+DEATH_LOG = []
+DEATH_LOG_CAP = 400
 
 
 def _companion_store(name, create=False):
@@ -4032,6 +4038,23 @@ async def respawn_player(player):
     # toward the score penalty, so offloading gold pre-death buys no
     # discount on dying.
     death_room = player.room
+    killer, killer_room, hit_dmg, hp_before = LAST_HIT.pop(
+        player.id, (None, death_room, 0, player.hp)
+    )
+    DEATH_LOG.append(
+        {
+            "t": round(time.time() - START_TIME, 1),
+            "player": player.name,
+            "level": getattr(player, "level", 1),
+            "room": death_room,
+            "killer": killer,
+            "killer_room": killer_room,
+            "dmg": hit_dmg,
+            "hp_before": hp_before,
+        }
+    )
+    if len(DEATH_LOG) > DEATH_LOG_CAP:
+        del DEATH_LOG[:-DEATH_LOG_CAP]
     dropped = (player.gold * DEATH_GOLD_DROP_PCT) // 100
     lost = (player.gold * DEATH_GOLD_LOST_PCT) // 100
     player.gold -= dropped + lost
@@ -4883,6 +4906,12 @@ async def cmd_attack(player, msg):
             retaliation = random.randint(1, npc["attack"])
             retaliation = max(0, retaliation - _player_damage_reduction(player))
             retaliation = _training_damage(retaliation)
+            LAST_HIT[player.id] = (
+                npc["name"],
+                npc["room"],
+                retaliation,
+                player.hp,
+            )
             player.hp -= retaliation
             player.last_damage_ts = time.time()
             await send(
@@ -10198,6 +10227,7 @@ def world_snapshot():
         "players": online_players,
         "scores": scores,
         "activity": list(command_log),
+        "death_log": list(DEATH_LOG),
         "market": {
             "treasury": round(tax_treasury, 2),
             "collected_lifetime": round(tax_collected_lifetime, 2),
@@ -11534,6 +11564,7 @@ async def npc_apply(npc, intent, ctx, now):
     # land twice.
     if victim.hp <= 0:
         return
+    LAST_HIT[victim.id] = (npc["name"], npc["room"], dmg, victim.hp)
     victim.hp -= dmg
     # Retaliation (#544 owner call A): a hit on the owner is an
     # owner-initiated fight, so the pet may answer it.
