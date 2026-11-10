@@ -3046,12 +3046,11 @@ async def _companion_attack_npc(owner, rec, npc, swing_dmg=0):
         # No owner swing, no pet damage: banking credit must not fund a
         # later tick into an attack of its own (#590).
         return
-    # The pet rides the owner's own swing: it adds at most this fraction of the
-    # swing the owner just landed, on the same hostile. It has no clock of its
-    # own, so a dead or afk owner stops the pet too -- keeping the gate's
-    # companion share under 0.6/1.6 = 37.5% (#590). The credit carries the
-    # fractional remainder: int(1 * 0.6) is 0 and level-1 owners swing for 1-3,
-    # so flooring each swing would starve the pet below the gate's 20% floor.
+    # The pet rides the owner's own swing: one hit per owner swing on the same
+    # hostile, and never on a clock of its own, so a dead or afk owner stops it
+    # (#590). The credit carries the fractional remainder instead of flooring
+    # each swing -- int(1 * S) throws away most of a level-1 owner's 1-3 swing
+    # -- and the cap bounds what a pause can carry into the next strike.
     credit = float(rec.get("swing_credit", 0.0)) + swing_dmg * (
         COMPANION_ASSIST_SWING_FRAC
     )
@@ -4045,7 +4044,7 @@ async def respawn_player(player):
         {
             "t": round(time.time() - START_TIME, 1),
             "player": player.name,
-            "level": getattr(player, "level", 1),
+            "level": get_score_entry(player.name).get("level", 1),
             "room": death_room,
             "killer": killer,
             "killer_room": killer_room,
