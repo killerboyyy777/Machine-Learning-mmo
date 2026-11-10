@@ -11296,7 +11296,12 @@ def _npc_pick_target(npc, candidates, cfg):
 
 def _npc_swing(npc, victim, state, event=None):
     dmg = random.randint(1, npc["attack"])
-    dmg = max(0, dmg - _player_damage_reduction(victim))
+    if npc["attack"] > 0:
+        # A landed hit is never free. Gear (plus buffs) could absorb the whole
+        # roll from a starter mob -- 3-4 defense against atk 2-3 -- and that
+        # made every level-1 agent unkillable outside the frontier, which is
+        # why the gate's death floors read 0.35-0.43 (#590).
+        dmg = max(1, dmg - _player_damage_reduction(victim))
     dmg = _training_damage(dmg)
     intent = {
         "kind": "attack",
