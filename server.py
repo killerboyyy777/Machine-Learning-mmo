@@ -142,9 +142,11 @@ HP_REGEN_DAMAGE_WINDOW = 15
 # Zonal respawn differential. It used to slow a civilian room's hostiles to
 # half a wild room's rate (#538), which left the gate's civ death floor at
 # 0.351/agent-hour against a 0.5 floor while wild sat at 0.363 -- both zones
-# needed the same lift, so civ loses the penalty and wild respawns a quarter
-# faster. Applied when the kill schedules the respawn.
-CIV_NPC_RESPAWN_MULT = 1.0
+# needed the same lift. At this rate wild holds 0.75-1.23 while civ still
+# misses on quiet seeds (0.426 on 701 against 0.614 and 1.027), so civ now
+# respawns faster than wild to buy margin where the floor is hardest to hit.
+# Applied when the kill schedules the respawn.
+CIV_NPC_RESPAWN_MULT = 0.6
 WILD_NPC_RESPAWN_MULT = 0.75
 # Recent-action ring used by variety scoring; unbounded history would let an
 # old playstyle keep counting after the player switched.
