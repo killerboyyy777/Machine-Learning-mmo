@@ -160,7 +160,27 @@ jobs:
           node-version: "22"
       - run: pip install websockets==17.4 playwright
       - run: node --version
-      - run: python -m playwright install --with-deps firefox
+      # --with-deps shells out to apt against archive.ubuntu.com, and a DNS
+      # hiccup there fails the job on a commit that is fine (#633 hit it twice).
+      # Retry the apt half, and cache the browser so a hit skips the download.
+      - name: Cache Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-firefox-${{ runner.os }}-${{ hashFiles('.github/workflows/tests.yml') }}
+      - name: Install Firefox system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if python -m playwright install-deps firefox; then
+              exit 0
+            fi
+            echo "apt attempt ${attempt} failed; retrying in 15s"
+            sleep 15
+          done
+          echo "could not install Firefox system dependencies after 3 attempts" >&2
+          exit 1
+      - name: Install Firefox browser
+        run: python -m playwright install firefox
       - run: echo '{}' > scores.json
       - run: TEXTMMO_GM_SEED=700 nohup python server.py > server.ci.log 2>&1 &
       - run: sleep 5
