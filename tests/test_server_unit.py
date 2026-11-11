@@ -686,7 +686,7 @@ async def main():
     wild_wait = (
         srv._npc_respawn_at({"room": wild_room, "respawn_seconds": 30}) - time.time()
     )
-    assert 29.0 <= wild_wait <= 31.0, wild_wait
+    assert abs(wild_wait - 30.0 * srv.WILD_NPC_RESPAWN_MULT) < 1.5, wild_wait
     assert abs(civ_wait - 30.0 * srv.CIV_NPC_RESPAWN_MULT) < 1.5, civ_wait
     print("CIV_RESPAWN_DIFFERENTIAL_OK")
 
@@ -1237,9 +1237,12 @@ async def main():
     hp_after_owner = srv.npcs["comp_dummy"]["hp"]
     assert hp_after_owner < 100, "companion did not assist the owner's hit"
     assert srv.npcs["comp_dummy"]["contributors"].get("CompOwner", 0) > 0
+    # The pet rides the owner's own swing only: a bare tick must not shave the
+    # target further, because the pet has no clock of its own (#590).
     srv.COMPANION_LAST_ATTACK.pop("compowner", None)
+    before_tick = srv.npcs["comp_dummy"]["hp"]
     await srv.tick_companions(time.time())
-    assert srv.npcs["comp_dummy"]["hp"] < hp_after_owner
+    assert srv.npcs["comp_dummy"]["hp"] == before_tick
     assert srv.npcs["comp_dummy"]["contributors"]["CompOwner"] > 0
 
     # Owner-initiated assist (#544 owner call A): with the stamp cleared, a
@@ -1250,11 +1253,12 @@ async def main():
     assert srv.npcs["comp_dummy"]["hp"] == idle_hp, "companion pulled an unengaged mob"
     assert "compowner" not in srv.COMPANION_TARGETS
 
-    # A hit on the owner is owner-initiated, so the pet answers that NPC.
+    # Being hit stamps the target, but with no owner swing the pet has nothing
+    # to ride: it must not free-attack on that stamp alone (#590).
     srv._companion_retaliate(comp_owner, "comp_dummy")
     srv.COMPANION_LAST_ATTACK.pop("compowner", None)
     await srv.tick_companions(time.time())
-    assert srv.npcs["comp_dummy"]["hp"] < idle_hp, "companion ignored retaliation"
+    assert srv.npcs["comp_dummy"]["hp"] == idle_hp, "pet free-attacked on retaliation"
 
     # A tracked mob at 1 HP releases the slot instead of stalling the pet on a
     # target it is not allowed to finish; the next engaged mob gets the hit.
@@ -1271,10 +1275,10 @@ async def main():
     assert srv.npcs["comp_low"]["contributors"] == {}
     assert "compowner" not in srv.COMPANION_TARGETS
     await srv.cmd_attack(comp_owner, {"target": "high dummy"})
-    high_hp = srv.npcs["comp_high"]["hp"]
     srv.COMPANION_LAST_ATTACK.pop("compowner", None)
+    after_swing = srv.npcs["comp_high"]["hp"]
     await srv.tick_companions(time.time())
-    assert srv.npcs["comp_high"]["hp"] < high_hp, "companion skipped the healthy mob"
+    assert srv.npcs["comp_high"]["hp"] == after_swing, "pet free-attacked after the swing"
 
     # Being hit also arms the pet against the attacker (companion retaliation).
     await srv._damage_companion(comp_owner, rec, 1, "Test Brute", time.time(), "comp_low")
@@ -1295,7 +1299,8 @@ async def main():
     assert rec["downed_until"] >= down_at + srv.COMPANION_DOWNED_SECONDS - 1
     await srv.cmd_companion(comp_owner, {"action": "status"})
     assert inbox[-1]["downed"] is True
-    assert inbox[-1]["revive_cost"] == 50
+    downed_minutes = max(1, -(-srv.COMPANION_DOWNED_SECONDS // 60))
+    assert inbox[-1]["revive_cost"] == downed_minutes * srv.COMPANION_REVIVE_GOLD_PER_MINUTE
 
     rec["downed_until"] = time.time() + 61
     comp_owner.gold = 100

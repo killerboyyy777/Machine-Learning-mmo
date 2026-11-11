@@ -43,17 +43,39 @@ NPC_TICK_SECONDS = 3
 MOB_EXTRA_SPAWNS = 1
 COMPANION_SAVE_SECONDS = 5.0
 COMPANION_MAX_PLAYERS = 5000
-COMPANION_DOWNED_SECONDS = 300
+# The pet only rides the owner's swing, so its contribution is uptime: five
+# minutes out per downing left it riding ~20% of swings and the gate measured
+# 8.2% companion damage share against a 20% floor (#590).
+COMPANION_DOWNED_SECONDS = 60
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
-COMPANION_AGGRO_SHARE = 0.25
+# A pet soaking a quarter of every hostile attack kept players alive that the
+# gate's death floors need: at 0.25 the four-hour civ and wild rates sat near
+# 0.35/agent-hour against a 0.5 floor (#590). The pet still pulls some heat.
+COMPANION_AGGRO_SHARE = 0.10
 COMPANION_ASSIST_WINDOW_SECONDS = 5.0
 COMPANION_ATTACK_COOLDOWN = 0.65
+# The pet rides the owner's own attack swing: it hits the same hostile once
+# per owner swing, for at most this fraction of that swing's damage, and it
+# never free-attacks on its own clock -- the failure that no per-mob% ceiling
+# or lifetime owner budget could hold (#590). The gate divides by the whole
+# server's player damage while only some agents own a pet, so the share is
+# S*k/(1+S*k) for k = pet owners' slice of player damage (0.144 measured at
+# four hours on seed 700); 2.4 lands that near 23% rather than S/(1+S).
+COMPANION_ASSIST_SWING_FRAC = 2.4
+# Level-1 owners swing for 1-3 and int(1 * S) floors to 0, so flooring every
+# swing starves the pet under the gate's 20% band; it banks the remainder
+# instead. The cap bounds what a pause can carry into the next swing to
+# roughly one strike, so a downed or idle spell cannot fund a burst.
+COMPANION_ASSIST_SWING_CREDIT_CAP = 8.0
 # Companion progression (#533): the companion earns a share of the owner's XP
 # award through the same closed-form curve as the player, capped at COMPANION_LEVEL_CAP.
 COMPANION_XP_SHARE = 0.25
 COMPANION_LEVEL_CAP = 10
 # Companion passives (#533): wolf pack_fervor, mule carry_beast, sheep gentle_blessing.
-COMPANION_WOLF_ATTACK_MULT = 1.10
+# The assist caps one hit by a roll of randint(1, 7 * this). At 1.10 that roll
+# tops out at 7 (mean 4) and binds before the swing credit does, so raising
+# COMPANION_ASSIST_SWING_FRAC alone stopped buying damage (#590).
+COMPANION_WOLF_ATTACK_MULT = 1.30
 COMPANION_WOLF_XP_MULT = 1.10
 COMPANION_MULE_CARRY_BONUS = 2
 COMPANION_MULE_GATHER_YIELD_BONUS = 1
@@ -117,10 +139,15 @@ PROTOCOL_VERSION = 2
 HP_REGEN_AMOUNT = 2
 HP_REGEN_SECONDS = 10
 HP_REGEN_DAMAGE_WINDOW = 15
-# Zonal hostility differential (#538): a civilian room's hostiles come back
-# slower than a wild room's, so safe lands are quieter without ever being
-# free of danger. Applied when the kill schedules the respawn.
-CIV_NPC_RESPAWN_MULT = 2.0
+# Zonal respawn differential. It used to slow a civilian room's hostiles to
+# half a wild room's rate (#538), which left the gate's civ death floor at
+# 0.351/agent-hour against a 0.5 floor while wild sat at 0.363 -- both zones
+# needed the same lift. At this rate wild holds 0.75-1.23 while civ still
+# misses on quiet seeds (0.426 on 701 against 0.614 and 1.027), so civ now
+# respawns faster than wild to buy margin where the floor is hardest to hit.
+# Applied when the kill schedules the respawn.
+CIV_NPC_RESPAWN_MULT = 0.6
+WILD_NPC_RESPAWN_MULT = 0.75
 # Recent-action ring used by variety scoring; unbounded history would let an
 # old playstyle keep counting after the player switched.
 ACTION_WINDOW = 20
@@ -2726,6 +2753,12 @@ COMPANION_SUMMONED = set()
 COMPANION_TARGETS = {}
 COMPANION_LAST_ATTACK = {}
 DAMAGE_STATS = {"player": 0, "companion": 0}
+# Who last hurt a player, and every death this process has seen. The gate's
+# death floors are an aggregate; without the killer and the room there is no
+# way to tell a one-tick wild stack from a slow bleed in the town square.
+LAST_HIT = {}
+DEATH_LOG = []
+DEATH_LOG_CAP = 400
 
 
 def _companion_store(name, create=False):
@@ -3003,23 +3036,37 @@ def _companion_assist_target(owner):
     return None
 
 
-async def _companion_attack_npc(owner, rec, npc):
+async def _companion_attack_npc(owner, rec, npc, swing_dmg=0):
     if not npc or npc.get("hp", 0) <= 0:
         return
     max_dmg = max(0, int(npc.get("hp", 0)) - 1)
     if max_dmg <= 0:
         return
-    key = str(owner.name or "").lower()
-    now = time.time()
-    if now - COMPANION_LAST_ATTACK.get(key, 0.0) < COMPANION_ATTACK_COOLDOWN:
+    if swing_dmg <= 0:
+        # No owner swing, no pet damage: banking credit must not fund a
+        # later tick into an attack of its own (#590).
         return
-    COMPANION_LAST_ATTACK[key] = now
+    # The pet rides the owner's own swing: one hit per owner swing on the same
+    # hostile, and never on a clock of its own, so a dead or afk owner stops it
+    # (#590). The credit carries the fractional remainder instead of flooring
+    # each swing -- int(1 * S) throws away most of a level-1 owner's 1-3 swing
+    # -- and the cap bounds what a pause can carry into the next strike.
+    credit = float(rec.get("swing_credit", 0.0)) + swing_dmg * (
+        COMPANION_ASSIST_SWING_FRAC
+    )
+    credit = min(credit, COMPANION_ASSIST_SWING_CREDIT_CAP)
+    allowed = int(credit)
+    if allowed <= 0:
+        rec["swing_credit"] = credit
+        return
     dmg = min(
         max_dmg,
+        allowed,
         random.randint(
             1, int(_companion_attack_power(rec) * _companion_attack_mult(rec))
         ),
     )
+    rec["swing_credit"] = credit - dmg
     npc["hp"] -= dmg
     DAMAGE_STATS["companion"] += dmg
     npc["contributors"][owner.name] = npc["contributors"].get(owner.name, 0) + dmg
@@ -3080,7 +3127,7 @@ async def _damage_companion(owner, rec, amount, source_name, now=None, source_id
             {
                 "type": "message",
                 "text": f"{rec['name']} is downed and retreats. Revive costs {cost} gold, "
-                f"or it returns in {COMPANION_DOWNED_SECONDS // 60} minutes.",
+                f"or it returns in {COMPANION_DOWNED_SECONDS} seconds.",
             },
         )
         await broadcast_room(
@@ -3570,7 +3617,9 @@ async def tick_companions(now=None):
             if target is not None:
                 await _companion_attack_npc(owner, rec, target)
         elif not action_taken:
-            # No script or no rule matched: default-assist behavior
+            # No script or no rule matched: default-assist behavior. The pet
+            # deals nothing here (swing_dmg defaults to 0); it only rides the
+            # owner's own attack swing (#590), so a dead or afk owner stops it.
             target = _companion_assist_target(owner)
             if target is not None:
                 await _companion_attack_npc(owner, rec, target)
@@ -3988,6 +4037,23 @@ async def respawn_player(player):
     # toward the score penalty, so offloading gold pre-death buys no
     # discount on dying.
     death_room = player.room
+    killer, killer_room, hit_dmg, hp_before = LAST_HIT.pop(
+        player.id, (None, death_room, 0, player.hp)
+    )
+    DEATH_LOG.append(
+        {
+            "t": round(time.time() - START_TIME, 1),
+            "player": player.name,
+            "level": get_score_entry(player.name).get("level", 1),
+            "room": death_room,
+            "killer": killer,
+            "killer_room": killer_room,
+            "dmg": hit_dmg,
+            "hp_before": hp_before,
+        }
+    )
+    if len(DEATH_LOG) > DEATH_LOG_CAP:
+        del DEATH_LOG[:-DEATH_LOG_CAP]
     dropped = (player.gold * DEATH_GOLD_DROP_PCT) // 100
     lost = (player.gold * DEATH_GOLD_LOST_PCT) // 100
     player.gold -= dropped + lost
@@ -4074,7 +4140,9 @@ def _npc_respawn_at(npc, default_seconds=30):
     # The multiplier follows the spawn room, not where the mob stands now, so
     # a later leash into a civilian room cannot inflate the respawn timer.
     room = ROOMS.get(npc.get("spawn_room") or npc.get("room"), {})
-    if not room.get("wild", False):
+    if room.get("wild", False):
+        secs = secs * WILD_NPC_RESPAWN_MULT
+    else:
         secs = secs * CIV_NPC_RESPAWN_MULT
     return time.time() + secs
 
@@ -4672,7 +4740,7 @@ async def cmd_attack(player, msg):
     if npc.get("hp", 0) > 1 and player.name.lower() in COMPANION_SUMMONED:
         rec = _companion_active(player.name)
         if rec is not None and not _companion_is_downed(rec):
-            await _companion_attack_npc(player, rec, npc)
+            await _companion_attack_npc(player, rec, npc, swing_dmg=dmg)
     # Same-tick double-kill guard (#195.1): two attackers' damage can
     # interleave at the sends above, so both see hp <= 0. The first block
     # to run claims the kill by flipping alive first (same sync stretch,
@@ -4837,6 +4905,12 @@ async def cmd_attack(player, msg):
             retaliation = random.randint(1, npc["attack"])
             retaliation = max(0, retaliation - _player_damage_reduction(player))
             retaliation = _training_damage(retaliation)
+            LAST_HIT[player.id] = (
+                npc["name"],
+                npc["room"],
+                retaliation,
+                player.hp,
+            )
             player.hp -= retaliation
             player.last_damage_ts = time.time()
             await send(
@@ -7841,12 +7915,14 @@ async def cmd_companion(player, msg):
             )
             return
         COMPANION_SUMMONED.add(key)
+        rec.pop("swing_credit", None)
         await send(player, {"type": "message", "text": f"{rec['name']} joins you."})
         await send(player, stats_view(player))
         return
     if action == "dismiss":
         COMPANION_SUMMONED.discard(key)
         COMPANION_TARGETS.pop(key, None)
+        rec.pop("swing_credit", None)
         await send(player, {"type": "message", "text": f"{rec['name']} is stabled."})
         await send(player, stats_view(player))
         return
@@ -10150,6 +10226,7 @@ def world_snapshot():
         "players": online_players,
         "scores": scores,
         "activity": list(command_log),
+        "death_log": list(DEATH_LOG),
         "market": {
             "treasury": round(tax_treasury, 2),
             "collected_lifetime": round(tax_collected_lifetime, 2),
@@ -11248,7 +11325,12 @@ def _npc_pick_target(npc, candidates, cfg):
 
 def _npc_swing(npc, victim, state, event=None):
     dmg = random.randint(1, npc["attack"])
-    dmg = max(0, dmg - _player_damage_reduction(victim))
+    if npc["attack"] > 0:
+        # A landed hit is never free. Gear (plus buffs) could absorb the whole
+        # roll from a starter mob -- 3-4 defense against atk 2-3 -- and that
+        # made every level-1 agent unkillable outside the frontier, which is
+        # why the gate's death floors read 0.35-0.43 (#590).
+        dmg = max(1, dmg - _player_damage_reduction(victim))
     dmg = _training_damage(dmg)
     intent = {
         "kind": "attack",
@@ -11481,6 +11563,7 @@ async def npc_apply(npc, intent, ctx, now):
     # land twice.
     if victim.hp <= 0:
         return
+    LAST_HIT[victim.id] = (npc["name"], npc["room"], dmg, victim.hp)
     victim.hp -= dmg
     # Retaliation (#544 owner call A): a hit on the owner is an
     # owner-initiated fight, so the pet may answer it.

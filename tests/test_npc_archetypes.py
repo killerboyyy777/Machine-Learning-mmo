@@ -23,9 +23,9 @@ import server as srv
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
     WORLD = json.load(fh)
 
-# --- archetype data: leashing confined to the wild crag stalker; the three
-# civil-boundary hunters keep aggro acquisition but never leash, so the civil
-# death floor holds without the seed-702 leash retreat. ---
+# --- archetype data: the wild crag stalker and the three civil-boundary
+# hunters all leash. The hunter leash is one hop, so a wolf cannot follow a
+# role across the map into the graveyard and farm it there. ---
 assert srv.NPC_ARCHETYPE_DEFAULTS == {
     "archetype": None,
     "aggro_radius": 0,
@@ -40,7 +40,7 @@ assert srv.NPC_ARCHETYPE_DEFAULTS == {
 }
 assert WORLD["npc_archetypes"] == {
     "stalker": {"aggro_radius": 1, "leash_radius": 3},
-    "hunter": {"aggro_radius": 1},
+    "hunter": {"aggro_radius": 1, "leash_radius": 1},
     "skirmisher": {"flee_below_pct": 25},
 }
 
@@ -63,7 +63,7 @@ for nid, tmpl in WORLD["npcs"].items():
     elif nid in HUNTERS:
         assert resolved["archetype"] == "hunter", nid
         assert resolved["aggro_radius"] == 1, nid
-        assert resolved["leash_radius"] == 0, nid
+        assert resolved["leash_radius"] == 1, nid
         assert srv._npc_state_machine_active(resolved), nid
     else:
         assert resolved == srv.NPC_ARCHETYPE_DEFAULTS, nid
@@ -179,11 +179,11 @@ print("GM_BOSS_NORMALISED_OK")
 # --- respawn timing reads spawn_room, not the current room ---
 civ_room = next(r for r, v in srv.ROOMS.items() if not v.get("wild"))
 wild_room = next(r for r, v in srv.ROOMS.items() if v.get("wild"))
-assert srv.CIV_NPC_RESPAWN_MULT > 1.0
+assert srv.CIV_NPC_RESPAWN_MULT > 0 and srv.WILD_NPC_RESPAWN_MULT > 0
 wild_home = srv._npc_respawn_at(
     {"room": civ_room, "spawn_room": wild_room, "respawn_seconds": 30}
 ) - (time.time())
-assert 29.0 <= wild_home <= 31.0, wild_home
+assert abs(wild_home - 30.0 * srv.WILD_NPC_RESPAWN_MULT) < 1.5, wild_home
 civ_home = srv._npc_respawn_at(
     {"room": wild_room, "spawn_room": civ_room, "respawn_seconds": 30}
 ) - (time.time())
