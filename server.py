@@ -33,6 +33,7 @@ COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
 GUILDS_FILE = join(dirname(abspath(__file__)), "guilds.json")
 # Intel keeps one too: bot-cadence appends must never rewrite the vault file.
 INTEL_FILE = join(dirname(abspath(__file__)), "intel.json")
+FREIGHT_FILE = join(dirname(abspath(__file__)), "freight.json")
 
 NPC_TICK_SECONDS = 3
 # Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
@@ -321,6 +322,36 @@ COMMISSION_COLLAB_CAP = 200
 # Terminal (completed/cancelled) commissions older than this are pruned.
 # Open bounties hold real escrow and are never pruned.
 COMMISSION_TTL_SECONDS = 3600
+# Freight contracts (#503): custody passes to the hauler at pickup, so the
+# sender is discharged and can log off. The package drops where the hauler
+# dies, like any carried item, and the deposit is what stops "accept and never
+# run" from being the best move.
+FREIGHT_VERSION = 1
+FREIGHT_TTL_SECONDS = 7200
+FREIGHT_DEPOSIT_PCT = 25
+FREIGHT_MAX_OPEN_PER_POSTER = 3
+FREIGHT_MAX_PACKAGE_UNITS = 6
+FREIGHT_MAX_CONTRACTS = 300
+FREIGHT_DELIVERED_RETENTION_SECONDS = 86400
+FREIGHT_BONUS_DEFAULT_SECONDS = 1800
+# NPC stations trade with each other and post their own consignments. The
+# goods are real items already lying at the origin station, so a station
+# contract creates no items; only the fee is minted, on delivery, as payment
+# for work done -- the same faucet quests use. Station freight never enters a
+# player's escrow, so an expired one returns its goods and costs nobody.
+FREIGHT_STATION_INTERVAL_SECONDS = 180
+FREIGHT_STATION_ROOMS = (
+    "market",
+    "salt_docks",
+    "chandlery",
+    "artisan_row",
+    "smithy",
+    "tannery",
+)
+FREIGHT_STATION_MAX_OPEN = 4
+FREIGHT_STATION_MAX_UNITS = 3
+FREIGHT_STATION_FEE_PER_UNIT = 6
+FREIGHT_STATION_FEE_MIN = 8
 
 # --- Adventurers Guild hub (#337) -------------------------------------------
 # Post/fill are presence-gated to GUILD_ROOM; list/cancel stay global.
@@ -1536,6 +1567,161 @@ def _rebuild_guild_index():
 
 
 GUILDS_FILE_BLOCKED = False
+
+
+FREIGHT_FILE_BLOCKED = False
+FREIGHT = {}
+FREIGHT_STATS = {
+    "posted": 0,
+    "accepted": 0,
+    "delivered": 0,
+    "cancelled": 0,
+    "expired": 0,
+    "lost": 0,
+    "deposits_forfeited": 0,
+    "fee_paid": 0,
+    "station_posted": 0,
+    "station_fee_paid": 0,
+    "bonus_paid": 0,
+}
+_freight_counter = itertools.count(1)
+_freight_dirty = False
+_freight_station_at = 0.0
+
+FREIGHT_FIELDS = (
+    "id",
+    "poster",
+    "poster_kind",
+    "hauler",
+    "origin",
+    "destination",
+    "items",
+    "fee",
+    "deposit",
+    "bonus",
+    "bonus_until",
+    "posted_at",
+    "expires_at",
+    "state",
+    "refund",
+    "delivered_at",
+    "lost_at",
+)
+
+
+def _normalize_freight_record(row):
+    if not isinstance(row, dict):
+        return None
+    rec = {key: row.get(key) for key in FREIGHT_FIELDS}
+    # Station consignments have no player wallet behind them, so the kind has
+    # to survive a save/load or a restart would refund them to nobody.
+    rec["poster_kind"] = "station" if row.get("poster_kind") == "station" else "player"
+    try:
+        rec["id"] = int(rec.get("id") or 0)
+        rec["fee"] = max(0, int(rec.get("fee") or 0))
+        rec["deposit"] = max(0, int(rec.get("deposit") or 0))
+        rec["bonus"] = max(0, int(rec.get("bonus") or 0))
+        rec["bonus_until"] = float(rec.get("bonus_until") or 0)
+        rec["refund"] = max(0, int(rec.get("refund") or 0))
+        rec["posted_at"] = float(rec.get("posted_at") or 0)
+        rec["expires_at"] = float(rec.get("expires_at") or 0)
+        rec["delivered_at"] = float(rec.get("delivered_at") or 0)
+        rec["lost_at"] = float(rec.get("lost_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if rec["id"] <= 0:
+        return None
+    items = rec.get("items")
+    if not isinstance(items, list):
+        return None
+    rec["items"] = [str(iid) for iid in items if isinstance(iid, str)]
+    if not rec["items"]:
+        return None
+    if rec.get("state") not in ("open", "carried", "delivered", "expired", "lost"):
+        return None
+    for key in ("poster", "origin", "destination"):
+        if not isinstance(rec.get(key), str) or not rec[key]:
+            return None
+    if rec.get("hauler") is not None and not isinstance(rec["hauler"], str):
+        rec["hauler"] = None
+    return rec
+
+
+def load_freight(path=None):
+    global FREIGHT_FILE_BLOCKED, _freight_counter
+    path = path or FREIGHT_FILE
+    data = None
+    for candidate in (path, path + ".1"):
+        try:
+            with open(candidate) as f:
+                data = json.load(f)
+            break
+        except FileNotFoundError:
+            continue
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: could not load {os.path.basename(candidate)}: {e}")
+            return {}
+    if data is None:
+        return {}
+    if not isinstance(data, dict) or data.get("version") != FREIGHT_VERSION:
+        FREIGHT_FILE_BLOCKED = True
+        print(
+            f"Warning: {os.path.basename(path)} version is not {FREIGHT_VERSION}; not loaded"
+        )
+        return {}
+    raw = data.get("contracts")
+    if not isinstance(raw, list):
+        return {}
+    loaded = {}
+    for row in raw[:FREIGHT_MAX_CONTRACTS]:
+        rec = _normalize_freight_record(row)
+        if rec is not None:
+            loaded[rec["id"]] = rec
+    _freight_counter = itertools.count(max(loaded) + 1 if loaded else 1)
+    return loaded
+
+
+def save_freight(path=None):
+    global _freight_dirty
+    path = path or FREIGHT_FILE
+    if FREIGHT_FILE_BLOCKED:
+        return False
+    payload = {
+        "version": FREIGHT_VERSION,
+        "contracts": list(FREIGHT.values())[-FREIGHT_MAX_CONTRACTS:],
+        "stats": FREIGHT_STATS,
+    }
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(payload, f, separators=(",", ":"))
+        if os.path.exists(path):
+            os.replace(path, path + ".1")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        print(f"Warning: could not save {os.path.basename(path)}: {e}")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    _freight_dirty = False
+    return True
+
+
+def mark_freight_dirty():
+    global _freight_dirty
+    _freight_dirty = True
+
+
+async def freight_save_loop():
+    while True:
+        await asyncio.sleep(30)
+        if _freight_dirty:
+            save_freight()
+
+
+FREIGHT = load_freight()
 
 
 def load_guilds(path=None):
@@ -4086,6 +4272,8 @@ async def respawn_player(player):
             guild.get("id"), player.name, death_room, "player_death", None, None
         )
 
+    _freight_release_on_death(player, death_room)
+
     await apply_death_penalty(
         player, dropped + lost + _sheltered_gold(player.name) + item_value
     )
@@ -4605,6 +4793,15 @@ async def cmd_login(player, msg):
     await send(player, welcome)
     await send(player, room_view(player.room))
     await _deliver_craft_pending(player, entry)
+    owed = _freight_flush_refunds(player)
+    if owed:
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": f"Freight settled while you were away: {owed} gold returned.",
+            },
+        )
     await send(player, stats_view(player))
     await broadcast_room(
         player.room, {"type": "message", "text": f"{name} appears."}, exclude=player
@@ -7762,6 +7959,568 @@ async def cmd_intel(player, msg):
     await _intel_refuse(player, f"Unknown intel action '{action}'. Use log or query.")
 
 
+def _freight_find(raw_id):
+    try:
+        cid = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    return FREIGHT.get(cid)
+
+
+def _freight_flush_refunds(player):
+    """Pay out money that terminal events owed this player while offline."""
+    owed = 0
+    for rec in FREIGHT.values():
+        if rec["state"] in ("lost", "expired") and rec.get("poster") == player.name:
+            owed += int(rec.get("refund") or 0)
+            rec["refund"] = 0
+    if owed:
+        player.gold += owed
+        mark_freight_dirty()
+    return owed
+
+
+def _freight_drop_package(room_id, items):
+    for iid in items:
+        _add_ground(room_id, iid)
+
+
+def _freight_station_busy():
+    return sum(
+        1
+        for rec in FREIGHT.values()
+        if rec.get("poster_kind") == "station" and rec["state"] in ("open", "carried")
+    )
+
+
+def tick_station_freight(now):
+    """NPC stations consign goods they already hold to another station.
+
+    The items come out of the origin room's ground stock and go back on the
+    ground at the destination, so a consignment creates no items. Only the fee
+    is minted, and only on delivery -- payment for work done, like a quest.
+    """
+    global _freight_station_at
+    if now - _freight_station_at < FREIGHT_STATION_INTERVAL_SECONDS:
+        return
+    _freight_station_at = now
+    if len(FREIGHT) >= FREIGHT_MAX_CONTRACTS:
+        return
+    if _freight_station_busy() >= FREIGHT_STATION_MAX_OPEN:
+        return
+    origins = [
+        rid for rid in FREIGHT_STATION_ROOMS if rid in room_items and _ground_items(rid)
+    ]
+    if not origins:
+        return
+    if len(FREIGHT_STATION_ROOMS) < 2:
+        return
+    random.shuffle(origins)
+    origin = origins[0]
+    others = [rid for rid in FREIGHT_STATION_ROOMS if rid != origin]
+    if not others:
+        return
+    ground = _ground_items(origin)
+    units = min(FREIGHT_STATION_MAX_UNITS, len(ground))
+    if units <= 0:
+        return
+    items = [ground.pop(0) for _ in range(units)]
+    fee = max(FREIGHT_STATION_FEE_MIN, units * FREIGHT_STATION_FEE_PER_UNIT)
+    cid = next(_freight_counter)
+    FREIGHT[cid] = {
+        "id": cid,
+        "poster": ROOMS.get(origin, {}).get("name", origin),
+        "poster_kind": "station",
+        "hauler": None,
+        "origin": origin,
+        "destination": random.choice(others),
+        "items": items,
+        "fee": fee,
+        "deposit": max(1, fee * FREIGHT_DEPOSIT_PCT // 100),
+        "posted_at": now,
+        "expires_at": now + FREIGHT_TTL_SECONDS,
+        "state": "open",
+        "refund": 0,
+        "delivered_at": 0.0,
+        "lost_at": 0.0,
+    }
+    FREIGHT_STATS["station_posted"] = FREIGHT_STATS.get("station_posted", 0) + 1
+    mark_freight_dirty()
+
+
+def prune_freight(now=None):
+    """Expire contracts and settle delivered ones nobody claimed."""
+    now = time.time() if now is None else now
+    tick_station_freight(now)
+    changed = False
+    for cid in list(FREIGHT):
+        rec = FREIGHT[cid]
+        state = rec["state"]
+        if state in ("delivered",) and now - rec["delivered_at"] >= (
+            FREIGHT_DELIVERED_RETENTION_SECONDS
+        ):
+            _freight_drop_package(rec["destination"], rec.pop("items", []))
+            del FREIGHT[cid]
+            changed = True
+            continue
+        if state not in ("open", "carried") or now < rec["expires_at"]:
+            continue
+        station = rec.get("poster_kind") == "station"
+        if state == "open":
+            rec["state"] = "expired"
+            # A station's goods go back where they came from and nobody is out
+            # of pocket; a player's fee is refunded because it left escrow.
+            if station:
+                _freight_drop_package(rec["origin"], rec.pop("items", []))
+                rec["refund"] = 0
+            else:
+                rec["refund"] = rec["fee"]
+            FREIGHT_STATS["expired"] += 1
+        else:
+            hauler = find_player_anywhere(rec.get("hauler"))
+            room_id = hauler.room if hauler else rec["destination"]
+            _freight_drop_package(room_id, rec.pop("items", []))
+            rec["state"] = "lost"
+            rec["lost_at"] = now
+            rec["refund"] = 0 if station else rec["fee"] + rec["deposit"]
+            FREIGHT_STATS["lost"] += 1
+            FREIGHT_STATS["deposits_forfeited"] += rec["deposit"]
+        changed = True
+    if changed:
+        mark_freight_dirty()
+
+
+async def cmd_freight(player, msg):
+    action = str(msg.get("action", msg.get("sub", "list")) or "list").lower()
+    owed = _freight_flush_refunds(player)
+    if owed:
+        await send(
+            player,
+            {"type": "message", "text": f"Freight refund: {owed} gold returned."},
+        )
+
+    if action == "post":
+        await _freight_post(player, msg)
+        return
+    if action == "accept":
+        await _freight_accept(player, msg)
+        return
+    if action == "deliver":
+        await _freight_deliver(player, msg)
+        return
+    if action == "claim":
+        await _freight_claim(player, msg)
+        return
+    if action == "cancel":
+        await _freight_cancel(player, msg)
+        return
+    if action == "quote":
+        destination = str(msg.get("destination", "")).strip().lower()
+        if destination not in ROOMS:
+            await send(player, {"type": "error", "text": "No such destination room."})
+            return
+        samples = sorted(
+            int(rec["fee"])
+            for rec in FREIGHT.values()
+            if rec["state"] == "delivered"
+            and rec["origin"] == player.room
+            and rec["destination"] == destination
+        )
+        if not samples:
+            await send(
+                player,
+                {
+                    "type": "message",
+                    "text": (
+                        f"No delivery has run {player.room} -> {destination} yet, "
+                        "so there is no going rate: name your own fee."
+                    ),
+                },
+            )
+            return
+        mid = len(samples) // 2
+        median = (
+            samples[mid] if len(samples) % 2 else (samples[mid - 1] + samples[mid]) // 2
+        )
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": (
+                    f"{len(samples)} delivery(s) {player.room} -> {destination}; "
+                    f"median fee {median}, low {samples[0]}, high {samples[-1]}."
+                ),
+            },
+        )
+        return
+    if action == "status":
+        rec = _freight_find(msg.get("id", msg.get("contract_id")))
+        if rec is None or (
+            rec["poster"] != player.name and rec.get("hauler") != player.name
+        ):
+            await send(
+                player, {"type": "error", "text": "No freight contract by that id."}
+            )
+            return
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": (
+                    f"#{rec['id']} {rec['state']}: {len(rec['items'])} unit(s) "
+                    f"{rec['origin']} -> {rec['destination']}, fee {rec['fee']}, "
+                    f"deposit {rec['deposit']}, poster {rec['poster']}, "
+                    f"hauler {rec.get('hauler') or 'none'}."
+                ),
+            },
+        )
+        return
+    if action not in ("list", ""):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    "Unknown freight action. Use post, quote, accept, deliver, "
+                    "claim, cancel, list or status."
+                ),
+            },
+        )
+        return
+
+    open_rows = [rec for rec in FREIGHT.values() if rec["state"] == "open"]
+    mine = [
+        rec
+        for rec in FREIGHT.values()
+        if rec["poster"] == player.name or rec.get("hauler") == player.name
+    ]
+    lines = [f"Open freight contracts: {len(open_rows)}."]
+    for rec in sorted(open_rows, key=lambda r: r["id"])[:20]:
+        lines.append(
+            f"  #{rec['id']} {rec['origin']} -> {rec['destination']} "
+            f"fee {rec['fee']} ({len(rec['items'])} unit(s))"
+        )
+    if mine:
+        lines.append("Yours:")
+        for rec in sorted(mine, key=lambda r: r["id"])[:20]:
+            lines.append(f"  #{rec['id']} {rec['state']} -> {rec['destination']}")
+    await send(player, {"type": "message", "text": "\n".join(lines)})
+
+
+async def _freight_post(player, msg):
+    destination = str(msg.get("destination", "")).strip().lower()
+    if destination not in ROOMS:
+        await send(player, {"type": "error", "text": "No such destination room."})
+        return
+    if destination == player.room:
+        await send(
+            player, {"type": "error", "text": "Freight has to go somewhere else."}
+        )
+        return
+    try:
+        fee = int(msg.get("fee", 0))
+    except (TypeError, ValueError):
+        fee = 0
+    if fee <= 0:
+        await send(player, {"type": "error", "text": "Name a fee of at least 1 gold."})
+        return
+    try:
+        bonus = max(0, int(msg.get("bonus", 0) or 0))
+        bonus_seconds = max(0, int(msg.get("bonus_seconds", 0) or 0))
+    except (TypeError, ValueError):
+        bonus = 0
+        bonus_seconds = 0
+    if bonus:
+        # Rush money only pays for speed, so it rides the same escrow as the
+        # fee and is handed back to the poster when the target is missed.
+        bonus_seconds = bonus_seconds or FREIGHT_BONUS_DEFAULT_SECONDS
+    up_front = fee + bonus
+    if player.gold < up_front:
+        await send(
+            player, {"type": "error", "text": f"You need {up_front} gold up front."}
+        )
+        return
+    open_by_me = sum(
+        1
+        for rec in FREIGHT.values()
+        if rec["poster"] == player.name and rec["state"] in ("open", "carried")
+    )
+    if open_by_me >= FREIGHT_MAX_OPEN_PER_POSTER:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"You already have {open_by_me} freight contracts in play "
+                    f"(limit {FREIGHT_MAX_OPEN_PER_POSTER})."
+                ),
+            },
+        )
+        return
+    if len(FREIGHT) >= FREIGHT_MAX_CONTRACTS:
+        await send(player, {"type": "error", "text": "The freight board is full."})
+        return
+    raw_items = msg.get("items")
+    if isinstance(raw_items, str):
+        raw_items = [raw_items]
+    if not isinstance(raw_items, list) or not raw_items:
+        await send(
+            player,
+            {"type": "error", "text": "Say which items go in the package."},
+        )
+        return
+    package = []
+    for wanted in raw_items:
+        iid = find_item_by_name(player.inventory, str(wanted))
+        if iid is None:
+            await send(
+                player,
+                {"type": "error", "text": f"You are not carrying {wanted}."},
+            )
+            return
+        if iid in (player.equipped, player.armor, player.offhand):
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": f"{_iname(iid)} is equipped; unequip it first.",
+                },
+            )
+            return
+        package.append(iid)
+    if len(package) > FREIGHT_MAX_PACKAGE_UNITS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (f"A package holds at most {FREIGHT_MAX_PACKAGE_UNITS} units."),
+            },
+        )
+        return
+    for iid in package:
+        player.inventory.remove(iid)
+    player.gold -= up_front
+    cid = next(_freight_counter)
+    now = time.time()
+    rec = {
+        "id": cid,
+        "poster": player.name,
+        "poster_kind": "player",
+        "hauler": None,
+        "origin": player.room,
+        "destination": destination,
+        "items": package,
+        "fee": fee,
+        "deposit": max(1, (fee * FREIGHT_DEPOSIT_PCT) // 100),
+        "bonus": bonus,
+        "bonus_until": now + bonus_seconds if bonus else 0.0,
+        "posted_at": now,
+        "expires_at": now + FREIGHT_TTL_SECONDS,
+        "state": "open",
+        "refund": 0,
+        "delivered_at": 0.0,
+        "lost_at": 0.0,
+    }
+    FREIGHT[cid] = rec
+    FREIGHT_STATS["posted"] += 1
+    FREIGHT_STATS["fee_paid"] += fee
+    mark_freight_dirty()
+    mark_scores_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Freight #{cid} posted: {len(package)} unit(s) {rec['origin']} -> "
+                f"{destination}, fee {fee} in escrow, deposit {rec['deposit']}."
+                + (
+                    f" Bonus {bonus} for delivery within {bonus_seconds}s."
+                    if bonus
+                    else ""
+                )
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+async def _freight_accept(player, msg):
+    rec = _freight_find(msg.get("id", msg.get("contract_id")))
+    if rec is None or rec["state"] != "open":
+        await send(player, {"type": "error", "text": "No open contract by that id."})
+        return
+    if rec["poster"] == player.name:
+        await send(
+            player, {"type": "error", "text": "You cannot haul your own freight."}
+        )
+        return
+    if player.room != rec["origin"]:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Pick this up at {rec['origin']}, not here.",
+            },
+        )
+        return
+    deposit = int(rec["deposit"])
+    if player.gold < deposit:
+        await send(
+            player,
+            {"type": "error", "text": f"The hauler deposit is {deposit} gold."},
+        )
+        return
+    player.gold -= deposit
+    rec["hauler"] = player.name
+    rec["state"] = "carried"
+    FREIGHT_STATS["accepted"] += 1
+    mark_freight_dirty()
+    mark_scores_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Freight #{rec['id']} accepted: {len(rec['items'])} unit(s) to "
+                f"{rec['destination']}. Deposit {deposit} gold held; deliver to "
+                f"earn {rec['fee']}."
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+async def _freight_deliver(player, msg):
+    rec = _freight_find(msg.get("id", msg.get("contract_id")))
+    if rec is None or rec["state"] != "carried" or rec.get("hauler") != player.name:
+        await send(player, {"type": "error", "text": "You are not hauling that."})
+        return
+    if player.room != rec["destination"]:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"Deliver at {rec['destination']}, not here.",
+            },
+        )
+        return
+    player.gold += rec["fee"] + rec["deposit"]
+    if rec.get("poster_kind") == "station":
+        # Stock the station already held, moved between two stations: the goods
+        # land on this floor and only the fee was ever minted.
+        _freight_drop_package(rec["destination"], rec.pop("items", []))
+        FREIGHT_STATS["station_fee_paid"] = FREIGHT_STATS.get("station_fee_paid", 0) + 1
+    bonus = int(rec.get("bonus") or 0)
+    if bonus:
+        if time.time() <= float(rec.get("bonus_until") or 0):
+            player.gold += bonus
+            FREIGHT_STATS["bonus_paid"] = FREIGHT_STATS.get("bonus_paid", 0) + bonus
+        else:
+            # The rush money was escrowed with the fee; late delivery hands it
+            # back to the poster rather than paying for work not done in time.
+            rec["refund"] = int(rec.get("refund") or 0) + bonus
+    rec["state"] = "delivered"
+    rec["delivered_at"] = time.time()
+    FREIGHT_STATS["delivered"] += 1
+    mark_freight_dirty()
+    mark_scores_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Freight #{rec['id']} delivered. {rec['fee']} fee and "
+                f"{rec['deposit']} deposit paid."
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+async def _freight_claim(player, msg):
+    rec = _freight_find(msg.get("id", msg.get("contract_id")))
+    if rec is not None and rec.get("poster_kind") == "station":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Station freight settles on delivery; there is nothing to claim.",
+            },
+        )
+        return
+    if rec is None or rec["poster"] != player.name:
+        await send(player, {"type": "error", "text": "That contract is not yours."})
+        return
+    if rec["state"] not in ("delivered", "expired", "lost"):
+        await send(player, {"type": "error", "text": "That contract is still in play."})
+        return
+    items = list(rec.pop("items", []))
+    banked = 0
+    for iid in items:
+        if not _deliver_item_or_bank(player, iid):
+            banked += 1
+    refund = int(rec.pop("refund", 0) or 0)
+    player.gold += refund
+    del FREIGHT[rec["id"]]
+    mark_freight_dirty()
+    mark_scores_dirty()
+    text = f"Freight #{rec['id']} closed: {len(items)} unit(s) returned"
+    if banked:
+        text += f" ({banked} to your item bank, pack was full)"
+    if refund:
+        text += f", {refund} gold refunded"
+    await send(player, {"type": "message", "text": text + "."})
+    await send(player, stats_view(player))
+
+
+async def _freight_cancel(player, msg):
+    rec = _freight_find(msg.get("id", msg.get("contract_id")))
+    if rec is None or rec["poster"] != player.name:
+        await send(player, {"type": "error", "text": "That contract is not yours."})
+        return
+    if rec["state"] != "open":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "A contract already picked up cannot be cancelled.",
+            },
+        )
+        return
+    for iid in rec["items"]:
+        _deliver_item_or_bank(player, iid)
+    player.gold += rec["fee"] + int(rec.get("bonus") or 0)
+    del FREIGHT[rec["id"]]
+    FREIGHT_STATS["cancelled"] += 1
+    mark_freight_dirty()
+    mark_scores_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Freight #{rec['id']} cancelled; goods and "
+                f"{rec['fee'] + int(rec.get('bonus') or 0)} gold returned."
+            ),
+        },
+    )
+    await send(player, stats_view(player))
+
+
+def _freight_release_on_death(player, death_room):
+    """A hauler dies holding someone else's goods: the package hits the floor."""
+    for rec in list(FREIGHT.values()):
+        if rec["state"] != "carried" or rec.get("hauler") != player.name:
+            continue
+        _freight_drop_package(death_room, rec.pop("items"))
+        rec["state"] = "lost"
+        rec["lost_at"] = time.time()
+        rec["refund"] = rec["fee"] + rec["deposit"]
+        FREIGHT_STATS["lost"] += 1
+        FREIGHT_STATS["deposits_forfeited"] += rec["deposit"]
+        mark_freight_dirty()
+
+
 async def cmd_inventory(player, msg):
     await send(
         player,
@@ -8037,6 +8796,7 @@ async def cmd_help(player, msg):
                 "commission_post commission_list commission_fill commission_cancel "
                 "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit] "
                 "intel [log|query] "
+                "freight [post|quote|accept|deliver|claim|cancel|list|status] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
                 "stats lists your active companion: name, species, level, hp, attack, "
@@ -9831,6 +10591,7 @@ HANDLERS = {
     "commission_cancel": cmd_commission_cancel,
     "guild": cmd_guild,
     "intel": cmd_intel,
+    "freight": cmd_freight,
 }
 
 SCORE_ARG_EXTRACTORS = {
@@ -9853,6 +10614,7 @@ SCORE_ARG_EXTRACTORS = {
         msg.get("target") or msg.get("required_kills", "")
     ).lower(),
     "commission_fill": lambda msg: str(msg.get("commission_id", "")).lower(),
+    "freight": lambda msg: str(msg.get("id", msg.get("contract_id", ""))).lower(),
     "commission_cancel": lambda msg: str(msg.get("commission_id", "")).lower(),
 }
 
@@ -10227,6 +10989,14 @@ def world_snapshot():
         "scores": scores,
         "activity": list(command_log),
         "death_log": list(DEATH_LOG),
+        "freight": {
+            "open": sum(1 for r in FREIGHT.values() if r["state"] == "open"),
+            "carried": sum(1 for r in FREIGHT.values() if r["state"] == "carried"),
+            "delivered": FREIGHT_STATS["delivered"],
+            "posted": FREIGHT_STATS["posted"],
+            "lost": FREIGHT_STATS["lost"],
+            "deposits_forfeited": FREIGHT_STATS["deposits_forfeited"],
+        },
         "market": {
             "treasury": round(tax_treasury, 2),
             "collected_lifetime": round(tax_collected_lifetime, 2),
@@ -11596,6 +12366,7 @@ async def npc_ai_loop():
             _npc_ai_engaged_time(list(all_npcs()), now - prev_ai_tick)
         prev_ai_tick = now
         prune_commissions(now)
+        prune_freight(now)
         tick_standing_bounties(now)
         await prune_market_orders(now)
         prune_invites(now)
