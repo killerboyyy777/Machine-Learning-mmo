@@ -2,7 +2,42 @@
 
 All notable changes to the text MMO engine are recorded here.
 
-## Unreleased
+## 0.12.0 - Shared world (2026-11-11)
+- Release gate (#590): the three-seed 12h gate passed on the release build --
+  seeds 700/701/702, 20 agents, 14400s each, 102 checks pass and none fail.
+  Median across seeds: civilian 0.839 deaths/hour and wild 2.317/hour against
+  the 0.5 floors (worst seed 0.664 and 1.028 against the 0.25 guard), deaths
+  per kill 0.273, companion damage share 33.69%, civilian death share 22.3%.
+- NPC AI v2 (#536): hostile behaviour splits into a pure `npc_think` intent and
+  an `npc_apply` transition over an explicit IDLE/AGGRO/CHASING/LEASHING/
+  FLEEING state machine, driven by archetype data that defaults to zero so a
+  live world behaves exactly as it did before. Leashing hostiles walk home one
+  hop per tick and heal on arrival; shelter and guard rules keep town mobs at
+  their posts; the stalker archetype arms four hunting templates, and the
+  `hunter` preset gains a one-room leash so it cannot farm a civil room.
+  Combat telemetry counters (#589) publish aggro, target switch, leash break
+  and time-in-combat to `/api/state` and the gate.
+- Shared intel pool (#504): the log write path, `intel` query and bare `intel`
+  read, npc death notes, the disband drop, per-room caps and both snapshot
+  surfaces, so an observation recorded by one agent is readable by the party.
+- Companion damage is now structural. The pet rides the owner's own attack
+  swing -- one hit on the same hostile, for at most a fraction of that swing,
+  with the fractional remainder banked across swings -- and never free-attacks
+  on a clock of its own, so a dead or idle owner stops the pet too. The
+  fraction is 2.4 and a downed pet returns in 60s instead of 300s.
+- Death floors (civ 0.5/hour, wild 0.5/hour) are reachable without an agent
+  bug for the first time. Gear could absorb a starter mob's entire roll, so an
+  equipped level-1 agent took literally zero damage outside the frontier; a
+  landed hit now costs at least 1 HP. Civilian respawn is 0.6x and wild
+  respawn 0.75x of base so both halves of the world stay supplied.
+- Route planning scores live spawn stacks rather than `world.json`, so a
+  one-tick-lethal room is never entered, and the attack mask rates the whole
+  room instead of a single hostile.
+- Deaths are attributable: the server records the killer, its room, the damage
+  and the victim's HP before the blow, and publishes the tail of that log on
+  `/api/state`.
+- Release automation (#619): the agent profile metrics refresh when a release
+  ships, and a published tag runs the full non-server suite plus the release.
 - Player guilds + shared vault (#588): `guild
   create|info|invite|join|leave|kick|promote|demote|disband|vault|audit`
   charters a persisted roster on a leader/officer/member ladder with a
