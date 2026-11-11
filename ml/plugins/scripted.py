@@ -41,11 +41,6 @@ import server as srv
 
 from . import AgentPlugin, register
 
-# Wild rooms keep their stand-your-ground risk only while HP is healthy.
-# Below this fraction the policy retreats, so a wild visit costs HP instead
-# of turning one agent into a respawn loop.
-WILD_STAND_HP_FRAC = 0.35
-
 
 class ScriptedPolicy(AgentPlugin):
     """Fixed behavior-tree baseline: no learning, just a priority list over
@@ -110,24 +105,53 @@ class ScriptedPolicy(AgentPlugin):
         if pick is not None:
             return pick
         moves = [i for i, a in enumerate(ACTIONS) if a.startswith("move_") and mask[i]]
-        if moves:
-            return random.choice(moves)
-        return None
+        if not moves:
+            return None
+        exits = (srv.ROOMS.get(env._state.get("room_id"), {}) or {}).get("exits") or {}
+        safe = [
+            i
+            for i in moves
+            if self._survivable(env, exits.get(ACTIONS[i][len("move_") :]))
+        ]
+        return random.choice(safe or moves)
 
     def _in_room(self, env, room):
         return env._state.get("room_id") == room
 
     def _room_hostiles(self, room_id):
-        """Resident hostile count for a room, from static world data.
+        """Hostile instances in a room, from the live table.
 
-        Roaming NPCs can still enter a nominally safe room, so this is a
-        planning hint rather than a guarantee.
+        Reads server.npcs, not world.json: MOB_EXTRA_SPAWNS stacks several
+        copies of one template in every wild room, so static rows understate
+        a room's danger by that multiplier. Scored against static rows, a
+        hunter walked into rooms that killed it on arrival (#590: wild 8.7
+        deaths/h, almost all of it one-tick fights).
         """
         return sum(
             1
-            for npc in (srv.WORLD.get("npcs") or {}).values()
+            for npc in (getattr(srv, "npcs", {}) or {}).values()
             if npc.get("room") == room_id and npc.get("hostile")
         )
+
+    def _room_incoming(self, room_id):
+        """Damage per tick from the hostile instances in a room."""
+        return sum(
+            max(0, int(npc.get("attack") or 0))
+            for npc in (getattr(srv, "npcs", {}) or {}).values()
+            if npc.get("room") == room_id and npc.get("hostile")
+        )
+
+    def _survivable(self, env, room_id, ticks=1):
+        """True when the room cannot kill the agent in one tick of contact.
+
+        Crossing a room costs at least one tick of every resident hostile's
+        damage, and a level-1 agent has 20 hp: four Glacier Wyrms hit for 52,
+        so a route that steps through them is death before any fight maths
+        matters. Winning the fight itself is the attack mask's call.
+        """
+        hp = max(1, int(env._state.get("hp") or 1))
+        incoming = self._room_incoming(room_id)
+        return incoming <= 0 or incoming * ticks < hp
 
     def _safe_path(self, start, target):
         """Shortest exit path that does not route through a hostile room.
@@ -167,7 +191,7 @@ class ScriptedPolicy(AgentPlugin):
         path = (
             self._safe_path(start, room)
             if avoid_hostiles
-            else reachable_path(srv.ROOMS, start, room)
+            else self._reachable_safely(env, start, room)
         )
         if not path:
             return
@@ -176,19 +200,58 @@ class ScriptedPolicy(AgentPlugin):
         if i is not None and mask[i]:
             yield i
 
+    def _reachable_safely(self, env, start, target):
+        """Shortest path that only crosses rooms the agent survives.
+
+        Unlike `_safe_path`, hostile rooms are allowed when their live
+        incoming damage stays under what the agent can take, so a hunter can
+        still reach weak wild rooms instead of refusing every one.
+        """
+        if start == target:
+            return []
+        if start not in srv.ROOMS or target not in srv.ROOMS:
+            return None
+        queue = [(start, [])]
+        seen = {start}
+        while queue:
+            room_id, path = queue.pop(0)
+            exits = srv.ROOMS.get(room_id, {}).get("exits") or {}
+            for direction, dest in exits.items():
+                if dest in seen or dest not in srv.ROOMS:
+                    continue
+                if not self._survivable(env, dest):
+                    continue
+                next_path = path + [direction]
+                if dest == target:
+                    return next_path
+                seen.add(dest)
+                queue.append((dest, next_path))
+        return None
+
     def _safe_random_move(self, env, mask=None):
-        """A valid move preferring exits whose destination has no hostiles."""
+        """A valid move preferring destinations with no hostiles, then the
+        least damaging one.
+
+        Picking blind among hostile exits is what fed the death loop: with
+        every exit dangerous the agent chose uniformly, half the time into a
+        room that hit harder than the one it left.
+        """
         mask = self._valid(env) if mask is None else mask
         s = env._state
         exits = (srv.ROOMS.get(s.get("room_id"), {}) or {}).get("exits") or {}
-        safe = []
+        options = []
         for direction, dest in exits.items():
             i = self._idx(f"move_{direction}")
-            if i is not None and mask[i] and not self._room_hostiles(dest):
-                safe.append(i)
-        if safe:
-            return random.choice(safe)
-        return self._random_move(env, mask)
+            if i is None or not mask[i]:
+                continue
+            options.append((self._room_incoming(dest), i))
+        if not options:
+            return self._random_move(env, mask)
+        calm = [i for incoming, i in options if incoming == 0]
+        if calm:
+            return random.choice(calm)
+        least = min(incoming for incoming, _ in options)
+        return random.choice([i for incoming, i in options if incoming == least])
 
     def _path_attack_cost(self, start, target):
         """Sum hostile attack along the plain shortest path to `target`."""
@@ -203,11 +266,7 @@ class ScriptedPolicy(AgentPlugin):
             dest = (srv.ROOMS.get(here, {}).get("exits") or {}).get(direction)
             if dest is None:
                 return 10 ** 6
-            cost += sum(
-                max(0, int(npc.get("attack") or 0))
-                for npc in (srv.WORLD.get("npcs") or {}).values()
-                if npc.get("room") == dest and npc.get("hostile")
-            )
+            cost += self._room_incoming(dest)
             here = dest
         return cost
 
@@ -226,11 +285,10 @@ class ScriptedPolicy(AgentPlugin):
     def _flee_unwinnable(self, env, mask=None):
         """Move out of a room whose hostiles are all too strong to fight.
 
-        The env attack mask only offers `attack` when the agent can win;
-        without this check a role stands in the room and bleeds out.
-        Wild rooms stay stand-your-ground while HP is above
-        WILD_STAND_HP_FRAC, which keeps wild lethal on entry; below it the
-        agent leaves rather than feeding a respawn loop.
+        The env attack mask only offers `attack` when the whole room can be
+        beaten, so a room without it costs HP every tick the agent stays.
+        Wild zones included: the old stand-your-ground window parked agents
+        in four-mob rooms they could not clear and fed a respawn loop.
         """
         room = env._state.get("room_id")
         if not self._room_hostiles(room):
@@ -239,11 +297,6 @@ class ScriptedPolicy(AgentPlugin):
         attack = self._idx("attack")
         if attack is not None and mask[attack]:
             return None
-        if (srv.ROOMS.get(room) or {}).get("wild"):
-            hp = float(env._state.get("hp", 1) or 0)
-            max_hp = float(env._state.get("max_hp", 1) or 1)
-            if hp > max_hp * WILD_STAND_HP_FRAC:
-                return None
         return self._safe_random_move(env, mask)
 
     def _dungeon_entrance_room(self):
@@ -433,6 +486,13 @@ class DungeonPlugin(ScriptedPolicy):
     def plan(self, env, mask):
         s = env._state
         yield self._heal_first(env, mask)
+        # The dungeon entrance is itself a hostile room (the graveyard ghost),
+        # so the flee rule below pushed the role back out every time it
+        # arrived: it ping-ponged at the door and never cleared a floor.
+        if not s.get("is_dungeon") and self._in_room(
+            env, self._dungeon_entrance_room()
+        ):
+            yield self._first_valid(env, ("move_enter", "move_down"), mask)
         yield self._flee_unwinnable(env, mask)
         # Companion playstyle: acquire and summon before descending so the
         # pet contributes damage instead of sitting as dead content.
@@ -483,11 +543,9 @@ class HunterPlugin(ScriptedPolicy):
         for room_id, room in srv.ROOMS.items():
             if not room.get("wild"):
                 continue
-            resident = sum(
-                int(npc.get("attack", 0))
-                for npc in (srv.WORLD.get("npcs") or {}).values()
-                if npc.get("room") == room_id and npc.get("hostile")
-            )
+            if not self._survivable(env, room_id):
+                continue
+            resident = self._room_incoming(room_id)
             # Path danger matters more than the target room: the northern
             # wild rooms sit behind Ice Wraiths and Treants a level-1
             # hunter cannot survive, while the southern route is weak mobs.

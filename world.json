@@ -731,7 +731,7 @@
   },
   "npc_archetypes": {
     "stalker": {"aggro_radius": 1, "leash_radius": 3},
-    "hunter": {"aggro_radius": 1},
+    "hunter": {"aggro_radius": 1, "leash_radius": 1},
     "skirmisher": {"flee_below_pct": 25}
   },
   "items": {

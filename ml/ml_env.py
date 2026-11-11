@@ -1821,7 +1821,12 @@ class TextMMOEnv:
                 1, min(s.get("hp", 1) or 1, s.get("max_hp", 1) or 1)
             )
             player_avg = max(1.0, (1 + max(1, player_atk)) / 2.0)
-            best = None
+            # Every hostile instance in the room swings each tick, and
+            # MOB_EXTRA_SPAWNS stacks up to four copies of one template in a
+            # wild room. Surviving against the single best target made a
+            # four-wyrm room look winnable, so a respawned agent walked back
+            # in and died again (gate seed 701: 321 deaths in 20 minutes).
+            hostiles = []
             for name in s["npc_names"] or []:
                 if name in NON_HOSTILE_NAMES:
                     continue
@@ -1830,11 +1835,22 @@ class TextMMOEnv:
                     # Dungeon guards are dynamic; assume a mid-tier hostile
                     # instead of treating them as free kills.
                     spec = {"max_hp": 60, "attack": 8}
-                npc_hp = max(1, int(spec.get("max_hp", 1) or 1))
-                npc_atk = max(1, int(spec.get("attack", 1) or 1))
+                hostiles.append(
+                    (
+                        name,
+                        max(1, int(spec.get("max_hp", 1) or 1)),
+                        max(1, int(spec.get("attack", 1) or 1)),
+                    )
+                )
+            if not hostiles:
+                return None
+            incoming_avg = sum(
+                max(1.0, (1 + npc_atk) / 2.0) for _, _, npc_atk in hostiles
+            )
+            turns_to_die = math.ceil(player_hp / incoming_avg)
+            best = None
+            for name, npc_hp, _ in hostiles:
                 turns_to_kill = math.ceil(npc_hp / player_avg)
-                npc_avg = max(1.0, (1 + npc_atk) / 2.0)
-                turns_to_die = math.ceil(player_hp / npc_avg)
                 # One-turn safety margin: variance kills otherwise even fights.
                 if turns_to_kill + 1 <= turns_to_die and (
                     best is None or turns_to_kill < best[0]
