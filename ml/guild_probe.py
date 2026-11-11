@@ -1,7 +1,7 @@
 """Release-gate guild probe (#589): drive the real guild command surface.
 
 The gate cannot score guilds from bot play -- emergent guilds are #591's work
-(v0.13.0), not a bot behaviour -- so each seed runs one scripted charter: found
+(v0.13.0), not a bot behavior -- so each seed runs one scripted charter: found
 a guild, invite and admit a second character, move gold and one gathered item
 through the vault in both directions, read the audit log and disband, checking
 that gold is conserved between purses and vault after every step.
