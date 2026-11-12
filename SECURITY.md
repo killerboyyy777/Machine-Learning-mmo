@@ -18,6 +18,9 @@ security fixes.
 only the maintainer can read. That is the reporting channel; there is no email
 address to use instead, and none is published on the maintainer's profile.
 
+If that button is missing, open a public issue that contains **no details** and
+ask for a private channel. Do not describe the problem in the issue itself.
+
 Include:
 
 * What you did, step by step (commands sent, rooms/NPCs involved)
