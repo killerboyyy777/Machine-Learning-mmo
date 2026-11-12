@@ -1501,6 +1501,9 @@ GUILD_PERMISSION_VERBS = tuple(
 GUILD_PERMISSION_DEFAULTS = dict(GUILD_VERB_MIN_RANK, transfer="leader")
 GUILD_TRANSFER_TTL_SECONDS = 3600
 GUILD_TRANSFER_MAX_PENDING = 20
+# One guild cannot fill another's queue (or its audit log) on its own; the
+# queue cap alone would let a single sender take every slot.
+GUILD_TRANSFER_MAX_PER_PAIR = 3
 
 
 def _guild_permissions(guild):
@@ -7592,7 +7595,8 @@ async def _guild_vault_withdraw_item(player, record, raw):
             {"type": "error", "text": "The guild vault holds no such item."},
         )
         return
-    if _guild_member_rank(record, player.name) == "officer":
+    rank_now = _guild_member_rank(record, player.name)
+    if rank_now != "leader":
         state = _guild_withdrawn_today(record, time.time())
         used = _guild_int(state.get("items"))
         if used + 1 > GUILD_OFFICER_DAILY_ITEMS:
@@ -7601,9 +7605,9 @@ async def _guild_vault_withdraw_item(player, record, raw):
                 {
                     "type": "error",
                     "text": (
-                        "Officers may withdraw at most "
-                        f"{GUILD_OFFICER_DAILY_ITEMS} items per day "
-                        "(asked 1). It resets at midnight UTC."
+                        f"{'Officers' if rank_now == 'officer' else 'Withdrawals'} "
+                        f"may withdraw at most {GUILD_OFFICER_DAILY_ITEMS} items "
+                        "per day (asked 1). It resets at midnight UTC."
                     ),
                 },
             )
@@ -7640,6 +7644,12 @@ async def _cmd_guild_vault(player, msg):
     record = _guild_for_member(player.name)
     if record is None:
         await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    if record.get("id") in GUILD_DISSOLVING:
+        await send(
+            player,
+            {"type": "error", "text": "That guild is disbanding; the vault is closed."},
+        )
         return
     if not _guild_allows(record, player.name, op):
         if op == "withdraw":
@@ -7833,6 +7843,19 @@ async def _cmd_guild_transfer(player, msg):
             {"type": "error", "text": f"{target['name']} has too many offers waiting."},
         )
         return
+    paired = [row for row in waiting if row.get("from") == record.get("id")]
+    if len(paired) >= GUILD_TRANSFER_MAX_PER_PAIR:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"You already have {len(paired)} offers waiting with "
+                    f"{target['name']}. Wait for an answer."
+                ),
+            },
+        )
+        return
     held = _guild_int(record.get("vault_gold"))
     if held < amount:
         await send(
@@ -7863,12 +7886,12 @@ async def _cmd_guild_transfer(player, msg):
     waiting_line = (
         f"{record['name']} offers {amount} gold. " f"Accept it with guild accept {tid}."
     )
-    for other in players.values():
+    for other in list(players.values()):
         if not other.logged_in or not other.name:
             continue
         if _guild_member_rank(target, other.name) is None:
             continue
-        if target.get("id") in GUILD_DISSOLVING:
+        if GUILDS.get(target.get("id")) is not target:
             break
         await send(other, {"type": "message", "text": waiting_line})
     mark_guilds_dirty()

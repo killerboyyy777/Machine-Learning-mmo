@@ -301,6 +301,52 @@ async def main():
             assert tele["transfers_pending"] == 0, tele
             print("SECOND_TRANSFER_COUNTED_OK")
 
+            # --- one guild cannot fill another's queue ----------------------
+            assert srv.GUILD_TRANSFERS == {}
+            for _ in range(3):
+                out = await say(
+                    leader, action="transfer", guild="Salt Company", amount=5
+                )
+                assert any("Proposal #" in t for t in out), out
+            assert len(srv.GUILD_TRANSFERS) == 3
+            out = await say(leader, action="transfer", guild="Salt Company", amount=5)
+            assert any("Wait for an answer" in t for t in out), out
+            assert len(srv.GUILD_TRANSFERS) == 3
+            print("PAIR_CAP_OK")
+
+            # --- the sender must still be the guild that promised ------------
+            tid = min(srv.GUILD_TRANSFERS)
+            mine["name_key"] = "renamed pact"
+            out = await say(other_leader, action="accept", id=tid)
+            assert any("no longer exists" in t for t in out), out
+            mine["name_key"] = "iron pact"
+            assert tid not in srv.GUILD_TRANSFERS
+            srv.GUILD_TRANSFERS.clear()
+            print("SOURCE_KEY_REFUSED_OK")
+
+            # --- a dissolving guild's vault is closed ------------------------
+            srv.GUILD_DISSOLVING.add(mine["id"])
+            out = await say(leader, action="vault", op="deposit", gold=5)
+            assert any("vault is closed" in t for t in out), out
+            srv.GUILD_DISSOLVING.discard(mine["id"])
+            print("DISSOLVING_VAULT_CLOSED_OK")
+
+            # --- a member-rank withdraw still meets the daily cap ------------
+            capman = mkplayer("Fay", 70606)
+            players.append(capman)
+            capguild = make_guild("Cap Company", [("fay", "member", 9)])
+            capguild["permissions"] = {"withdraw": "member"}
+            capguild["vault_items"] = ["rat_tail"] * 6
+            taken = 0
+            for _ in range(4):
+                out = await say(capman, action="vault", op="withdraw", item="rat_tail")
+                if any("may withdraw at most" in t for t in out):
+                    break
+                taken += 1
+            assert taken == srv.GUILD_OFFICER_DAILY_ITEMS, taken
+            assert len(capguild["vault_items"]) == 3, capguild["vault_items"]
+            print("MEMBER_WITHDRAW_CAPPED_OK")
+
             print("GUILD_TRANSFERS_OK")
         finally:
             (
