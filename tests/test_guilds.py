@@ -115,7 +115,10 @@ with tempfile.TemporaryDirectory() as tmp:
 
         # --- an unknown version is left on disk and starts an empty world -
         with open(db, "w") as f:
-            json.dump({"version": 2, "guilds": {"7": {"name": "Future"}}}, f)
+            json.dump(
+                {"version": srv.GUILD_VERSION + 1, "guilds": {"7": {"name": "Future"}}},
+                f,
+            )
         before = _read(db)
         srv.GUILDS_FILE_BLOCKED = False
         assert srv.load_guilds() == ({}, [])

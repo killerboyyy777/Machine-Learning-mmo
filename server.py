@@ -377,6 +377,9 @@ BOUNTY_UNDELVED_PAYOUT_XP = 15
 STANDING_TICK_SECONDS = 60
 
 # --- Player guilds (#588) ---------------------------------------------------
+# Stays 1 even though the record gained `permissions`: the loader treats an
+# unknown version as unreadable and refuses the whole file, so bumping would
+# make a rolled-back server drop every guild instead of ignoring one key.
 GUILD_VERSION = 1
 GUILD_MAX_MEMBERS = 20
 GUILD_MAX_GUILDS = 200
@@ -1472,6 +1475,44 @@ async def companions_save_loop():
 
 GUILD_RANKS = ("leader", "officer", "member")
 
+GUILD_VERB_MIN_RANK = {
+    "invite": "officer",
+    "kick": "officer",
+    "promote": "leader",
+    "demote": "leader",
+    "disband": "leader",
+    "deposit": "member",
+    "withdraw": "officer",
+}
+
+# Every verb a guild can re-rank, and the rank it needs when the guild has not
+# said otherwise (#600). A guild stores overrides only, so a record written
+# before this existed behaves exactly as it did. `permissions` and the audit
+# are deliberately absent: a guild must not be able to let a member rewrite the
+# permission table or silence the log. `disband` is absent for a different
+# reason: it pays the caller the whole vault, so re-ranking it would hand the
+# treasury to whoever can type the command.
+#
+# These live here, above load_guilds, because the loader normalises records at
+# import time and used to call a helper defined six thousand lines below it.
+GUILD_PERMISSION_VERBS = tuple(
+    verb for verb in GUILD_VERB_MIN_RANK if verb != "disband"
+) + ("transfer",)
+GUILD_PERMISSION_DEFAULTS = dict(GUILD_VERB_MIN_RANK, transfer="leader")
+GUILD_TRANSFER_TTL_SECONDS = 3600
+GUILD_TRANSFER_MAX_PENDING = 20
+
+
+def _guild_permissions(guild):
+    """The guild's own overrides, filtered to verbs and ranks that exist."""
+    out = {}
+    raw = guild.get("permissions") if isinstance(guild, dict) else None
+    if isinstance(raw, dict):
+        for verb, rank in raw.items():
+            if verb in GUILD_PERMISSION_VERBS and rank in GUILD_RANKS:
+                out[verb] = rank
+    return out
+
 
 def new_guild_record(guild_id, name, founder, created_ts=None):
     ts = time.time() if created_ts is None else float(created_ts)
@@ -1827,6 +1868,7 @@ _pending_guild_invites = {}
 
 
 def guild_telemetry():
+    _guild_transfer_prune()
     online = {p.name.lower() for p in players.values() if p.logged_in and p.name}
     members_total = 0
     online_members = 0
@@ -6487,39 +6529,6 @@ def _guild_rank_order(rank):
         return len(GUILD_RANKS)
 
 
-GUILD_VERB_MIN_RANK = {
-    "invite": "officer",
-    "kick": "officer",
-    "promote": "leader",
-    "demote": "leader",
-    "disband": "leader",
-    "deposit": "member",
-    "withdraw": "officer",
-}
-
-# Every verb a guild can re-rank, and the rank it needs when the guild has not
-# said otherwise (#600). A guild stores overrides only, so a record written
-# before this existed behaves exactly as it did. `permissions` and the audit
-# are deliberately absent: a guild must not be able to let a member rewrite the
-# permission table or silence the log.
-GUILD_PERMISSION_VERBS = tuple(GUILD_VERB_MIN_RANK) + ("transfer",)
-GUILD_PERMISSION_DEFAULTS = dict(GUILD_VERB_MIN_RANK, transfer="leader")
-GUILD_TRANSFER_TTL_SECONDS = 3600
-GUILD_TRANSFER_MAX_PENDING = 20
-
-
-def _guild_permissions(guild):
-    """The guild's own overrides, filtered to verbs and ranks that exist."""
-    out = {}
-    raw = guild.get("permissions") if isinstance(guild, dict) else None
-    if isinstance(raw, dict):
-        for verb, rank in raw.items():
-            if verb in GUILD_PERMISSION_VERBS and rank in GUILD_RANKS:
-                out[verb] = rank
-    return out
-
-
-
 def _guild_allows(guild, name, action):
     """One rank gate for every guild verb; the matrix lives only here.
 
@@ -6673,6 +6682,7 @@ def _guild_index_drop(record):
 async def _guild_return_vault(player, record):
     """Empty the vault into the leader: pack first, item bank when full."""
     global GUILD_VAULT_GOLD_OUT_TOTAL
+    GUILD_DISSOLVING.add(record.get("id"))
     items = [i for i in record.get("vault_items") or [] if isinstance(i, str)]
     gold = int(record.get("vault_gold", 0) or 0)
     record["vault_items"] = []
@@ -6718,6 +6728,16 @@ def _guild_audit_line(entry):
     elif action in ("deposit_item", "withdraw_item"):
         moved = "deposited" if action == "deposit_item" else "withdrew"
         said = f"{moved} {_iname(str(item or ''))}"
+    elif action == "transfer_proposed":
+        said = f"offered {target} {amount} gold"
+    elif action == "transfer_incoming":
+        said = f"was offered {amount} gold by {target}"
+    elif action == "transfer_sent":
+        said = f"sent {amount} gold to {target}"
+    elif action == "transfer_received":
+        said = f"received {amount} gold from {target}"
+    elif action == "permissions":
+        said = f"set {target} to need {entry.get('rank_to') or '?'}"
     elif action == "disband":
         said = (
             f"disbanded the guild ({amount} gold, "
@@ -6774,7 +6794,15 @@ def _guild_audit(
 
 
 def _guild_dissolve(record, now):
-    GUILDS.pop(record.get("id"), None)
+    gid = record.get("id")
+    GUILDS.pop(gid, None)
+    GUILD_DISSOLVING.discard(gid)
+    # A proposal names a guild id, and ids are recycled from max(GUILDS) + 1.
+    # Keeping a dead guild's rows would let its successor be paid or drained by
+    # a claim nobody there made.
+    for tid, row in list(GUILD_TRANSFERS.items()):
+        if row.get("from") == gid or row.get("to") == gid:
+            GUILD_TRANSFERS.pop(tid, None)
     _guild_index_drop(record)
     _guild_add_tombstone(record, now)
     _intel_drop_guild(record.get("id"))
@@ -7476,16 +7504,20 @@ async def _guild_vault_withdraw_gold(player, record, raw):
             },
         )
         return
-    if _guild_member_rank(record, player.name) == "officer":
+    rank_now = _guild_member_rank(record, player.name)
+    if rank_now != "leader":
         state = _guild_withdrawn_today(record, time.time())
         used = _guild_int(state.get("gold"))
         if used + amount > GUILD_OFFICER_DAILY_GOLD:
+            # The cap exists so a lower rank cannot empty the vault in one
+            # sitting; lowering `withdraw` must not quietly remove it.
+            who = "Officers" if rank_now == "officer" else "Withdrawals"
             await send(
                 player,
                 {
                     "type": "error",
                     "text": (
-                        "Officers may withdraw at most "
+                        f"{who} may withdraw at most "
                         f"{GUILD_OFFICER_DAILY_GOLD} gold per day "
                         f"(asked {amount}). It resets at midnight UTC."
                     ),
@@ -7674,6 +7706,10 @@ async def _cmd_guild_audit(player, msg):
 
 
 GUILD_TRANSFERS = {}
+# A guild being torn down still sits in GUILDS until its vault has been paid
+# out, and that await is long enough for a transfer to land in a record that is
+# about to be deleted. Marking it first keeps the gold out of the void.
+GUILD_DISSOLVING = set()
 _guild_transfer_ids = itertools.count(1)
 GUILD_TRANSFERS_COMPLETED = 0
 GUILD_TRANSFERS_EXPIRED = 0
@@ -7715,6 +7751,18 @@ async def _cmd_guild_permissions(player, msg):
         await send(
             player,
             {"type": "error", "text": "Only the guild leader can change permissions."},
+        )
+        return
+    if verb == "disband":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    "Disbanding stays with the leader: it pays whoever runs it "
+                    "the whole vault, so it is not a configurable rank."
+                ),
+            },
         )
         return
     if verb not in GUILD_PERMISSION_VERBS:
@@ -7772,8 +7820,10 @@ async def _cmd_guild_transfer(player, msg):
             player, {"type": "error", "text": "A guild cannot send gold to itself."}
         )
         return
-    amount = _guild_int(msg.get("amount") or msg.get("gold"))
-    if amount <= 0:
+    amount = _guild_gold_amount(
+        msg.get("amount") if "amount" in msg else msg.get("gold")
+    )
+    if amount is None or amount <= 0:
         await send(player, {"type": "error", "text": "Send a whole number of gold."})
         return
     waiting = _guild_transfers_for(target.get("id"))
@@ -7795,11 +7845,32 @@ async def _cmd_guild_transfer(player, msg):
         "id": tid,
         "from": record.get("id"),
         "to": target.get("id"),
+        "from_key": str(record.get("name_key") or ""),
+        "to_key": str(target.get("name_key") or ""),
         "amount": amount,
         "by": player.name,
         "ts": time.time(),
     }
-    _guild_audit(record, player.name, "transfer_proposed", target=target["name"], amount=amount)
+    _guild_audit(
+        record, player.name, "transfer_proposed", target=target["name"], amount=amount
+    )
+    # The receiving side has no way to look a proposal up, so the offer has to
+    # land where they already read: their own audit log, plus a nudge to whoever
+    # of theirs is online.
+    _guild_audit(
+        target, player.name, "transfer_incoming", target=record["name"], amount=amount
+    )
+    waiting_line = (
+        f"{record['name']} offers {amount} gold. " f"Accept it with guild accept {tid}."
+    )
+    for other in players.values():
+        if not other.logged_in or not other.name:
+            continue
+        if _guild_member_rank(target, other.name) is None:
+            continue
+        if target.get("id") in GUILD_DISSOLVING:
+            break
+        await send(other, {"type": "message", "text": waiting_line})
     mark_guilds_dirty()
     await send(
         player,
@@ -7834,6 +7905,20 @@ async def _cmd_guild_accept(player, msg):
             player, {"type": "error", "text": "That transfer is not for your guild."}
         )
         return
+    if record.get("id") in GUILD_DISSOLVING:
+        GUILD_TRANSFERS.pop(tid, None)
+        await send(
+            player,
+            {"type": "error", "text": "That guild is disbanding; nothing moved."},
+        )
+        return
+    if str(record.get("name_key") or "") != str(row.get("to_key") or ""):
+        GUILD_TRANSFERS.pop(tid, None)
+        await send(
+            player,
+            {"type": "error", "text": "That transfer is not for your guild."},
+        )
+        return
     if not _guild_allows(record, player.name, "transfer"):
         need = _guild_permissions(record).get("transfer")
         need = need or GUILD_PERMISSION_DEFAULTS["transfer"]
@@ -7843,7 +7928,9 @@ async def _cmd_guild_accept(player, msg):
         )
         return
     source = GUILDS.get(row.get("from"))
-    if source is None:
+    if source is None or str(source.get("name_key") or "") != str(
+        row.get("from_key") or ""
+    ):
         GUILD_TRANSFERS.pop(tid, None)
         await send(
             player,
@@ -7868,8 +7955,12 @@ async def _cmd_guild_accept(player, msg):
     GUILD_TRANSFERS.pop(tid, None)
     GUILD_TRANSFERS_COMPLETED += 1
     GUILD_GOLD_TRANSFERRED += amount
-    _guild_audit(source, player.name, "transfer_sent", target=record["name"], amount=amount)
-    _guild_audit(record, player.name, "transfer_received", target=source["name"], amount=amount)
+    _guild_audit(
+        source, player.name, "transfer_sent", target=record["name"], amount=amount
+    )
+    _guild_audit(
+        record, player.name, "transfer_received", target=source["name"], amount=amount
+    )
     mark_guilds_dirty()
     await send(
         player,

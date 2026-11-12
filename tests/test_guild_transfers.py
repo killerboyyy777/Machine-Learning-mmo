@@ -246,6 +246,61 @@ async def main():
             assert tele["vault_gold_total"] == vault_gold(mine) + vault_gold(theirs)
             print("TELEMETRY_OK")
 
+            # --- the receiving guild can see an offer, and it pays once ------
+            out = await say(leader, action="transfer", guild="Salt Company", amount=25)
+            offer = [t for t in out if "guild accept" in t][-1]
+            tid = int(offer.split("#")[1].split(":")[0])
+            assert any(
+                row["action"] == "transfer_incoming" for row in theirs["audit"]
+            ), theirs["audit"]
+            print("TARGET_SEES_OFFER_OK")
+
+            out = await say(other_leader, action="accept", id=tid)
+            assert any("sends 25 gold" in t for t in out), out
+            assert vault_gold(mine) == 175 and vault_gold(theirs) == 85
+            out = await say(other_leader, action="accept", id=tid)
+            assert any("No transfer" in t for t in out), out
+            assert vault_gold(mine) == 175 and vault_gold(theirs) == 85
+            print("NO_DOUBLE_ACCEPT_OK")
+
+            # --- an id that now names a different guild pays nobody ----------
+            out = await say(leader, action="transfer", guild="Salt Company", amount=25)
+            tid = int(
+                [t for t in out if "guild accept" in t][-1].split("#")[1].split(":")[0]
+            )
+            theirs["name_key"] = "some other company"
+            out = await say(other_leader, action="accept", id=tid)
+            assert any("not for your guild" in t for t in out), out
+            assert vault_gold(mine) == 175 and vault_gold(theirs) == 85
+            theirs["name_key"] = "salt company"
+            srv.GUILD_TRANSFERS.pop(tid, None)
+            print("ID_REUSE_REFUSED_OK")
+
+            # --- a guild mid-disband cannot receive gold ---------------------
+            out = await say(leader, action="transfer", guild="Salt Company", amount=10)
+            tid = int(
+                [t for t in out if "guild accept" in t][-1].split("#")[1].split(":")[0]
+            )
+            srv.GUILD_DISSOLVING.add(theirs["id"])
+            out = await say(other_leader, action="accept", id=tid)
+            assert any("disbanding" in t for t in out), out
+            assert vault_gold(mine) == 175 and vault_gold(theirs) == 85
+            srv.GUILD_DISSOLVING.discard(theirs["id"])
+            assert srv.GUILD_TRANSFERS == {}
+            print("DISSOLVING_REFUSED_OK")
+
+            # --- disband is not a rank a guild may hand out ------------------
+            out = await say(leader, action="permissions", verb="disband", rank="member")
+            assert any("stays with the leader" in t for t in out), out
+            assert "disband" not in srv._guild_permissions(mine)
+            print("DISBAND_NOT_CONFIGURABLE_OK")
+
+            tele = srv.guild_telemetry()
+            assert tele["transfers_completed"] == 2, tele
+            assert tele["gold_transferred"] == 75, tele
+            assert tele["transfers_pending"] == 0, tele
+            print("SECOND_TRANSFER_COUNTED_OK")
+
             print("GUILD_TRANSFERS_OK")
         finally:
             (
