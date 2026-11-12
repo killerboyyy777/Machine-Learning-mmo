@@ -1919,6 +1919,28 @@ async def main():
     assert _env_tax(10) == 1
     assert _env_tax(25) == 3  # half-up: banker's round(2.5) would say 2
     assert _env_tax(100) == 10
+    # A configured minimum above the transaction value must never make tax
+    # exceed the sale price or produce a negative seller payout.
+    import ml_env as _ml_env
+    tax_min_saved = (srv.TAX_MINIMUM, _ml_env.TAX_MINIMUM)
+    tax_state_saved = (srv.tax_treasury, srv.tax_collected_lifetime, srv.tax_sunk_lifetime)
+    try:
+        srv.TAX_MINIMUM = _ml_env.TAX_MINIMUM = 100
+        assert _env_tax(2) == 1
+        assert 2 - _env_tax(2) >= 0
+        # Exercise the authoritative server settlement too: the seller must
+        # receive a positive payout, never a negative balance adjustment.
+        history_len = len(srv.market_history)
+        await srv._settle_market_fill(None, "TaxClampBuyer", "TaxClampSeller",
+                                      "rat_tail", 2, "ask")
+        assert srv.SCORES["taxclampseller"]["gold_bank"] == 1
+        assert srv.SCORES["taxclampseller"]["tax_paid"] == 1
+        del srv.SCORES["taxclampbuyer"]
+        del srv.SCORES["taxclampseller"]
+        del srv.market_history[history_len:]
+    finally:
+        srv.TAX_MINIMUM, _ml_env.TAX_MINIMUM = tax_min_saved
+        srv.tax_treasury, srv.tax_collected_lifetime, srv.tax_sunk_lifetime = tax_state_saved
     t_saved = (srv.tax_treasury, srv.tax_collected_lifetime)
     srv.tax_treasury = 0.0
     srv.tax_collected_lifetime = 0.0

@@ -402,7 +402,7 @@ def market_tax(price):
     1g trades pay out in full with 0 tax). Mirrors cmd_market_buy exactly.
     """
     if price > 1:
-        return max(TAX_MINIMUM, min(int(price * TAX_RATE + 0.5), price - 1))
+        return min(price - 1, max(TAX_MINIMUM, int(price * TAX_RATE + 0.5)))
     return 0
 
 

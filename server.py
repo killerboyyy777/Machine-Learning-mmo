@@ -4689,7 +4689,11 @@ async def cmd_login(player, msg):
             },
         )
         return
-    entry = get_score_entry(name)
+    # Do not create or touch score entries until the caller proves they own
+    # the requested name. Rejected login attempts must not grow SCORES or
+    # refresh last_seen, otherwise an attacker can force pruning of dormant
+    # accounts once SCORE_ENTRY_MAX is exceeded.
+    entry = SCORES.get(name.lower(), {})
     stored = entry.get("auth_token")
     has_progress = bool(entry.get("starting_purse_claimed"))
     if stored:
@@ -4721,10 +4725,13 @@ async def cmd_login(player, msg):
                 },
             )
             return
-        if token:
-            token_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
-            entry["auth_token"] = token_hash
-            mark_scores_dirty()
+    # Authentication has succeeded. Only now create/update the persistent
+    # account record and claim a first-time token.
+    entry = get_score_entry(name)
+    if not stored and token:
+        token_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+        entry["auth_token"] = token_hash
+        mark_scores_dirty()
     if entry.get("gold_bank", 0):
         player.gold += entry["gold_bank"]
         entry["gold_bank"] = 0
@@ -9699,7 +9706,7 @@ async def _settle_market_fill(buyer, buyer_name, seller_name, iid, price, via):
     # the tax never eats the whole price -- 1g trades used to pay the
     # seller 0. Conservation holds: tax + payout == price, always.
     if price > 1:
-        tax = max(TAX_MINIMUM, min(int(price * TAX_RATE + 0.5), price - 1))
+        tax = min(price - 1, max(TAX_MINIMUM, int(price * TAX_RATE + 0.5)))
     else:
         tax = 0
     seller_payout = price - tax
