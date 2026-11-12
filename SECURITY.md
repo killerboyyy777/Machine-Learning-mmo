@@ -1,52 +1,34 @@
-# Security Policy
+# Security
 
-## Supported Versions
+This is a single-operator game server. There is no hosted service, no user
+account with a password, and no personal data beyond the world save the operator
+chose to keep. The operator is trusted by design: `scores.json`, `world.json`
+and the config files are theirs, and a malicious operator is not a threat model.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| master  | :white_check_mark: |
-| tags `v*` (latest) | :white_check_mark: |
-| older tags | :x: (upgrade first, then report) |
+So there is no supported-version matrix and no coordinated-disclosure window.
+Only `master` and the latest tag matter, and a fix ships when it ships.
 
-Only the current `master` branch and the latest tagged release receive
-security fixes.
+## What is actually worth reporting
 
-## Reporting a Vulnerability
+Real defects are the ones that break the boundary the design assumes:
 
-**Do not open a public issue for security problems.** Instead:
+* a way past the dashboard write gates (`/api/config`, `/api/train/start`,
+  `/api/train/stop`), which refuse non-loopback peers, refuse a non-loopback
+  `Origin`, and require `application/json`;
+* a way to reach GM control (port 8767) from a non-loopback peer, since the GM
+  handler closes every non-loopback connection regardless of the bind address;
+* a way to make the server leak resources behind `TEXTMMO_MAX_CONNECTIONS`,
+  which is a hard cap on concurrent players rather than a rate limit and has no
+  per-IP or handshake throttle.
 
-1. Go to the repository's **Security tab > Report a vulnerability**
-   (private advisory), or
-2. Contact the maintainer directly via the email on their GitHub profile.
+Use **Security > Report a vulnerability** for those. Game balance problems - a
+profitable loop, a mob that cannot lose - are ordinary issues with repro steps,
+not security.
 
-Include:
+## What is not a defect
 
-* What you did, step by step (commands sent, rooms/NPCs involved)
-* What you expected vs what happened (privilege escalation, data loss,
-  remote crash, treasury/market theft, auth-token bypass, ...)
-* `server.py` revision (`git rev-parse HEAD`), config files in use
-  (`server_config.json`, `ml_config.json`), relevant logs
-* Whether it needs other players/bots online to trigger
-
-You will get an initial response within 7 days. If the issue is confirmed,
-we will coordinate a fix and credit you in the release notes (unless you
-prefer to stay anonymous).
-
-## Disclosure Policy
-
-* We ask for up to 90 days of coordinated disclosure before you publish
-  details of a confirmed vulnerability.
-* Once a fix is released, details may be published freely.
-* Cheat/exploit reports that only affect game balance (not security --
-  e.g. a profitable market loop) belong in **public issues** with repro
-  steps, not here. When in doubt, report privately and we will route it.
-
-## Scope Notes
-
-* The game server trusts its local operator completely: `scores.json`,
-  `world.json`, and the config files are operator-controlled. A malicious
-  operator is out of scope.
-* Denial-of-service via sheer connection volume is rate-limited by
-  `TEXTMMO_MAX_CONNECTIONS`, not eliminated; report bypasses of it here.
-* The dashboard HTTP server (`start_dashboard`) is loopback-oriented
-  tooling, not hardened public infrastructure.
+The dashboard listens on `0.0.0.0` by default and reads are unauthenticated:
+`/api/state` publishes player names, guild vault totals and recent deaths, and
+`/api/activity/stream` publishes the command log. That is an exposure decision
+the operator makes, not a vulnerability. The same goes for publishing the GM
+port: the peer gate still refuses anything that is not loopback.
