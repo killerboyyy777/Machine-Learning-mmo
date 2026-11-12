@@ -47,6 +47,20 @@ prefer to stay anonymous).
   `world.json`, and the config files are operator-controlled. A malicious
   operator is out of scope.
 * Denial-of-service via sheer connection volume is rate-limited by
-  `TEXTMMO_MAX_CONNECTIONS`, not eliminated; report bypasses of it here.
-* The dashboard HTTP server (`start_dashboard`) is loopback-oriented
-  tooling, not hardened public infrastructure.
+  `TEXTMMO_MAX_CONNECTIONS` (default 1000), not eliminated; report bypasses of
+  it here.
+* The dashboard (`http.server`, port 8766) **listens on `0.0.0.0` by default**,
+  so any host that is reachable makes it reachable. Reads are unauthenticated
+  by design: `/api/state` and the SSE stream publish live world state, which
+  includes player names, guild vault totals and recent deaths. That is an
+  operator decision about exposure, not a vulnerability. The write routes
+  (`/api/config`, `/api/train/start`, `/api/train/stop`) are stricter - they
+  refuse any peer that is not loopback, refuse a non-loopback `Origin`, and
+  require `application/json` - so report a way past those three checks here.
+* The GM WebSocket (port 8767) has **no authentication**. It binds
+  `127.0.0.1` unless `TEXTMMO_GM_HOST` is set, and setting it to `0.0.0.0` is
+  how the compose `soak` profile reaches it inside a Docker network. Publishing
+  that port to an untrusted network is operator error, not a server defect;
+  report a way to reach GM control from a non-GM port here.
+* Published containers are built by CI from a tag, not from a workstation. A
+  report that an image behaves differently from the tagged source is in scope.
