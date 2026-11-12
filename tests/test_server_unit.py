@@ -1923,6 +1923,7 @@ async def main():
     # exceed the sale price or produce a negative seller payout.
     import ml_env as _ml_env
     tax_min_saved = (srv.TAX_MINIMUM, _ml_env.TAX_MINIMUM)
+    tax_state_saved = (srv.tax_treasury, srv.tax_collected_lifetime, srv.tax_sunk_lifetime)
     try:
         srv.TAX_MINIMUM = _ml_env.TAX_MINIMUM = 100
         assert _env_tax(2) == 1
@@ -1939,6 +1940,7 @@ async def main():
         del srv.market_history[history_len:]
     finally:
         srv.TAX_MINIMUM, _ml_env.TAX_MINIMUM = tax_min_saved
+        srv.tax_treasury, srv.tax_collected_lifetime, srv.tax_sunk_lifetime = tax_state_saved
     t_saved = (srv.tax_treasury, srv.tax_collected_lifetime)
     srv.tax_treasury = 0.0
     srv.tax_collected_lifetime = 0.0
