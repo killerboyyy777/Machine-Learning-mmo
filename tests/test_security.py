@@ -139,6 +139,40 @@ async def main():
             "bad\x01ctrl" not in srv.SCORES
         ), "control-char name must not mint a score entry"
 
+        # --- 5. rejected fresh names must not mint or refresh accounts ----
+        # With token auth enabled, a stream of valid-looking but unauthenticated
+        # names must not grow SCORES or make dormant accounts eligible for LRU
+        # eviction.
+        old_required = srv.AUTH_TOKEN_REQUIRED
+        old_prune = srv._last_score_prune
+        victim_key = "dormantloginvictim"
+        flood_names = [f"RejectedFlood{i}" for i in range(25)]
+        try:
+            srv.AUTH_TOKEN_REQUIRED = True
+            victim_entry = srv.get_score_entry("DormantLoginVictim")
+            victim_entry["auth_token"] = srv.hashlib.sha256(b"victim-secret").hexdigest()
+            victim_entry["starting_purse_claimed"] = True
+            victim_entry["last_seen"] = 1
+            srv.mark_scores_dirty()
+            for i, flood_name in enumerate(flood_names):
+                rejected = srv.Player(ws=FakeWS(), id=92100 + i, name="", logged_in=False)
+                INBOX.clear()
+                await srv.cmd_login(rejected, {"name": flood_name})
+                assert not rejected.logged_in
+                assert flood_name.lower() not in srv.SCORES, (
+                    "rejected login created a score entry", flood_name
+                )
+                unplayer(rejected)
+            assert srv.SCORES[victim_key]["auth_token"] == srv.hashlib.sha256(
+                b"victim-secret"
+            ).hexdigest()
+        finally:
+            srv.AUTH_TOKEN_REQUIRED = old_required
+            srv._last_score_prune = old_prune
+            srv.SCORES.pop(victim_key, None)
+            for flood_name in flood_names:
+                srv.SCORES.pop(flood_name.lower(), None)
+
         print("SECURITY_NAME_BOUNDS_OK")
     finally:
         srv.send = real_send
