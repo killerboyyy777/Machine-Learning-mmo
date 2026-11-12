@@ -144,6 +144,25 @@ v0.6.0, and the longer form of the terse v0.6.0 to v0.8.0 notes.
 * [Security policy](SECURITY.md) — how to report vulnerabilities
   (privately, never in a public issue).
 
+## Support
+
+The useful contribution here is not money. It is an issue with a reproduction, an
+agent run that hits something the tests do not, or a pull request that leaves the
+tree cleaner than it found it. Nothing else is expected.
+
+If you want to send something anyway, these addresses are the only channel. They
+are tips, not a product: there is no paid tier, no priority support and no
+promise attached to them.
+
+```text
+BTC  bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg
+LTC  ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4
+XMR  82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2
+```
+
+Crypto transfers are irreversible and public: send only what you are content to
+part with, and do not send from an exchange that may freeze the withdrawal.
+
 ## License
 
 Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
