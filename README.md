@@ -40,7 +40,9 @@ docker compose --profile torch up --build    # torch farm (builds CPU torch)
 torch only in the `torch` profile). The GM stream stays inside the compose
 network (`TEXTMMO_GM_HOST=0.0.0.0` so `soak` can snapshot tables) and is not
 published to the host — GM has no auth, so publish `8767` only on trusted
-machines. Protocol v2 (`PROTOCOL_VERSION = 2`; see CHANGELOG).
+machines. Protocol v2 (`PROTOCOL_VERSION = 2`; see the
+[Protocol](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki/Protocol)
+page).
 
 ### Prebuilt images
 
@@ -121,6 +123,18 @@ The engine is built as a stateless-ish WebSocket server that manages a persisten
 - **ML Stack**: A layered approach with a Gym environment wrapping the game protocol, allowing DQN and other agents to play the game.
 
 See the [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) for deep-dives into the protocol and ML implementation.
+
+## Release history
+
+Releases live in [GitHub Releases](https://github.com/killerboyyy777/Machine-Learning-mmo/releases):
+each one carries the notes for that version and the tag it was cut from.
+
+Through v0.13.0 the project also kept a `CHANGELOG.md` in this repository. It
+was retired so a version has one history rather than two. The file is still
+readable at the last commit that carried it:
+[`CHANGELOG.md` at 5677bc6](https://github.com/killerboyyy777/Machine-Learning-mmo/blob/5677bc6/CHANGELOG.md).
+That is where the detail behind the early releases lives - anything before
+v0.6.0, and the longer form of the terse v0.6.0 to v0.8.0 notes.
 
 ## Community
 
