@@ -273,4 +273,44 @@ env._apply_event({"type": "error", "text": "You are not in a guild."})
 assert env._state["guild_name"] == ""
 print("SILENT_DISBAND_OK")
 
+
+# --- the other ways a guild ends, and the refusal that names it ---
+env = fresh_env()
+env._state["guild_name"] = "Iron Pact"
+env._apply_event(
+    {"type": "message", "text": "Iron Pact had no members left and is dissolved."}
+)
+assert env._state["guild_name"] == ""
+env._apply_event({"type": "message", "text": "WolfPaw removes you from Iron Pact."})
+assert env._state["guild_name"] == ""
+env._apply_event(
+    {
+        "type": "error",
+        "text": "The name Iron Pact was disbanded recently. Pick another.",
+    }
+)
+before = env._state["guild_cycle"]
+assert before == 3, before  # two clears above, plus the refusal
+env._apply_event(
+    {"type": "error", "text": "You are already in Iron Pact. Leave it first."}
+)
+assert env._state["guild_name"] == "Iron Pact", env._state["guild_name"]
+print("GUILD_ENDS_OK")
+
+# --- the info poll is periodic, not every step ---
+policy = GuildFounderPlugin()
+env = fresh_env()
+env._state["gold"] = 200
+env._state["room_id"] = "guild_hall"
+env._state["exits"] = ["artisan_row"]
+env._state["guild_name"] = "Poll Co"
+env._state["guild_rank"] = "leader"
+env._state["guild_members"] = 2
+policy._invite_at = 10**6
+env._step_count = 1
+assert selected(policy, env) == "guild_deposit"
+env._step_count = 1 + GuildFounderPlugin.INFO_EVERY
+assert selected(policy, env) == "guild_info"
+print("INFO_POLL_OK")
+
 print("GUILD_BOT_ROLE_OK")

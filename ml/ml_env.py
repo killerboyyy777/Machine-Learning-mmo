@@ -1223,8 +1223,12 @@ class TextMMOEnv:
                 self._clear_guild()
             elif "already in " in text and not self._state.get("guild_name"):
                 # A reconnecting bot can be guilded on the server's side while
-                # a fresh env knows nothing; the refusal names the guild.
-                self._state["guild_name"] = text[len("You are already in "):].rstrip(".")
+                # a fresh env knows nothing; the refusal names the guild, but
+                # the sentence continues (". Leave it first."), so take the
+                # name up to the first full stop.
+                self._state["guild_name"] = (
+                    text[len("You are already in "):].split(". ")[0].rstrip(".")
+                )
 
     async def _send(self, cmd, **kwargs):
         if self.ws is None:
