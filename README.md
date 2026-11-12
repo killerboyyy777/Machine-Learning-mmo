@@ -160,7 +160,7 @@ LTC  ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4
 XMR  82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2
 ```
 
-Crypto transfers are irreversible and public: send only what you are content to
+Crypto transfers are irreversible: send only what you are content to
 part with, and do not send from an exchange that may freeze the withdrawal.
 
 ## License
