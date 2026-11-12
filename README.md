@@ -129,7 +129,7 @@ See the [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) for 
 Releases live in [GitHub Releases](https://github.com/killerboyyy777/Machine-Learning-mmo/releases):
 each one carries the notes for that version and the tag it was cut from.
 
-Before v0.13.0 the project also kept a `CHANGELOG.md` in this repository. It
+Through v0.13.0 the project also kept a `CHANGELOG.md` in this repository. It
 was retired so a version has one history rather than two. The file is still
 readable at the last commit that carried it:
 [`CHANGELOG.md` at 5677bc6](https://github.com/killerboyyy777/Machine-Learning-mmo/blob/5677bc6/CHANGELOG.md).
