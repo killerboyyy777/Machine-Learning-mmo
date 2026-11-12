@@ -684,13 +684,24 @@ class GuildFounderPlugin(ScriptedPolicy):
     """
 
     name = "guild"
+    HALL = "guild_hall"
     FOUND_GOLD = 120
     IDLE_STEPS = 600
+    # The server pushes guild state only when asked, and a disband reaches
+    # members as silence, so the role polls rather than trusting its copy.
+    INFO_EVERY = 40
+    INVITE_EVERY = 30
 
     def _idle_too_long(self, env):
         """True once a one-member guild has sat alone for IDLE_STEPS."""
         members = int(env._state.get("guild_members", 0) or 0)
         now = getattr(env, "_step_count", 0)
+        name = env._state.get("guild_name") or ""
+        if name != getattr(self, "_idle_guild", None):
+            # A different guild is a different clock: inheriting the old one
+            # would disband a guild the instant it was founded.
+            self._idle_guild = name
+            self._busy_at = now
         if members >= 2:
             self._busy_at = now
             return False
@@ -705,30 +716,45 @@ class GuildFounderPlugin(ScriptedPolicy):
         yield self._flee_unwinnable(env, mask)
         yield self._first_valid(env, ("flee",), mask)
 
+        now = getattr(env, "_step_count", 0)
         guild = s.get("guild_name") or ""
         if not guild and s.get("guild_invite"):
             # Joining is not hall-gated, so accept before walking anywhere.
             yield self._first_valid(env, ("guild_join",), mask)
 
-        if not guild and int(s.get("gold", 0) or 0) < self.FOUND_GOLD:
-            # Earn the threshold first: fight, loot, sell. Founding on the
-            # first coin leaves the vault empty and the guild pointless.
+        need = self.FOUND_GOLD if not guild else GUILD_RESERVE_GOLD
+        if int(s.get("gold", 0) or 0) < need:
+            # Earn first: a vault cannot be filled from an empty purse, and a
+            # death can drop the bot under its own reserve with nothing left
+            # to deposit. A guilded bot only needs the reserve, not the
+            # founding threshold, so it can still reach the hall.
             yield self._first_valid(env, ("attack", "take"), mask)
             yield self._first_valid(env, ("sell",), mask)
             yield self._safe_random_move(env, mask)
             yield self._first_valid(env, self.WANDER, mask)
             return
 
-        if not self._in_room(env, "guild_hall"):
-            yield from self._navigate_toward(env, "guild_hall", mask)
+        if not self._in_room(env, self.HALL):
+            yield from self._navigate_toward(env, self.HALL, mask)
 
         if not guild:
             yield self._first_valid(env, ("guild_create",), mask)
         else:
-            if s.get("guild_rank") == "leader" and int(
-                s.get("guild_members", 0) or 0
-            ) < 2:
-                yield self._first_valid(env, ("guild_invite",), mask)
+            rank = s.get("guild_rank") or ""
+            members = int(s.get("guild_members", 0) or 0)
+            if getattr(self, "_info_at", None) is None:
+                self._info_at = now
+            elif now - self._info_at >= self.INFO_EVERY:
+                # Poll the server instead of trusting a copy that a silent
+                # disband or a peer's withdrawal has already invalidated.
+                self._info_at = now
+                yield self._first_valid(env, ("guild_info",), mask)
+            if rank in ("leader", "officer") and members < 2:
+                # The server refuses a repeat invite for five minutes, so a
+                # per-step invite would spend the whole window being refused.
+                if now - getattr(self, "_invite_at", -self.INVITE_EVERY) >= self.INVITE_EVERY:
+                    self._invite_at = now
+                    yield self._first_valid(env, ("guild_invite",), mask)
             if int(s.get("gold", 0) or 0) > GUILD_RESERVE_GOLD:
                 yield self._first_valid(env, ("guild_deposit",), mask)
             else:

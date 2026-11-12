@@ -8,6 +8,7 @@ the prose the env learns guild state from, and the founder's plan order.
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,6 +29,7 @@ GUILD_ACTIONS = [
     "guild_withdraw",
     "guild_disband",
     "guild_leave",
+    "guild_info",
 ]
 
 
@@ -70,6 +72,7 @@ assert env._action_to_cmd("guild_deposit") is None
 print("NO_SURPLUS_OK")
 
 # --- withdraw only when short, and only when the vault can cover the step ---
+env._state["guild_rank"] = "leader"
 env._state["gold"] = 10
 env._state["guild_vault_gold"] = GUILD_WITHDRAW_STEP
 cmd = env._action_to_cmd("guild_withdraw")
@@ -102,6 +105,7 @@ print("CREATE_ONCE_OK", cmd["name"])
 # --- join needs a pending invitation, and joins the named guild ---
 env._state["guild_name"] = ""
 env._state["guild_invite"] = "Wolf Pact"
+env._state["guild_invite_at"] = time.time()
 assert env._action_to_cmd("guild_join") == {
     "cmd": "guild",
     "action": "join",
@@ -213,8 +217,60 @@ env._state["guild_rank"] = "leader"
 env._state["guild_members"] = 1
 env._state["gold"] = GUILD_RESERVE_GOLD
 policy._busy_at = 0
+policy._idle_guild = "Lonely Company"
+policy._invite_at = GuildFounderPlugin.IDLE_STEPS + 1
 env._step_count = GuildFounderPlugin.IDLE_STEPS + 1
 assert selected(policy, env) == "guild_disband"
 print("IDLE_DISBAND_OK")
+
+
+# --- inviting and withdrawing need officer rank or better ---
+env = fresh_env()
+env._state["guild_name"] = "Test Company"
+env._state["room_id"] = srv.GUILD_ROOM
+env._state["guild_rank"] = "member"
+env._state["player_names"] = ["GuildBot", "WolfPaw"]
+env._state["gold"] = 10
+env._state["guild_vault_gold"] = 200
+assert env._action_to_cmd("guild_invite") is None
+assert env._action_to_cmd("guild_withdraw") is None
+env._state["guild_rank"] = "officer"
+assert env._action_to_cmd("guild_invite") == {
+    "cmd": "guild",
+    "action": "invite",
+    "target": "WolfPaw",
+}
+assert env._action_to_cmd("guild_withdraw")["gold"] == GUILD_WITHDRAW_STEP
+print("RANK_GATE_OK")
+
+# --- an expired invitation is not offered ---
+env = fresh_env()
+env._state["guild_invite"] = "Wolf Pact"
+env._state["guild_invite_at"] = time.time() - 301
+assert env._action_to_cmd("guild_join") is None
+print("INVITE_EXPIRY_OK")
+
+# --- a disbanded name is tombstoned, so the next founding moves on ---
+env = fresh_env()
+env._state["room_id"] = srv.GUILD_ROOM
+first = env._action_to_cmd("guild_create")["name"]
+env._apply_event({"type": "message", "text": "Guild X founded. You are its leader."})
+env._apply_event({"type": "message", "text": "X is disbanded."})
+env._state["room_id"] = srv.GUILD_ROOM
+second = env._action_to_cmd("guild_create")["name"]
+assert first != second, (first, second)
+print("NAME_CYCLE_OK", first, second)
+
+# --- guild_info is always available; it is how a member keeps up ---
+env = fresh_env()
+assert env._action_to_cmd("guild_info") == {"cmd": "guild", "action": "info"}
+print("INFO_ALWAYS_OK")
+
+# --- a disband that told nobody is caught by the next info refusal ---
+env = fresh_env()
+env._state["guild_name"] = "Ghost Pact"
+env._apply_event({"type": "error", "text": "You are not in a guild."})
+assert env._state["guild_name"] == ""
+print("SILENT_DISBAND_OK")
 
 print("GUILD_BOT_ROLE_OK")
