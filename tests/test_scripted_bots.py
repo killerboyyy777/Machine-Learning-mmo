@@ -302,5 +302,5 @@ print("ROLES_SPLIT_OK")
 
 assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "hunter", "market",
                                   "commissioner", "quester", "crafter",
-                                  "party_leader"}
+                                  "party_leader", "guild"}
 print("ALL_SCRIPTED_OK")

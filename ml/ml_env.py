@@ -134,6 +134,7 @@ import os
 import random
 import re
 import sys
+import time
 
 # ml_env.py lives in the ml/ subfolder but reuses the engine's already-loaded
 # world data for the observation vocab. Make the repo root importable.
@@ -764,6 +765,18 @@ async def reset_with_retry(
             await sleep(delay)
 
 
+# Guild play (#591). The role keeps this much gold on its person and banks the
+# rest; it draws a fixed step back only when it is short. Both are constants so
+# the behaviour is auditable rather than learned, and the vault exists to make
+# death cheaper rather than to be optimised.
+GUILD_RESERVE_GOLD = 60
+# The server expires an invitation after this many seconds; the env clears its
+# own copy on the same clock so `guild_join` is not offered for a dead invite.
+GUILD_INVITE_TTL_SECONDS = 300
+# Rank ladder: inviting and withdrawing need officer or better (server rule).
+GUILD_OUTRANK = ("leader", "officer")
+GUILD_WITHDRAW_STEP = 40
+
 ACTIONS = (
     [f"move_{d}" for d in DIRECTIONS]
     + ["attack", "take", "rest", "look",
@@ -798,7 +811,15 @@ ACTIONS = (
         # Flee combat when hurt or outnumbered.
         "flee",
         # Companion playstyle (#535): acquire, summon, dismiss, inspect.
-        "companion_adopt", "companion_summon", "companion_dismiss", "companion_status"]
+        "companion_adopt", "companion_summon", "companion_dismiss", "companion_status",
+        # Guild play (#591). Appended last (never-shift rule), so a pre-#591
+        # checkpoint keeps its action indices; the action space itself grows,
+        # which is why this lands in its own release.
+        "guild_create", "guild_invite", "guild_join",
+        "guild_deposit", "guild_withdraw", "guild_disband", "guild_leave",
+        # Refresh: the server pushes guild state only when asked, so the role
+        # needs one action that asks. Appended after the verbs above.
+        "guild_info"]
 )
 N_ACTIONS = len(ACTIONS)
 
@@ -959,6 +980,12 @@ class TextMMOEnv:
             "market_orders": 0, "market_state": None,
             "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
             "other_players": 0,
+            # Guild state (#591), mirrored from the guild event payload and
+            # from the server's own reply text: guild verbs predate the env,
+            # so most of the signal arrives as prose.
+            "guild_name": "", "guild_rank": "", "guild_members": 0,
+            "guild_vault_gold": 0, "guild_invite": "",
+            "guild_invite_at": 0.0, "guild_cycle": 0,
             # Quest state, mirrored from the server's stats event. Until the
             # first stats lands these stay False (no quest assumed).
             "quest_guard_active": False, "guard_charm_crafted": False,
@@ -1111,6 +1138,15 @@ class TextMMOEnv:
             self._state["tax_min"] = event.get("tax_min", self._state["tax_min"])
         elif t == "party":
             self._state["party_info"] = event
+        elif t == "guild":
+            payload = event or {}
+            self._state["guild_name"] = str(
+                payload.get("name") or self._state["guild_name"]
+            )
+            if payload.get("leader") == self.name:
+                self._state["guild_rank"] = "leader"
+            self._state["guild_members"] = int(payload.get("member_count", 0) or 0)
+            self._state["guild_vault_gold"] = int(payload.get("vault_gold", 0) or 0)
         elif t == "message":
             # Only structured use: commission_list replies, parsed
             # best-effort into the open-bounty list (stale until the
@@ -1120,6 +1156,42 @@ class TextMMOEnv:
                 self._state["open_commissions"] = _parse_commissions(text)
             elif "No open commissions" in text:
                 self._state["open_commissions"] = []
+            elif " invites you to join " in text:
+                invited = text.split(" invites you to join ", 1)[1].split(".")[0].strip()
+                if invited:
+                    self._state["guild_invite"] = invited
+                    self._state["guild_invite_at"] = time.time()
+            elif text.startswith("Guild ") and " founded." in text:
+                self._state["guild_name"] = text[len("Guild "): text.index(" founded.")]
+                self._state["guild_rank"] = "leader"
+                self._state["guild_members"] = 1
+                self._state["guild_invite"] = ""
+            elif text.startswith("You join "):
+                self._state["guild_name"] = text[len("You join "):].split(" as ")[0]
+                self._state["guild_rank"] = "member"
+                self._state["guild_invite"] = ""
+                self._state["guild_members"] = max(
+                    2, int(self._state.get("guild_members", 0) or 0)
+                )
+            elif (
+                text.startswith("You leave ")
+                or text.endswith((" is disbanded.", " is dissolved."))
+                or " removes you from " in text
+            ):
+                # A disband reaches members as silence, so the periodic
+                # guild_info call is what really notices it; these texts just
+                # make the common paths immediate.
+                self._clear_guild()
+            elif " vault: " in text or " The vault holds " in text:
+                try:
+                    rest = (
+                        text.split(" vault: ", 1)[1]
+                        if " vault: " in text
+                        else text.split(" The vault holds ", 1)[1]
+                    )
+                    self._state["guild_vault_gold"] = int(rest.split(" gold")[0])
+                except (IndexError, ValueError):
+                    pass
         elif t == "xp":
             self._pending_xp += event.get("gained", 0.0) or 0.0
             self._state["level"] = event.get("level", self._state["level"])
@@ -1140,6 +1212,22 @@ class TextMMOEnv:
             text = event.get("text", "")
             if "Login rejected" in text or "already in use" in text:
                 self._login_error = text
+            elif "disbanded recently" in text:
+                # The server tombstones a disbanded name for thirty days, so
+                # the next founding attempt needs a different one.
+                self._state["guild_cycle"] = int(
+                    self._state.get("guild_cycle", 0) or 0
+                ) + 1
+            elif "not in a guild" in text and self._state.get("guild_name"):
+                self._clear_guild()
+            elif "already in " in text and not self._state.get("guild_name"):
+                # A reconnecting bot can be guilded on the server's side while
+                # a fresh env knows nothing; the refusal names the guild, but
+                # the sentence continues (". Leave it first."), so take the
+                # name up to the first full stop.
+                self._state["guild_name"] = (
+                    text[len("You are already in "):].split(". ")[0].rstrip(".")
+                )
 
     async def _send(self, cmd, **kwargs):
         if self.ws is None:
@@ -1775,6 +1863,27 @@ class TextMMOEnv:
                and score >= th[self.curriculum_stage + 1]):
             self.curriculum_stage += 1
 
+    def _guild_name(self):
+        """Guild name for this bot, unique per founding attempt.
+
+        The server rejects duplicates and tombstones a disbanded name for
+        thirty days, so a fixed name would let the role found once and then
+        fail forever after its own idle disband. The cycle counter moves the
+        name forward on every disband, leave and "disbanded recently" refusal.
+        """
+        cycle = int(self._state.get("guild_cycle", 0) or 0)
+        suffix = f" {cycle}" if cycle else ""
+        base = "".join(ch for ch in f"{self.name} Co" if ch.isprintable())
+        return (base[: 24 - len(suffix)] + suffix).strip()
+
+    def _clear_guild(self):
+        """Forget guild state the server no longer agrees with."""
+        self._state["guild_name"] = ""
+        self._state["guild_rank"] = ""
+        self._state["guild_members"] = 0
+        self._state["guild_vault_gold"] = 0
+        self._state["guild_cycle"] = int(self._state.get("guild_cycle", 0) or 0) + 1
+
     def _action_to_cmd(self, action):
         s = self._state
         if self._curriculum_gated(action):
@@ -2301,6 +2410,62 @@ class TextMMOEnv:
             # Same reasoning: info must follow accept to observe the party,
             # and no snapshot tracks membership tightly enough to gate on.
             return {"cmd": "party_info"}
+        if action.startswith("guild_"):
+            guild = str(s.get("guild_name") or "")
+            rank = str(s.get("guild_rank") or "")
+            # The server gates charter, vault and disband on the guild hall;
+            # a masked-off action must not be a guaranteed error pick.
+            in_hall = s.get("room_id") == srv.GUILD_ROOM
+            if action == "guild_create":
+                if guild or not in_hall:
+                    return None
+                return {"cmd": "guild", "action": "create", "name": self._guild_name()}
+            if action == "guild_info":
+                # Always worth asking: this is how a fresh process learns it
+                # is already guilded, and how a member notices a silent disband.
+                return {"cmd": "guild", "action": "info"}
+            if action == "guild_invite":
+                if not guild or rank not in GUILD_OUTRANK:
+                    return None
+                for pname in s.get("player_names") or []:
+                    if pname != self.name:
+                        return {"cmd": "guild", "action": "invite", "target": pname}
+                return None
+            if action == "guild_join":
+                invite = str(s.get("guild_invite") or "")
+                if guild or not invite:
+                    return None
+                age = time.time() - float(s.get("guild_invite_at", 0) or 0)
+                if age > GUILD_INVITE_TTL_SECONDS:
+                    return None
+                return {"cmd": "guild", "action": "join", "name": invite}
+            if action == "guild_deposit":
+                if not guild or not in_hall:
+                    return None
+                spare = int(s.get("gold", 0) or 0) - GUILD_RESERVE_GOLD
+                if spare <= 0:
+                    return None
+                return {"cmd": "guild", "action": "vault", "op": "deposit", "gold": spare}
+            if action == "guild_withdraw":
+                if not guild or not in_hall or rank not in GUILD_OUTRANK:
+                    return None
+                if int(s.get("gold", 0) or 0) >= GUILD_RESERVE_GOLD:
+                    return None
+                if int(s.get("guild_vault_gold", 0) or 0) < GUILD_WITHDRAW_STEP:
+                    return None
+                return {
+                    "cmd": "guild", "action": "vault",
+                    "op": "withdraw", "gold": GUILD_WITHDRAW_STEP,
+                }
+            if action == "guild_disband":
+                if not guild or not in_hall or s.get("guild_rank") != "leader":
+                    return None
+                return {"cmd": "guild", "action": "disband"}
+            if action == "guild_leave":
+                if not guild:
+                    return None
+                return {"cmd": "guild", "action": "leave"}
+            return None
         if action == "flee":
             # Panic exit when badly wounded or outnumbered, mirroring the
             # server's own should_flee rule so the command is not rejected.

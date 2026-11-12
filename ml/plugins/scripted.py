@@ -1,7 +1,7 @@
 """Scripted behavior-tree baselines as plugins (moved from ml_botfarm.py).
 
 Each role is a registered plugin (``gather``/``dungeon``/``market``/
-``commissioner``/``quester``/``crafter``/``party_leader``) sharing the
+``commissioner``/``quester``/``crafter``/``party_leader``/``guild``) sharing the
 ``ScriptedPolicy`` priority-list
 machinery. No learning, just behavior trees over the env's valid-action
 mask -- the fixed comparison point for RL runs.
@@ -19,6 +19,7 @@ if ROOT not in sys.path:
 try:
     from ..ml_env import (
         ACTIONS,
+        GUILD_RESERVE_GOLD,
         MAREN_NAME,
         MAREN_ROOM,
         QUEST_GIVER_NAME,
@@ -29,6 +30,7 @@ try:
 except ImportError:
     from ml_env import (
         ACTIONS,
+        GUILD_RESERVE_GOLD,
         MAREN_NAME,
         MAREN_ROOM,
         QUEST_GIVER_NAME,
@@ -671,6 +673,104 @@ class CommissionerPlugin(ScriptedPolicy):
 
 
 @register
+class GuildFounderPlugin(ScriptedPolicy):
+    """Guild founder (#591): an organisation-forming bot.
+
+    Banks surplus gold in the vault instead of carrying it into the wild, draws
+    a fixed step back when short, invites the first guildless peer in reach, and
+    disbands a guild nobody joined so the 200-guild cap is never approached.
+    The thresholds are constants, not policy: a balance change here should be a
+    one-line diff and an attributable gate result.
+    """
+
+    name = "guild"
+    HALL = "guild_hall"
+    FOUND_GOLD = 120
+    IDLE_STEPS = 600
+    # The server pushes guild state only when asked, and a disband reaches
+    # members as silence, so the role polls rather than trusting its copy.
+    INFO_EVERY = 40
+    INVITE_EVERY = 30
+
+    def _idle_too_long(self, env):
+        """True once a one-member guild has sat alone for IDLE_STEPS."""
+        members = int(env._state.get("guild_members", 0) or 0)
+        now = getattr(env, "_step_count", 0)
+        name = env._state.get("guild_name") or ""
+        if name != getattr(self, "_idle_guild", None):
+            # A different guild is a different clock: inheriting the old one
+            # would disband a guild the instant it was founded.
+            self._idle_guild = name
+            self._busy_at = now
+        if members >= 2:
+            self._busy_at = now
+            return False
+        if getattr(self, "_busy_at", None) is None:
+            self._busy_at = now
+            return False
+        return now - self._busy_at >= self.IDLE_STEPS
+
+    def plan(self, env, mask):
+        s = env._state
+        yield self._heal_first(env, mask)
+        yield self._flee_unwinnable(env, mask)
+        yield self._first_valid(env, ("flee",), mask)
+
+        now = getattr(env, "_step_count", 0)
+        guild = s.get("guild_name") or ""
+        if not guild and s.get("guild_invite"):
+            # Joining is not hall-gated, so accept before walking anywhere.
+            yield self._first_valid(env, ("guild_join",), mask)
+
+        need = self.FOUND_GOLD if not guild else GUILD_RESERVE_GOLD
+        if int(s.get("gold", 0) or 0) < need:
+            # Earn first: a vault cannot be filled from an empty purse, and a
+            # death can drop the bot under its own reserve with nothing left
+            # to deposit. A guilded bot only needs the reserve, not the
+            # founding threshold, so it can still reach the hall.
+            yield self._first_valid(env, ("attack", "take"), mask)
+            yield self._first_valid(env, ("sell",), mask)
+            yield self._safe_random_move(env, mask)
+            yield self._first_valid(env, self.WANDER, mask)
+            return
+
+        if not self._in_room(env, self.HALL):
+            yield from self._navigate_toward(env, self.HALL, mask)
+
+        if not guild:
+            yield self._first_valid(env, ("guild_create",), mask)
+        else:
+            rank = s.get("guild_rank") or ""
+            members = int(s.get("guild_members", 0) or 0)
+            if getattr(self, "_info_at", None) is None:
+                self._info_at = now
+            elif now - self._info_at >= self.INFO_EVERY:
+                # Poll the server instead of trusting a copy that a silent
+                # disband or a peer's withdrawal has already invalidated.
+                self._info_at = now
+                yield self._first_valid(env, ("guild_info",), mask)
+            if (
+                rank in ("leader", "officer")
+                and members < 2
+                # The server refuses a repeat invite for five minutes, so a
+                # per-step invite would spend the whole window being refused.
+                and now - getattr(self, "_invite_at", -self.INVITE_EVERY)
+                >= self.INVITE_EVERY
+            ):
+                self._invite_at = now
+                yield self._first_valid(env, ("guild_invite",), mask)
+            if int(s.get("gold", 0) or 0) > GUILD_RESERVE_GOLD:
+                yield self._first_valid(env, ("guild_deposit",), mask)
+            else:
+                yield self._first_valid(env, ("guild_withdraw",), mask)
+            if self._idle_too_long(env):
+                yield self._first_valid(env, ("guild_disband",), mask)
+        yield self._first_valid(env, ("equip", "buy"), mask)
+        yield self._safe_random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
+@register
 class QuesterPlugin(ScriptedPolicy):
     """Quest-chain specialist (#335): accept the guard/remedy/tonic quests
     at their givers, gather-or-craft the required inputs, then turn in.
@@ -814,6 +914,7 @@ CommissionerPolicy = CommissionerPlugin
 QuesterPolicy = QuesterPlugin
 CrafterPolicy = CrafterPlugin
 PartyLeaderPolicy = PartyLeaderPlugin
+GuildFounderPolicy = GuildFounderPlugin
 
 SCRIPTED_POLICIES = {
     "gather": GatherSellPolicy,
@@ -824,5 +925,6 @@ SCRIPTED_POLICIES = {
     "quester": QuesterPolicy,
     "crafter": CrafterPolicy,
     "party_leader": PartyLeaderPolicy,
+    "guild": GuildFounderPolicy,
 }
 SCRIPTED_NAMES = tuple(SCRIPTED_POLICIES)
