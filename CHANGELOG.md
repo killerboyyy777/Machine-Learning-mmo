@@ -2,6 +2,32 @@
 
 All notable changes to the text MMO engine are recorded here.
 
+## 0.13.0 - Freight (2026-11-12)
+- Release gate (#590): the three-seed 12h gate passed on the release build --
+  seeds 700/701/702, 20 agents, 14400s each, 101 checks pass and one
+  non-blocking per-seed row fails. Median across seeds: civilian 1.478
+  deaths/hour and wild 0.588/hour against the 0.5 floors (worst seed 0.613 and
+  0.428 against the 0.25 guard), deaths per kill 0.144, companion damage share
+  33.48%, civilian death share 66.3% against the 95% cap. Gold and item
+  conservation were clean on every seed.
+- Freight contracts (#503): `freight post` escrows the fee, seals the package
+  and puts it on the board; `freight accept` takes custody at pickup and escrows
+  a deposit of a quarter of the fee; `freight deliver` pays the hauler and hands
+  the goods to the receiver; `freight quote` reports the median fee paid on that
+  route. Custody transfers at pickup, so a poster can log off and the contract
+  survives them.
+- Freight loss is real: a hauler who dies drops the package where they died, as
+  a normal ground item anyone can pick up, and forfeits the deposit to the
+  poster. Expiry returns the goods and refunds the fee, so a contract that is
+  never hauled costs nobody.
+- Packages are sealed: the board and `freight status` show the unit count and
+  weight, never the manifest, unless you posted the contract or accepted it.
+- Station consignments: every three minutes a stocked station offers up to three
+  items it already holds to another station for a fee. The consignment creates
+  and destroys no items, and the fee is minted only on delivery.
+- `freight` telemetry on `/api/state`: open and carried counts, posted,
+  delivered, lost, deposits forfeited, station posts and bonuses paid.
+
 ## Unreleased
 - Guild permissions (#600): a leader can rank any verb except disbanding, and
   the ladder stays the default when no override is set, so an existing
