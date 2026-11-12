@@ -154,7 +154,7 @@ If you want to send something anyway, these addresses are the only channel. They
 are tips, not a product: there is no paid tier, no priority support and no
 promise attached to them.
 
-```
+```text
 BTC  bc1qmkv939k2wqsej657cxj25ppwqdh65y2umnv3gg
 LTC  ltc1qjr49nr028mcajlt7prmmnqnjh0552qjj90zdq4
 XMR  82oJRDdiSWWbem3HiYx7ZdDdiPkYQAW4LaGNHpNcJ9DCendQ3XcxHNYQiRMtfghYtSMmARPGqKe2ddSrhtjviTraEyGwgZ2
