@@ -13,11 +13,10 @@ security fixes.
 
 ## Reporting a Vulnerability
 
-**Do not open a public issue for security problems.** Instead:
-
-1. Go to the repository's **Security tab > Report a vulnerability**
-   (private advisory), or
-2. Contact the maintainer directly via the email on their GitHub profile.
+**Do not open a public issue for security problems.** Use the repository's
+**Security tab > Report a vulnerability**, which opens a private advisory that
+only the maintainer can read. That is the reporting channel; there is no email
+address to use instead, and none is published on the maintainer's profile.
 
 Include:
 
@@ -46,21 +45,24 @@ prefer to stay anonymous).
 * The game server trusts its local operator completely: `scores.json`,
   `world.json`, and the config files are operator-controlled. A malicious
   operator is out of scope.
-* Denial-of-service via sheer connection volume is rate-limited by
-  `TEXTMMO_MAX_CONNECTIONS` (default 1000), not eliminated; report bypasses of
-  it here.
+* `TEXTMMO_MAX_CONNECTIONS` (default 1000) is a **hard cap** on concurrent
+  players, not a rate limit: it is checked once the WebSocket handshake has
+  completed, and there is no per-IP throttle or handshake limiter. A churn or
+  handshake flood is a known gap rather than a surprise; report a way to make
+  the server leak resources behind that cap, not the cap itself.
 * The dashboard (`http.server`, port 8766) **listens on `0.0.0.0` by default**,
   so any host that is reachable makes it reachable. Reads are unauthenticated
-  by design: `/api/state` and the SSE stream publish live world state, which
-  includes player names, guild vault totals and recent deaths. That is an
-  operator decision about exposure, not a vulnerability. The write routes
-  (`/api/config`, `/api/train/start`, `/api/train/stop`) are stricter - they
-  refuse any peer that is not loopback, refuse a non-loopback `Origin`, and
-  require `application/json` - so report a way past those three checks here.
+  by design. `/api/state` publishes live world state, including player names,
+  guild vault totals and recent deaths; `/api/activity/stream` publishes the
+  command log, which carries player names. That is an operator decision about
+  exposure, not a vulnerability.
+* The dashboard write routes (`/api/config`, `/api/train/start`,
+  `/api/train/stop`) are stricter: they refuse any peer that is not loopback,
+  refuse a non-loopback `Origin`, and require `application/json`. Report a way
+  past those three checks.
 * The GM WebSocket (port 8767) has **no authentication**. It binds
-  `127.0.0.1` unless `TEXTMMO_GM_HOST` is set, and setting it to `0.0.0.0` is
-  how the compose `soak` profile reaches it inside a Docker network. Publishing
-  that port to an untrusted network is operator error, not a server defect;
-  report a way to reach GM control from a non-GM port here.
+  `127.0.0.1` unless `TEXTMMO_GM_HOST` is set, and independently of the bind it
+  closes every peer that is not loopback, so widening the bind does not widen
+  access. Report a way to reach GM control from a non-loopback peer.
 * Published containers are built by CI from a tag, not from a workstation. A
   report that an image behaves differently from the tagged source is in scope.
