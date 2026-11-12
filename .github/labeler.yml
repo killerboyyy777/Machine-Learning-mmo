@@ -27,12 +27,11 @@ area:tests:
       - any-glob-to-any-file:
           - tests/**/*
 
-# area:docs — README, CHANGELOG, protocol docs
+# area:docs - README, protocol docs
 area:docs:
   - changed-files:
       - any-glob-to-any-file:
           - README.md
-          - CHANGELOG.md
           - docs/**/*
 
 # area:dashboard — live dashboard, GM panel, charts
@@ -59,5 +58,4 @@ documentation:
   - changed-files:
       - any-glob-to-any-file:
           - README.md
-          - CHANGELOG.md
           - docs/**/*

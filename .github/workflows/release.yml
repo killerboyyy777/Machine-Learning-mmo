@@ -1,11 +1,10 @@
 name: Release
 
 # Cutting a release is one step: `git tag vX.Y && git push origin vX.Y`.
-# Paste the matching CHANGELOG section into the release notes on GitHub
-# afterwards (or use the auto-generated notes and link the changelog).
-# Then set the title, which nothing here does: the release step passes no
+# The release body is written by hand from the pull requests since the previous
+# tag. Then set the title, which nothing here does: the release step passes no
 # `name:`, so the title defaults to the bare tag.
-#   gh release edit vX.Y --title "vX.Y - <theme>" --notes-file <section.md>
+#   gh release create vX.Y --title "vX.Y - <theme>" --notes-file <body.md>
 on:
   push:
     tags: ["v*"]
