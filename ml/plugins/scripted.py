@@ -749,12 +749,16 @@ class GuildFounderPlugin(ScriptedPolicy):
                 # disband or a peer's withdrawal has already invalidated.
                 self._info_at = now
                 yield self._first_valid(env, ("guild_info",), mask)
-            if rank in ("leader", "officer") and members < 2:
+            if (
+                rank in ("leader", "officer")
+                and members < 2
                 # The server refuses a repeat invite for five minutes, so a
                 # per-step invite would spend the whole window being refused.
-                if now - getattr(self, "_invite_at", -self.INVITE_EVERY) >= self.INVITE_EVERY:
-                    self._invite_at = now
-                    yield self._first_valid(env, ("guild_invite",), mask)
+                and now - getattr(self, "_invite_at", -self.INVITE_EVERY)
+                >= self.INVITE_EVERY
+            ):
+                self._invite_at = now
+                yield self._first_valid(env, ("guild_invite",), mask)
             if int(s.get("gold", 0) or 0) > GUILD_RESERVE_GOLD:
                 yield self._first_valid(env, ("guild_deposit",), mask)
             else:

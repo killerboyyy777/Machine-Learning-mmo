@@ -1175,8 +1175,7 @@ class TextMMOEnv:
                 )
             elif (
                 text.startswith("You leave ")
-                or text.endswith(" is disbanded.")
-                or text.endswith(" is dissolved.")
+                or text.endswith((" is disbanded.", " is dissolved."))
                 or " removes you from " in text
             ):
                 # A disband reaches members as silence, so the periodic
