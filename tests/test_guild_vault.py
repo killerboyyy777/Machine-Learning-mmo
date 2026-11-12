@@ -130,7 +130,8 @@ async def main():
             await srv.cmd_guild(aria, {"action": "frobnicate"})
             assert texts(inbox)[-1] == (
                 "Unknown guild action 'frobnicate'. Use create, info, invite, join, "
-                "leave, kick, promote, demote, disband, vault, or audit."
+                "leave, kick, promote, demote, disband, vault, audit, "
+                "permissions, transfer, or accept."
             )
             inbox.clear()
             await srv.cmd_guild(aria, {"action": "vault", "op": "bogus"})

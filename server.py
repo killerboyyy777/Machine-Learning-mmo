@@ -1487,6 +1487,7 @@ def new_guild_record(guild_id, name, founder, created_ts=None):
         "vault_gold": 0,
         "vault_items": [],
         "audit": [],
+        "permissions": {},
         "withdrawn_today": {"day": "", "gold": 0, "items": 0},
     }
 
@@ -1549,6 +1550,7 @@ def _normalize_guild_record(guild_id, rec):
         "vault_gold": vault_gold,
         "vault_items": vault_items,
         "audit": audit,
+        "permissions": _guild_permissions({"permissions": rec.get("permissions")}),
         "withdrawn_today": {
             "day": str(withdrawn.get("day") or ""),
             "gold": withdrawn_gold,
@@ -1852,6 +1854,13 @@ def guild_telemetry():
         "vault_gold_in_total": GUILD_VAULT_GOLD_IN_TOTAL,
         "vault_gold_out_total": GUILD_VAULT_GOLD_OUT_TOTAL,
         "audit_entries_written": GUILD_AUDIT_ENTRIES_WRITTEN,
+        "transfers_pending": len(GUILD_TRANSFERS),
+        "transfers_completed": GUILD_TRANSFERS_COMPLETED,
+        "transfers_expired": GUILD_TRANSFERS_EXPIRED,
+        "gold_transferred": GUILD_GOLD_TRANSFERRED,
+        "permissions_customised": sum(
+            1 for record in GUILDS.values() if _guild_permissions(record)
+        ),
     }
 
 
@@ -6488,6 +6497,28 @@ GUILD_VERB_MIN_RANK = {
     "withdraw": "officer",
 }
 
+# Every verb a guild can re-rank, and the rank it needs when the guild has not
+# said otherwise (#600). A guild stores overrides only, so a record written
+# before this existed behaves exactly as it did. `permissions` and the audit
+# are deliberately absent: a guild must not be able to let a member rewrite the
+# permission table or silence the log.
+GUILD_PERMISSION_VERBS = tuple(GUILD_VERB_MIN_RANK) + ("transfer",)
+GUILD_PERMISSION_DEFAULTS = dict(GUILD_VERB_MIN_RANK, transfer="leader")
+GUILD_TRANSFER_TTL_SECONDS = 3600
+GUILD_TRANSFER_MAX_PENDING = 20
+
+
+def _guild_permissions(guild):
+    """The guild's own overrides, filtered to verbs and ranks that exist."""
+    out = {}
+    raw = guild.get("permissions") if isinstance(guild, dict) else None
+    if isinstance(raw, dict):
+        for verb, rank in raw.items():
+            if verb in GUILD_PERMISSION_VERBS and rank in GUILD_RANKS:
+                out[verb] = rank
+    return out
+
+
 
 def _guild_allows(guild, name, action):
     """One rank gate for every guild verb; the matrix lives only here.
@@ -6499,7 +6530,9 @@ def _guild_allows(guild, name, action):
     if not isinstance(guild, dict):
         return False
     verb, _, target_rank = str(action or "").partition(":")
-    minimum = GUILD_VERB_MIN_RANK.get(verb)
+    minimum = _guild_permissions(guild).get(verb) or GUILD_VERB_MIN_RANK.get(verb)
+    if verb == "transfer":
+        minimum = minimum or GUILD_PERMISSION_DEFAULTS["transfer"]
     if minimum is None:
         return False
     row = (guild.get("members") or {}).get(str(name or "").lower())
@@ -7640,6 +7673,216 @@ async def _cmd_guild_audit(player, msg):
     )
 
 
+GUILD_TRANSFERS = {}
+_guild_transfer_ids = itertools.count(1)
+GUILD_TRANSFERS_COMPLETED = 0
+GUILD_TRANSFERS_EXPIRED = 0
+GUILD_GOLD_TRANSFERRED = 0
+
+
+def _guild_transfer_prune(now=None):
+    """Proposals expire; nothing is escrowed, so dropping one moves no gold."""
+    global GUILD_TRANSFERS_EXPIRED
+    now = time.time() if now is None else now
+    for tid, row in list(GUILD_TRANSFERS.items()):
+        if now - float(row.get("ts", 0) or 0) > GUILD_TRANSFER_TTL_SECONDS:
+            GUILD_TRANSFERS.pop(tid, None)
+            GUILD_TRANSFERS_EXPIRED += 1
+
+
+def _guild_transfers_for(guild_id):
+    _guild_transfer_prune()
+    return [row for row in GUILD_TRANSFERS.values() if row.get("to") == guild_id]
+
+
+async def _cmd_guild_permissions(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    verb = str(msg.get("verb") or msg.get("permission") or "").strip().lower()
+    rank = str(msg.get("rank") or "").strip().lower()
+    if not verb:
+        table = dict(GUILD_PERMISSION_DEFAULTS)
+        table.update(_guild_permissions(record))
+        body = "\n".join(f"  {v}: {r}" for v, r in table.items())
+        await send(
+            player,
+            {"type": "message", "text": f"{record['name']} permissions:\n{body}"},
+        )
+        return
+    if _guild_member_rank(record, player.name) != "leader":
+        await send(
+            player,
+            {"type": "error", "text": "Only the guild leader can change permissions."},
+        )
+        return
+    if verb not in GUILD_PERMISSION_VERBS:
+        known = ", ".join(GUILD_PERMISSION_VERBS)
+        await send(
+            player,
+            {"type": "error", "text": f"Unknown permission '{verb}'. Use {known}."},
+        )
+        return
+    if rank not in GUILD_RANKS:
+        known = ", ".join(GUILD_RANKS)
+        await send(
+            player, {"type": "error", "text": f"Unknown rank '{rank}'. Use {known}."}
+        )
+        return
+    table = dict(record.get("permissions") or {})
+    # Storing the default as an override would freeze today's value into a
+    # record that a later release may want to change; clearing it keeps the
+    # record honest about what the guild actually decided.
+    if rank == GUILD_PERMISSION_DEFAULTS[verb]:
+        table.pop(verb, None)
+    else:
+        table[verb] = rank
+    record["permissions"] = table
+    _guild_audit(record, player.name, "permissions", target=verb, rank_to=rank)
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": f"{record['name']}: {verb} now needs {rank}.",
+        },
+    )
+
+
+async def _cmd_guild_transfer(player, msg):
+    record = _guild_for_member(player.name)
+    if record is None:
+        await send(player, {"type": "error", "text": "You are not in a guild."})
+        return
+    if not _guild_allows(record, player.name, "transfer"):
+        need = _guild_permissions(record).get("transfer")
+        need = need or GUILD_PERMISSION_DEFAULTS["transfer"]
+        await send(
+            player,
+            {"type": "error", "text": f"Sending gold to another guild needs {need}."},
+        )
+        return
+    target = _guild_for_name(msg.get("guild") or msg.get("target") or "")
+    if target is None:
+        await send(player, {"type": "error", "text": "No guild by that name."})
+        return
+    if target.get("id") == record.get("id"):
+        await send(
+            player, {"type": "error", "text": "A guild cannot send gold to itself."}
+        )
+        return
+    amount = _guild_int(msg.get("amount") or msg.get("gold"))
+    if amount <= 0:
+        await send(player, {"type": "error", "text": "Send a whole number of gold."})
+        return
+    waiting = _guild_transfers_for(target.get("id"))
+    if len(waiting) >= GUILD_TRANSFER_MAX_PENDING:
+        await send(
+            player,
+            {"type": "error", "text": f"{target['name']} has too many offers waiting."},
+        )
+        return
+    held = _guild_int(record.get("vault_gold"))
+    if held < amount:
+        await send(
+            player,
+            {"type": "error", "text": f"The vault holds {held} gold, not {amount}."},
+        )
+        return
+    tid = next(_guild_transfer_ids)
+    GUILD_TRANSFERS[tid] = {
+        "id": tid,
+        "from": record.get("id"),
+        "to": target.get("id"),
+        "amount": amount,
+        "by": player.name,
+        "ts": time.time(),
+    }
+    _guild_audit(record, player.name, "transfer_proposed", target=target["name"], amount=amount)
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Proposal #{tid}: {amount} gold to {target['name']}. "
+                f"It expires in {GUILD_TRANSFER_TTL_SECONDS // 60} minutes; "
+                f"they accept with guild accept {tid}."
+            ),
+        },
+    )
+
+
+async def _cmd_guild_accept(player, msg):
+    global GUILD_TRANSFERS_COMPLETED, GUILD_GOLD_TRANSFERRED
+    _guild_transfer_prune()
+    tid = _guild_int(msg.get("id") or msg.get("transfer"))
+    row = GUILD_TRANSFERS.get(tid)
+    if row is None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"No transfer #{tid} is waiting; offers expire after an hour.",
+            },
+        )
+        return
+    record = _guild_for_member(player.name)
+    if record is None or record.get("id") != row.get("to"):
+        await send(
+            player, {"type": "error", "text": "That transfer is not for your guild."}
+        )
+        return
+    if not _guild_allows(record, player.name, "transfer"):
+        need = _guild_permissions(record).get("transfer")
+        need = need or GUILD_PERMISSION_DEFAULTS["transfer"]
+        await send(
+            player,
+            {"type": "error", "text": f"Accepting a transfer needs {need}."},
+        )
+        return
+    source = GUILDS.get(row.get("from"))
+    if source is None:
+        GUILD_TRANSFERS.pop(tid, None)
+        await send(
+            player,
+            {"type": "error", "text": "That guild no longer exists; nothing moved."},
+        )
+        return
+    amount = _guild_int(row.get("amount"))
+    if _guild_int(source.get("vault_gold")) < amount:
+        # No escrow: the proposal was a claim on the vault, and the vault no
+        # longer backs it. Dropping it keeps every gold piece in one place.
+        GUILD_TRANSFERS.pop(tid, None)
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "The sending guild's vault no longer holds that gold. Nothing moved.",
+            },
+        )
+        return
+    source["vault_gold"] = _guild_int(source.get("vault_gold")) - amount
+    record["vault_gold"] = _guild_int(record.get("vault_gold")) + amount
+    GUILD_TRANSFERS.pop(tid, None)
+    GUILD_TRANSFERS_COMPLETED += 1
+    GUILD_GOLD_TRANSFERRED += amount
+    _guild_audit(source, player.name, "transfer_sent", target=record["name"], amount=amount)
+    _guild_audit(record, player.name, "transfer_received", target=source["name"], amount=amount)
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"{source['name']} sends {amount} gold. "
+                f"The vault holds {_guild_int(record.get('vault_gold'))} gold."
+            ),
+        },
+    )
+
+
 async def cmd_guild(player, msg):
     action = str(msg.get("action") or "info").strip().lower()
     if action == "create":
@@ -7675,6 +7918,15 @@ async def cmd_guild(player, msg):
     if action == "audit":
         await _cmd_guild_audit(player, msg)
         return
+    if action == "permissions":
+        await _cmd_guild_permissions(player, msg)
+        return
+    if action == "transfer":
+        await _cmd_guild_transfer(player, msg)
+        return
+    if action == "accept":
+        await _cmd_guild_accept(player, msg)
+        return
     await send(
         player,
         {
@@ -7682,7 +7934,7 @@ async def cmd_guild(player, msg):
             "text": (
                 f"Unknown guild action '{action}'. "
                 "Use create, info, invite, join, leave, kick, promote, demote, "
-                "disband, vault, or audit."
+                "disband, vault, audit, permissions, transfer, or accept."
             ),
         },
     )
