@@ -10,7 +10,10 @@ All notable changes to the text MMO engine are recorded here.
   completes, gold moves only on accept from a re-checked vault, both sides get
   an audit row, and the offer carries the guild names it was made for so a
   recycled guild id cannot redirect it. `guild audit` now names the amount and
-  the counterparty for every transfer row.
+  the counterparty for every transfer row. One guild may hold three offers to
+  the same target at once, and no guild may receive more than twenty.
+- Guild vault withdrawals are capped for every rank below leader, gold and
+  items alike; a guild that is disbanding refuses deposits and transfers.
 
 ## 0.12.0 - Shared world (2026-11-11)
 - Release gate (#590): the three-seed 12h gate passed on the release build --
