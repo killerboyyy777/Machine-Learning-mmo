@@ -2,6 +2,19 @@
 
 All notable changes to the text MMO engine are recorded here.
 
+## Unreleased
+- Guild permissions (#600): a leader can rank any verb except disbanding, and
+  the ladder stays the default when no override is set, so an existing
+  `guilds.json` behaves exactly as before.
+- Inter-guild transfers (#600): `guild transfer` proposes and `guild accept`
+  completes, gold moves only on accept from a re-checked vault, both sides get
+  an audit row, and the offer carries the guild names it was made for so a
+  recycled guild id cannot redirect it. `guild audit` now names the amount and
+  the counterparty for every transfer row. One guild may hold three offers to
+  the same target at once, and no guild may receive more than twenty.
+- Guild vault withdrawals are capped for every rank below leader, gold and
+  items alike; a guild that is disbanding refuses deposits and transfers.
+
 ## 0.12.0 - Shared world (2026-11-11)
 - Release gate (#590): the three-seed 12h gate passed on the release build --
   seeds 700/701/702, 20 agents, 14400s each, 102 checks pass and none fail.

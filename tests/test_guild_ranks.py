@@ -96,7 +96,8 @@ async def main():
             await srv.cmd_guild(aria, {"action": "frobnicate"})
             assert texts(inbox)[-1] == (
                 "Unknown guild action 'frobnicate'. Use create, info, invite, join, "
-                "leave, kick, promote, demote, disband, vault, or audit."
+                "leave, kick, promote, demote, disband, vault, audit, "
+                "permissions, transfer, or accept."
             )
             assert srv.guild_telemetry()["invites_pending"] == 0
             print("SURFACE_OK")
