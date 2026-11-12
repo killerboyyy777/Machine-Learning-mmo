@@ -150,22 +150,28 @@ async def main():
         try:
             srv.AUTH_TOKEN_REQUIRED = True
             victim_entry = srv.get_score_entry("DormantLoginVictim")
-            victim_entry["auth_token"] = srv.hashlib.sha256(b"victim-secret").hexdigest()
+            victim_entry["auth_token"] = srv.hashlib.sha256(
+                b"victim-secret"
+            ).hexdigest()
             victim_entry["starting_purse_claimed"] = True
             victim_entry["last_seen"] = 1
             srv.mark_scores_dirty()
             for i, flood_name in enumerate(flood_names):
-                rejected = srv.Player(ws=FakeWS(), id=92100 + i, name="", logged_in=False)
+                rejected = srv.Player(
+                    ws=FakeWS(), id=92100 + i, name="", logged_in=False
+                )
                 INBOX.clear()
                 await srv.cmd_login(rejected, {"name": flood_name})
                 assert not rejected.logged_in
                 assert flood_name.lower() not in srv.SCORES, (
-                    "rejected login created a score entry", flood_name
+                    "rejected login created a score entry",
+                    flood_name,
                 )
                 unplayer(rejected)
-            assert srv.SCORES[victim_key]["auth_token"] == srv.hashlib.sha256(
-                b"victim-secret"
-            ).hexdigest()
+            assert (
+                srv.SCORES[victim_key]["auth_token"]
+                == srv.hashlib.sha256(b"victim-secret").hexdigest()
+            )
         finally:
             srv.AUTH_TOKEN_REQUIRED = old_required
             srv._last_score_prune = old_prune
