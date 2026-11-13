@@ -48,6 +48,11 @@ COMPANION_MAX_PLAYERS = 5000
 # minutes out per downing left it riding ~20% of swings and the gate measured
 # 8.2% companion damage share against a 20% floor (#590).
 COMPANION_DOWNED_SECONDS = 60
+# A downed pet retreats, then comes back whole. It used to return at 25% hp,
+# which died to the next hit; once the civilian rooms were lethal enough to
+# hold the gate civ floor, that turned every pet into a near-permanent
+# blackout and the companion damage share collapsed to 7% (#590).
+COMPANION_RETURN_HEAL_FRAC = 1.0
 COMPANION_REVIVE_GOLD_PER_MINUTE = 10
 # A pet soaking a quarter of every hostile attack kept players alive that the
 # gate's death floors need: at 0.25 the four-hour civ and wild rates sat near
@@ -3389,7 +3394,7 @@ async def _return_companion_with_owner(owner):
     if rec is None:
         return
     if _companion_is_downed(rec):
-        _companion_heal(rec, 0.25)
+        _companion_heal(rec, COMPANION_RETURN_HEAL_FRAC)
     await send(
         owner,
         {
@@ -3827,7 +3832,7 @@ async def tick_companions(now=None):
         if _companion_is_downed(rec, now):
             downed_until = float(rec.get("downed_until", 0) or 0)
             if downed_until and now >= downed_until:
-                _companion_heal(rec, 0.25)
+                _companion_heal(rec, COMPANION_RETURN_HEAL_FRAC)
                 owner = _online_player(key)
                 if owner and key in COMPANION_SUMMONED:
                     await send(
@@ -9034,7 +9039,7 @@ async def cmd_companion(player, msg):
         now = time.time()
         if _companion_is_downed(rec, now):
             if rec.get("downed_until") and now >= rec["downed_until"]:
-                _companion_heal(rec, 0.25)
+                _companion_heal(rec, COMPANION_RETURN_HEAL_FRAC)
             else:
                 remaining = max(0, int(float(rec.get("downed_until", 0) or 0) - now))
                 await send(
@@ -9083,7 +9088,7 @@ async def cmd_companion(player, msg):
         player.gold -= cost
         sunk = _treasury_credit(cost)
         mark_scores_dirty()
-        _companion_heal(rec, 0.25)
+        _companion_heal(rec, COMPANION_RETURN_HEAL_FRAC)
         COMPANION_SUMMONED.add(key)
         note = f" ({sunk:g} sunk by the reserve cap)" if sunk else ""
         await send(

@@ -1311,18 +1311,18 @@ async def main():
     await srv.cmd_companion(comp_owner, {"action": "revive"})
     assert comp_owner.gold == 80, comp_owner.gold
     assert srv.tax_treasury == 20.0 and srv.tax_collected_lifetime == 20.0
-    assert rec["hp"] == 7 and rec["downed_until"] == 0
+    assert rec["hp"] == srv._companion_max_hp(rec) and rec["downed_until"] == 0
     assert "compowner" in srv.COMPANION_SUMMONED
     assert srv._scores_dirty is True, "revive paid gold without marking scores dirty"
 
     await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
     rec["downed_until"] = time.time() - 1
     await srv.tick_companions(time.time())
-    assert rec["hp"] == 7 and rec["downed_until"] == 0
+    assert rec["hp"] == srv._companion_max_hp(rec) and rec["downed_until"] == 0
 
     await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
     await srv.respawn_player(comp_owner)
-    assert rec["hp"] == 7 and rec["downed_until"] == 0
+    assert rec["hp"] == srv._companion_max_hp(rec) and rec["downed_until"] == 0
 
     with tempfile.TemporaryDirectory() as td:
         comp_path = os.path.join(td, "companions.json")
