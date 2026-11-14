@@ -1505,6 +1505,65 @@ async def main():
             srv.COMPANION_PLAYERS.pop(n, None)
     print("COMPANION_CORE_OK")
 
+    # --- Freight package selection reserves distinct inventory copies ----
+    saved_freight = srv.FREIGHT
+    saved_freight_stats = srv.FREIGHT_STATS
+    saved_freight_counter = srv._freight_counter
+    saved_freight_dirty = srv._freight_dirty
+    saved_scores_dirty = srv._scores_dirty
+    short_freight = enough_freight = None
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_STATS = {key: 0 for key in saved_freight_stats}
+        srv._freight_counter = srv.itertools.count(1)
+
+        short_freight = mkplayer("FreightDupShort", 70401, room="market")
+        short_freight.gold = 100
+        short_freight.inventory = ["rat_tail"]
+        inbox.clear()
+        await srv.cmd_freight(
+            short_freight,
+            {
+                "action": "post",
+                "destination": "smithy",
+                "fee": 20,
+                "items": ["rat_tail", "rat_tail"],
+            },
+        )
+        assert short_freight.inventory == ["rat_tail"]
+        assert short_freight.gold == 100
+        assert srv.FREIGHT == {}
+        assert inbox[-1]["type"] == "error"
+
+        enough_freight = mkplayer("FreightDupEnough", 70402, room="market")
+        enough_freight.gold = 100
+        enough_freight.inventory = ["rat_tail", "rat_tail"]
+        await srv.cmd_freight(
+            enough_freight,
+            {
+                "action": "post",
+                "destination": "smithy",
+                "fee": 20,
+                "items": ["rat_tail", "rat_tail"],
+            },
+        )
+        assert enough_freight.inventory == []
+        assert enough_freight.gold == 80
+        assert srv.FREIGHT[1]["items"] == ["rat_tail", "rat_tail"]
+    finally:
+        if short_freight:
+            unplayer(short_freight)
+        if enough_freight:
+            unplayer(enough_freight)
+        srv.SCORES.pop("freightdupshort", None)
+        srv.SCORES.pop("freightdupenough", None)
+        srv.FREIGHT = saved_freight
+        srv.FREIGHT_STATS = saved_freight_stats
+        srv._freight_counter = saved_freight_counter
+        srv._freight_dirty = saved_freight_dirty
+        srv._scores_dirty = saved_scores_dirty
+    print("FREIGHT_DUPLICATE_ITEM_SELECTION_OK")
+
     # --- Companion DroneLang (#534) unit tests ---
     print("DRONE_LANG_TESTS_STARTED")
     await _test_parse_and_validate(srv)

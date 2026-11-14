@@ -8643,8 +8643,12 @@ async def _freight_post(player, msg):
         )
         return
     package = []
+    # Reserve each selected occurrence during validation. Looking every
+    # requested name up against the unchanged inventory can select the same
+    # single item repeatedly, then partially remove the package below.
+    available_items = list(player.inventory)
     for wanted in raw_items:
-        iid = find_item_by_name(player.inventory, str(wanted))
+        iid = find_item_by_name(available_items, str(wanted))
         if iid is None:
             await send(
                 player,
@@ -8661,6 +8665,7 @@ async def _freight_post(player, msg):
             )
             return
         package.append(iid)
+        available_items.remove(iid)
     if len(package) > FREIGHT_MAX_PACKAGE_UNITS:
         await send(
             player,
