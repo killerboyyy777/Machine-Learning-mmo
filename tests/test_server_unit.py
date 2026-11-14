@@ -1324,6 +1324,10 @@ async def main():
     await srv.respawn_player(comp_owner)
     assert rec["hp"] == srv._companion_max_hp(rec) and rec["downed_until"] == 0
 
+    await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
+    await srv._return_companion_with_owner(comp_owner)
+    assert rec["hp"] == srv._companion_max_hp(rec) and rec["downed_until"] == 0
+
     with tempfile.TemporaryDirectory() as td:
         comp_path = os.path.join(td, "companions.json")
 
