@@ -36,6 +36,9 @@ GUILDS_FILE = join(dirname(abspath(__file__)), "guilds.json")
 # Intel keeps one too: bot-cadence appends must never rewrite the vault file.
 INTEL_FILE = join(dirname(abspath(__file__)), "intel.json")
 FREIGHT_FILE = join(dirname(abspath(__file__)), "freight.json")
+# Arena ratings keep one too: a ladder is durable, while scores.json evicts
+# entries on a TTL and a rating must outlive the session that earned it.
+ARENA_FILE = join(dirname(abspath(__file__)), "arena.json")
 
 NPC_TICK_SECONDS = 3
 # Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
@@ -9425,7 +9428,7 @@ async def cmd_help(player, msg):
                 "freight [post|quote|accept|deliver|claim|cancel|list|status] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest "
-                "arena [enter|leave|status]. "
+                "arena [enter|leave|status|ladder]. "
                 "stats lists your active companion: name, species, level, hp, attack, "
                 "defense, passive, script state."
             ),
@@ -11179,6 +11182,286 @@ async def handle_gm_connection(ws):
 
 
 # ---------------------------------------------------------------------------
+# Arena ratings: a zero-sum Elo ladder in its own file (#653)
+# ---------------------------------------------------------------------------
+# One delta is computed from the mean rating of each side and the other is
+# its negation, so a match cannot mint or destroy rating. The floor is the
+# one place that property bends, so the clamp is counted instead of hidden:
+# a probe can assert conservation over clamp-free matches rather than flake
+# the first time a 100-rated bot loses.
+ARENA_VERSION = 1
+ARENA_RATING_DEFAULT = 1000.0
+ARENA_RATING_FLOOR = 100.0
+ARENA_K = 32.0
+ARENA_HISTORY_MAX = 200
+ARENA_RATINGS_MAX = 5000
+ARENA_SAVE_SECONDS = 5.0
+ARENA_LADDER_SHOW = 20
+ARENA_LIVE_SHOW = 20
+ARENA_RECENT_SHOW = 10
+
+ARENA_FILE_BLOCKED = False
+_arena_dirty = False
+
+
+def mark_arena_dirty():
+    global _arena_dirty
+    _arena_dirty = True
+
+
+def _arena_num(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_rating_row(key, rec):
+    """One ladder row from disk, or None when it cannot be trusted."""
+    if not isinstance(rec, dict):
+        return None
+    name = str(rec.get("name") or rec.get("display_name") or key or "").strip()
+    if not name:
+        return None
+    rating = _arena_num(rec.get("rating"), ARENA_RATING_DEFAULT)
+    rating = max(ARENA_RATING_FLOOR, rating)
+    return {
+        "name": name,
+        "rating": rating,
+        "peak": max(rating, _arena_num(rec.get("peak"), rating)),
+        "wins": max(0, int(_arena_num(rec.get("wins"), 0))),
+        "losses": max(0, int(_arena_num(rec.get("losses"), 0))),
+        "matches": max(0, int(_arena_num(rec.get("matches"), 0))),
+    }
+
+
+def load_arena(path=None):
+    global ARENA_FILE_BLOCKED
+    path = path or ARENA_FILE
+    for candidate in (path, path + ".1"):
+        try:
+            with open(candidate) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: could not load {os.path.basename(candidate)}: {e}")
+            continue
+        if not isinstance(data, dict) or data.get("version") != ARENA_VERSION:
+            if candidate == path:
+                ARENA_FILE_BLOCKED = True
+            print(
+                f"Warning: {os.path.basename(candidate)} version is not "
+                f"{ARENA_VERSION}; not loaded"
+            )
+            return {}, [], 0
+        if candidate != path:
+            print(
+                f"Warning: {os.path.basename(path)} missing/corrupt, "
+                f"recovered from {os.path.basename(candidate)}"
+            )
+        ratings = {}
+        raw_ratings = data.get("ratings")
+        if isinstance(raw_ratings, dict):
+            for key, rec in raw_ratings.items():
+                row = _normalize_rating_row(key, rec)
+                if row is not None:
+                    ratings[str(key).lower()] = row
+        raw_history = data.get("history")
+        history = (
+            [row for row in raw_history if isinstance(row, dict)][-ARENA_HISTORY_MAX:]
+            if isinstance(raw_history, list)
+            else []
+        )
+        return ratings, history, max(0, int(_arena_num(data.get("clamps"), 0)))
+    return {}, [], 0
+
+
+def save_arena(path=None):
+    global _arena_dirty
+    if path is None and ARENA_FILE_BLOCKED:
+        return False
+    path = path or ARENA_FILE
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(
+                {
+                    "version": ARENA_VERSION,
+                    "ratings": ARENA_RATINGS,
+                    "history": ARENA_HISTORY[-ARENA_HISTORY_MAX:],
+                    "clamps": ARENA_RATING_CLAMPS,
+                },
+                f,
+            )
+        if os.path.exists(path):
+            os.replace(path, path + ".1")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    _arena_dirty = False
+    return True
+
+
+async def arena_save_loop():
+    while True:
+        await asyncio.sleep(ARENA_SAVE_SECONDS)
+        if _arena_dirty:
+            save_arena()
+
+
+ARENA_RATINGS, ARENA_HISTORY, ARENA_RATING_CLAMPS = load_arena()
+
+
+def _arena_rating(name):
+    row = ARENA_RATINGS.get((name or "").lower())
+    return row["rating"] if row else ARENA_RATING_DEFAULT
+
+
+def _arena_expected(rating, opponent):
+    return 1.0 / (1.0 + 10.0 ** ((opponent - rating) / 400.0))
+
+
+def _arena_side_mean(names):
+    values = [_arena_rating(name) for name in names]
+    return sum(values) / len(values) if values else ARENA_RATING_DEFAULT
+
+
+def _arena_trim_ratings():
+    """Keep the file bounded: the least-played, lowest-rated rows go first."""
+    excess = len(ARENA_RATINGS) - ARENA_RATINGS_MAX
+    if excess <= 0:
+        return
+    ranked = sorted(
+        ARENA_RATINGS.items(),
+        key=lambda item: (item[1].get("matches", 0), item[1].get("rating", 0.0)),
+    )
+    for key, _ in ranked[:excess]:
+        ARENA_RATINGS.pop(key, None)
+
+
+def _arena_apply_rating(name, delta):
+    """Write one delta, clamped at the floor; returns what actually landed."""
+    global ARENA_RATING_CLAMPS
+    key = (name or "").lower()
+    row = ARENA_RATINGS.get(key)
+    if row is None:
+        row = {
+            "name": name,
+            "rating": ARENA_RATING_DEFAULT,
+            "peak": ARENA_RATING_DEFAULT,
+            "wins": 0,
+            "losses": 0,
+            "matches": 0,
+        }
+    before = row["rating"]
+    after = before + delta
+    if after < ARENA_RATING_FLOOR:
+        after = ARENA_RATING_FLOOR
+        ARENA_RATING_CLAMPS += 1
+    if delta > 0:
+        row["wins"] = row.get("wins", 0) + 1
+    elif delta < 0:
+        row["losses"] = row.get("losses", 0) + 1
+    row["matches"] = row.get("matches", 0) + 1
+    row["rating"] = round(after, 2)
+    row["peak"] = round(max(row.get("peak", row["rating"]), row["rating"]), 2)
+    ARENA_RATINGS[key] = row
+    _arena_trim_ratings()
+    return round(row["rating"] - before, 2)
+
+
+def _arena_rate_match(match, winner_team):
+    """Rate one match on the ladder, once, and log it to the history ring.
+
+    A forfeiter stays in the count (match.forfeits) so both sides keep their
+    size and the two deltas keep cancelling: dropping them would make a
+    forfeit worth more rating than a kill.
+    """
+    sides = {1: [], 2: []}
+    for rec in match.players.values():
+        sides[rec["team"]].append(rec["name"])
+    for row in match.forfeits:
+        sides[row["team"]].append(row["name"])
+    if not sides[1] or not sides[2]:
+        return {}
+    if winner_team == 0:
+        result = 0.5
+    else:
+        result = 1.0 if winner_team == 1 else 0.0
+    delta1 = ARENA_K * (
+        result - _arena_expected(_arena_side_mean(sides[1]), _arena_side_mean(sides[2]))
+    )
+    deltas = {}
+    for name in sides[1]:
+        deltas[name] = _arena_apply_rating(name, delta1)
+    for name in sides[2]:
+        deltas[name] = _arena_apply_rating(name, -delta1)
+    ARENA_HISTORY.append(
+        {
+            "ts": round(time.time(), 3),
+            "match_id": match.id,
+            "team_size": match.team_size,
+            "winner": winner_team,
+            "scores": {"team1": match.scores[1], "team2": match.scores[2]},
+            "teams": {"team1": sides[1], "team2": sides[2]},
+            "deltas": deltas,
+        }
+    )
+    del ARENA_HISTORY[:-ARENA_HISTORY_MAX]
+    mark_arena_dirty()
+    return deltas
+
+
+def arena_ladder():
+    """Every rated character, best first; ties broken by name for stability."""
+    rows = [
+        {
+            "name": row.get("name") or key,
+            "rating": round(row.get("rating", ARENA_RATING_DEFAULT), 2),
+            "peak": round(row.get("peak", row.get("rating", 0.0)), 2),
+            "wins": row.get("wins", 0),
+            "losses": row.get("losses", 0),
+            "matches": row.get("matches", 0),
+        }
+        for key, row in ARENA_RATINGS.items()
+    ]
+    rows.sort(key=lambda row: (-row["rating"], row["name"].lower()))
+    return rows
+
+
+def arena_snapshot():
+    """Scoreboard slice of /api/state: what #654's panel will read."""
+    live = [
+        {
+            "match_id": match.id,
+            "team_size": match.team_size,
+            "state": match.state,
+            "round": match.round,
+            "scores": {"team1": match.scores[1], "team2": match.scores[2]},
+            "teams": {"team1": match.names(1), "team2": match.names(2)},
+        }
+        for match in list(ARENA_MATCHES.values())[:ARENA_LIVE_SHOW]
+    ]
+    ladder = arena_ladder()
+    return {
+        "version": ARENA_VERSION,
+        "queues": {
+            f"{size}v{size}": len(_arena_prune_queue(size)) for size in ARENA_TEAM_SIZES
+        },
+        "live": live,
+        "ladder": ladder[:ARENA_LADDER_SHOW],
+        "ladder_size": len(ladder),
+        "recent": [dict(row) for row in ARENA_HISTORY[-ARENA_RECENT_SHOW:]],
+        "rating_clamps": ARENA_RATING_CLAMPS,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Arena: queues, matches, PvP (#652)
 # ---------------------------------------------------------------------------
 # A match owns one instanced room, the way a dungeon owns d_<id>_f<n>: the id
@@ -11257,6 +11540,9 @@ class ArenaMatch:
         # pid -> {name, team, entry_room, entry_hp}; entry_room is where the
         # match found this session, restored on the way out.
         self.players = {}
+        # name/team of anyone who left or dropped with the match still live;
+        # they still take the loss delta, so the ladder needs them.
+        self.forfeits = []
         self.scores = {1: 0, 2: 0}
         self.round = 0
         self.state = "countdown"
@@ -11407,9 +11693,21 @@ async def _arena_finish(match, winner_team, reason):
     else:
         line = f"{reason} Draw at {match.scores[1]}-{match.scores[2]}."
     await _arena_send(match, line)
+    # Rate before the roster is popped: it is the last moment pids, teams and
+    # names still agree with each other.
+    deltas = _arena_rate_match(match, winner_team)
     _end_match(match)
     for player, rec in _arena_live(match):
         await send(player, {"type": "message", "text": line})
+        if player.name in deltas:
+            await send(
+                player,
+                {
+                    "type": "message",
+                    "text": f"Rating {_arena_rating(player.name):.0f} "
+                    f"({deltas[player.name]:+.1f}).",
+                },
+            )
         await _arena_restore(player, rec)
 
 
@@ -11546,6 +11844,7 @@ async def _arena_forfeit(match, player, reason):
     rec = match.players.pop(player.id, None)
     await _arena_send(match, f"{player.name} {reason}.")
     if rec is not None:
+        match.forfeits.append({"name": player.name, "team": team})
         await _arena_restore(player, rec)
     if not _arena_live(match):
         _end_match(match)
@@ -11566,6 +11865,7 @@ async def arena_on_disconnect(player):
     team = match.team_of(player.id)
     winner = 2 if team == 1 else (1 if team == 2 else 0)
     match.players.pop(player.id, None)
+    match.forfeits.append({"name": player.name, "team": team})
     player.arena_match = 0
     player.arena_team = 0
     if not _arena_live(match):
@@ -11627,6 +11927,7 @@ async def cmd_arena(player, msg):
         }
         size = arena_queued_size(player)
         payload["queued"] = f"{size}v{size}" if size else None
+        payload["rating"] = round(_arena_rating(player.name), 2)
         if match is not None:
             payload.update(
                 {
@@ -11643,8 +11944,25 @@ async def cmd_arena(player, msg):
             )
         await send(player, payload)
         return
+    if action == "ladder":
+        row = ARENA_RATINGS.get(player.name.lower())
+        you = None
+        if row is not None:
+            you = {
+                "name": row.get("name") or player.name,
+                "rating": round(row.get("rating", ARENA_RATING_DEFAULT), 2),
+                "wins": row.get("wins", 0),
+                "losses": row.get("losses", 0),
+                "matches": row.get("matches", 0),
+            }
+        await send(
+            player,
+            {"type": "arena_ladder", "ladder": arena_ladder(), "you": you},
+        )
+        return
     await send(
-        player, {"type": "error", "text": "Arena actions: enter, leave, status."}
+        player,
+        {"type": "error", "text": "Arena actions: enter, leave, status, ladder."},
     )
 
 
@@ -12153,6 +12471,7 @@ def world_snapshot():
             "rooms": sorted(list(ROOMS.keys())),
         },
         "history": list(_dashboard_history),
+        "arena": arena_snapshot(),
     }
 
 
@@ -13771,6 +14090,7 @@ async def main():
                     _run_resilient("dashboard_snapshot", dashboard_refresh_loop)
                 ),
                 asyncio.create_task(_run_resilient("arena", arena_loop)),
+                asyncio.create_task(_run_resilient("arena_save", arena_save_loop)),
             ]
         )
         try:

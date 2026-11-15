@@ -200,7 +200,7 @@ async def main():
         # --- The one command index actually names the arena --------------
         await srv.cmd_help(three, {})
         help_text = frames("ArenaThree", "help")[-1]["text"]
-        assert "arena [enter|leave|status]" in help_text, help_text
+        assert "arena [enter|leave|status|ladder]" in help_text, help_text
         print("HELP_OK")
 
         print("ARENA_MATCH_OK")
