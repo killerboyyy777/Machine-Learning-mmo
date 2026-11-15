@@ -4,20 +4,21 @@ Run from the repo root:  python tests/test_npc_archetypes.py
 
 PR 1 is data only: every hostile template still resolves to baseline (an absent
 `archetype` key), all four NPC constructors carry `spawn_room`/`state`/`target`,
-and the hostile tick's output for a fixed world and seed matches the
-baseline fixture with unrelated freight RNG isolated.
+and the hostile tick's output for a fixed world and seed matches the fixture
+captured from master@e9c2e05 before this change.
 """
 
 import asyncio
 import json
 import os
-import random
 import sys
 import time
-import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import npc_tick_fixture
+from npc_tick_fixture import GOLDEN
+
 import server as srv
 
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
@@ -190,140 +191,7 @@ civ_home = srv._npc_respawn_at(
 assert abs(civ_home - 30.0 * srv.CIV_NPC_RESPAWN_MULT) < 1.5, civ_home
 print("RESPAWN_USES_SPAWN_ROOM_OK")
 
-# --- hostile tick baseline, 30 ticks, seed 700; freight RNG isolated ---
-GOLDEN = {
-    "seed": 700,
-    "ticks": 30,
-    "damages": [
-        2,
-        6,
-        5,
-        1,
-        5,
-        2,
-        6,
-        2,
-        3,
-        6,
-        2,
-        5,
-        1,
-        5,
-        6,
-        4,
-        4,
-        2,
-        1,
-        1,
-        4,
-        3,
-        3,
-        6,
-        6,
-        4,
-        2,
-        2,
-        4,
-        1,
-    ],
-    "victim_hp": 398,
-    "npc_hp": 40,
-    "npc_room": "forest_edge",
-}
-
-
-class _StopTicks(Exception):
-    pass
-
-
-def _hostile_tick_replay(ticks, seed):
-    saved = {
-        "npcs": srv.npcs,
-        "players": srv.players,
-        "room_members": srv.room_members,
-        "players_by_name": srv.players_by_name,
-        "dungeons": srv.dungeons,
-        "asyncio": srv.asyncio,
-        "_scores_dirty": srv._scores_dirty,
-        "tick_station_freight": srv.tick_station_freight,
-    }
-    calls = {"n": 0}
-
-    async def fake_sleep(_seconds):
-        calls["n"] += 1
-        if calls["n"] > ticks:
-            raise _StopTicks
-
-    async def drive():
-        try:
-            await srv.npc_ai_loop()
-        except _StopTicks:
-            pass
-
-    prefix = "Golden Wolf attacks you for "
-    try:
-        srv.npcs = {
-            "golden_wolf": {
-                "id": "golden_wolf",
-                "name": "Golden Wolf",
-                "room": "forest_edge",
-                "hp": 40,
-                "max_hp": 40,
-                "attack": 6,
-                "hostile": True,
-                "behavior": "idle",
-                "alive": True,
-                "respawn_at": None,
-                "contributors": {},
-                "state": "IDLE",
-                "spawn_room": "forest_edge",
-                "target": None,
-            }
-        }
-        srv.players = {}
-        srv.room_members = {}
-        srv.players_by_name = {}
-        srv.dungeons = {}
-        victim = srv.Player(
-            ws=None,
-            id=9001,
-            name="GoldenVictim",
-            logged_in=True,
-            hp=500,
-            max_hp=500,
-            room="forest_edge",
-        )
-        srv.players[victim.id] = victim
-        srv.add_member(victim)
-        srv.asyncio = types.SimpleNamespace(sleep=fake_sleep)
-        srv.tick_station_freight = lambda _now: None
-        random.seed(seed)
-        asyncio.run(drive())
-        damages = []
-        for raw in victim.outbound:
-            msg = json.loads(raw)
-            text = msg.get("text", "")
-            if msg.get("type") == "combat" and text.startswith(prefix):
-                damages.append(int(text[len(prefix) :].rstrip(".")))
-        return {
-            "seed": seed,
-            "ticks": ticks,
-            "damages": damages,
-            "victim_hp": victim.hp,
-            "npc_hp": srv.npcs["golden_wolf"]["hp"],
-            "npc_room": srv.npcs["golden_wolf"]["room"],
-        }
-    finally:
-        srv.npcs = saved["npcs"]
-        srv.players = saved["players"]
-        srv.room_members = saved["room_members"]
-        srv.players_by_name = saved["players_by_name"]
-        srv.dungeons = saved["dungeons"]
-        srv.asyncio = saved["asyncio"]
-        srv._scores_dirty = saved["_scores_dirty"]
-        srv.tick_station_freight = saved["tick_station_freight"]
-
-
-replay = _hostile_tick_replay(GOLDEN["ticks"], GOLDEN["seed"])
-assert replay == GOLDEN, replay
+# --- hostile tick guard: the seam reproduces the master@e9c2e05 capture ---
+replayed = npc_tick_fixture.replay(GOLDEN["ticks"], GOLDEN["seed"])
+assert replayed == GOLDEN, replayed
 print("HOSTILE_TICK_GOLDEN_OK")
