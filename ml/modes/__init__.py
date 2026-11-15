@@ -20,6 +20,10 @@ from types import MappingProxyType
 
 def _freeze(value):
     """Recursive read-only view of engine-owned JSON-ish data."""
+    # Already frozen: the engine caches the world view and hands the same
+    # proxy to every hook, so re-walking it per call would be pure churn.
+    if isinstance(value, MappingProxyType):
+        return value
     if isinstance(value, Mapping):
         return MappingProxyType({k: _freeze(v) for k, v in value.items()})
     if isinstance(value, (list, tuple)):
