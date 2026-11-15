@@ -2977,13 +2977,14 @@ def mode_award_kill(player, victim, points, xp):
         mode = player_mode(player)
         ctx = mode_context(player, mode)
         m_points, m_xp = mode.score_kill(ctx, player.name, victim, points, xp)
+        # Engine totals go in their own sub-dict: a mode may call a key
+        # "score" or "points" and still never see the engine write to it.
         # Awarding nothing writes nothing, so a passthrough mode leaves an
         # empty ledger rather than rows of zeros.
-        ledger = ctx.mode_state
-        if m_points:
-            ledger["points"] = ledger.get("points", 0.0) + float(m_points)
-        if m_xp:
-            ledger["xp"] = ledger.get("xp", 0.0) + float(m_xp)
+        if m_points or m_xp:
+            engine = ctx.mode_state.setdefault("_engine", {})
+            engine["points"] = engine.get("points", 0.0) + float(m_points or 0.0)
+            engine["xp"] = engine.get("xp", 0.0) + float(m_xp or 0.0)
         mode.on_kill(ctx, player.name, victim)
 
     _mode_call(player, "score_kill", run)
@@ -2997,8 +2998,8 @@ def mode_note_death(player, base_penalty):
         ctx = mode_context(player, mode)
         penalty = mode.score_death(ctx, player.name, base_penalty)
         if penalty:
-            ledger = ctx.mode_state
-            ledger["score"] = ledger.get("score", 0.0) - float(penalty)
+            engine = ctx.mode_state.setdefault("_engine", {})
+            engine["penalty"] = engine.get("penalty", 0.0) + float(penalty)
         mode.on_death(ctx, player.name)
 
     _mode_call(player, "score_death", run)

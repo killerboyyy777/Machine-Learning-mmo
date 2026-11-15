@@ -6,7 +6,9 @@ and its own scoring. Modes never mutate engine state directly -- each
 mode gets an isolated dict inside ModeContext.mode_state, keyed by mode
 name, and a read-only view of the world. Per-mode scores live in that
 isolated dict, never in the engine's score entries, so experimental
-rulesets cannot pollute the main leaderboard.
+rulesets cannot pollute the main leaderboard. The engine keeps its own
+kill and death totals in the ledger's ``_engine`` sub-dict rather than in
+the top-level names, so no key a mode chose can be written by the engine.
 
 Wiring lives in server.py: login, respawn, kill award and the NPC tick all
 ask the mode, and every hook is passthrough by default, so the open world
@@ -52,6 +54,13 @@ class ModeContext:
     interpreted by the engine. It belongs to the session, not a save file:
     a reconnect starts it empty, so treat it as turn state. It is seeded
     from initial_state() on first use and not re-seeded afterwards.
+
+    The one reserved key is ``_engine``, an engine-owned sub-dict holding
+    ``points``, ``xp`` and ``penalty`` -- the running totals of whatever the
+    engine itself credited for kills and charged for deaths. Everything else
+    in the ledger belongs to the mode, including names the engine uses for
+    its own fields elsewhere; a mode may keep a ``score`` key without the
+    engine ever writing to it.
     """
 
     world: Mapping = field(default_factory=dict)
@@ -133,11 +142,23 @@ class BaseMode:
         """Per engine tick; return None. Used for timed mode rules."""
 
     def score_kill(self, ctx, killer, victim, base_points, base_xp):
-        """Per-mode award for a kill. Returns (points, xp) for the LEDGER."""
+        """Per-mode award for a kill. Returns (points, xp) for the LEDGER.
+
+        base_points/base_xp are the engine's row for this kill before the
+        variety and diminishing-returns multipliers are applied, so a mode
+        that scales them is scaling the raw award, not the credited one.
+        A non-zero return is accumulated into ledger["_engine"]; the mode
+        does its own bookkeeping in ctx.mode_state.
+        """
         return 0.0, 0.0
 
     def score_death(self, ctx, character, base_penalty):
-        """Per-mode death cost. Returns the ledger penalty."""
+        """Per-mode death cost. Returns the ledger penalty.
+
+        base_penalty is the penalty the engine actually applied, already
+        including the wealth term. A non-zero return is accumulated into
+        ledger["_engine"]["penalty"].
+        """
         return 0.0
 
     def on_kill(self, ctx, killer, victim):

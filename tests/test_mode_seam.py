@@ -156,7 +156,8 @@ async def main():
         base_penalty = [c[2] for c in rec.calls if c[0] == "score_death"][-1]
         assert base_penalty > 0, base_penalty
         assert ("on_death", "SeamDead") in rec.calls
-        assert srv.mode_context(dead).mode_state["score"] == -rec.death_penalty
+        engine = srv.mode_context(dead).mode_state["_engine"]
+        assert engine["penalty"] == rec.death_penalty, engine
         # The engine's own bookkeeping is untouched by the mode.
         assert entry["deaths"] == 1 and entry["civ_deaths"] == 1
         unplayer(dead, "SeamDead")
@@ -197,8 +198,8 @@ async def main():
         assert scored[1] == "SeamKiller" and scored[2] == "Seam Dummy"
         assert scored[3] > 0 and scored[4] > 0
         ledger = srv.mode_context(killer).mode_state
-        assert ledger["points"] == rec.kill_award[0]
-        assert ledger["xp"] == rec.kill_award[1]
+        assert ledger["_engine"]["points"] == rec.kill_award[0], ledger
+        assert ledger["_engine"]["xp"] == rec.kill_award[1], ledger
         del srv.npcs["seam_dummy"]
         unplayer(killer, "SeamKiller")
         print("KILL_HOOK_OK")
@@ -231,6 +232,38 @@ async def main():
         assert srv.mode_context(seeded).mode_state == {}
         unplayer(seeded, "SeamSeed")
         print("INITIAL_STATE_SEED_OK")
+
+        # --- Engine totals never land on a mode's own key names -----------
+        class CollidingMode(srv.BaseMode):
+            name = "colliding"
+
+            def initial_state(self):
+                return {"score": 0.0, "points": 0.0, "xp": 0.0}
+
+            def score_kill(self, ctx, killer, victim, base_points, base_xp):
+                return 1.5, 2.5
+
+            def score_death(self, ctx, character, base_penalty):
+                return 3.0
+
+        collider = mkplayer("SeamCollide", 61009)
+        collider.mode = CollidingMode()
+        assert srv.mode_context(collider).mode_state == {
+            "score": 0.0,
+            "points": 0.0,
+            "xp": 0.0,
+        }
+        srv.mode_award_kill(collider, "Collide Rat", 4.0, 4.0)
+        ledger = srv.mode_context(collider).mode_state
+        assert ledger["_engine"] == {"points": 1.5, "xp": 2.5}, ledger
+        srv.mode_note_death(collider, 9.0)
+        ledger = srv.mode_context(collider).mode_state
+        assert ledger["_engine"] == {"points": 1.5, "xp": 2.5, "penalty": 3.0}, ledger
+        # The mode's own keys are exactly as the mode left them: the engine
+        # writes only under "_engine", whatever the mode named its fields.
+        assert (ledger["score"], ledger["points"], ledger["xp"]) == (0.0, 0.0, 0.0)
+        unplayer(collider, "SeamCollide")
+        print("ENGINE_LEDGER_KEYS_OK")
 
         # --- A raising hook costs its own character, not the engine -------
         class BrokenMode(srv.BaseMode):
