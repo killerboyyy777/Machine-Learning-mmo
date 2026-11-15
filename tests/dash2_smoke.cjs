@@ -634,8 +634,6 @@ for (let i = 0; i < ids.length; i++) {
 if (geoFail) { console.error(`GEO_FAIL (${geoFail})`); process.exit(1); }
   console.log(`GEO_OK (north-up, deterministic, no overlap at tile ${TW}x${TH})`);
 
-  if (failed) { console.error("PROVE_FAIL (" + failed + ")"); process.exit(1); }
-  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config)");
 }
 
 async function arenaFollowLifecycleCase() {
@@ -670,7 +668,14 @@ async function arenaFollowLifecycleCase() {
   }
 }
 
-configCase().then(geoCase).then(arenaFollowLifecycleCase).catch(e => {
+configCase().then(geoCase).then(arenaFollowLifecycleCase).then(() => {
+  if (failed) {
+    console.error("PROVE_FAIL (" + failed + ")");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow)");
+}).catch(e => {
   console.error("SMOKE_THREW " + ((e && e.stack) || e));
   process.exit(1);
 });
