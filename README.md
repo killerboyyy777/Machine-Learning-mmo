@@ -132,6 +132,30 @@ delta, so leaving is never cheaper than losing.
 `/api/state` carries an additive `arena` block (`queues`, `live`, `ladder`,
 `ladder_size`, `recent`, `rating_clamps`) for the dashboard next release.
 
+### Watching
+
+`arena watch <match_id>` attaches a session to a live match read-only;
+`arena unwatch` (or `arena leave`) detaches. A watcher is not in the match
+roster, so no seating, scoring or HP path can see it, and every command but
+`arena` and `help` is refused while watching. The match id is the one in
+`arena status` or the dashboard's live list.
+
+A watcher receives the score line and the combat lines as they happen, plus
+`{"type": "arena_view"}` on attach: match id, team size, state, round, scores,
+both teams with name, HP and rating, and the last twelve match events. It
+deliberately carries no room id, exits, items, gold or inventories, so a
+spectator cannot read anything a fighter holds. When the match ends the
+watcher gets `{"type": "arena_end"}` with the winner and final score and its
+own state is cleared. An audience is capped at eight sessions per match.
+
+The same view is served to HTTP clients: `/api/state` carries the lists, and
+`GET /api/arena/<match_id>` returns one live match in the `arena_view` shape
+(404 once it has ended). Both come from the same builder the socket path uses,
+so the dashboard panel and a connected client cannot disagree.
+
+The dashboard's Arena tab renders the live matches, the ladder and recent
+results, and its follow box polls the per-match endpoint every two seconds.
+
 ## Balance measurement
 
 `ml/balance.py` runs a mixed-agent profile against a live server, samples

@@ -54,6 +54,7 @@ jobs:
       - run: python tests/test_mode_seam.py
       - run: python tests/test_arena_match.py
       - run: python tests/test_arena_ratings.py
+      - run: python tests/test_arena_spectator.py
 
   live:
     name: Live protocol + ML env (fresh server, seed 700)
