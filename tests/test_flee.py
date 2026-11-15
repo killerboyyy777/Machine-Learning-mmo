@@ -136,11 +136,63 @@ async def test_no_flee_healthy():
         return False
 
 
+async def test_flee_dungeon():
+    """Fleeing in an instance used to raise KeyError from the world exit map.
+
+    Instanced rooms are not ROOMS keys, so cmd_flee now routes the dungeon
+    case through the floor's own rule: up is the way out, and a floor seals
+    it until every guard there is dead.
+    """
+    srv.npcs.clear()
+    dungeon = srv.Dungeon(party_id=0)
+    srv.dungeons[dungeon.id] = dungeon
+    saved_send = srv.send
+    sent = []
+
+    async def mock_send(p, msg):
+        sent.append(msg)
+
+    srv.send = mock_send
+    delvers = []
+    try:
+        dungeon.floor(1)
+        delver = Player(name="TestFleeFloor1", hp=2, max_hp=20, room=dungeon.room_id(1))
+        delvers.append(delver)
+        add_member(delver)
+        await srv.cmd_flee(delver, {})
+        assert delver.room == srv.DUNGEON_ENTRANCE_ROOM, (delver.room, sent)
+        assert not [m for m in sent if m.get("type") == "error"], sent
+        print("Dungeon floor 1 flee left the instance")
+
+        dungeon.floor(2)  # guards alive, so the way up is sealed
+        sent.clear()
+        stuck = Player(name="TestFleeSealed", hp=2, max_hp=20, room=dungeon.room_id(2))
+        delvers.append(stuck)
+        add_member(stuck)
+        await srv.cmd_flee(stuck, {})
+        assert stuck.room == dungeon.room_id(2), stuck.room
+        errors = [m.get("text") for m in sent if m.get("type") == "error"]
+        assert errors == ["There is no way out!"], sent
+
+        dungeon.floors[2].cleared = True
+        sent.clear()
+        await srv.cmd_flee(stuck, {})
+        assert stuck.room == dungeon.room_id(1), (stuck.room, sent)
+        print("Dungeon floor 2 flee obeys the seal")
+        return True
+    finally:
+        srv.send = saved_send
+        for p in delvers:
+            srv.remove_member(p)
+        srv.dungeons.pop(dungeon.id, None)
+
+
 async def main():
     results = []
     results.append(await test_flee_trigger_hp())
     results.append(await test_flee_trigger_outnumbered())
     results.append(await test_no_flee_healthy())
+    results.append(await test_flee_dungeon())
 
     if all(results):
         print("All flee tests passed!")
