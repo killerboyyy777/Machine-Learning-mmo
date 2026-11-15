@@ -211,6 +211,72 @@ async def main():
         assert "mode_tick(player)" in loop_src, "npc_ai_loop dropped the mode tick"
         print("TICK_HOOK_OK")
 
+        # --- initial_state() seeds the ledger, exactly once ---------------
+        class SeededMode(srv.BaseMode):
+            name = "seeded"
+
+            def initial_state(self):
+                return {"streak": 0, "kills": 0}
+
+        seeded = mkplayer("SeamSeed", 61007)
+        seeded.mode = SeededMode()
+        first = srv.mode_context(seeded).mode_state
+        assert first == {"streak": 0, "kills": 0}, first
+        first["streak"] = 3
+        # Second context is the same ledger, not a fresh seed.
+        assert srv.mode_context(seeded).mode_state["streak"] == 3
+        # An emptied ledger stays emptied: seeding keys on absence, so a mode
+        # that legitimately clears its state is not re-seeded under its feet.
+        first.clear()
+        assert srv.mode_context(seeded).mode_state == {}
+        unplayer(seeded, "SeamSeed")
+        print("INITIAL_STATE_SEED_OK")
+
+        # --- A raising hook costs its own character, not the engine -------
+        class BrokenMode(srv.BaseMode):
+            name = "broken"
+
+            def on_tick(self, ctx, character):
+                raise RuntimeError("boom")
+
+            def score_kill(self, ctx, killer, victim, base_points, base_xp):
+                raise RuntimeError("boom")
+
+        broken = mkplayer("SeamBroken", 61008)
+        broken.mode = BrokenMode()
+        srv.mode_tick(broken)  # must not raise into the heartbeat
+        # The corrupt-ledger ValueError from isolate() is contained the same way.
+        broken.mode_store["broken"] = []
+        srv.mode_tick(broken)
+        broken.mode_store["broken"] = {}
+        # A kill through a broken mode still pays the engine: containment is
+        # about the mode's ledger, never the player's award.
+        broken.base_attack = 50
+        srv.npcs["broken_dummy"] = {
+            "id": "broken_dummy",
+            "name": "Broken Dummy",
+            "room": "town_square",
+            "hp": 1,
+            "max_hp": 20,
+            "attack": 0,
+            "hostile": False,
+            "behavior": "idle",
+            "loot": [],
+            "gold": 0,
+            "respawn_seconds": 60,
+            "alive": True,
+            "respawn_at": None,
+            "contributors": {},
+        }
+        gold_before = broken.gold
+        await srv.cmd_attack(broken, {"target": "broken dummy"})
+        assert not srv.npcs["broken_dummy"]["alive"]
+        assert srv.get_score_entry(broken.name)["kills"] == 1
+        assert broken.gold >= gold_before
+        del srv.npcs["broken_dummy"]
+        unplayer(broken, "SeamBroken")
+        print("HOOK_FAILURE_CONTAINED_OK")
+
         # --- Ledgers are per mode name and survive a bad store only ------
         store = {}
         a = srv.isolate(store, "one")

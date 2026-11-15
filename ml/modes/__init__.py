@@ -13,6 +13,11 @@ ask the mode, and every hook is passthrough by default, so the open world
 behaves exactly as it did before a mode overrides one. The ledger is per
 session -- the engine does not persist it across a reconnect yet -- so a
 mode must treat it as turn state, not durable storage.
+
+The engine contains hook failures: a raising hook is logged with mode, hook
+and character, and the engine carries on as if the hook had returned its
+default. A mode is therefore never able to break another player's tick, and
+never able to break the server into a restart loop either.
 """
 
 from collections.abc import Mapping
@@ -37,10 +42,16 @@ def _freeze(value):
 class ModeContext:
     """What a mode may see and touch during a hook call.
 
-    world is read-only (room ids, npc rosters supplied by the engine);
+    world is read-only static topology: ``start_room`` plus ``rooms``, each
+    room carrying id-keyed ``name``, ``wild``, ``shelter`` and ``exits``.
+    It is frozen once at load and never rebuilt, which is why it holds no
+    npc rosters or live room state -- those mutate every tick, and a view
+    frozen at load would quietly report the world as it was, not as it is.
+
     mode_state is this mode's private ledger, keyed by mode name and never
     interpreted by the engine. It belongs to the session, not a save file:
-    a reconnect starts it empty, so treat it as turn state.
+    a reconnect starts it empty, so treat it as turn state. It is seeded
+    from initial_state() on first use and not re-seeded afterwards.
     """
 
     world: Mapping = field(default_factory=dict)

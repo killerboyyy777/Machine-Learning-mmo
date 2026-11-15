@@ -2909,10 +2909,18 @@ def player_mode(player):
 
 
 def mode_context(player, mode=None):
+    """This session's mode context, with its ledger seeded once.
+
+    A mode seeds its ledger through initial_state(); the store is keyed by
+    mode name, so "key absent" is the fresh signal and an emptied ledger
+    stays emptied instead of being re-seeded under the mode's feet.
+    """
     mode = mode or player_mode(player)
-    return ModeContext(
-        world=_mode_world_view(), mode_state=isolate(player.mode_store, mode.name)
-    )
+    fresh = mode.name not in player.mode_store
+    ledger = isolate(player.mode_store, mode.name)
+    if fresh:
+        ledger.update(mode.initial_state())
+    return ModeContext(world=_mode_world_view(), mode_state=ledger)
 
 
 def mode_room_ok(room_id):
@@ -2926,45 +2934,82 @@ def mode_room_ok(room_id):
     return room_id in ROOMS or dungeon_for_room(room_id) is not None
 
 
+def _mode_call(player, hook, fn, default=None):
+    """Run one mode hook; a broken mode must not take the engine with it.
+
+    The seam is the boundary where untrusted ruleset code meets the world.
+    A raising hook would otherwise escape into npc_ai_loop -- the same loop
+    that regenerates HP, respawns NPCs and prunes the market -- and take the
+    tick away from every other player. Contained here, a bad mode costs its
+    own character one hook and leaves a line naming mode, hook and player.
+    """
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001 - a bad mode must not end the tick
+        print(
+            f"[modes] {player_mode(player).name} {hook} failed"
+            f" for {player.name}: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return default
+
+
 def mode_on_login(player):
-    mode = player_mode(player)
-    return mode.on_login(mode_context(player, mode), player.name)
+    def run():
+        mode = player_mode(player)
+        return mode.on_login(mode_context(player, mode), player.name)
+
+    return _mode_call(player, "on_login", run)
 
 
 def mode_on_respawn(player):
-    mode = player_mode(player)
-    return mode.on_respawn(mode_context(player, mode), player.name)
+    def run():
+        mode = player_mode(player)
+        return mode.on_respawn(mode_context(player, mode), player.name)
+
+    return _mode_call(player, "on_respawn", run)
 
 
 def mode_award_kill(player, victim, points, xp):
     """Score a kill on the mode's ledger, never on the engine's score entry."""
-    mode = player_mode(player)
-    ctx = mode_context(player, mode)
-    m_points, m_xp = mode.score_kill(ctx, player.name, victim, points, xp)
-    # A passthrough mode awards nothing, so its ledger stays empty rather
-    # than accumulating zero rows.
-    ledger = ctx.mode_state
-    if m_points:
-        ledger["points"] = ledger.get("points", 0.0) + float(m_points)
-    if m_xp:
-        ledger["xp"] = ledger.get("xp", 0.0) + float(m_xp)
-    mode.on_kill(ctx, player.name, victim)
+
+    def run():
+        mode = player_mode(player)
+        ctx = mode_context(player, mode)
+        m_points, m_xp = mode.score_kill(ctx, player.name, victim, points, xp)
+        # Awarding nothing writes nothing, so a passthrough mode leaves an
+        # empty ledger rather than rows of zeros.
+        ledger = ctx.mode_state
+        if m_points:
+            ledger["points"] = ledger.get("points", 0.0) + float(m_points)
+        if m_xp:
+            ledger["xp"] = ledger.get("xp", 0.0) + float(m_xp)
+        mode.on_kill(ctx, player.name, victim)
+
+    _mode_call(player, "score_kill", run)
 
 
 def mode_note_death(player, base_penalty):
     """Mode-side death cost and side effects, alongside apply_death_penalty."""
-    mode = player_mode(player)
-    ctx = mode_context(player, mode)
-    penalty = mode.score_death(ctx, player.name, base_penalty)
-    if penalty:
-        ledger = ctx.mode_state
-        ledger["score"] = ledger.get("score", 0.0) - float(penalty)
-    mode.on_death(ctx, player.name)
+
+    def run():
+        mode = player_mode(player)
+        ctx = mode_context(player, mode)
+        penalty = mode.score_death(ctx, player.name, base_penalty)
+        if penalty:
+            ledger = ctx.mode_state
+            ledger["score"] = ledger.get("score", 0.0) - float(penalty)
+        mode.on_death(ctx, player.name)
+
+    _mode_call(player, "score_death", run)
 
 
 def mode_tick(player):
-    mode = player_mode(player)
-    mode.on_tick(mode_context(player, mode), player.name)
+    def run():
+        mode = player_mode(player)
+        mode.on_tick(mode_context(player, mode), player.name)
+
+    _mode_call(player, "on_tick", run)
 
 
 async def cmd_flee(player, msg):
@@ -4450,11 +4495,12 @@ async def respawn_player(player):
 
     _freight_release_on_death(player, death_room)
 
-    wealth_lost = dropped + lost + _sheltered_gold(player.name) + item_value
-    await apply_death_penalty(player, wealth_lost)
-    # Same death, same number, mode-side ledger: the engine's score is already
-    # written and a mode cannot move it.
-    mode_note_death(player, wealth_lost)
+    penalty = await apply_death_penalty(
+        player, dropped + lost + _sheltered_gold(player.name) + item_value
+    )
+    # Same death, same number: the mode scores what the engine actually
+    # applied rather than a recomputation that could drift from it.
+    mode_note_death(player, penalty)
 
     # XP loss (#334): percentual of total XP, no cap, natural de-level.
     entry = get_score_entry(player.name)
