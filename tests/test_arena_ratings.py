@@ -186,7 +186,7 @@ async def main():
         assert srv.ARENA_HISTORY[-1]["match_id"] == ring.id
         print("HISTORY_CAP_OK")
 
-        # --- Ladder is ordered, and both surfaces expose it ---------------
+        # --- Ladder is ordered, capped, and both surfaces expose it -------
         ladder = srv.arena_ladder()
         ratings = [row["rating"] for row in ladder]
         assert ratings == sorted(ratings, reverse=True), ratings
@@ -195,15 +195,73 @@ async def main():
             snap
         ), sorted(snap)
         assert snap["live"] == [] and snap["ladder"], snap
+        assert snap["ladder_size"] == len(ladder), snap
         looker = mkplayer("RateLooker", 63199)
         await srv.cmd_arena(looker, {"action": "ladder"})
         frames = [f for f in inbox["RateLooker"] if f.get("type") == "arena_ladder"]
         assert frames, inbox["RateLooker"]
-        assert frames[-1]["ladder"] and frames[-1]["you"] is None, frames[-1]
+        frame = frames[-1]
+        assert frame["ladder"] and frame["you"] is None, frame
+        assert len(frame["ladder"]) <= srv.ARENA_LADDER_SHOW, len(frame["ladder"])
+        assert frame["ladder_size"] == len(ladder), frame
+        # A rated caller gets a rank even when the cap cuts them out of the table.
+        srv.ARENA_RATINGS["ratelooker"] = {
+            "name": "RateLooker",
+            "rating": srv.ARENA_RATING_FLOOR,
+            "peak": srv.ARENA_RATING_DEFAULT,
+            "wins": 0,
+            "losses": 9,
+            "matches": 9,
+        }
+        await srv.cmd_arena(looker, {"action": "ladder"})
+        bottom = [f for f in inbox["RateLooker"] if f.get("type") == "arena_ladder"][-1]
+        assert bottom["you"]["rank"] == bottom["ladder_size"], bottom
+        assert len(bottom["ladder"]) == min(
+            bottom["ladder_size"], srv.ARENA_LADDER_SHOW
+        )
         await srv.cmd_arena(looker, {"action": "status"})
         status = [f for f in inbox["RateLooker"] if f.get("type") == "arena"][-1]
-        assert status["rating"] == srv.ARENA_RATING_DEFAULT, status
+        assert status["rating"] == srv.ARENA_RATING_FLOOR, status
         print("LADDER_OK")
+
+        # --- A forfeit keeps its roster slot and still cancels out --------
+        srv.ARENA_RATINGS.pop("ratelooker", None)
+        for name in ("ForfeitWin", "ForfeitQuit"):
+            srv.ARENA_RATINGS.pop(name.lower(), None)
+        quit_duel = mk_match(1, ["ForfeitQuit", "ForfeitWin"])
+        quitter = srv.players[63000]
+        before_quit = rating_of("ForfeitQuit")
+        before_win = rating_of("ForfeitWin")
+        await srv._arena_forfeit(quit_duel, quitter, "leaves the arena")
+        delta = round(rating_of("ForfeitWin") - before_win, 2)
+        assert delta > 0, delta
+        assert round(rating_of("ForfeitQuit") - before_quit, 2) == -delta
+        row = srv.ARENA_HISTORY[-1]
+        assert row["winner"] == 2 and row["match_id"] == quit_duel.id, row
+        assert len(row["teams"]["team1"]) == 1 and len(row["teams"]["team2"]) == 1, row
+        assert "ForfeitQuit" in row["teams"]["team1"], row
+        assert round(sum(row["deltas"].values()), 2) == 0.0, row["deltas"]
+        assert quitter.arena_match == 0 and quitter.arena_team == 0
+        assert quit_duel.id not in srv.ARENA_MATCHES
+        print("FORFEIT_DUEL_OK")
+
+        # --- A disconnect in 2v2 is an ordinary loss for that side --------
+        for i in range(4):
+            srv.ARENA_RATINGS.pop(f"dcdrop{i}".lower(), None)
+        team_match = mk_match(2, ["DcdropA", "DcdropB", "DcdropC", "DcdropD"])
+        dropper = srv.players[63000]
+        before_team = {name: rating_of(name) for name in ("DcdropC", "DcdropD")}
+        await srv.arena_on_disconnect(dropper)
+        row = srv.ARENA_HISTORY[-1]
+        assert row["winner"] == 2 and row["match_id"] == team_match.id, row
+        assert len(row["teams"]["team1"]) == 2 and len(row["teams"]["team2"]) == 2, row
+        assert row["teams"]["team1"] == ["DcdropB", "DcdropA"], row["teams"]
+        c_delta = round(rating_of("DcdropC") - before_team["DcdropC"], 2)
+        d_delta = round(rating_of("DcdropD") - before_team["DcdropD"], 2)
+        assert c_delta > 0 and c_delta == d_delta, (c_delta, d_delta)
+        assert round(sum(row["deltas"].values()), 2) == 0.0, row["deltas"]
+        assert dropper.arena_match == 0 and team_match.id not in srv.ARENA_MATCHES
+        print("FORFEIT_DISCONNECT_OK")
 
         print("ARENA_RATINGS_OK")
     finally:

@@ -11945,19 +11945,37 @@ async def cmd_arena(player, msg):
         await send(player, payload)
         return
     if action == "ladder":
+        rows = arena_ladder()
         row = ARENA_RATINGS.get(player.name.lower())
         you = None
         if row is not None:
+            rank = next(
+                (
+                    index + 1
+                    for index, entry in enumerate(rows)
+                    if entry["name"].lower() == player.name.lower()
+                ),
+                None,
+            )
             you = {
                 "name": row.get("name") or player.name,
                 "rating": round(row.get("rating", ARENA_RATING_DEFAULT), 2),
                 "wins": row.get("wins", 0),
                 "losses": row.get("losses", 0),
                 "matches": row.get("matches", 0),
+                "rank": rank,
             }
+        # A capped table plus the caller's own row: ARENA_RATINGS_MAX rows in
+        # one frame would be half a megabyte, and the rank is all a client
+        # needs to place someone who did not make the cut.
         await send(
             player,
-            {"type": "arena_ladder", "ladder": arena_ladder(), "you": you},
+            {
+                "type": "arena_ladder",
+                "ladder": rows[:ARENA_LADDER_SHOW],
+                "ladder_size": len(rows),
+                "you": you,
+            },
         )
         return
     await send(
