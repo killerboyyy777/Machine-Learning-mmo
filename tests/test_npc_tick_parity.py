@@ -3,8 +3,8 @@
 Run from the repo root:  python tests/test_npc_tick_parity.py
 
 npc_think is pure and npc_apply carries the old hostile tick's I/O. The golden
-block replays the same fixture as tests/test_npc_archetypes.py with freight
-RNG isolated so the extracted seam cannot drift from the NPC baseline.
+block replays the same fixture as tests/test_npc_archetypes.py so the extracted
+seam cannot drift from the committed damage sequence.
 """
 
 import asyncio
@@ -17,47 +17,10 @@ import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import server as srv
+import npc_tick_fixture
+from npc_tick_fixture import GOLDEN
 
-GOLDEN = {
-    "seed": 700,
-    "ticks": 30,
-    "damages": [
-        2,
-        6,
-        5,
-        1,
-        5,
-        2,
-        6,
-        2,
-        3,
-        6,
-        2,
-        5,
-        1,
-        5,
-        6,
-        4,
-        4,
-        2,
-        1,
-        1,
-        4,
-        3,
-        3,
-        6,
-        6,
-        4,
-        2,
-        2,
-        4,
-        1,
-    ],
-    "victim_hp": 398,
-    "npc_hp": 40,
-    "npc_room": "forest_edge",
-}
+import server as srv
 
 
 def _fake_victim(player_id=9001, name="ParityVictim", hp=500):
@@ -175,93 +138,8 @@ print("BASELINE_NO_CHASE_OK")
 
 
 # --- GOLDEN_REPLAY_OK: the committed fixture through the seam driver ---
-class _StopTicks(Exception):
-    pass
-
-
-def _golden_replay(ticks, seed):
-    saved = {
-        "npcs": srv.npcs,
-        "players": srv.players,
-        "room_members": srv.room_members,
-        "players_by_name": srv.players_by_name,
-        "dungeons": srv.dungeons,
-        "asyncio": srv.asyncio,
-        "scores_dirty": srv._scores_dirty,
-        "companions_summoned": srv.COMPANION_SUMMONED,
-        "companion_targets": srv.COMPANION_TARGETS,
-        "tick_station_freight": srv.tick_station_freight,
-    }
-    calls = {"n": 0}
-
-    async def fake_sleep(_seconds):
-        calls["n"] += 1
-        if calls["n"] > ticks:
-            raise _StopTicks
-
-    async def drive():
-        try:
-            await srv.npc_ai_loop()
-        except _StopTicks:
-            pass
-
-    try:
-        npc = _fake_npc()
-        srv.npcs = {"parity_wolf": npc}
-        srv.players = {}
-        srv.room_members = {}
-        srv.players_by_name = {}
-        srv.dungeons = {}
-        srv.COMPANION_SUMMONED = set()
-        srv.COMPANION_TARGETS = {}
-        victim = srv.Player(
-            ws=None,
-            id=9001,
-            name="GoldenVictim",
-            logged_in=True,
-            hp=500,
-            max_hp=500,
-            room="forest_edge",
-        )
-        srv.players[victim.id] = victim
-        srv.add_member(victim)
-        srv.asyncio = types.SimpleNamespace(sleep=fake_sleep)
-        srv.tick_station_freight = lambda _now: None
-        random.seed(seed)
-        asyncio.run(drive())
-        prefix = "Golden Wolf attacks you for "
-        damages = []
-        for raw in victim.outbound:
-            msg = json.loads(raw)
-            text = msg.get("text", "")
-            if text.startswith(prefix):
-                damages.append(int(text[len(prefix) :].rstrip(".")))
-        return {
-            "seed": seed,
-            "ticks": ticks,
-            "damages": damages,
-            "victim_hp": victim.hp,
-            "npc_hp": npc["hp"],
-            "npc_room": npc["room"],
-        }
-    finally:
-        srv.npcs = saved["npcs"]
-        srv.players = saved["players"]
-        srv.room_members = saved["room_members"]
-        srv.players_by_name = saved["players_by_name"]
-        srv.dungeons = saved["dungeons"]
-        srv.asyncio = saved["asyncio"]
-        srv._scores_dirty = saved["scores_dirty"]
-        srv.COMPANION_SUMMONED = saved["companions_summoned"]
-        srv.COMPANION_TARGETS = saved["companion_targets"]
-        srv.tick_station_freight = saved["tick_station_freight"]
-
-
-# The loop is the seam driver; freight is stubbed because its unrelated RNG
-# draws must not shift the deterministic NPC combat sequence.
-replay = _golden_replay(GOLDEN["ticks"], GOLDEN["seed"])
-assert replay == GOLDEN, replay
-assert replay["victim_hp"] == GOLDEN["victim_hp"]
+replayed = npc_tick_fixture.replay(GOLDEN["ticks"], GOLDEN["seed"])
+assert replayed == GOLDEN, replayed
 print("GOLDEN_REPLAY_OK")
 
 
