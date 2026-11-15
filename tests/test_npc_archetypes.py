@@ -4,8 +4,8 @@ Run from the repo root:  python tests/test_npc_archetypes.py
 
 PR 1 is data only: every hostile template still resolves to baseline (an absent
 `archetype` key), all four NPC constructors carry `spawn_room`/`state`/`target`,
-and the hostile tick's output for a fixed world and seed matches a
-deterministic golden fixture for the current NPC tick implementation.
+and the hostile tick's output for a fixed world and seed matches the
+baseline fixture with unrelated freight RNG isolated.
 """
 
 import asyncio
@@ -190,11 +190,13 @@ civ_home = srv._npc_respawn_at(
 assert abs(civ_home - 30.0 * srv.CIV_NPC_RESPAWN_MULT) < 1.5, civ_home
 print("RESPAWN_USES_SPAWN_ROOM_OK")
 
-# --- deterministic hostile tick guard, 30 ticks, seed 700 ---
+# --- hostile tick baseline, 30 ticks, seed 700; freight RNG isolated ---
 GOLDEN = {
     "seed": 700,
     "ticks": 30,
     "damages": [
+        2,
+        6,
         5,
         1,
         5,
@@ -223,10 +225,8 @@ GOLDEN = {
         2,
         4,
         1,
-        4,
-        5,
     ],
-    "victim_hp": 397,
+    "victim_hp": 398,
     "npc_hp": 40,
     "npc_room": "forest_edge",
 }
@@ -245,6 +245,7 @@ def _hostile_tick_replay(ticks, seed):
         "dungeons": srv.dungeons,
         "asyncio": srv.asyncio,
         "_scores_dirty": srv._scores_dirty,
+        "tick_station_freight": srv.tick_station_freight,
     }
     calls = {"n": 0}
 
@@ -295,6 +296,7 @@ def _hostile_tick_replay(ticks, seed):
         srv.players[victim.id] = victim
         srv.add_member(victim)
         srv.asyncio = types.SimpleNamespace(sleep=fake_sleep)
+        srv.tick_station_freight = lambda _now: None
         random.seed(seed)
         asyncio.run(drive())
         damages = []
@@ -319,6 +321,7 @@ def _hostile_tick_replay(ticks, seed):
         srv.dungeons = saved["dungeons"]
         srv.asyncio = saved["asyncio"]
         srv._scores_dirty = saved["_scores_dirty"]
+        srv.tick_station_freight = saved["tick_station_freight"]
 
 
 replay = _hostile_tick_replay(GOLDEN["ticks"], GOLDEN["seed"])
