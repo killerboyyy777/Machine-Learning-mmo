@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 import ml_env
 from ml_env import (GOAL_AXES, ITEM_ID_TO_NAME, ITEM_LIST,
-                    MERCHANT_NAMES, OBS_SIZE, QUESTS, TextMMOEnv,
+                    MERCHANT_NAMES, N_ACTIONS, OBS_SIZE, QUESTS, TextMMOEnv,
                     _parse_commissions, best_market_ask, flatten_obs,
                     flip_margin, goal_reward, inventory_value, merchant_value,
                     mutate_goal, pack_full, pack_units, quest_stage,
@@ -405,6 +405,15 @@ def test_env_goal_carriage():
     print("GOAL_CARRIAGE_OK")
 
 
+
+def test_readme_ml_dimensions_match_env():
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), encoding="utf-8") as readme:
+        docs = readme.read()
+    expected = f"({OBS_SIZE} obs dims, {N_ACTIONS} actions)"
+    assert expected in docs, (expected, "README ML dimensions are stale")
+    print("README_ML_DIMENSIONS_OK")
+
+test_readme_ml_dimensions_match_env()
 test_discounted_commission_parses()
 test_pack_masks_from_server_count()
 test_priced_market_post()
