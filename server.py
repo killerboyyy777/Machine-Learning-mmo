@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import itertools
 import json
+import math
 import os
 import queue
 import random
@@ -11195,6 +11196,7 @@ ARENA_RATING_FLOOR = 100.0
 ARENA_K = 32.0
 ARENA_HISTORY_MAX = 200
 ARENA_RATINGS_MAX = 5000
+ARENA_COUNT_MAX = 1000000
 ARENA_SAVE_SECONDS = 5.0
 ARENA_LADDER_SHOW = 20
 ARENA_LIVE_SHOW = 20
@@ -11210,10 +11212,26 @@ def mark_arena_dirty():
 
 
 def _arena_num(value, default=0.0):
+    """A finite float or the default.
+
+    json.load accepts NaN and Infinity, and a stored "inf" rating would keep
+    winning every comparison forever, so non-finite input is a failed read
+    rather than a value.
+    """
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return default
+    return number if math.isfinite(number) else default
+
+
+def _arena_count(value):
+    """A persisted counter: finite, non-negative, bounded.
+
+    int() would raise on nan and build a 1000-bit integer from 1e300; a
+    corrupt row must cost its own field, not the server's startup.
+    """
+    return max(0, min(int(_arena_num(value, 0)), ARENA_COUNT_MAX))
 
 
 def _normalize_rating_row(key, rec):
@@ -11223,15 +11241,17 @@ def _normalize_rating_row(key, rec):
     name = str(rec.get("name") or rec.get("display_name") or key or "").strip()
     if not name:
         return None
-    rating = _arena_num(rec.get("rating"), ARENA_RATING_DEFAULT)
-    rating = max(ARENA_RATING_FLOOR, rating)
+    rating = max(
+        ARENA_RATING_FLOOR, _arena_num(rec.get("rating"), ARENA_RATING_DEFAULT)
+    )
     return {
         "name": name,
         "rating": rating,
         "peak": max(rating, _arena_num(rec.get("peak"), rating)),
-        "wins": max(0, int(_arena_num(rec.get("wins"), 0))),
-        "losses": max(0, int(_arena_num(rec.get("losses"), 0))),
-        "matches": max(0, int(_arena_num(rec.get("matches"), 0))),
+        "wins": _arena_count(rec.get("wins")),
+        "losses": _arena_count(rec.get("losses")),
+        "draws": _arena_count(rec.get("draws")),
+        "matches": _arena_count(rec.get("matches")),
     }
 
 
@@ -11344,8 +11364,13 @@ def _arena_trim_ratings():
         ARENA_RATINGS.pop(key, None)
 
 
-def _arena_apply_rating(name, delta):
-    """Write one delta, clamped at the floor; returns what actually landed."""
+def _arena_apply_rating(name, delta, outcome):
+    """Write one delta, clamped at the floor; returns what actually landed.
+
+    outcome is "win", "loss" or "draw" and comes from the match result, not
+    from the sign of delta: a draw between unequal ratings moves both ratings
+    and must not be recorded as a win for the underdog.
+    """
     global ARENA_RATING_CLAMPS
     key = (name or "").lower()
     row = ARENA_RATINGS.get(key)
@@ -11356,6 +11381,7 @@ def _arena_apply_rating(name, delta):
             "peak": ARENA_RATING_DEFAULT,
             "wins": 0,
             "losses": 0,
+            "draws": 0,
             "matches": 0,
         }
     before = row["rating"]
@@ -11363,10 +11389,12 @@ def _arena_apply_rating(name, delta):
     if after < ARENA_RATING_FLOOR:
         after = ARENA_RATING_FLOOR
         ARENA_RATING_CLAMPS += 1
-    if delta > 0:
+    if outcome == "win":
         row["wins"] = row.get("wins", 0) + 1
-    elif delta < 0:
+    elif outcome == "loss":
         row["losses"] = row.get("losses", 0) + 1
+    else:
+        row["draws"] = row.get("draws", 0) + 1
     row["matches"] = row.get("matches", 0) + 1
     row["rating"] = round(after, 2)
     row["peak"] = round(max(row.get("peak", row["rating"]), row["rating"]), 2)
@@ -11396,11 +11424,17 @@ def _arena_rate_match(match, winner_team):
     delta1 = ARENA_K * (
         result - _arena_expected(_arena_side_mean(sides[1]), _arena_side_mean(sides[2]))
     )
+    if winner_team == 0:
+        outcome1, outcome2 = "draw", "draw"
+    elif winner_team == 1:
+        outcome1, outcome2 = "win", "loss"
+    else:
+        outcome1, outcome2 = "loss", "win"
     deltas = {}
     for name in sides[1]:
-        deltas[name] = _arena_apply_rating(name, delta1)
+        deltas[name] = _arena_apply_rating(name, delta1, outcome1)
     for name in sides[2]:
-        deltas[name] = _arena_apply_rating(name, -delta1)
+        deltas[name] = _arena_apply_rating(name, -delta1, outcome2)
     ARENA_HISTORY.append(
         {
             "ts": round(time.time(), 3),
@@ -11426,6 +11460,7 @@ def arena_ladder():
             "peak": round(row.get("peak", row.get("rating", 0.0)), 2),
             "wins": row.get("wins", 0),
             "losses": row.get("losses", 0),
+            "draws": row.get("draws", 0),
             "matches": row.get("matches", 0),
         }
         for key, row in ARENA_RATINGS.items()

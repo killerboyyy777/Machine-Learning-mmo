@@ -107,6 +107,38 @@ async def main():
         assert srv.ARENA_HISTORY[-1]["winner"] == 0
         print("RATING_DRAW_OK")
 
+        # --- A draw between unequal sides moves rating but is not a win ---
+        # The counters come from the result, not from the sign of the delta:
+        # an underdog that draws gains rating and has still not won.
+        srv.ARENA_RATINGS["rateunder"] = {
+            "name": "RateUnder",
+            "rating": 800.0,
+            "peak": 800.0,
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "matches": 0,
+        }
+        srv.ARENA_RATINGS["ratefav"] = {
+            "name": "RateFav",
+            "rating": 1200.0,
+            "peak": 1200.0,
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "matches": 0,
+        }
+        uneven = mk_match(1, ["RateUnder", "RateFav"])
+        uneven.scores = {1: 1, 2: 1}
+        await srv._arena_finish(uneven, 0, "Test uneven draw.")
+        under = srv.ARENA_RATINGS["rateunder"]
+        fav = srv.ARENA_RATINGS["ratefav"]
+        assert under["rating"] > 800.0 and fav["rating"] < 1200.0, (under, fav)
+        assert (under["wins"], under["losses"], under["draws"]) == (0, 0, 1), under
+        assert (fav["wins"], fav["losses"], fav["draws"]) == (0, 0, 1), fav
+        assert round(under["rating"] + fav["rating"], 2) == 2000.0, (under, fav)
+        print("DRAW_COUNTERS_OK")
+
         # --- Both members of a side move together -------------------------
         teams = mk_match(2, ["RateTeamA", "RateTeamB", "RateTeamC", "RateTeamD"])
         teams.scores = {1: 2, 2: 1}
@@ -176,6 +208,45 @@ async def main():
         )
         assert srv.load_arena(future) == ({}, [], 0)
         print("STORE_CORRUPT_OK")
+
+        # --- Non-finite stored values cost their field, not the startup ---
+        # json.load accepts NaN and Infinity, so a bad file reaches the
+        # normalizer as floats; int(nan) raises and an inf rating would win
+        # every comparison forever.
+        poisoned = os.path.join(tmpdir, "nonfinite.json")
+        write_text(
+            poisoned,
+            json.dumps(
+                {
+                    "version": srv.ARENA_VERSION,
+                    "ratings": {
+                        "broken": {
+                            "name": "Broken",
+                            "rating": "inf",
+                            "peak": "inf",
+                            "wins": "nan",
+                            "losses": "inf",
+                            "draws": -5,
+                            "matches": 1e300,
+                        },
+                        "sparse": {"name": "Sparse", "rating": 1200},
+                    },
+                    "history": [],
+                    "clamps": float("nan"),
+                }
+            ),
+        )
+        rows, _, clamps = srv.load_arena(poisoned)
+        broken = rows["broken"]
+        assert broken["rating"] == srv.ARENA_RATING_DEFAULT, broken
+        assert broken["peak"] == srv.ARENA_RATING_DEFAULT, broken
+        assert (broken["wins"], broken["losses"]) == (0, 0), broken
+        assert broken["draws"] == 0 and broken["matches"] == srv.ARENA_COUNT_MAX, broken
+        assert clamps == 0, clamps
+        assert rows["sparse"]["wins"] == 0 and rows["sparse"]["draws"] == 0, rows[
+            "sparse"
+        ]
+        print("STORE_NONFINITE_OK")
 
         # --- History is a bounded ring ------------------------------------
         srv.ARENA_HISTORY[:] = [{"match_id": n} for n in range(srv.ARENA_HISTORY_MAX)]

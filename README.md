@@ -116,7 +116,8 @@ shape plus the player's own team and rating.
 
 Winning or losing a match moves rating on a zero-sum Elo ladder: one delta is
 computed from each side's mean rating and the other is its negation, so a match
-never mints rating. A draw splits the expectation. Rating starts at 1000 and
+never mints rating. A draw splits the expectation and is counted as a draw, not
+as a win for whichever side gained rating. Rating starts at 1000 and
 never drops below 100; the clamp is the one place the sum stops balancing, so
 `arena.json` counts clamps (`rating_clamps`) rather than hiding them.
 
