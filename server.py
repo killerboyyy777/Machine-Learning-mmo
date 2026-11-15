@@ -3013,6 +3013,22 @@ def mode_tick(player):
     _mode_call(player, "on_tick", run)
 
 
+async def _flee_dungeon(player, d):
+    """Flee up toward the entrance; a floor seals that way until cleared.
+
+    Instanced rooms are not ROOMS keys, so the world exit map cannot describe
+    them. The room view derives a dungeon's exits from the floor instead, and
+    fleeing has to agree with what the player is looking at.
+    """
+    floor_no = floor_from_room(player.room)
+    floor = d.floors.get(floor_no) if floor_no else None
+    if floor_no != 1 and not (floor and floor.cleared):
+        await send(player, {"type": "error", "text": "There is no way out!"})
+        return
+    await send(player, {"type": "message", "text": "You panic and flee up!"})
+    await cmd_move(player, {"dir": "up"})
+
+
 async def cmd_flee(player, msg):
     """Emergency escape from hostile rooms."""
     room_id = player.room
@@ -3053,6 +3069,11 @@ async def cmd_flee(player, msg):
         await send(
             player, {"type": "error", "text": "You are not in enough danger to flee."}
         )
+        return
+
+    d = dungeon_for_room(room_id)
+    if d:
+        await _flee_dungeon(player, d)
         return
 
     exits = ROOMS[room_id].get("exits", {})
