@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml/badge.svg)](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml)
 
-A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
+A minimal, hackable text-based MMORPG engine. Requires Python 3.12 or newer. Rooms, NPCs, items,
 loot, respawns, parties, a player market, instanced dungeons, and 1v1/2v2 arena
 matches — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
