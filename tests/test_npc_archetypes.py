@@ -5,7 +5,7 @@ Run from the repo root:  python tests/test_npc_archetypes.py
 PR 1 is data only: every hostile template still resolves to baseline (an absent
 `archetype` key), all four NPC constructors carry `spawn_room`/`state`/`target`,
 and the hostile tick's output for a fixed world and seed matches a
- deterministic golden fixture for the current NPC tick implementation.
+deterministic golden fixture for the current NPC tick implementation.
 """
 
 import asyncio
