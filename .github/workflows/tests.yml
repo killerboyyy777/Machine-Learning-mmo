@@ -54,6 +54,28 @@ jobs:
       - run: python tests/test_mode_seam.py
       - run: python tests/test_arena_match.py
       - run: python tests/test_arena_ratings.py
+      - run: python tests/test_arena_spectator_edges.py
+      - run: python tests/test_companion_assist_cap.py
+      - run: python tests/test_dungeon_descent.py
+      - run: python tests/test_env_attack_mask.py
+      - run: python tests/test_freight.py
+      - run: python tests/test_guilds.py
+      - run: python tests/test_guild_membership.py
+      - run: python tests/test_guild_ranks.py
+      - run: python tests/test_guild_vault.py
+      - run: python tests/test_guild_audit.py
+      - run: python tests/test_guild_transfers.py
+      - run: python tests/test_guild_bot_role.py
+      - run: python tests/test_guild_probe.py
+      - run: python tests/test_intel_store.py
+      - run: python tests/test_intel_log.py
+      - run: python tests/test_intel_query.py
+      - run: python tests/test_npc_archetypes.py
+      - run: python tests/test_npc_tick_parity.py
+      - run: python tests/test_npc_ai_state.py
+      - run: python tests/test_npc_ai_telemetry.py
+      - run: python tests/test_npc_leash.py
+      - run: python tests/test_scripted_danger.py
       - run: python tests/test_arena_spectator.py
 
   live:
