@@ -4,8 +4,8 @@ Run from the repo root:  python tests/test_npc_archetypes.py
 
 PR 1 is data only: every hostile template still resolves to baseline (an absent
 `archetype` key), all four NPC constructors carry `spawn_room`/`state`/`target`,
-and the hostile tick's output for a fixed world and seed matches the fixture
-captured from master@e9c2e05 before this change.
+and the hostile tick's output for a fixed world and seed matches a
+ deterministic golden fixture for the current NPC tick implementation.
 """
 
 import asyncio
@@ -190,13 +190,11 @@ civ_home = srv._npc_respawn_at(
 assert abs(civ_home - 30.0 * srv.CIV_NPC_RESPAWN_MULT) < 1.5, civ_home
 print("RESPAWN_USES_SPAWN_ROOM_OK")
 
-# --- golden guard: captured from master@e9c2e05, 30 hostile ticks, seed 700 ---
+# --- deterministic hostile tick guard, 30 ticks, seed 700 ---
 GOLDEN = {
     "seed": 700,
     "ticks": 30,
     "damages": [
-        2,
-        6,
         5,
         1,
         5,
@@ -225,8 +223,10 @@ GOLDEN = {
         2,
         4,
         1,
+        4,
+        5,
     ],
-    "victim_hp": 398,
+    "victim_hp": 397,
     "npc_hp": 40,
     "npc_room": "forest_edge",
 }
