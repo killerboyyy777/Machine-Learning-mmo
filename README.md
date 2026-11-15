@@ -110,7 +110,27 @@ refused during a match.
 The room view for an arena room carries an `arena` block
 (`match_id, team_size, state, round, rounds_to_win, scores, teams, hp`), and
 `arena status` replies with a `{"type": "arena"}` event carrying the same
-shape plus the player's own team.
+shape plus the player's own team and rating.
+
+### Ratings
+
+Winning or losing a match moves rating on a zero-sum Elo ladder: one delta is
+computed from each side's mean rating and the other is its negation, so a match
+never mints rating. A draw splits the expectation and is counted as a draw, not
+as a win for whichever side gained rating. Rating starts at 1000 and
+never drops below 100; the clamp is the one place the sum stops balancing, so
+`arena.json` counts clamps (`rating_clamps`) rather than hiding them.
+
+The ladder is durable, so it does not live in `scores.json` (which evicts
+entries on a TTL). `arena.json` holds the ratings, a 200-row match history and
+that clamp count, written atomically with a `.1` generation, and a corrupt or
+future-versioned file loads as an empty ladder with a warning instead of
+stopping the server. A forfeit or a disconnect is a loss with the ordinary
+delta, so leaving is never cheaper than losing.
+
+`arena ladder` returns `{"type": "arena_ladder", "ladder", "you"}`, and
+`/api/state` carries an additive `arena` block (`queues`, `live`, `ladder`,
+`ladder_size`, `recent`, `rating_clamps`) for the dashboard next release.
 
 ## Balance measurement
 
