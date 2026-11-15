@@ -2832,6 +2832,10 @@ class Player:
     # Session-scoped like mode: a match never outlives the connection.
     arena_match: int = 0
     arena_team: int = 0
+    # Match this session is watching (#654), 0 when not spectating. A watcher
+    # never enters match.players, so no scoring or seating path can see them.
+    arena_watch: int = 0
+    arena_spectating: bool = False
 
     def __post_init__(self):
         if self.outbound_event is None:
@@ -9429,7 +9433,7 @@ async def cmd_help(player, msg):
                 "freight [post|quote|accept|deliver|claim|cancel|list|status] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest "
-                "arena [enter|leave|status|ladder]. "
+                "arena [enter|leave|status|ladder|watch|unwatch]. "
                 "stats lists your active companion: name, species, level, hp, attack, "
                 "defense, passive, script state."
             ),
@@ -11512,6 +11516,13 @@ ARENA_ROUNDS_TO_WIN = 2
 ARENA_MAX_ROUNDS = 3
 ARENA_TEAM_SIZES = (1, 2)
 ARENA_QUEUE_MODES = {"1v1": 1, "2v2": 2}
+# Spectating is read-only and bounded: a match has one room and one feed, and
+# an unbounded audience would let a crowd of idle sessions pin every message.
+ARENA_SPECTATOR_MAX = 8
+ARENA_SPECTATOR_EVENTS = 12
+# Sub-actions a watcher keeps: reading, plus the two ways out. Everything
+# else would put them in a queue while still attached to a pit.
+ARENA_SPECTATOR_ACTIONS = frozenset({"status", "ladder", "watch", "unwatch", "leave"})
 # A match moves no value: no loot, no gold, no gear, no potions. Refusing the
 # world verbs at dispatch is what keeps that true by construction instead of
 # by every handler remembering to check.
@@ -11582,6 +11593,12 @@ class ArenaMatch:
         self.round = 0
         self.state = "countdown"
         self.timer = time.time() + ARENA_COUNTDOWN_SECONDS
+        # pids of sessions watching read-only (#654). Deliberately not part of
+        # players: every seating, scoring and HP path walks that dict.
+        self.spectators = set()
+        # Round outcomes and lines a late watcher missed, bounded so the feed
+        # cannot grow with the match.
+        self.events = deque(maxlen=ARENA_SPECTATOR_EVENTS)
 
     @property
     def room_id(self):
@@ -11609,8 +11626,86 @@ def _arena_live(match):
     return live
 
 
+def spectators_of(match):
+    """Sessions still watching this match, pruned as they leave."""
+    live = []
+    for pid in list(match.spectators):
+        player = players.get(pid)
+        if player is None or not player.logged_in or player.arena_watch != match.id:
+            match.spectators.discard(pid)
+            continue
+        live.append(player)
+    return live
+
+
+async def _arena_emit(match, payload):
+    """One event to the audience: fighters come by room, watchers directly."""
+    for player in spectators_of(match):
+        await send(player, payload)
+
+
 async def _arena_send(match, text):
-    await broadcast_room(match.room_id, {"type": "message", "text": text})
+    # Feed first, then fan out: a watcher who attaches mid-round still sees
+    # the lines that led to the score it is looking at.
+    match.events.append(text)
+    payload = {"type": "message", "text": text}
+    await broadcast_room(match.room_id, payload)
+    await _arena_emit(match, payload)
+
+
+def detach_spectator(player):
+    """Drop a session from whatever feed it is on."""
+    match = ARENA_MATCHES.get(getattr(player, "arena_watch", 0) or 0)
+    if match is not None:
+        match.spectators.discard(player.id)
+    player.arena_watch = 0
+    player.arena_spectating = False
+
+
+def arena_watch_blocks(player, cmd):
+    """True when a watching session may not run this command.
+
+    A spectator may look and leave, nothing else. #654 also allowed "chat",
+    but the server has no chat command, so the permitted verb is the arena one
+    that detaches the feed; naming it keeps the refusal self-explanatory.
+    """
+    return bool(player.arena_spectating and cmd not in ("arena", "help"))
+
+
+def arena_spectator_view(match):
+    """What an audience may see, as an allowlist rather than a filter.
+
+    No room id, exits, items, gold or inventories: the pit's own state and the
+    score line only, so a field added to a fighter later cannot leak by default.
+    """
+
+    def side(team):
+        rows = []
+        for pid, rec in list(match.players.items()):
+            if rec["team"] != team:
+                continue
+            player = players.get(pid)
+            hp = max(0, int(player.hp)) if player is not None else 0
+            rows.append(
+                {
+                    "name": rec["name"],
+                    "hp": hp,
+                    "rating": round(_arena_rating(rec["name"]), 1),
+                }
+            )
+        return rows
+
+    return {
+        "type": "arena_view",
+        "match_id": match.id,
+        "team_size": match.team_size,
+        "state": match.state,
+        "round": match.round,
+        "rounds_to_win": ARENA_ROUNDS_TO_WIN,
+        "scores": {"team1": match.scores[1], "team2": match.scores[2]},
+        "teams": {"team1": side(1), "team2": side(2)},
+        "events": list(match.events),
+    }
 
 
 def arena_room_view(match):
@@ -11645,6 +11740,9 @@ def arena_room_view(match):
 
 async def _arena_place(player, match):
     rec = match.players[player.id]
+    # A queued session can be watching another pit when its own match starts;
+    # fighting takes the session back from the feed.
+    detach_spectator(player)
     if rec["entry_room"] is None:
         rec["entry_room"] = player.room
         rec["entry_hp"] = max(1, player.hp)
@@ -11670,13 +11768,22 @@ async def _arena_restore(player, rec):
     await send(player, stats_view(player))
 
 
-def _end_match(match):
-    """Drop the match and its room.
+async def _end_match(match, winner_team=0):
+    """Drop the match and its room, and close the feed.
 
     Nothing to sweep: an arena holds no loot, no floor gold and no NPCs, so
     teardown cannot leak value into the world.
     """
     ARENA_MATCHES.pop(match.id, None)
+    close = {
+        "type": "arena_end",
+        "match_id": match.id,
+        "winner": winner_team,
+        "scores": {"team1": match.scores[1], "team2": match.scores[2]},
+    }
+    for player in spectators_of(match):
+        await send(player, close)
+        detach_spectator(player)
 
 
 async def _arena_begin_round(match):
@@ -11731,7 +11838,7 @@ async def _arena_finish(match, winner_team, reason):
     # Rate before the roster is popped: it is the last moment pids, teams and
     # names still agree with each other.
     deltas = _arena_rate_match(match, winner_team)
-    _end_match(match)
+    await _end_match(match, winner_team)
     for player, rec in _arena_live(match):
         await send(player, {"type": "message", "text": line})
         if player.name in deltas:
@@ -11748,7 +11855,7 @@ async def _arena_finish(match, winner_team, reason):
 
 async def _arena_tick_match(match, now):
     if not _arena_live(match):
-        _end_match(match)
+        await _end_match(match)
         return
     if now < match.timer:
         return
@@ -11864,6 +11971,12 @@ async def arena_attack(player, target_name):
         {"type": "combat", "text": f"{player.name} hits {target.name} for {dmg}."},
         exclude=player,
     )
+    # Watchers are outside the room, so the hit reaches them by feed; it stays
+    # out of match.events, which keeps round outcomes and not every swing.
+    await _arena_emit(
+        match,
+        {"type": "combat", "text": f"{player.name} hits {target.name} for {dmg}."},
+    )
     await send(target, stats_view(target))
     if target.hp <= 0:
         target.hp = 0
@@ -11882,13 +11995,14 @@ async def _arena_forfeit(match, player, reason):
         match.forfeits.append({"name": player.name, "team": team})
         await _arena_restore(player, rec)
     if not _arena_live(match):
-        _end_match(match)
+        await _end_match(match)
         return
     await _arena_finish(match, winner, f"Match {match.id}: {player.name} {reason}.")
 
 
 async def arena_on_disconnect(player):
     """A leaving session never keeps a queue entry or a half-owned match."""
+    detach_spectator(player)
     for entries in ARENA_QUEUES.values():
         while player.id in entries:
             entries.remove(player.id)
@@ -11904,7 +12018,7 @@ async def arena_on_disconnect(player):
     player.arena_match = 0
     player.arena_team = 0
     if not _arena_live(match):
-        _end_match(match)
+        await _end_match(match)
         return
     await _arena_finish(match, winner, f"Match {match.id}: {player.name} disconnects.")
 
@@ -11912,6 +12026,18 @@ async def arena_on_disconnect(player):
 async def cmd_arena(player, msg):
     action = str(msg.get("action") or msg.get("sub") or "status").lower()
     match = match_for_player(player)
+    # A watcher may read, leave or unwatch. Anything that would seat them in a
+    # pit is refused here: the dispatch guard lets the whole arena command
+    # through, so this is the gate that keeps 'watch' read-only.
+    if player.arena_spectating and action not in ARENA_SPECTATOR_ACTIONS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "You are watching a match; 'arena unwatch' first.",
+            },
+        )
+        return
     if action == "enter":
         mode = str(msg.get("mode") or "1v1").lower()
         team_size = ARENA_QUEUE_MODES.get(mode)
@@ -11938,6 +12064,10 @@ async def cmd_arena(player, msg):
         await _arena_try_pair(team_size)
         return
     if action == "leave":
+        if player.arena_spectating:
+            detach_spectator(player)
+            await send(player, {"type": "message", "text": "You stop watching."})
+            return
         size = arena_queued_size(player)
         if size:
             ARENA_QUEUES[size].remove(player.id)
@@ -11952,6 +12082,48 @@ async def cmd_arena(player, msg):
             player, {"type": "error", "text": "You are not queued or in a match."}
         )
         return
+    if action == "watch":
+        raw = str(msg.get("match") or msg.get("target") or "").strip().lower()
+        raw = raw.removeprefix("a_")
+        try:
+            match_id = int(raw)
+        except ValueError:
+            match_id = 0
+        target = ARENA_MATCHES.get(match_id) if match_id else None
+        if target is None:
+            await send(player, {"type": "error", "text": "No such live match."})
+            return
+        if match is not None:
+            await send(
+                player, {"type": "error", "text": "You cannot watch while fighting."}
+            )
+            return
+        # Prune first: a watcher who dropped without cleanup must not keep
+        # holding a seat, or a match with no audience reads as full.
+        spectators_of(target)
+        if player.id not in target.spectators and (
+            len(target.spectators) >= ARENA_SPECTATOR_MAX
+        ):
+            await send(
+                player,
+                {"type": "error", "text": "That match already has its audience."},
+            )
+            return
+        detach_spectator(player)
+        target.spectators.add(player.id)
+        player.arena_watch = target.id
+        player.arena_spectating = True
+        await send(player, arena_spectator_view(target))
+        return
+    if action == "unwatch":
+        if not player.arena_spectating:
+            await send(
+                player, {"type": "error", "text": "You are not watching a match."}
+            )
+            return
+        detach_spectator(player)
+        await send(player, {"type": "message", "text": "You stop watching."})
+        return
     if action == "status":
         payload = {
             "type": "arena",
@@ -11963,6 +12135,7 @@ async def cmd_arena(player, msg):
         size = arena_queued_size(player)
         payload["queued"] = f"{size}v{size}" if size else None
         payload["rating"] = round(_arena_rating(player.name), 2)
+        payload["watching"] = player.arena_watch or None
         if match is not None:
             payload.update(
                 {
@@ -12015,7 +12188,10 @@ async def cmd_arena(player, msg):
         return
     await send(
         player,
-        {"type": "error", "text": "Arena actions: enter, leave, status, ladder."},
+        {
+            "type": "error",
+            "text": "Arena actions: enter, leave, status, ladder, watch, unwatch.",
+        },
     )
 
 
@@ -13071,6 +13247,26 @@ def start_dashboard():
             if path == "/api/state":
                 state = world_snapshot_json if world_snapshot_json is not None else "{}"
                 self._send(state.encode(), "application/json")
+            elif path.startswith("/api/arena/"):
+                # Following one match reads the live match, not the cached
+                # snapshot: a fight mutates every second. Built by the same
+                # function the socket path uses, so the two cannot drift.
+                body = {"error": "no such live match"}
+                status = 404
+                try:
+                    match_id = int(path.rsplit("/", 1)[-1].lstrip("a_"))
+                    match = ARENA_MATCHES.get(match_id)
+                    if match is not None:
+                        body = arena_spectator_view(match)
+                        status = 200
+                except (TypeError, ValueError):
+                    body = {"error": "match id must be a number"}
+                except (RuntimeError, KeyError):
+                    # The game thread may seat or drop a fighter mid-read; a
+                    # retry is cheaper than a traceback in the HTTP thread.
+                    body = {"error": "match changed while reading"}
+                    status = 503
+                self._send_json(body, status)
             elif path == "/health":
                 # Liveness probe for CI/Docker/monitoring (#56). Served
                 # from the cached snapshot (#224): iterating live `players`
@@ -13991,6 +14187,17 @@ async def handle_connection(ws):
                 await send(
                     player,
                     {"type": "error", "text": f"You cannot '{cmd}' during a match."},
+                )
+                continue
+            # A watcher is read-only by construction: the only verb that may
+            # run is the one that stops watching or asks about the arena.
+            if arena_watch_blocks(player, cmd):
+                await send(
+                    player,
+                    {
+                        "type": "error",
+                        "text": "You are watching a match; 'arena unwatch' first.",
+                    },
                 )
                 continue
             try:
