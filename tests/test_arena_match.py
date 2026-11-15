@@ -197,6 +197,12 @@ async def main():
         assert "attack" not in srv.ARENA_BLOCKED_COMMANDS
         print("NO_WORLD_PVP_OK")
 
+        # --- The one command index actually names the arena --------------
+        await srv.cmd_help(three, {})
+        help_text = frames("ArenaThree", "help")[-1]["text"]
+        assert "arena [enter|leave|status]" in help_text, help_text
+        print("HELP_OK")
+
         print("ARENA_MATCH_OK")
     finally:
         srv.send = saved_send

@@ -9424,7 +9424,8 @@ async def cmd_help(player, msg):
                 "intel [log|query] "
                 "freight [post|quote|accept|deliver|claim|cancel|list|status] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
-                "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest. "
+                "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest "
+                "arena [enter|leave|status]. "
                 "stats lists your active companion: name, species, level, hp, attack, "
                 "defense, passive, script state."
             ),
