@@ -98,6 +98,7 @@ def replay(ticks, seed):
         "scores_dirty": srv._scores_dirty,
         "last_hit": dict(srv.LAST_HIT),
         "companions_summoned": srv.COMPANION_SUMMONED,
+        "rng_state": random.getstate(),
         "companion_targets": srv.COMPANION_TARGETS,
     }
     try:
@@ -147,3 +148,4 @@ def replay(ticks, seed):
         srv.LAST_HIT.update(saved["last_hit"])
         srv.COMPANION_SUMMONED = saved["companions_summoned"]
         srv.COMPANION_TARGETS = saved["companion_targets"]
+        random.setstate(saved["rng_state"])
