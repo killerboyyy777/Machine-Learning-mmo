@@ -3,8 +3,8 @@
 Run from the repo root:  python tests/test_npc_tick_parity.py
 
 npc_think is pure and npc_apply carries the old hostile tick's I/O. The golden
-block replays the same fixture as tests/test_npc_archetypes.py so the extracted
-seam cannot drift from the committed damage sequence.
+block replays the same fixture as tests/test_npc_archetypes.py with freight
+RNG isolated so the extracted seam cannot drift from the NPC baseline.
 """
 
 import asyncio
@@ -190,6 +190,7 @@ def _golden_replay(ticks, seed):
         "scores_dirty": srv._scores_dirty,
         "companions_summoned": srv.COMPANION_SUMMONED,
         "companion_targets": srv.COMPANION_TARGETS,
+        "tick_station_freight": srv.tick_station_freight,
     }
     calls = {"n": 0}
 
@@ -225,6 +226,7 @@ def _golden_replay(ticks, seed):
         srv.players[victim.id] = victim
         srv.add_member(victim)
         srv.asyncio = types.SimpleNamespace(sleep=fake_sleep)
+        srv.tick_station_freight = lambda _now: None
         random.seed(seed)
         asyncio.run(drive())
         prefix = "Golden Wolf attacks you for "
@@ -252,10 +254,11 @@ def _golden_replay(ticks, seed):
         srv._scores_dirty = saved["scores_dirty"]
         srv.COMPANION_SUMMONED = saved["companions_summoned"]
         srv.COMPANION_TARGETS = saved["companion_targets"]
+        srv.tick_station_freight = saved["tick_station_freight"]
 
 
-# The loop is the seam driver, so this replay covers npc_think/npc_apply and
-# the pre-tick HP regen that the committed fixture's victim_hp already counts.
+# The loop is the seam driver; freight is stubbed because its unrelated RNG
+# draws must not shift the deterministic NPC combat sequence.
 replay = _golden_replay(GOLDEN["ticks"], GOLDEN["seed"])
 assert replay == GOLDEN, replay
 assert replay["victim_hp"] == GOLDEN["victim_hp"]
