@@ -99,6 +99,15 @@ async def main():
             pass
         # The cached world view is handed over as-is, not re-frozen per call.
         assert srv.mode_context(p).world is ctx.world
+        # Placement accepts static rooms and live instances, nothing else:
+        # arena rooms will be instances, which are deliberately outside ROOMS.
+        assert srv.mode_room_ok(srv.START_ROOM)
+        assert not srv.mode_room_ok("no_such_room")
+        assert not srv.mode_room_ok(None)
+        assert not srv.mode_room_ok("d_999999_f1")
+        srv.dungeons[999999] = object()
+        assert srv.mode_room_ok("d_999999_f1")
+        del srv.dungeons[999999]
         assert ctx.mode_state == {}
         assert srv.mode_on_login(p) is None
         assert srv.mode_on_respawn(p) is None

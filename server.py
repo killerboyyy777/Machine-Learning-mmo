@@ -2915,6 +2915,17 @@ def mode_context(player, mode=None):
     )
 
 
+def mode_room_ok(room_id):
+    """Can a mode place a session in this room?
+
+    Static rooms live in ROOMS; instanced ones (dungeons today, arena match
+    rooms next) deliberately do not, because ml/ml_env enumerates ROOMS as
+    the static world. A plain membership test would bounce a mode's own room
+    back to the lobby, so instances count when they are live.
+    """
+    return room_id in ROOMS or dungeon_for_room(room_id) is not None
+
+
 def mode_on_login(player):
     mode = player_mode(player)
     return mode.on_login(mode_context(player, mode), player.name)
@@ -4455,7 +4466,7 @@ async def respawn_player(player):
     sync_player_level(player)
     spawn = mode_on_respawn(player)
     remove_member(player)
-    player.room = spawn if spawn in ROOMS else START_ROOM
+    player.room = spawn if mode_room_ok(spawn) else START_ROOM
     add_member(player)
     await _return_companion_with_owner(player)
     text = "You died and wake up back in Town Square."
@@ -4940,7 +4951,7 @@ async def cmd_login(player, msg):
     # placement stays exactly the lobbyless world behaviour it had (#66).
     player.mode = DEFAULT_MODE
     spawn = mode_on_login(player)
-    player.room = spawn if spawn in ROOMS else dest
+    player.room = spawn if mode_room_ok(spawn) else dest
     if banked:
         # The bank can hold more than one pack (fills while pack-full keep
         # landing there), so hand over what fits and leave the rest banked;
@@ -5196,9 +5207,13 @@ async def cmd_attack(player, msg):
                     pts *= 1.5
                     xp *= 1.5
                     reason += " (narrow victory)"
-                killer_award = (pts, xp)
             else:
                 reason = f"helped defeat {npc['name']}"
+            # The killer's row is what the mode rescores, whatever branch
+            # decided it: a quest-NPC kill is a -0.5 award the mode must see
+            # as -0.5 rather than as a zero it can scale up.
+            if cname == player.name:
+                killer_award = (pts, xp)
             await award_points_to_name(cname, pts, reason)
             await award_xp(cname, xp, reason)
         mode_award_kill(player, npc["name"], *killer_award)

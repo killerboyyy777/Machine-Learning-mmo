@@ -8,9 +8,11 @@ name, and a read-only view of the world. Per-mode scores live in that
 isolated dict, never in the engine's score entries, so experimental
 rulesets cannot pollute the main leaderboard.
 
-Wiring into the tick loop / command handlers is a follow-up; this
-module defines the contract and the registry so modes load today and
-the engine can call them tomorrow without renegotiating the API.
+Wiring lives in server.py: login, respawn, kill award and the NPC tick all
+ask the mode, and every hook is passthrough by default, so the open world
+behaves exactly as it did before a mode overrides one. The ledger is per
+session -- the engine does not persist it across a reconnect yet -- so a
+mode must treat it as turn state, not durable storage.
 """
 
 from collections.abc import Mapping
@@ -36,8 +38,9 @@ class ModeContext:
     """What a mode may see and touch during a hook call.
 
     world is read-only (room ids, npc rosters supplied by the engine);
-    mode_state is this mode's private ledger, persisted by the engine
-    under the mode's name but never interpreted by it.
+    mode_state is this mode's private ledger, keyed by mode name and never
+    interpreted by the engine. It belongs to the session, not a save file:
+    a reconnect starts it empty, so treat it as turn state.
     """
 
     world: Mapping = field(default_factory=dict)
