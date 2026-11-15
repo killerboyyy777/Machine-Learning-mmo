@@ -97,8 +97,14 @@ async def main():
         # bypass. Entering the queue is not a read-only spectator operation.
         await srv.cmd_arena(newcomer, {"action": "enter", "mode": "1v1"})
         check(
-            srv.arena_queued_size(newcomer) == 0
-            and all(newcomer.id not in q for q in srv.ARENA_QUEUES.values()),
+            newcomer.arena_spectating
+            and srv.arena_queued_size(newcomer) == 0
+            and all(newcomer.id not in q for q in srv.ARENA_QUEUES.values())
+            and any(
+                item.get("type") == "error"
+                and "watching a match" in item.get("text", "")
+                for item in inbox.get(newcomer.name, [])
+            ),
             "SPECTATOR_CANNOT_QUEUE",
         )
 
