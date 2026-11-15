@@ -65,9 +65,9 @@ def activity_rows(height):
 def render_tab_bar(active):
     """Single-line tab strip, active tab highlighted.
 
-    Styling is color-only, never padding: an 80-column ssh window has to
-    fit all eleven labels, and a background-colored cell would also make
-    the strip jump around as the active tab changes.
+    Styling is color-only, never padding: a background-colored cell would make
+    the strip jump around as the active tab changes. The strip no longer fits
+    an 80-column window once arena is added, so it folds onto two lines there.
     """
     bar = Text()
     for tab, label in TABS:
@@ -93,6 +93,8 @@ def render_panel(tab, snapshot, rows=ACTIVITY_ROWS, extras=None):
         return render_market(snapshot, rows)
     if tab == "dungeon":
         return render_dungeon(snapshot, rows)
+    if tab == "arena":
+        return render_arena(snapshot, rows)
     if tab == "agents":
         return render_agents(snapshot, rows)
     if tab == "quests":
@@ -627,6 +629,104 @@ def render_dungeon(snapshot, rows=ACTIVITY_ROWS):
         Text("Dungeons", style="bold"),
         _dungeons(snapshot),
     )
+
+
+# --- arena ---------------------------------------------------------------
+def render_arena(snapshot, rows=ACTIVITY_ROWS):
+    """Arena tab: live matches, the ladder and recent results (#654)."""
+    arena = snapshot.get("arena") or {}
+    return Group(
+        Text("Live matches", style="bold"),
+        _arena_matches(arena),
+        Text(""),
+        Text("Ladder", style="bold"),
+        _arena_ladder(arena),
+        Text(""),
+        Text("Recent results", style="bold"),
+        _arena_results(arena),
+    )
+
+
+def _arena_matches(arena):
+    matches = [m for m in (arena.get("live") or []) if isinstance(m, dict)]
+    if not matches:
+        return Text("no live matches", style="dim italic")
+    table = _table(
+        [
+            ("id", {"no_wrap": True}),
+            ("teams", {"overflow": "ellipsis"}),
+            ("state", {"no_wrap": True}),
+            ("round", {"justify": "right", "no_wrap": True}),
+            ("score", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    for match in matches:
+        teams = match.get("teams") or {}
+        scores = match.get("scores") or {}
+        table.add_row(
+            str(match.get("match_id") or "?"),
+            f"{_names(teams.get('team1'))} vs {_names(teams.get('team2'))}",
+            str(match.get("state") or "?"),
+            str(int(_as_float(match.get("round")))),
+            f"{int(_as_float(scores.get('team1')))}-{int(_as_float(scores.get('team2')))}",
+        )
+    return table
+
+
+def _arena_ladder(arena):
+    rows_ = [r for r in (arena.get("ladder") or []) if isinstance(r, dict)]
+    if not rows_:
+        return Text("nobody is rated yet", style="dim italic")
+    table = _table(
+        [
+            ("#", {"justify": "right", "no_wrap": True}),
+            ("player", {"overflow": "ellipsis"}),
+            ("rating", {"justify": "right", "no_wrap": True}),
+            ("peak", {"justify": "right", "no_wrap": True}),
+            ("w/l/d", {"justify": "right", "no_wrap": True}),
+        ]
+    )
+    for place, row in enumerate(rows_, start=1):
+        wins = int(_as_float(row.get("wins")))
+        losses = int(_as_float(row.get("losses")))
+        draws = int(_as_float(row.get("draws")))
+        table.add_row(
+            str(place),
+            str(row.get("name") or "?"),
+            f"{_as_float(row.get('rating')):.0f}",
+            f"{_as_float(row.get('peak')):.0f}",
+            f"{wins}/{losses}/{draws}",
+        )
+    return table
+
+
+def _arena_results(arena):
+    rows_ = [r for r in (arena.get("recent") or []) if isinstance(r, dict)]
+    if not rows_:
+        return Text("no rated matches yet", style="dim italic")
+    table = _table(
+        [
+            ("id", {"no_wrap": True}),
+            ("result", {"no_wrap": True}),
+            ("score", {"justify": "right", "no_wrap": True}),
+            ("teams", {"overflow": "ellipsis"}),
+        ]
+    )
+    for row in rows_:
+        teams = row.get("teams") or {}
+        scores = row.get("scores") or {}
+        winner = row.get("winner")
+        table.add_row(
+            str(row.get("match_id") or "?"),
+            f"team {int(_as_float(winner))} won" if winner else "draw",
+            f"{int(_as_float(scores.get('team1')))}-{int(_as_float(scores.get('team2')))}",
+            f"{_names(teams.get('team1'))} vs {_names(teams.get('team2'))}",
+        )
+    return table
+
+
+def _names(names):
+    return ", ".join(str(name) for name in (names or [])) or "-"
 
 
 def _mmss(seconds):

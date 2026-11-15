@@ -19,6 +19,7 @@ TABS = (
     ("players", "Players"),
     ("market", "Market"),
     ("dungeon", "Dungeons"),
+    ("arena", "Arena"),
     ("agents", "Agents"),
     ("quests", "Quests"),
     ("crafting", "Crafting"),

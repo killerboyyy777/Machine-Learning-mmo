@@ -154,7 +154,8 @@ The same view is served to HTTP clients: `/api/state` carries the lists, and
 so the dashboard panel and a connected client cannot disagree.
 
 The dashboard's Arena tab renders the live matches, the ladder and recent
-results, and its follow box polls the per-match endpoint every two seconds.
+results, and its follow box polls the per-match endpoint every two seconds. The
+terminal UI mirrors it as a twelfth tab over the same snapshot block.
 
 ## Balance measurement
 

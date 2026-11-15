@@ -2654,8 +2654,8 @@ const TAB_SECTIONS = {
     ["dungeon clears", s => renderDungeonClears(s.dungeon_clears || {})],
     ["dungeons", s => renderDungeons(s.dungeons || [])],
   ],
-  agents: [["agents", s => renderAgents(s.players || [])]],
   arena: [["arena", s => renderArena(s.arena || {})]],
+  agents: [["agents", s => renderAgents(s.players || [])]],
   quests: [
     ["quests", s => renderQuests(s.quests || {})],
     ["commissions", s => renderCommissions(s.commissions || [])],
@@ -2681,21 +2681,21 @@ let arenaFollowTimer = null;
 function renderArena(a) {
   const live = a.live || [];
   $("arenaNoLive").style.display = live.length ? "none" : "";
-  $("arenaLive").innerHTML = live.map(m => {
+  setHTML("arenaLive", live.map(m => {
     const t1 = (m.teams && m.teams.team1) || [];
     const t2 = (m.teams && m.teams.team2) || [];
     return `<div class="room"><div><b>#${esc(m.match_id)}</b> ${esc(m.team_size)}v${esc(m.team_size)} &middot; ${esc(m.state)} &middot; round ${esc(m.round)} &middot; ${esc(m.scores.team1)}-${esc(m.scores.team2)}</div><div class="dim">${esc(t1.join(", "))} vs ${esc(t2.join(", "))}</div><button type="button" data-arena-follow="${esc(m.match_id)}">watch</button></div>`;
-  }).join("");
+  }).join(""));
   const ladder = a.ladder || [];
   $("arenaNoLadder").style.display = ladder.length ? "none" : "";
-  $("arenaLadder").innerHTML = ladder.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name)}</td><td>${fmtNum(r.rating)}</td><td>${fmtNum(r.peak)}</td><td>${fmtNum(r.wins)}</td><td>${fmtNum(r.losses)}</td><td>${fmtNum(r.draws)}</td><td>${fmtNum(r.matches)}</td></tr>`).join("");
+  setHTML("arenaLadder", ladder.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name)}</td><td>${fmtNum(r.rating)}</td><td>${fmtNum(r.peak)}</td><td>${fmtNum(r.wins)}</td><td>${fmtNum(r.losses)}</td><td>${fmtNum(r.draws)}</td><td>${fmtNum(r.matches)}</td></tr>`).join(""));
   const recent = a.recent || [];
-  $("arenaRecent").innerHTML = recent.length ? recent.slice().reverse().map(row => {
+  setHTML("arenaRecent", recent.length ? recent.slice().reverse().map(row => {
     const t1 = (row.teams && row.teams.team1) || [];
     const t2 = (row.teams && row.teams.team2) || [];
     const head = row.winner ? `team ${row.winner} won` : "draw";
     return `<div class="dim" style="padding:2px 0">#${esc(row.match_id)} &middot; ${esc(row.team_size)}v${esc(row.team_size)} &middot; ${head} ${esc(row.scores.team1)}-${esc(row.scores.team2)} &middot; ${esc(t1.join(", "))} vs ${esc(t2.join(", "))}</div>`;
-  }).join("") : `<p class="empty">No rated matches yet.</p>`;
+  }).join("") : `<p class="empty">No rated matches yet.</p>`);
 }
 
 async function arenaFollowTick(id) {
@@ -2707,10 +2707,10 @@ async function arenaFollowTick(id) {
     const line = t => (t || []).map(p => `${p.name} ${p.hp}hp (${p.rating})`).join(", ");
     $("arenaFollowStatus").textContent = `match #${v.match_id} · ${v.state} · round ${v.round} · ${v.scores.team1}-${v.scores.team2}`;
     const events = (v.events || []).slice().reverse().map(e => esc(e)).join("<br>");
-    $("arenaFollow").innerHTML = `<div class="dim">${esc(line(teams.team1))} vs ${esc(line(teams.team2))}</div><div class="dim" style="margin-top:6px">${events}</div>`;
+    setHTML("arenaFollow", `<div class="dim">${esc(line(teams.team1))} vs ${esc(line(teams.team2))}</div><div class="dim" style="margin-top:6px">${events}</div>`);
   } catch (e) {
     $("arenaFollowStatus").textContent = `no live match #${id}`;
-    $("arenaFollow").innerHTML = "";
+    setHTML("arenaFollow", "");
   }
 }
 
