@@ -179,6 +179,49 @@ async def main():
             for flood_name in flood_names:
                 srv.SCORES.pop(flood_name.lower(), None)
 
+        # --- 6. a pre-token account cannot be claimed with a new token -----
+        # #647: progress but no stored hash means an offered token has nothing
+        # to match, so accepting it would make the caller the owner. The login
+        # must fail closed and must not bind the token it was handed.
+        legacy = srv.Player(ws=FakeWS(), id=92200, name="", logged_in=False)
+        await srv.cmd_login(legacy, {"name": "LegacyOwner"})
+        assert legacy.logged_in, "fresh tokenless login must still work"
+        legacy_entry = srv.get_score_entry("LegacyOwner")
+        assert legacy_entry.get("starting_purse_claimed") is True
+        assert not legacy_entry.get("auth_token")
+        unplayer(legacy)
+        srv.name_owners.pop("legacyowner", None)
+
+        claimer = srv.Player(ws=FakeWS(), id=92201, name="", logged_in=False)
+        INBOX.clear()
+        await srv.cmd_login(claimer, {"name": "LegacyOwner", "token": "attacker-owned"})
+        assert not claimer.logged_in, "legacy account was claimed by a new token"
+        assert any(m.get("type") == "error" for m in INBOX), INBOX
+        assert not srv.SCORES["legacyowner"].get(
+            "auth_token"
+        ), "rejected login bound the offered token"
+        unplayer(claimer)
+
+        # The operator lever restores the old claim path deliberately.
+        old_claim = srv.ALLOW_LEGACY_TOKEN_CLAIM
+        try:
+            srv.ALLOW_LEGACY_TOKEN_CLAIM = True
+            operator_claim = srv.Player(ws=FakeWS(), id=92202, name="", logged_in=False)
+            INBOX.clear()
+            await srv.cmd_login(
+                operator_claim, {"name": "LegacyOwner", "token": "operator-approved"}
+            )
+            assert operator_claim.logged_in, "operator opt-in must allow the claim"
+            assert (
+                srv.SCORES["legacyowner"]["auth_token"]
+                == srv.hashlib.sha256(b"operator-approved").hexdigest()
+            )
+            unplayer(operator_claim)
+        finally:
+            srv.ALLOW_LEGACY_TOKEN_CLAIM = old_claim
+            srv.name_owners.pop("legacyowner", None)
+            drop_entry("LegacyOwner")
+
         print("SECURITY_NAME_BOUNDS_OK")
     finally:
         srv.send = real_send

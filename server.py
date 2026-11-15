@@ -220,6 +220,13 @@ OUTBOUND_QUEUE_MAX = _env_int("TEXTMMO_OUTBOUND_QUEUE", 64)
 AUTH_TOKEN_REQUIRED = str(
     os.environ.get("TEXTMMO_REQUIRE_TOKEN", "")
 ).strip().lower() in ("1", "true", "yes", "on")
+# An account that predates token binding has progress but no stored hash, so an
+# offered token has nothing to be compared against and proves nothing. The
+# default refuses the login; a server that never issued tokens can restore the
+# old claim path deliberately (#647).
+ALLOW_LEGACY_TOKEN_CLAIM = str(
+    os.environ.get("TEXTMMO_ALLOW_LEGACY_TOKEN_CLAIM", "")
+).strip().lower() in ("1", "true", "yes", "on")
 SNAPSHOT_REFRESH_SECONDS = 1.0
 TASK_RESTART_DELAY = 2.0
 
@@ -4781,6 +4788,21 @@ async def cmd_login(player, msg):
                 {
                     "type": "error",
                     "text": f"The name '{name}' is protected by a token. Login rejected.",
+                },
+            )
+            return
+        if has_progress and not ALLOW_LEGACY_TOKEN_CLAIM:
+            # The account predates token binding, so the offered token cannot
+            # be verified and binding it would hand the account to the first
+            # caller (#647). Fail closed; only the operator can recover it.
+            await send(
+                player,
+                {
+                    "type": "error",
+                    "text": (
+                        f"The name '{name}' predates token protection and cannot "
+                        "be claimed with a new token. Contact the server operator."
+                    ),
                 },
             )
             return
