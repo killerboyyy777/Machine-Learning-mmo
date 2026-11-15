@@ -52,6 +52,7 @@ jobs:
       - run: python tests/test_mcp_client.py
       - run: python tests/test_modes.py
       - run: python tests/test_mode_seam.py
+      - run: python tests/test_arena_match.py
 
   live:
     name: Live protocol + ML env (fresh server, seed 700)

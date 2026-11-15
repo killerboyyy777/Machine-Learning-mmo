@@ -2824,6 +2824,10 @@ class Player:
     # serialises Player, so neither reaches clients or scores.json.
     mode: object = None
     mode_store: dict = field(default_factory=dict)
+    # Arena match this session is fighting in (#652), 0 when not in one.
+    # Session-scoped like mode: a match never outlives the connection.
+    arena_match: int = 0
+    arena_team: int = 0
 
     def __post_init__(self):
         if self.outbound_event is None:
@@ -2931,7 +2935,11 @@ def mode_room_ok(room_id):
     the static world. A plain membership test would bounce a mode's own room
     back to the lobby, so instances count when they are live.
     """
-    return room_id in ROOMS or dungeon_for_room(room_id) is not None
+    return (
+        room_id in ROOMS
+        or dungeon_for_room(room_id) is not None
+        or match_for_room(room_id) is not None
+    )
 
 
 def _mode_call(player, hook, fn, default=None):
@@ -3032,6 +3040,11 @@ async def _flee_dungeon(player, d):
 async def cmd_flee(player, msg):
     """Emergency escape from hostile rooms."""
     room_id = player.room
+    # A match owns the answer before the world does: the pit has no exits, so
+    # "no hostiles here" or a danger check would only mislead.
+    if match_for_room(room_id):
+        await send(player, {"type": "error", "text": "There is no way out!"})
+        return
     hostiles = [n for n in npcs_in_room(room_id) if n.get("hostile")]
     if not hostiles:
         await send(
@@ -4259,6 +4272,9 @@ def room_view(room_id):
     d = dungeon_for_room(room_id)
     if d:
         return dungeon_room_view(room_id, d)
+    match = match_for_room(room_id)
+    if match:
+        return arena_room_view(match)
     room = ROOMS[room_id]
     return {
         "type": "room",
@@ -5095,6 +5111,15 @@ async def cmd_move(player, msg):
     if d:
         await _dungeon_move_or_fail(player, d, direction)
         return
+    if match_for_room(player.room):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "The arena has no exits; 'arena leave' forfeits.",
+            },
+        )
+        return
     room_data = ROOMS.get(player.room)
     if room_data is None:
         await send(
@@ -5153,6 +5178,10 @@ async def cmd_attack(player, msg):
     target_name = msg.get("target", "")
     npc = find_npc_in_room(player.room, target_name)
     if not npc:
+        # Inside a match the target may be a player; the arena owns that path
+        # and says so, so a team-mate refusal does not read as "no such name".
+        if await arena_attack(player, target_name):
+            return
         await send(
             player, {"type": "error", "text": f"No '{target_name}' here to attack."}
         )
@@ -11148,6 +11177,476 @@ async def handle_gm_connection(ws):
             pass
 
 
+# ---------------------------------------------------------------------------
+# Arena: queues, matches, PvP (#652)
+# ---------------------------------------------------------------------------
+# A match owns one instanced room, the way a dungeon owns d_<id>_f<n>: the id
+# is not a ROOMS key, so the world map, its NPCs, ml_env's ROOM_LIST, the
+# dashboard snapshot and every ROOMS-keyed helper never see it. Teams are a
+# scoring axis, not a place -- both sides share the pit, so target lookup, the
+# room view and the gear maths work unchanged.
+ARENA_TICK_SECONDS = 1.0
+ARENA_COUNTDOWN_SECONDS = 5.0
+ARENA_ROUND_SECONDS = 90.0
+ARENA_ROUND_PAUSE_SECONDS = 3.0
+ARENA_ROUNDS_TO_WIN = 2
+ARENA_MAX_ROUNDS = 3
+ARENA_TEAM_SIZES = (1, 2)
+ARENA_QUEUE_MODES = {"1v1": 1, "2v2": 2}
+# A match moves no value: no loot, no gold, no gear, no potions. Refusing the
+# world verbs at dispatch is what keeps that true by construction instead of
+# by every handler remembering to check.
+ARENA_BLOCKED_COMMANDS = frozenset(
+    {
+        "take",
+        "drop",
+        "gather",
+        "buy",
+        "sell",
+        "craft",
+        "quest",
+        "freight",
+        "rest",
+        "heal",
+        "use",
+        "market_post",
+        "market_cancel",
+        "market_buy",
+        "market_expand",
+        "market_buy_order",
+        "market_buy_modify",
+        "commission_post",
+        "commission_fill",
+        "commission_cancel",
+        "guild",
+        "intel",
+    }
+)
+
+ARENA_MATCHES = {}
+ARENA_QUEUES = {size: [] for size in ARENA_TEAM_SIZES}
+
+
+def match_for_room(room_id):
+    """The match that owns this arena room, or None (cf. dungeon_for_room)."""
+    if isinstance(room_id, str) and room_id.startswith("a_"):
+        try:
+            return ARENA_MATCHES.get(int(room_id[2:]))
+        except ValueError:
+            return None
+    return None
+
+
+def match_for_player(player):
+    match_id = getattr(player, "arena_match", 0)
+    return ARENA_MATCHES.get(match_id) if match_id else None
+
+
+def arena_queued_size(player):
+    for size, entries in ARENA_QUEUES.items():
+        if player.id in entries:
+            return size
+    return 0
+
+
+class ArenaMatch:
+    def __init__(self, team_size):
+        self.id = next(_id_counter)
+        self.team_size = team_size
+        # pid -> {name, team, entry_room, entry_hp}; entry_room is where the
+        # match found this session, restored on the way out.
+        self.players = {}
+        self.scores = {1: 0, 2: 0}
+        self.round = 0
+        self.state = "countdown"
+        self.timer = time.time() + ARENA_COUNTDOWN_SECONDS
+
+    @property
+    def room_id(self):
+        return f"a_{self.id}"
+
+    def team_of(self, pid):
+        rec = self.players.get(pid)
+        return rec["team"] if rec else 0
+
+    def names(self, team=None):
+        return [
+            rec["name"]
+            for rec in self.players.values()
+            if team is None or rec["team"] == team
+        ]
+
+
+def _arena_live(match):
+    """Players still connected to this match, with their roster rows."""
+    live = []
+    for pid, rec in match.players.items():
+        player = players.get(pid)
+        if player is not None and player.logged_in:
+            live.append((player, rec))
+    return live
+
+
+async def _arena_send(match, text):
+    await broadcast_room(match.room_id, {"type": "message", "text": text})
+
+
+def arena_room_view(match):
+    return {
+        "type": "room",
+        "id": match.room_id,
+        "name": "The Arena",
+        "description": "Sanded stone, four walls, the gate shut.",
+        "exits": {},
+        "npcs": [],
+        "items": [],
+        "gold": 0,
+        "players": [p.name for p in players_in_room(match.room_id)],
+        "is_dungeon": False,
+        "dungeon_floor": 0,
+        "party_size": 0,
+        "shelter": True,
+        "wild": False,
+        "gatherables": [],
+        "arena": {
+            "match_id": match.id,
+            "team_size": match.team_size,
+            "state": match.state,
+            "round": match.round,
+            "rounds_to_win": ARENA_ROUNDS_TO_WIN,
+            "scores": {"team1": match.scores[1], "team2": match.scores[2]},
+            "teams": {"team1": match.names(1), "team2": match.names(2)},
+            "hp": {p.name: p.hp for p, _ in _arena_live(match)},
+        },
+    }
+
+
+async def _arena_place(player, match):
+    rec = match.players[player.id]
+    if rec["entry_room"] is None:
+        rec["entry_room"] = player.room
+        rec["entry_hp"] = max(1, player.hp)
+    remove_member(player)
+    player.room = match.room_id
+    player.arena_match = match.id
+    player.arena_team = rec["team"]
+    add_member(player)
+    await send(player, room_view(match.room_id))
+    await send(player, stats_view(player))
+
+
+async def _arena_restore(player, rec):
+    """Put a fighter back where the match found them."""
+    player.arena_match = 0
+    player.arena_team = 0
+    player.hp = min(player.max_hp, max(1, rec.get("entry_hp") or player.max_hp))
+    remove_member(player)
+    room = rec.get("entry_room")
+    player.room = room if mode_room_ok(room) else START_ROOM
+    add_member(player)
+    await send(player, room_view(player.room))
+    await send(player, stats_view(player))
+
+
+def _end_match(match):
+    """Drop the match and its room.
+
+    Nothing to sweep: an arena holds no loot, no floor gold and no NPCs, so
+    teardown cannot leak value into the world.
+    """
+    ARENA_MATCHES.pop(match.id, None)
+
+
+async def _arena_begin_round(match):
+    match.round += 1
+    match.state = "fighting"
+    match.timer = time.time() + ARENA_ROUND_SECONDS
+    for player, _ in _arena_live(match):
+        player.hp = player.max_hp
+    await _arena_send(
+        match,
+        f"Round {match.round}: {', '.join(match.names(1))} vs "
+        f"{', '.join(match.names(2))}. First to {ARENA_ROUNDS_TO_WIN} rounds.",
+    )
+    for player, _ in _arena_live(match):
+        await send(player, room_view(match.room_id))
+        await send(player, stats_view(player))
+
+
+def _arena_hp_leader(match):
+    totals = {1: 0, 2: 0}
+    for player, rec in _arena_live(match):
+        totals[rec["team"]] += max(0, player.hp)
+    if totals[1] == totals[2]:
+        return 0
+    return 1 if totals[1] > totals[2] else 2
+
+
+def _arena_winner(match):
+    if match.scores[1] == match.scores[2]:
+        return 0
+    return 1 if match.scores[1] > match.scores[2] else 2
+
+
+async def _arena_end_round(match, winner_team, reason):
+    match.state = "pause"
+    match.timer = time.time() + ARENA_ROUND_PAUSE_SECONDS
+    if winner_team:
+        match.scores[winner_team] += 1
+    line = f"{reason} Score {match.scores[1]}-{match.scores[2]}."
+    await _arena_send(match, line)
+    for player, _ in _arena_live(match):
+        await send(player, {"type": "message", "text": line})
+        await send(player, stats_view(player))
+
+
+async def _arena_finish(match, winner_team, reason):
+    if winner_team:
+        line = f"{reason} Team {winner_team} wins {match.scores[1]}-{match.scores[2]}."
+    else:
+        line = f"{reason} Draw at {match.scores[1]}-{match.scores[2]}."
+    await _arena_send(match, line)
+    _end_match(match)
+    for player, rec in _arena_live(match):
+        await send(player, {"type": "message", "text": line})
+        await _arena_restore(player, rec)
+
+
+async def _arena_tick_match(match, now):
+    if not _arena_live(match):
+        _end_match(match)
+        return
+    if now < match.timer:
+        return
+    if match.state == "countdown":
+        await _arena_begin_round(match)
+        return
+    if match.state == "fighting":
+        await _arena_end_round(match, _arena_hp_leader(match), "Time expires.")
+        return
+    if match.state == "pause":
+        decided = max(match.scores.values()) >= ARENA_ROUNDS_TO_WIN
+        if decided or match.round >= ARENA_MAX_ROUNDS:
+            await _arena_finish(match, _arena_winner(match), "The match is over.")
+        else:
+            await _arena_begin_round(match)
+
+
+async def arena_loop():
+    """Match clock: round timers, teardown and pairing, once per second.
+
+    Kept off npc_ai_loop because a round clock has to outpace the 3s NPC
+    heartbeat, and isolated per match so one bad match cannot stall the rest.
+    """
+    while True:
+        now = time.time()
+        for match in list(ARENA_MATCHES.values()):
+            try:
+                await _arena_tick_match(match, now)
+            except Exception as e:  # noqa: BLE001 - one match, not the clock
+                print(
+                    f"[arena] match {match.id} tick failed: {type(e).__name__}: {e}",
+                    flush=True,
+                )
+        try:
+            for team_size in ARENA_TEAM_SIZES:
+                await _arena_try_pair(team_size)
+        except Exception as e:  # noqa: BLE001 - pairing must not end the clock
+            print(f"[arena] pairing failed: {type(e).__name__}: {e}", flush=True)
+        await asyncio.sleep(ARENA_TICK_SECONDS)
+
+
+def _arena_prune_queue(team_size):
+    entries = ARENA_QUEUES[team_size]
+    live = []
+    for pid in entries:
+        player = players.get(pid)
+        if player is None or not player.logged_in or match_for_player(player):
+            continue
+        if pid not in live:
+            live.append(pid)
+    entries[:] = live
+    return entries
+
+
+async def _arena_start(team_size, pids):
+    match = ArenaMatch(team_size)
+    for index, pid in enumerate(pids):
+        player = players[pid]
+        match.players[pid] = {
+            "name": player.name,
+            "team": 1 if index < team_size else 2,
+            "entry_room": None,
+            "entry_hp": None,
+        }
+    ARENA_MATCHES[match.id] = match
+    for pid in pids:
+        await _arena_place(players[pid], match)
+    match.timer = time.time() + ARENA_COUNTDOWN_SECONDS
+    await _arena_send(
+        match,
+        f"Match {match.id} ({team_size}v{team_size}): "
+        f"{', '.join(match.names(1))} vs {', '.join(match.names(2))}. "
+        f"Round 1 in {int(ARENA_COUNTDOWN_SECONDS)}s.",
+    )
+
+
+async def _arena_try_pair(team_size):
+    entries = _arena_prune_queue(team_size)
+    need = team_size * 2
+    while len(entries) >= need:
+        pids = entries[:need]
+        del entries[:need]
+        await _arena_start(team_size, pids)
+    return entries
+
+
+async def arena_attack(player, target_name):
+    """Resolve a PvP attack inside a match.
+
+    Returns True when the arena owned the command, so cmd_attack can tell a
+    refused arena target (team-mate, round not live) from a name that is
+    simply not here.
+    """
+    match = match_for_player(player)
+    if match is None:
+        return False
+    if match.state != "fighting" or player.hp <= 0:
+        await send(player, {"type": "error", "text": "You are not fighting yet."})
+        return True
+    target = find_player_in_room(match.room_id, target_name)
+    if target is None or target.id not in match.players:
+        return False
+    if match.team_of(target.id) == match.team_of(player.id):
+        await send(
+            player, {"type": "error", "text": f"{target.name} is your team-mate."}
+        )
+        return True
+    dmg = max(1, random.randint(1, player.attack) - _player_defense(target))
+    target.hp -= dmg
+    await send(player, {"type": "combat", "text": f"You hit {target.name} for {dmg}."})
+    await broadcast_room(
+        match.room_id,
+        {"type": "combat", "text": f"{player.name} hits {target.name} for {dmg}."},
+        exclude=player,
+    )
+    await send(target, stats_view(target))
+    if target.hp <= 0:
+        target.hp = 0
+        await _arena_end_round(
+            match, match.team_of(player.id), f"{target.name} is down."
+        )
+    return True
+
+
+async def _arena_forfeit(match, player, reason):
+    team = match.team_of(player.id)
+    winner = 2 if team == 1 else (1 if team == 2 else 0)
+    rec = match.players.pop(player.id, None)
+    await _arena_send(match, f"{player.name} {reason}.")
+    if rec is not None:
+        await _arena_restore(player, rec)
+    if not _arena_live(match):
+        _end_match(match)
+        return
+    await _arena_finish(match, winner, f"Match {match.id}: {player.name} {reason}.")
+
+
+async def arena_on_disconnect(player):
+    """A leaving session never keeps a queue entry or a half-owned match."""
+    for entries in ARENA_QUEUES.values():
+        while player.id in entries:
+            entries.remove(player.id)
+    match = match_for_player(player)
+    if match is None:
+        player.arena_match = 0
+        player.arena_team = 0
+        return
+    team = match.team_of(player.id)
+    winner = 2 if team == 1 else (1 if team == 2 else 0)
+    match.players.pop(player.id, None)
+    player.arena_match = 0
+    player.arena_team = 0
+    if not _arena_live(match):
+        _end_match(match)
+        return
+    await _arena_finish(match, winner, f"Match {match.id}: {player.name} disconnects.")
+
+
+async def cmd_arena(player, msg):
+    action = str(msg.get("action") or msg.get("sub") or "status").lower()
+    match = match_for_player(player)
+    if action == "enter":
+        mode = str(msg.get("mode") or "1v1").lower()
+        team_size = ARENA_QUEUE_MODES.get(mode)
+        if team_size is None:
+            await send(
+                player, {"type": "error", "text": "Arena mode is '1v1' or '2v2'."}
+            )
+            return
+        if match is not None:
+            await send(player, {"type": "error", "text": "You are already in a match."})
+            return
+        if arena_queued_size(player):
+            await send(player, {"type": "error", "text": "You are already queued."})
+            return
+        ARENA_QUEUES[team_size].append(player.id)
+        entries = _arena_prune_queue(team_size)
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": f"You queue for {mode} ({len(entries)} waiting).",
+            },
+        )
+        await _arena_try_pair(team_size)
+        return
+    if action == "leave":
+        size = arena_queued_size(player)
+        if size:
+            ARENA_QUEUES[size].remove(player.id)
+            await send(
+                player, {"type": "message", "text": "You leave the arena queue."}
+            )
+            return
+        if match is not None:
+            await _arena_forfeit(match, player, "leaves the arena")
+            return
+        await send(
+            player, {"type": "error", "text": "You are not queued or in a match."}
+        )
+        return
+    if action == "status":
+        payload = {
+            "type": "arena",
+            "in_match": match is not None,
+            "queues": {
+                f"{s}v{s}": len(_arena_prune_queue(s)) for s in ARENA_TEAM_SIZES
+            },
+        }
+        size = arena_queued_size(player)
+        payload["queued"] = f"{size}v{size}" if size else None
+        if match is not None:
+            payload.update(
+                {
+                    "match_id": match.id,
+                    "state": match.state,
+                    "round": match.round,
+                    "scores": {
+                        "team1": match.scores[1],
+                        "team2": match.scores[2],
+                    },
+                    "team": match.team_of(player.id),
+                    "teams": {"team1": match.names(1), "team2": match.names(2)},
+                }
+            )
+        await send(player, payload)
+        return
+    await send(
+        player, {"type": "error", "text": "Arena actions: enter, leave, status."}
+    )
+
+
 HANDLERS = {
     "login": cmd_login,
     "look": cmd_look,
@@ -11189,6 +11688,7 @@ HANDLERS = {
     "guild": cmd_guild,
     "intel": cmd_intel,
     "freight": cmd_freight,
+    "arena": cmd_arena,
 }
 
 SCORE_ARG_EXTRACTORS = {
@@ -13112,6 +13612,14 @@ async def handle_connection(ws):
                     player, {"type": "error", "text": f"Unknown command '{cmd}'."}
                 )
                 continue
+            # A match owns what a session may do: world verbs would either
+            # crash on an instanced room or move value in or out of the pit.
+            if player.arena_match and cmd in ARENA_BLOCKED_COMMANDS:
+                await send(
+                    player,
+                    {"type": "error", "text": f"You cannot '{cmd}' during a match."},
+                )
+                continue
             try:
                 log_command(player.name, cmd, msg)
                 if player.logged_in and cmd in SCORE_ARG_EXTRACTORS:
@@ -13161,6 +13669,7 @@ async def handle_connection(ws):
                     {"type": "message", "text": f"{player.name} disappears."},
                 )
                 remove_member(player)
+                await arena_on_disconnect(player)
                 if dungeon_for_room(player.room):
                     player.room = DUNGEON_ENTRANCE_ROOM
                 if name_owners.get(player.name.lower()) == pid:
@@ -13260,6 +13769,7 @@ async def main():
                 asyncio.create_task(
                     _run_resilient("dashboard_snapshot", dashboard_refresh_loop)
                 ),
+                asyncio.create_task(_run_resilient("arena", arena_loop)),
             ]
         )
         try:
