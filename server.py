@@ -25,6 +25,8 @@ from os.path import abspath, dirname, join
 
 import websockets
 
+from ml.modes import BaseMode, ModeContext, isolate
+
 WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
 SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
 COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
@@ -2537,6 +2539,9 @@ async def apply_death_penalty(player, gold_lost=0):
             "reason": "died",
         },
     )
+    # The mode seam scores the same death on its own ledger, so it needs the
+    # number the engine actually applied rather than recomputing it.
+    return penalty
 
 
 # ---------------------------------------------------------------------------
@@ -2814,6 +2819,11 @@ class Player:
     outbound_event: object = None
     last_damage_ts: float = 0.0
     last_regen_ts: float = 0.0
+    # Game-mode seam (#66): the ruleset this session runs under and its
+    # private ledger. Session-scoped like room and party_id -- nothing
+    # serialises Player, so neither reaches clients or scores.json.
+    mode: object = None
+    mode_store: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.outbound_event is None:
@@ -2855,6 +2865,152 @@ def remove_member(player):
         lst = players_by_name.get(player.name.lower(), [])
         if player in lst:
             lst.remove(player)
+
+
+# --- Game modes (#474, #66) ------------------------------------------------
+# The engine owns transport, the world sim and persistence; a mode owns one
+# ruleset layered on top and sees the engine only through ModeContext. Every
+# BaseMode hook is passthrough, so calling all of them changes nothing until a
+# mode overrides one -- which is what makes this seam provable by parity.
+DEFAULT_MODE = BaseMode()
+_MODE_WORLD_VIEW = None
+
+
+def _mode_world_view():
+    """Frozen room facts a mode may read, built once.
+
+    Room topology is fixed after load (instanced rooms live outside ROOMS).
+    The contract owns freezing, so build one context and keep its world view:
+    re-freezing 43 rooms per tick per player would be pure churn.
+    """
+    global _MODE_WORLD_VIEW
+    if _MODE_WORLD_VIEW is None:
+        _MODE_WORLD_VIEW = ModeContext(
+            world={
+                "start_room": START_ROOM,
+                "rooms": {
+                    rid: {
+                        "name": room.get("name", rid),
+                        "wild": bool(room.get("wild", False)),
+                        "shelter": bool(room.get("shelter", False)),
+                        "exits": dict(room.get("exits") or {}),
+                    }
+                    for rid, room in ROOMS.items()
+                },
+            },
+            mode_state={},
+        ).world
+    return _MODE_WORLD_VIEW
+
+
+def player_mode(player):
+    """The ruleset this player runs under; base mode until one claims them."""
+    return getattr(player, "mode", None) or DEFAULT_MODE
+
+
+def mode_context(player, mode=None):
+    """This session's mode context, with its ledger seeded once.
+
+    A mode seeds its ledger through initial_state(); the store is keyed by
+    mode name, so "key absent" is the fresh signal and an emptied ledger
+    stays emptied instead of being re-seeded under the mode's feet.
+    """
+    mode = mode or player_mode(player)
+    fresh = mode.name not in player.mode_store
+    ledger = isolate(player.mode_store, mode.name)
+    if fresh:
+        ledger.update(mode.initial_state())
+    return ModeContext(world=_mode_world_view(), mode_state=ledger)
+
+
+def mode_room_ok(room_id):
+    """Can a mode place a session in this room?
+
+    Static rooms live in ROOMS; instanced ones (dungeons today, arena match
+    rooms next) deliberately do not, because ml/ml_env enumerates ROOMS as
+    the static world. A plain membership test would bounce a mode's own room
+    back to the lobby, so instances count when they are live.
+    """
+    return room_id in ROOMS or dungeon_for_room(room_id) is not None
+
+
+def _mode_call(player, hook, fn, default=None):
+    """Run one mode hook; a broken mode must not take the engine with it.
+
+    The seam is the boundary where untrusted ruleset code meets the world.
+    A raising hook would otherwise escape into npc_ai_loop -- the same loop
+    that regenerates HP, respawns NPCs and prunes the market -- and take the
+    tick away from every other player. Contained here, a bad mode costs its
+    own character one hook and leaves a line naming mode, hook and player.
+    """
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001 - a bad mode must not end the tick
+        print(
+            f"[modes] {player_mode(player).name} {hook} failed"
+            f" for {player.name}: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return default
+
+
+def mode_on_login(player):
+    def run():
+        mode = player_mode(player)
+        return mode.on_login(mode_context(player, mode), player.name)
+
+    return _mode_call(player, "on_login", run)
+
+
+def mode_on_respawn(player):
+    def run():
+        mode = player_mode(player)
+        return mode.on_respawn(mode_context(player, mode), player.name)
+
+    return _mode_call(player, "on_respawn", run)
+
+
+def mode_award_kill(player, victim, points, xp):
+    """Score a kill on the mode's ledger, never on the engine's score entry."""
+
+    def run():
+        mode = player_mode(player)
+        ctx = mode_context(player, mode)
+        m_points, m_xp = mode.score_kill(ctx, player.name, victim, points, xp)
+        # Engine totals go in their own sub-dict: a mode may call a key
+        # "score" or "points" and still never see the engine write to it.
+        # Awarding nothing writes nothing, so a passthrough mode leaves an
+        # empty ledger rather than rows of zeros.
+        if m_points or m_xp:
+            engine = ctx.mode_state.setdefault("_engine", {})
+            engine["points"] = engine.get("points", 0.0) + float(m_points or 0.0)
+            engine["xp"] = engine.get("xp", 0.0) + float(m_xp or 0.0)
+        mode.on_kill(ctx, player.name, victim)
+
+    _mode_call(player, "score_kill", run)
+
+
+def mode_note_death(player, base_penalty):
+    """Mode-side death cost and side effects, alongside apply_death_penalty."""
+
+    def run():
+        mode = player_mode(player)
+        ctx = mode_context(player, mode)
+        penalty = mode.score_death(ctx, player.name, base_penalty)
+        if penalty:
+            engine = ctx.mode_state.setdefault("_engine", {})
+            engine["penalty"] = engine.get("penalty", 0.0) + float(penalty)
+        mode.on_death(ctx, player.name)
+
+    _mode_call(player, "score_death", run)
+
+
+def mode_tick(player):
+    def run():
+        mode = player_mode(player)
+        mode.on_tick(mode_context(player, mode), player.name)
+
+    _mode_call(player, "on_tick", run)
 
 
 async def cmd_flee(player, msg):
@@ -4340,9 +4496,12 @@ async def respawn_player(player):
 
     _freight_release_on_death(player, death_room)
 
-    await apply_death_penalty(
+    penalty = await apply_death_penalty(
         player, dropped + lost + _sheltered_gold(player.name) + item_value
     )
+    # Same death, same number: the mode scores what the engine actually
+    # applied rather than a recomputation that could drift from it.
+    mode_note_death(player, penalty)
 
     # XP loss (#334): percentual of total XP, no cap, natural de-level.
     entry = get_score_entry(player.name)
@@ -4352,8 +4511,9 @@ async def respawn_player(player):
     if dungeon_for_room(death_room):
         _stamp_dungeon_death(player)
     sync_player_level(player)
+    spawn = mode_on_respawn(player)
     remove_member(player)
-    player.room = START_ROOM
+    player.room = spawn if mode_room_ok(spawn) else START_ROOM
     add_member(player)
     await _return_companion_with_owner(player)
     text = "You died and wake up back in Town Square."
@@ -4834,7 +4994,11 @@ async def cmd_login(player, msg):
         )
     player.name = name
     player.logged_in = True
-    player.room = dest
+    # A mode claims the session here; base mode claims nothing, so room
+    # placement stays exactly the lobbyless world behaviour it had (#66).
+    player.mode = DEFAULT_MODE
+    spawn = mode_on_login(player)
+    player.room = spawn if mode_room_ok(spawn) else dest
     if banked:
         # The bank can hold more than one pack (fills while pack-full keep
         # landing there), so hand over what fits and leave the rest banked;
@@ -5071,6 +5235,7 @@ async def cmd_attack(player, msg):
             num_contributors - 1, TEAMWORK_BONUS_CAP_CONTRIBUTORS
         )
         pool = (npc["max_hp"] * 0.5 + npc["attack"] * 3) * teamwork_multiplier
+        killer_award = (0.0, 0.0)
         for cname, dmg_dealt in contributors.items():
             share = dmg_dealt / total_dmg
             pts = pool * share
@@ -5091,8 +5256,14 @@ async def cmd_attack(player, msg):
                     reason += " (narrow victory)"
             else:
                 reason = f"helped defeat {npc['name']}"
+            # The killer's row is what the mode rescores, whatever branch
+            # decided it: a quest-NPC kill is a -0.5 award the mode must see
+            # as -0.5 rather than as a zero it can scale up.
+            if cname == player.name:
+                killer_award = (pts, xp)
             await award_points_to_name(cname, pts, reason)
             await award_xp(cname, xp, reason)
+        mode_award_kill(player, npc["name"], *killer_award)
         team_note = (
             ""
             if num_contributors <= 1
@@ -12792,6 +12963,11 @@ async def npc_ai_loop():
                                     "text": f"You feel revitalized and recover {player.hp - old_hp} HP.",
                                 },
                             )
+        # Mode tick rides the same heartbeat as the world: every logged-in
+        # session, every NPC_TICK_SECONDS, whether or not it is in combat.
+        for player in list(players.values()):
+            if player.logged_in:
+                mode_tick(player)
         for node in list(gather_nodes.values()):
             if (
                 not node["available"]

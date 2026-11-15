@@ -6,11 +6,20 @@ and its own scoring. Modes never mutate engine state directly -- each
 mode gets an isolated dict inside ModeContext.mode_state, keyed by mode
 name, and a read-only view of the world. Per-mode scores live in that
 isolated dict, never in the engine's score entries, so experimental
-rulesets cannot pollute the main leaderboard.
+rulesets cannot pollute the main leaderboard. The engine keeps its own
+kill and death totals in the ledger's ``_engine`` sub-dict rather than in
+the top-level names, so no key a mode chose can be written by the engine.
 
-Wiring into the tick loop / command handlers is a follow-up; this
-module defines the contract and the registry so modes load today and
-the engine can call them tomorrow without renegotiating the API.
+Wiring lives in server.py: login, respawn, kill award and the NPC tick all
+ask the mode, and every hook is passthrough by default, so the open world
+behaves exactly as it did before a mode overrides one. The ledger is per
+session -- the engine does not persist it across a reconnect yet -- so a
+mode must treat it as turn state, not durable storage.
+
+The engine contains hook failures: a raising hook is logged with mode, hook
+and character, and the engine carries on as if the hook had returned its
+default. A mode is therefore never able to break another player's tick, and
+never able to break the server into a restart loop either.
 """
 
 from collections.abc import Mapping
@@ -20,6 +29,10 @@ from types import MappingProxyType
 
 def _freeze(value):
     """Recursive read-only view of engine-owned JSON-ish data."""
+    # Already frozen: the engine caches the world view and hands the same
+    # proxy to every hook, so re-walking it per call would be pure churn.
+    if isinstance(value, MappingProxyType):
+        return value
     if isinstance(value, Mapping):
         return MappingProxyType({k: _freeze(v) for k, v in value.items()})
     if isinstance(value, (list, tuple)):
@@ -31,9 +44,23 @@ def _freeze(value):
 class ModeContext:
     """What a mode may see and touch during a hook call.
 
-    world is read-only (room ids, npc rosters supplied by the engine);
-    mode_state is this mode's private ledger, persisted by the engine
-    under the mode's name but never interpreted by it.
+    world is read-only static topology: ``start_room`` plus ``rooms``, each
+    room carrying id-keyed ``name``, ``wild``, ``shelter`` and ``exits``.
+    It is frozen once at load and never rebuilt, which is why it holds no
+    npc rosters or live room state -- those mutate every tick, and a view
+    frozen at load would quietly report the world as it was, not as it is.
+
+    mode_state is this mode's private ledger, keyed by mode name and never
+    interpreted by the engine. It belongs to the session, not a save file:
+    a reconnect starts it empty, so treat it as turn state. It is seeded
+    from initial_state() on first use and not re-seeded afterwards.
+
+    The one reserved key is ``_engine``, an engine-owned sub-dict holding
+    ``points``, ``xp`` and ``penalty`` -- the running totals of whatever the
+    engine itself credited for kills and charged for deaths. Everything else
+    in the ledger belongs to the mode, including names the engine uses for
+    its own fields elsewhere; a mode may keep a ``score`` key without the
+    engine ever writing to it.
     """
 
     world: Mapping = field(default_factory=dict)
@@ -115,11 +142,23 @@ class BaseMode:
         """Per engine tick; return None. Used for timed mode rules."""
 
     def score_kill(self, ctx, killer, victim, base_points, base_xp):
-        """Per-mode award for a kill. Returns (points, xp) for the LEDGER."""
+        """Per-mode award for a kill. Returns (points, xp) for the LEDGER.
+
+        base_points/base_xp are the engine's row for this kill before the
+        variety and diminishing-returns multipliers are applied, so a mode
+        that scales them is scaling the raw award, not the credited one.
+        A non-zero return is accumulated into ledger["_engine"]; the mode
+        does its own bookkeeping in ctx.mode_state.
+        """
         return 0.0, 0.0
 
     def score_death(self, ctx, character, base_penalty):
-        """Per-mode death cost. Returns the ledger penalty."""
+        """Per-mode death cost. Returns the ledger penalty.
+
+        base_penalty is the penalty the engine actually applied, already
+        including the wealth term. A non-zero return is accumulated into
+        ledger["_engine"]["penalty"].
+        """
         return 0.0
 
     def on_kill(self, ctx, killer, victim):
