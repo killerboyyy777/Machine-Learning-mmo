@@ -2701,7 +2701,17 @@ function renderArena(a) {
 async function arenaFollowTick(id) {
   try {
     const res = await fetch(`/api/arena/${encodeURIComponent(id)}`);
-    if (!res.ok) throw new Error(res.status);
+    if (res.status === 404) {
+      // A finished match never comes back: stop the loop that outlived it.
+      arenaFollowStop();
+      $("arenaFollowStatus").textContent = `match #${id} has ended`;
+      setHTML("arenaFollow", "");
+      return;
+    }
+    if (!res.ok) {
+      $("arenaFollowStatus").textContent = `match #${id} busy; retrying`;
+      return;
+    }
     const v = await res.json();
     const teams = v.teams || {team1: [], team2: []};
     const line = t => (t || []).map(p => `${p.name} ${p.hp}hp (${p.rating})`).join(", ");
@@ -2709,8 +2719,8 @@ async function arenaFollowTick(id) {
     const events = (v.events || []).slice().reverse().map(e => esc(e)).join("<br>");
     setHTML("arenaFollow", `<div class="dim">${esc(line(teams.team1))} vs ${esc(line(teams.team2))}</div><div class="dim" style="margin-top:6px">${events}</div>`);
   } catch (e) {
-    $("arenaFollowStatus").textContent = `no live match #${id}`;
-    setHTML("arenaFollow", "");
+    // Network hiccup or a 5xx: keep the timer, the next tick may land.
+    $("arenaFollowStatus").textContent = `match #${id} unreachable; retrying`;
   }
 }
 

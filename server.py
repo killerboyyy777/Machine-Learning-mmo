@@ -11520,6 +11520,9 @@ ARENA_QUEUE_MODES = {"1v1": 1, "2v2": 2}
 # an unbounded audience would let a crowd of idle sessions pin every message.
 ARENA_SPECTATOR_MAX = 8
 ARENA_SPECTATOR_EVENTS = 12
+# Sub-actions a watcher keeps: reading, plus the two ways out. Everything
+# else would put them in a queue while still attached to a pit.
+ARENA_SPECTATOR_ACTIONS = frozenset({"status", "ladder", "watch", "unwatch", "leave"})
 # A match moves no value: no loot, no gold, no gear, no potions. Refusing the
 # world verbs at dispatch is what keeps that true by construction instead of
 # by every handler remembering to check.
@@ -12023,6 +12026,18 @@ async def arena_on_disconnect(player):
 async def cmd_arena(player, msg):
     action = str(msg.get("action") or msg.get("sub") or "status").lower()
     match = match_for_player(player)
+    # A watcher may read, leave or unwatch. Anything that would seat them in a
+    # pit is refused here: the dispatch guard lets the whole arena command
+    # through, so this is the gate that keeps 'watch' read-only.
+    if player.arena_spectating and action not in ARENA_SPECTATOR_ACTIONS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "You are watching a match; 'arena unwatch' first.",
+            },
+        )
+        return
     if action == "enter":
         mode = str(msg.get("mode") or "1v1").lower()
         team_size = ARENA_QUEUE_MODES.get(mode)

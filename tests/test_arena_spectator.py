@@ -107,6 +107,27 @@ async def main():
         assert "arena_watch_blocks(player, cmd)" in inspect.getsource(
             srv.handle_connection
         ), "dispatch dropped the spectator guard"
+        # The dispatch guard lets the whole arena command through, so the
+        # sub-action gate is what keeps a watcher out of the queue.
+        watched_id = eye.arena_watch
+        await srv.cmd_arena(eye, {"action": "enter", "mode": "1v1"})
+        enter_err = last("SpecEye", "error")
+        assert enter_err is not None and "unwatch" in enter_err["text"], enter_err
+        assert srv.arena_queued_size(eye) == 0, "a watcher joined the queue"
+        assert eye.arena_spectating and eye.arena_watch == watched_id
+        await srv.cmd_arena(eye, {"action": "dance"})
+        assert "unwatch" in last("SpecEye", "error")["text"]
+        assert srv.arena_queued_size(eye) == 0
+        # Reading still works while watching, and so does the way out.
+        await srv.cmd_arena(eye, {"action": "status"})
+        assert eye.arena_spectating and eye.arena_watch == watched_id
+        assert srv.ARENA_SPECTATOR_ACTIONS == {
+            "status",
+            "ladder",
+            "watch",
+            "unwatch",
+            "leave",
+        }
         print("SPECTATOR_READONLY_OK")
 
         # --- the feed carries what the match says --------------------
