@@ -3,7 +3,8 @@
 [![Tests](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml/badge.svg)](https://github.com/killerboyyy777/Machine-Learning-mmo/actions/workflows/tests.yml)
 
 A minimal, hackable text-based MMORPG engine. Rooms, NPCs, items, combat,
-loot, respawns, parties, a player market, and instanced dungeons — all driven
+loot, respawns, parties, a player market, instanced dungeons, and 1v1/2v2 arena
+matches — all driven
 over WebSocket with plain JSON messages. Because the protocol is just JSON, a
 human, a bot, and an LLM agent all look identical to the server. On top sits
 an ML stack: Gym-style env (220 obs dims, 59 actions), linear + DQN agents
@@ -85,6 +86,31 @@ returns a read-only companion sheet
 and the dashboard Agents tab plus the TUI Agents panel show the same fields.
 DroneLang scripts drive companion actions via
 `companion script set|show|clear`.
+
+## Arena
+
+`arena enter` queues a session for a 1v1 (`arena enter 2v2` for two-a-side),
+`arena status` reports the queue, the match id, the round and both team
+rosters, and `arena leave` forfeits. A table pairs as soon as enough live
+sessions are queued; a session that disconnects forfeits and frees its
+opponents at once.
+
+A match lives in its own instanced room (`a_<match_id>`) that is not a key in
+`ROOMS`, so the world map, its NPCs, the ML action space and `/api/state`
+never see it. Rounds are 90 seconds, first to two rounds, and a round that
+times out is scored on remaining HP. Attacking a player resolves only inside a
+fighting match, with the same weapon roll and armour reduction as an NPC hit;
+outside a match the target is still "not here".
+
+A match moves no value: a downed fighter loses no gold, no items and no gear,
+does not enter the death log, and does not count toward the civilian or wild
+death counters. Gathering, trading, crafting, quests, healing and item use are
+refused during a match.
+
+The room view for an arena room carries an `arena` block
+(`match_id, team_size, state, round, rounds_to_win, scores, teams, hp`), and
+`arena status` replies with a `{"type": "arena"}` event carrying the same
+shape plus the player's own team.
 
 ## Balance measurement
 
