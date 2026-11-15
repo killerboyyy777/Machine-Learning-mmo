@@ -12098,6 +12098,9 @@ async def cmd_arena(player, msg):
                 player, {"type": "error", "text": "You cannot watch while fighting."}
             )
             return
+        # Prune first: a watcher who dropped without cleanup must not keep
+        # holding a seat, or a match with no audience reads as full.
+        spectators_of(target)
         if player.id not in target.spectators and (
             len(target.spectators) >= ARENA_SPECTATOR_MAX
         ):

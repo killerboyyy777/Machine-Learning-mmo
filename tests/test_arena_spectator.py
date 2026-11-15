@@ -157,6 +157,23 @@ async def main():
         assert err is not None and "audience" in err["text"], err
         print("SPECTATOR_CAP_OK")
 
+        # --- stale ids must not hold a seat --------------------------
+        # A watcher who vanished without cleanup leaves a pid behind; the cap
+        # counts seats, not ghosts, so it is pruned before the check.
+        saved = set(match.spectators)
+        match.spectators.clear()
+        ghosts = {990001, 990002}
+        match.spectators.update(ghosts)
+        ghostfree = mkplayer("SpecGhostFree", 64005)
+        await srv.cmd_arena(ghostfree, {"action": "watch", "match": str(match.id)})
+        assert ghostfree.arena_spectating, "a ghost held the last seat"
+        assert ghostfree.arena_watch == match.id
+        assert not (ghosts & match.spectators), match.spectators
+        srv.detach_spectator(ghostfree)
+        match.spectators.clear()
+        match.spectators.update(saved)
+        print("SPECTATOR_STALE_CAP_OK")
+
         # --- unwatch puts the session back in the world --------------
         await srv.cmd_arena(eye, {"action": "unwatch"})
         assert not eye.arena_spectating and eye.arena_watch == 0
