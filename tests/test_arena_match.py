@@ -9,7 +9,8 @@ regression in dispatch or in the room view shows up here.
 """
 
 import asyncio
-import inspect
+import copy
+import json
 import os
 import sys
 import time
@@ -110,15 +111,69 @@ async def main():
         await srv._arena_begin_round(match)
         assert match.round == 1 and match.state == "fighting"
         assert match.team_of(one.id) == 1 and match.team_of(three.id) == 2
-        # Companion actions are blocked by the real WebSocket dispatcher,
-        # before the command handler can mutate companion or treasury state.
+        # Exercise the real WebSocket dispatcher: a companion adoption
+        # submitted during a match must be rejected before its handler runs.
         assert "companion" in srv.ARENA_BLOCKED_COMMANDS
-        dispatch = inspect.getsource(srv.handle_connection)
-        arena_guard = dispatch.index(
-            "if player.arena_match and cmd in ARENA_BLOCKED_COMMANDS:"
+        handler_calls = []
+        saved_companion_handler = srv.HANDLERS["companion"]
+        saved_arena_disconnect = srv.arena_on_disconnect
+        companion_key = "arenadispatchguard"
+        companion_store_before = copy.deepcopy(
+            srv.COMPANION_PLAYERS.get(companion_key)
         )
-        handler_call = dispatch.index("await handler(player, msg)")
-        assert arena_guard < handler_call, "arena guard must run before handlers"
+        acquisition_stats_before = copy.deepcopy(srv.ACQUISITION_STATS)
+
+        async def companion_spy(player, msg):
+            handler_calls.append((player, msg))
+
+        class ArenaCommandWS(FakeWS):
+            def __aiter__(self):
+                async def messages():
+                    player = next(
+                        p for p in srv.players.values() if p.ws is self
+                    )
+                    player.name = "ArenaDispatchGuard"
+                    player.logged_in = True
+                    player.arena_match = match.id
+                    player.gold = 123
+                    srv.COMPANION_PLAYERS[companion_key] = {
+                        "companions": [],
+                        "active": 0,
+                        "updated_at": time.time(),
+                    }
+                    yield json.dumps(
+                        {"cmd": "companion", "action": "adopt", "species": "wolf"}
+                    )
+                    # The dispatcher has resumed the iterator only after it
+                    # has either invoked the handler or rejected the command.
+                    assert not handler_calls
+                    assert player.gold == 123
+                    assert srv.COMPANION_PLAYERS[companion_key] == {
+                        "companions": [],
+                        "active": 0,
+                        "updated_at": srv.COMPANION_PLAYERS[companion_key][
+                            "updated_at"
+                        ],
+                    }
+                    assert srv.ACQUISITION_STATS == acquisition_stats_before
+
+                return messages()
+
+        srv.HANDLERS["companion"] = companion_spy
+        async def no_arena_cleanup(player):
+            return None
+
+        srv.arena_on_disconnect = no_arena_cleanup
+        try:
+            await srv.handle_connection(ArenaCommandWS())
+            assert not handler_calls
+        finally:
+            srv.HANDLERS["companion"] = saved_companion_handler
+            srv.arena_on_disconnect = saved_arena_disconnect
+            if companion_store_before is None:
+                srv.COMPANION_PLAYERS.pop(companion_key, None)
+            else:
+                srv.COMPANION_PLAYERS[companion_key] = companion_store_before
         # Team-mates are not targets.
         await srv.cmd_attack(one, {"target": "ArenaTwo"})
         assert "team-mate" in text_of("ArenaOne")[-1]
