@@ -9440,7 +9440,8 @@ async def cmd_companion(player, msg):
 
 async def cmd_help(player, msg):
     recipe_names = sorted(
-        {_iname(recipe.get("result", recipe_id)) for recipe_id, recipe in RECIPES.items()}
+        _iname(recipe.get("result", recipe_id))
+        for recipe_id, recipe in RECIPES.items()
     )
     ammo_names = [_iname(ammo_id) for ammo_id in AMMO_BONUS]
     buff_names = sorted(
