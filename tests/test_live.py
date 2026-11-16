@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+
 import websockets
 
 # Ports are overridable so the same live protocol test can run on this
@@ -35,7 +36,7 @@ async def recv(ws, timeout=3.0, want_type=None):
             msg = json.loads(
                 await asyncio.wait_for(ws.recv(), max(0.05, deadline - time.time()))
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             break
         out.append(msg)
         if want_type and msg.get("type") == want_type:

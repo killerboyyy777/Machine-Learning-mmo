@@ -79,6 +79,7 @@ print("COMPARATIVE_SCHEMA_OK")
 
 # --- #247: report uses sample std, matching compare() ---
 import statistics as _statistics
+
 _mean, _std = report("probe", [3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
 assert _std == _statistics.stdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3]), _std
 assert _std > _statistics.pstdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3])

@@ -67,7 +67,6 @@ class LinearQAgent:
         self.training_steps = 0
         self.ckpt_version = None  # version dict of the loaded checkpoint
 
-
     def q_values(self, features):
         return [
             sum(w * f for w, f in zip(self.weights[a], features)) + self.bias[a]
@@ -106,14 +105,17 @@ class LinearQAgent:
     def save(self, path):
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
-            json.dump({
-                "weights": self.weights,
-                "bias": self.bias,
-                "training_steps": self.training_steps,
-                "obs_size": self.obs_size,
-                "n_actions": self.n_actions,
-                "version": checkpoint_version(self.obs_size, self.n_actions),
-            }, f)
+            json.dump(
+                {
+                    "weights": self.weights,
+                    "bias": self.bias,
+                    "training_steps": self.training_steps,
+                    "obs_size": self.obs_size,
+                    "n_actions": self.n_actions,
+                    "version": checkpoint_version(self.obs_size, self.n_actions),
+                },
+                f,
+            )
         os.replace(tmp, path)
 
     def load(self, path):
@@ -121,10 +123,12 @@ class LinearQAgent:
             return False
         with open(path) as f:
             data = json.load(f)
-        if (len(data.get("weights", [])) == self.n_actions
-                and data["weights"]
-                and len(data["weights"][0]) == self.obs_size
-                and len(data.get("bias", [])) == self.n_actions):
+        if (
+            len(data.get("weights", [])) == self.n_actions
+            and data["weights"]
+            and len(data["weights"][0]) == self.obs_size
+            and len(data.get("bias", [])) == self.n_actions
+        ):
             self.weights = data["weights"]
             self.bias = data["bias"]
             self.training_steps = int(data.get("training_steps", 0))
@@ -137,7 +141,16 @@ class LinearQAgent:
         return False
 
 
-async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, epsilon_decay_steps, run=None):
+async def train(
+    name,
+    url,
+    total_steps,
+    save_every,
+    epsilon_start,
+    epsilon_end,
+    epsilon_decay_steps,
+    run=None,
+):
     agent = LinearQAgent(OBS_SIZE, N_ACTIONS)
     if agent.load(WEIGHTS_FILE):
         print(f"Loaded existing weights from {WEIGHTS_FILE}")
@@ -178,9 +191,11 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
 
         if agent.training_steps % 50 == 0:
             avg_recent = sum(recent_rewards) / len(recent_rewards)
-            print(f"step {agent.training_steps:>6}  eps={epsilon:.3f}  score={obs['score_raw']:.2f}  "
-                  f"avg_reward(last {len(recent_rewards)})={avg_recent:+.4f}  "
-                  f"room={obs['room_id']}")
+            print(
+                f"step {agent.training_steps:>6}  eps={epsilon:.3f}  score={obs['score_raw']:.2f}  "
+                f"avg_reward(last {len(recent_rewards)})={avg_recent:+.4f}  "
+                f"room={obs['room_id']}"
+            )
             if run is not None:
                 # Same cadence as the print above, so the run log and stdout
                 # never disagree about how far the run got (#65).  steps is
@@ -202,9 +217,13 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
 
     agent.save(WEIGHTS_FILE)
     print(f"\nTraining finished after {total_steps} steps.")
-    print(f"Final score: {obs['score_raw']:.2f}   Total reward accumulated: {total_reward:.2f}")
+    print(
+        f"Final score: {obs['score_raw']:.2f}   Total reward accumulated: {total_reward:.2f}"
+    )
     print("Action usage:", {ACTIONS[i]: c for i, c in enumerate(action_counts) if c})
-    print(f"Weights saved to {WEIGHTS_FILE} -- rerun with the same --name to keep training this character.")
+    print(
+        f"Weights saved to {WEIGHTS_FILE} -- rerun with the same --name to keep training this character."
+    )
     if run is not None:
         run.finish(
             steps=agent.training_steps - base_steps,
@@ -216,23 +235,52 @@ async def train(name, url, total_steps, save_every, epsilon_start, epsilon_end, 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Simple linear Q-learning client for the text MMO.")
-    parser.add_argument("--name", default="MLAgent",
-                         help="Character name. Reuse the same name across runs to keep training "
-                              "one persistent character (recommended) rather than starting fresh each time.")
+    parser = argparse.ArgumentParser(
+        description="Simple linear Q-learning client for the text MMO."
+    )
+    parser.add_argument(
+        "--name",
+        default="MLAgent",
+        help="Character name. Reuse the same name across runs to keep training "
+        "one persistent character (recommended) rather than starting fresh each time.",
+    )
     parser.add_argument("--url", default="ws://localhost:8765")
-    parser.add_argument("--steps", type=int, default=2000, help="Total training steps this run")
-    parser.add_argument("--save-every", type=int, default=100, help="Checkpoint weights every N steps")
-    parser.add_argument("--epsilon-start", type=float, default=1.0, help="Starting exploration rate")
-    parser.add_argument("--epsilon-end", type=float, default=0.05, help="Final exploration rate")
-    parser.add_argument("--epsilon-decay-steps", type=int, default=1500,
-                         help="Steps over which epsilon decays from start to end")
-    parser.add_argument("--seed", type=int, default=None,
-                         help="RNG seed, recorded in the run record so two runs are comparable (#65)")
-    parser.add_argument("--runs-dir", default=None,
-                         help="run-record index directory (default <repo>/runs)")
-    parser.add_argument("--no-run-record", dest="run_record", action="store_false", default=True,
-                         help="do not write a run record to the dashboard index (#65)")
+    parser.add_argument(
+        "--steps", type=int, default=2000, help="Total training steps this run"
+    )
+    parser.add_argument(
+        "--save-every", type=int, default=100, help="Checkpoint weights every N steps"
+    )
+    parser.add_argument(
+        "--epsilon-start", type=float, default=1.0, help="Starting exploration rate"
+    )
+    parser.add_argument(
+        "--epsilon-end", type=float, default=0.05, help="Final exploration rate"
+    )
+    parser.add_argument(
+        "--epsilon-decay-steps",
+        type=int,
+        default=1500,
+        help="Steps over which epsilon decays from start to end",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed, recorded in the run record so two runs are comparable (#65)",
+    )
+    parser.add_argument(
+        "--runs-dir",
+        default=None,
+        help="run-record index directory (default <repo>/runs)",
+    )
+    parser.add_argument(
+        "--no-run-record",
+        dest="run_record",
+        action="store_false",
+        default=True,
+        help="do not write a run record to the dashboard index (#65)",
+    )
     args = parser.parse_args()
 
     # Seeding is independent of the run record: --seed must work even with
@@ -240,15 +288,28 @@ def main():
     seed_everything(args.seed)
     run = None
     if args.run_record:
-        run = start_run("ml_client", root=args.runs_dir or None, label=args.name,
-                        seed=args.seed, hparams=vars(args), checkpoint=WEIGHTS_FILE)
+        run = start_run(
+            "ml_client",
+            root=args.runs_dir or None,
+            label=args.name,
+            seed=args.seed,
+            hparams=vars(args),
+            checkpoint=WEIGHTS_FILE,
+        )
         print(f"[ml-client] run record: {run.run_id}")
 
-    asyncio.run(train(
-        args.name, args.url, args.steps, args.save_every,
-        args.epsilon_start, args.epsilon_end, args.epsilon_decay_steps,
-        run=run,
-    ))
+    asyncio.run(
+        train(
+            args.name,
+            args.url,
+            args.steps,
+            args.save_every,
+            args.epsilon_start,
+            args.epsilon_end,
+            args.epsilon_decay_steps,
+            run=run,
+        )
+    )
 
 
 if __name__ == "__main__":

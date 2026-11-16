@@ -49,10 +49,14 @@ assert min(b_novels) > b_seen, (b_seen, b_novels)
 # error above (RND_LEARNS_OK), so untouched regions must score higher.
 with torch.no_grad():
     err_seen = float(agent._rnd_error(x).item())
-    err_novels = [float(agent._rnd_error(
-        torch.tensor([n], dtype=torch.float32)).item()) for n in novels]
+    err_novels = [
+        float(agent._rnd_error(torch.tensor([n], dtype=torch.float32)).item())
+        for n in novels
+    ]
 assert min(err_novels) > err_seen, (err_seen, err_novels)
-print(f"RND_NOVELTY_OK (seen={b_seen:.4f} novel_mean={sum(b_novels)/len(b_novels):.4f})")
+print(
+    f"RND_NOVELTY_OK (seen={b_seen:.4f} novel_mean={sum(b_novels)/len(b_novels):.4f})"
+)
 
 # --- RND state survives save/load ---
 with tempfile.TemporaryDirectory() as tmp:
@@ -72,8 +76,9 @@ print("RND_PERSISTENCE_OK")
 off = TorchDQNAgent(rnd_lambda=0, replay_size=32, batch_size=8)
 flat = [0.0] * OBS_SIZE
 for _ in range(32):
-    off.store({"state": flat, "action": 0, "reward": 0.0,
-               "next_state": flat, "done": False})
+    off.store(
+        {"state": flat, "action": 0, "reward": 0.0, "next_state": flat, "done": False}
+    )
 off.t_step = 32
 pred_before = {k: v.clone() for k, v in off.rnd_pred.state_dict().items()}
 losses = off.learn()

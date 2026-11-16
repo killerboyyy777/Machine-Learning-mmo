@@ -6,13 +6,16 @@ so a restarted farm resumes the epsilon schedule instead of jumping
 back to epsilon_start. Also covers TorchFarm checkpoint/resume: farm
 steps and best_score survive restart (torch-gated, skips without torch).
 """
+
 import argparse
 import asyncio
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml")
+)
 
 import ml_botfarm
 from ml_botfarm import Farm
@@ -20,8 +23,11 @@ from ml_botfarm import Farm
 
 def _args(weights):
     return argparse.Namespace(
-        weights=weights, checkpoint_every=200,
-        epsilon_start=1.0, epsilon_end=0.05, epsilon_decay_steps=5000,
+        weights=weights,
+        checkpoint_every=200,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_decay_steps=5000,
         bots=1,
     )
 

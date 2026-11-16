@@ -3,6 +3,7 @@
 Run from the repo root: python tests/test_persistence.py
 No game server is needed.
 """
+
 import os
 import re
 import sys
@@ -13,9 +14,9 @@ sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
 import runlog
+from dqn_agent import TorchDQNAgent
 from ml_client import LinearQAgent
 from ml_env import N_ACTIONS, OBS_SIZE
-from dqn_agent import TorchDQNAgent
 
 
 def linear_check(folder):
@@ -54,8 +55,13 @@ def torch_check(folder):
     assert loaded.t_step == 456
     assert loaded.learn_step == 17
     assert loaded.best_score == 89.5
-    assert loaded.q.q_head.bias.detach().tolist() == agent.q.q_head.bias.detach().tolist()
-    assert loaded.target.q_head.bias.detach().tolist() == agent.target.q_head.bias.detach().tolist()
+    assert (
+        loaded.q.q_head.bias.detach().tolist() == agent.q.q_head.bias.detach().tolist()
+    )
+    assert (
+        loaded.target.q_head.bias.detach().tolist()
+        == agent.target.q_head.bias.detach().tolist()
+    )
     # #53: version metadata round-trips and matches the live build
     v = loaded.ckpt_version
     assert v and v["obs_size"] == OBS_SIZE and v["n_actions"] == N_ACTIONS, v
@@ -73,8 +79,9 @@ def runlog_check(folder):
     assert runlog.rate_per_hour(None, 5) is None and runlog.rate_per_hour(10, 0) is None
     assert runlog.seed_everything(None) is False and runlog.seed_everything(7) is True
 
-    run = runlog.start_run("dqn", root=root, seed=7, label="unit",
-                           hparams={"lr": 1e-3, "device": None})
+    run = runlog.start_run(
+        "dqn", root=root, seed=7, label="unit", hparams={"lr": 1e-3, "device": None}
+    )
     rid = run.run_id
     assert runlog.valid_run_id(rid), rid
     run.record(steps=100, score=5, td_loss=0.8)
@@ -84,7 +91,9 @@ def runlog_check(folder):
 
     got = runlog.read_run(root, rid)
     assert got["status"] == "finished" and got["seed"] == 7 and got["label"] == "unit"
-    assert got["metrics"]["score"] == 12 and got["metrics"]["score_hr"] > 0, got["metrics"]
+    assert got["metrics"]["score"] == 12 and got["metrics"]["score_hr"] > 0, got[
+        "metrics"
+    ]
     assert got["ended"] > got["started"] and got["elapsed"] > 0
     assert got["checkpoint"] == "torch_agents/ml_weights.json"
     # argparse namespaces hold Paths and Nones; the manifest must stay plain JSON.
@@ -157,7 +166,9 @@ def runlog_sendback_check(folder):
     # Only the LAST runs= used to survive, so a multi-param query silently dropped
     # every earlier one. Ids are minted-shape-checked, so use real shapes here.
     assert runlog.parse_run_ids("?runs=20260101-120000&runs=20260101-130000") == [
-        "20260101-120000", "20260101-130000"]
+        "20260101-120000",
+        "20260101-130000",
+    ]
     # A percent-encoded id never reached valid_run_id before, and an encoded
     # traversal is the case that matters.
     assert runlog.parse_run_ids("?runs=20260101-1200%30") == []
@@ -169,7 +180,8 @@ def runlog_sendback_check(folder):
     assert len(runlog.parse_run_ids("?" + "x" * (runlog.MAX_QUERY_CHARS + 5000))) == 0
     # Duplicates collapse: two boxes for one run must not open it twice.
     assert runlog.parse_run_ids("?runs=20260101-120000,20260101-120000") == [
-        "20260101-120000"]
+        "20260101-120000"
+    ]
     # runs_payload re-validates, so a caller bypassing parse_run_ids is safe too.
     assert runlog.runs_payload(root=root, ids=["../../etc"])["series"] == {}
 
@@ -183,8 +195,9 @@ def runlog_sendback_check(folder):
     assert m["metrics"]["stopped"] is True, m["metrics"]
     assert m["metrics"]["crash_reason"] is None
     assert m["metrics"]["steps"] == 5
-    assert any(f["name"] == "stopped" for f in
-               runlog.runs_payload(root=root)["fields"]), "bool field missing"
+    assert any(
+        f["name"] == "stopped" for f in runlog.runs_payload(root=root)["fields"]
+    ), "bool field missing"
 
     # --- direction (#5) ---------------------------------------------------
     # A substring match called these "higher", so a loss was ranked as a win.
@@ -193,8 +206,15 @@ def runlog_sendback_check(folder):
         assert runlog.higher_is_better(tok) is False, tok
     # Direction is a whole word, not a fragment: "gloss" (g-loss) and "terror"
     # (t-error) are not losses.
-    for tok in ("gloss", "terror", "my_lossy_metric", "losses", "runtimE",
-                "myloss", "avg_reward"):
+    for tok in (
+        "gloss",
+        "terror",
+        "my_lossy_metric",
+        "losses",
+        "runtimE",
+        "myloss",
+        "avg_reward",
+    ):
         assert runlog.higher_is_better(tok) is True, tok
 
     # --- same-second collision (#4) ---------------------------------------
@@ -204,17 +224,22 @@ def runlog_sendback_check(folder):
     assert len(made) == 4, made
 
     # --- per-kind columns (#1) -------------------------------------------
-    kinds = runlog.kind_fields([
-        {"kind": "dqn", "metrics": {"steps": 1, "total_steps": 1}},
-        {"kind": "ml_botfarm", "metrics": {"fitness": 1.0}},
-        {"kind": "soak", "metrics": {"episodes": 2}},
-    ])
+    kinds = runlog.kind_fields(
+        [
+            {"kind": "dqn", "metrics": {"steps": 1, "total_steps": 1}},
+            {"kind": "ml_botfarm", "metrics": {"fitness": 1.0}},
+            {"kind": "soak", "metrics": {"episodes": 2}},
+        ]
+    )
     assert kinds["ml_botfarm"] == ["fitness"], kinds
     assert kinds["soak"] == ["episodes"], kinds
     # A kind the table has never seen still gets its canonical columns rather
     # than nothing, so a first botfarm run is readable.
-    assert runlog.kind_fields([{"kind": "ml_botfarm", "metrics": {"top_score": 4}}]) == {
-        "ml_botfarm": ["top_score"]}, runlog.kind_fields([{"kind": "ml_botfarm", "metrics": {"top_score": 4}}])
+    assert runlog.kind_fields(
+        [{"kind": "ml_botfarm", "metrics": {"top_score": 4}}]
+    ) == {"ml_botfarm": ["top_score"]}, runlog.kind_fields(
+        [{"kind": "ml_botfarm", "metrics": {"top_score": 4}}]
+    )
     # An empty index still needs columns for the picker to have anything.
     assert runlog.kind_fields([]) == {}, runlog.kind_fields([])
 
@@ -230,6 +255,7 @@ def runlog_pkg_import_check():
     or every soak run is an unidentifiable row; the sys.path squash is what
     makes this the same import shape."""
     import subprocess
+
     probe = (
         "import os, sys; "
         "sys.path = [p for p in sys.path if os.path.basename(p) != 'ml']; "

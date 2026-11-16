@@ -44,26 +44,35 @@ import time
 import websockets
 
 try:
-    from .ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
     from .ml_client import LinearQAgent
-    from .runlog import seed_everything, start_run
+    from .ml_env import N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
+
     # Scripted baselines live in ml/plugins now; imported here so the
     # farm CLI, --scripted roles, and existing import sites keep working.
-    from .plugins.scripted import (  # noqa: F401
-        SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
-        GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
+    from .plugins.scripted import (
+        SCRIPTED_NAMES,
+        SCRIPTED_POLICIES,
         CommissionerPolicy,
+        DungeonClearerPolicy,
+        GatherSellPolicy,
+        MarketFlipperPolicy,
+        ScriptedPolicy,
     )
+    from .runlog import seed_everything, start_run
 except ImportError:
     # Running as a script (python ml/ml_botfarm.py): no parent package.
-    from ml_env import TextMMOEnv, OBS_SIZE, N_ACTIONS, flatten_obs
     from ml_client import LinearQAgent
-    from runlog import seed_everything, start_run
+    from ml_env import N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
     from plugins.scripted import (  # noqa: F401
-        SCRIPTED_POLICIES, SCRIPTED_NAMES, ScriptedPolicy,
-        GatherSellPolicy, DungeonClearerPolicy, MarketFlipperPolicy,
+        SCRIPTED_NAMES,
+        SCRIPTED_POLICIES,
         CommissionerPolicy,
+        DungeonClearerPolicy,
+        GatherSellPolicy,
+        MarketFlipperPolicy,
+        ScriptedPolicy,
     )
+    from runlog import seed_everything, start_run
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS_FILE = os.path.join(_HERE, "ml_weights.json")
@@ -199,24 +208,34 @@ class Farm:
     def epsilon_now(self):
         """Decay shared exploration with total farm steps (0.15s of delay per
         env-step keeps a handful of bots far apart even at low eps)."""
-        progress = min(1.0, self.agent.training_steps / max(1, self.args.epsilon_decay_steps))
-        return self.args.epsilon_start + (self.args.epsilon_end - self.args.epsilon_start) * progress
+        progress = min(
+            1.0, self.agent.training_steps / max(1, self.args.epsilon_decay_steps)
+        )
+        return (
+            self.args.epsilon_start
+            + (self.args.epsilon_end - self.args.epsilon_start) * progress
+        )
 
     def promote(self, fitness, best_score):
         self.best_fitness = fitness
         self.best_score = best_score
-        save_json(BEST_FILE, {
-            "weights": self.agent.weights,
-            "bias": self.agent.bias,
-            "fitness": round(fitness, 4),
-            "best_score": round(best_score, 2),
-            "steps": self.steps,
-            "training_steps": self.agent.training_steps,
-            "bots": self.args.bots,
-            "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
-        print(f"[best] NEW BEST fitness={fitness:.4f} score={best_score:.2f} "
-              f"at step {self.steps} -> {BEST_FILE}")
+        save_json(
+            BEST_FILE,
+            {
+                "weights": self.agent.weights,
+                "bias": self.agent.bias,
+                "fitness": round(fitness, 4),
+                "best_score": round(best_score, 2),
+                "steps": self.steps,
+                "training_steps": self.agent.training_steps,
+                "bots": self.args.bots,
+                "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        print(
+            f"[best] NEW BEST fitness={fitness:.4f} score={best_score:.2f} "
+            f"at step {self.steps} -> {BEST_FILE}"
+        )
 
     def save_weights(self):
         # Full LinearQAgent format (weights, bias, training_steps, dims,
@@ -264,10 +283,13 @@ class BotRunner:
                 return
             except (ConnectionError, OSError, websockets.ConnectionClosed) as e:
                 attempt += 1
-                delay = min(RESET_BACKOFF_MAX,
-                            RESET_BACKOFF_BASE * (2 ** min(attempt - 1, 5)))
-                print(f"[farm] {self.name}: server unreachable "
-                      f"({e.__class__.__name__}); reconnecting in {delay:.1f}s")
+                delay = min(
+                    RESET_BACKOFF_MAX, RESET_BACKOFF_BASE * (2 ** min(attempt - 1, 5))
+                )
+                print(
+                    f"[farm] {self.name}: server unreachable "
+                    f"({e.__class__.__name__}); reconnecting in {delay:.1f}s"
+                )
                 await asyncio.sleep(delay)
 
     async def run(self):
@@ -279,7 +301,9 @@ class BotRunner:
             if self.farm.args.steps and self.farm.steps >= self.farm.args.steps:
                 self.farm.stop.set()
                 break
-            action = self.farm.agent.act(self.features, self.farm.epsilon_now(), self.env.valid_action_mask())
+            action = self.farm.agent.act(
+                self.features, self.farm.epsilon_now(), self.env.valid_action_mask()
+            )
             try:
                 next_obs, reward, done, info = await self.env.step(action)
             except (ConnectionError, OSError, websockets.ConnectionClosed):
@@ -287,7 +311,11 @@ class BotRunner:
                 continue
             next_features = flatten_obs(next_obs)
             self.farm.agent.update(
-                self.features, action, reward, next_features, done,
+                self.features,
+                action,
+                reward,
+                next_features,
+                done,
                 self.env.valid_action_mask(),
             )
             self.farm.agent.training_steps += 1
@@ -357,15 +385,19 @@ async def evaluator(farm):
                 cands = [b.fitness() for b in farm.bots]
                 cands = [c for c in cands if c is not None]
                 if cands and max(cands) > farm.best_fitness + 1e-6:
-                    best_bot = max(farm.bots, key=lambda b: b.fitness() or float("-inf"))
+                    best_bot = max(
+                        farm.bots, key=lambda b: b.fitness() or float("-inf")
+                    )
                     farm.promote(max(cands), best_bot.score)
                 while farm.next_checkpoint <= farm.steps:
                     farm.next_checkpoint += max(1, farm.args.checkpoint_every)
             # periodic status line so you can watch the farm from the console
             per = "  ".join(f"{b.name}={b.score:.1f}" for b in farm.bots)
             best = farm.best_fitness if farm.best_fitness > float("-inf") else 0.0
-            print(f"[farm] steps={farm.steps} eps={farm.epsilon_now():.2f} "
-                  f"best={best:.4f} bots: {per}")
+            print(
+                f"[farm] steps={farm.steps} eps={farm.epsilon_now():.2f} "
+                f"best={best:.4f} bots: {per}"
+            )
             if run is not None:
                 # fitness is the farm's own selection signal, so it is the axis
                 # worth comparing; score is what a player would recognize.
@@ -378,41 +410,82 @@ async def evaluator(farm):
         if run is not None:
             run.finish(
                 steps=farm.steps,
-                fitness=farm.best_fitness if farm.best_fitness > float("-inf") else None,
+                fitness=(
+                    farm.best_fitness if farm.best_fitness > float("-inf") else None
+                ),
             )
             print(f"[farm] run {run.run_id} -> {run.manifest['status']}")
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Concurrent multi-bot ML training farm.")
-    p.add_argument("--bots", type=int, default=4, help="concurrent bot characters (default 4)")
-    p.add_argument("--name-prefix", default="FarmBot", help="bot names become <prefix><i>")
+    p.add_argument(
+        "--bots", type=int, default=4, help="concurrent bot characters (default 4)"
+    )
+    p.add_argument(
+        "--name-prefix", default="FarmBot", help="bot names become <prefix><i>"
+    )
     p.add_argument("--url", default="ws://localhost:8765")
-    p.add_argument("--steps", type=int, default=0, help="total env-steps, 0 = run until stopped")
+    p.add_argument(
+        "--steps", type=int, default=0, help="total env-steps, 0 = run until stopped"
+    )
     p.add_argument("--checkpoint-every", type=int, default=200)
-    p.add_argument("--eval-every", type=float, default=5.0, help="seconds between evaluations")
-    p.add_argument("--reward-window", type=int, default=200, help="rolling reward window for fitness")
+    p.add_argument(
+        "--eval-every", type=float, default=5.0, help="seconds between evaluations"
+    )
+    p.add_argument(
+        "--reward-window",
+        type=int,
+        default=200,
+        help="rolling reward window for fitness",
+    )
     p.add_argument("--weights", default=WEIGHTS_FILE)
-    p.add_argument("--scripted", default="none",
-                   choices=("none", "gather", "dungeon", "market",
-                            "commissioner", "quester", "crafter", "party_leader",
-                            "mixed"),
-                   help="run fixed behavior-tree baselines instead of training "
-                        "(one role each, or round-robin with 'mixed')")
-    p.add_argument("--roles", default=None,
-                    help="explicit per-role counts, e.g. "
-                         "gather:11,dungeon:4,market:7,commissioner:2,"
-                         "flex:gather (flex fills the remainder); overrides "
-                         "--scripted")
+    p.add_argument(
+        "--scripted",
+        default="none",
+        choices=(
+            "none",
+            "gather",
+            "dungeon",
+            "market",
+            "commissioner",
+            "quester",
+            "crafter",
+            "party_leader",
+            "mixed",
+        ),
+        help="run fixed behavior-tree baselines instead of training "
+        "(one role each, or round-robin with 'mixed')",
+    )
+    p.add_argument(
+        "--roles",
+        default=None,
+        help="explicit per-role counts, e.g. "
+        "gather:11,dungeon:4,market:7,commissioner:2,"
+        "flex:gather (flex fills the remainder); overrides "
+        "--scripted",
+    )
     p.add_argument("--epsilon-start", type=float, default=1.0)
     p.add_argument("--epsilon-end", type=float, default=0.05)
     p.add_argument("--epsilon-decay-steps", type=int, default=5000)
-    p.add_argument("--seed", type=int, default=None,
-                   help="RNG seed, recorded in the run record so two runs are comparable (#65)")
-    p.add_argument("--runs-dir", default=None,
-                   help="run-record index directory (default <repo>/runs)")
-    p.add_argument("--no-run-record", dest="run_record", action="store_false", default=True,
-                   help="do not write a run record to the dashboard index (#65)")
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed, recorded in the run record so two runs are comparable (#65)",
+    )
+    p.add_argument(
+        "--runs-dir",
+        default=None,
+        help="run-record index directory (default <repo>/runs)",
+    )
+    p.add_argument(
+        "--no-run-record",
+        dest="run_record",
+        action="store_false",
+        default=True,
+        help="do not write a run record to the dashboard index (#65)",
+    )
     args = p.parse_args()
     if args.bots < 1:
         p.error("--bots must be >= 1")
@@ -443,9 +516,11 @@ async def main():
     # slightly different initial game states (different room, NPC layout, etc.).
     bot_tasks = []
     for i, b in enumerate(farm.bots):
+
         async def start_delayed(bot=b, idx=i):
             await asyncio.sleep(2 * idx)  # 2-second delay per bot index
             await bot.run()
+
         bot_tasks.append(asyncio.create_task(start_delayed(), name=b.name))
     eval_task = asyncio.create_task(evaluator(farm))
     print(f"[farm] {args.bots} bots training on {args.url} - Ctrl+C to stop.")
@@ -466,8 +541,10 @@ async def main():
     for b in farm.bots:
         print(f"  {b.name}: score={b.score:.2f} steps={b.total_steps}")
     print(f"  total steps: {farm.steps}")
-    print(f"  best kept: {farm.best_fitness if farm.best_fitness > float('-inf') else 0.0:.4f} fitness, "
-          f"score={farm.best_score if farm.best_score > float('-inf') else 0.0:.2f}")
+    print(
+        f"  best kept: {farm.best_fitness if farm.best_fitness > float('-inf') else 0.0:.4f} fitness, "
+        f"score={farm.best_score if farm.best_score > float('-inf') else 0.0:.2f}"
+    )
     farm.save_weights()
     if farm.best_fitness > float("-inf"):
         print(f"  best policy snapshot: {BEST_FILE}")

@@ -11,6 +11,7 @@ Architecture:
   - PBT: population-based training (exploit best weights, explore hparams)
   - Metrics: JSONL event stream for offline analysis
 """
+
 from .churn import ChurnManager, geometric_lifetime, poisson_interval, wave_startup
 from .conductor import Conductor
 from .metrics import MetricsLogger

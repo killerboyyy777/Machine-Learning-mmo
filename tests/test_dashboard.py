@@ -7,6 +7,7 @@ exists in markup, the default landing is Overview, and the snapshot-server
 markers the client depends on are present. Old dashboard.html retired with
 the swap; its blocks were removed, not ported.
 """
+
 import os
 import re
 
@@ -31,15 +32,43 @@ for tok in ("--sp-md", "--fs-md", "--font", "--r-md"):
 # Market/Dungeons/GM (2/4) and Agents/Quests/Crafting (3/4) are functional.
 assert "revamp 2/4 (#206)" not in html, "market/dungeon/gm still placeholder"
 assert "revamp 3/4 (#209)" not in html, "agents/quests/crafting still placeholder"
-for wid in ("m-treasury", "orders", "tradeHistory", "m-priceHist",
-             "buffs", "bosses", "dungeons", "gmlog", "gm-send-gold",
-             "gm-action", "gm-players", "gm-rooms",
-             "agents", "noAgents", "agentActivity",
-             "q-active", "q-turnins", "questCatalog",
-             "matSupply", "noSupply", "matOrders", "noMatOrders",
-             "flow-gather", "flow-craft", "flow-take", "flow-buy", "flow-sell",
-             "cfgFile", "cfgForm", "cfgPresets", "cfgSave", "cfgMsg",
-             "cfgPath", "cfgRestart", "themeToggle"):
+for wid in (
+    "m-treasury",
+    "orders",
+    "tradeHistory",
+    "m-priceHist",
+    "buffs",
+    "bosses",
+    "dungeons",
+    "gmlog",
+    "gm-send-gold",
+    "gm-action",
+    "gm-players",
+    "gm-rooms",
+    "agents",
+    "noAgents",
+    "agentActivity",
+    "q-active",
+    "q-turnins",
+    "questCatalog",
+    "matSupply",
+    "noSupply",
+    "matOrders",
+    "noMatOrders",
+    "flow-gather",
+    "flow-craft",
+    "flow-take",
+    "flow-buy",
+    "flow-sell",
+    "cfgFile",
+    "cfgForm",
+    "cfgPresets",
+    "cfgSave",
+    "cfgMsg",
+    "cfgPath",
+    "cfgRestart",
+    "themeToggle",
+):
     assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Players tab split out of World (more tabs, less content each).
 assert '<div class="tab" data-tab="players">Players</div>' in html
@@ -53,7 +82,7 @@ assert "tabular-nums" in html and "min-height: 120px" in html
 # Round 2 follow-ups: no hardcoded dark surfaces remain (GM black stripe
 # was #gmlog's #0b0f13; the map canvas fill is token-read in JS now).
 assert "background: #0b0f13" not in html
-assert 'background: var(--panel2)' in html
+assert "background: var(--panel2)" in html
 # Tiles can never overlap: the world fits its container width with tiles
 # scaled down as cells narrow (round 3), and the layout returns world
 # dims the canvas sizes itself from.
@@ -84,23 +113,36 @@ assert html.index("Recent flow") < html.index("Recipe browser")
 assert "solid tile = indoor, dashed = outdoor" in html
 # #424 wild rendering: its own axis on top of indoor/outdoor, ASCII corner
 # tooth (no emoji anywhere in this file), plus the legend entry.
-for tok in ("red wash + W = wild", 'WILD_MARK = "W"', "if (room.wild)",
-            'wild = cssVar("--bad"'):
+for tok in (
+    "red wash + W = wild",
+    'WILD_MARK = "W"',
+    "if (room.wild)",
+    'wild = cssVar("--bad"',
+):
     assert tok in html, f"wild render token {tok} missing"
 assert chr(0x25B2) not in html, "non-ASCII wild marker in dashboard"
 # Spawn-border fix: outdoor-home tile carries accent AND dash.
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
 import json as _json
 import os as _os
+
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
-assert len(_world["rooms"]) == 43  # 32 map rooms + guild_hall + 6 wilds (#336) + 4 wild-interior chain rooms (#423)
+assert (
+    len(_world["rooms"]) == 43
+)  # 32 map rooms + guild_hall + 6 wilds (#336) + 4 wild-interior chain rooms (#423)
 assert all(isinstance(r.get("shelter"), bool) for r in _world["rooms"].values())
 # Settled-price panel renamed to plain words.
 assert "Price per completed sale" in html
 assert "Settled-price history" not in html
 # Split-lane live feel: SSE stream + shared row helper + start_ts ticker.
-for tok in ("EventSource", "/api/activity/stream", "activityRow",
-            "actMaxSeq", "start_ts", "startTs"):
+for tok in (
+    "EventSource",
+    "/api/activity/stream",
+    "activityRow",
+    "actMaxSeq",
+    "start_ts",
+    "startTs",
+):
     assert tok in html, f"split-lane token {tok} missing"
 # /OC robustness: guarded scores/servers/cmdClass, seq sort, empty states.
 assert ".score.toFixed" not in html, "unguarded toFixed survives"
@@ -110,25 +152,43 @@ assert "a.seq ?? -1" in html and "localeCompare" in html
 assert "No scores recorded yet." in html
 # Server lane: seq field, fan-out registry, SSE route, start timestamp.
 _srv = open(_os.path.join(_os.path.dirname(__file__), "..", "server.py")).read()
-for tok in ('"seq": activity_seq', "activity_subscribers",
-            "text/event-stream", '"start_ts": START_TIME'):
+for tok in (
+    '"seq": activity_seq',
+    "activity_subscribers",
+    "text/event-stream",
+    '"start_ts": START_TIME',
+):
     assert tok in _srv, f"server: split-lane token {tok} missing"
 # Shelter veto: market is outdoor.
 assert _world["rooms"]["market"]["shelter"] is False
 # Quest panel states the full turn-in chain, not just the brief.
 assert "turn-in:" in html and "hand it over" in html
 # Chart readouts: always-visible current value per graph.
-for wid in ("ovPlayersVal", "ovScoreVal", "ovVolumeVal",
-            "histPlayersVal", "histScoreVal", "m-priceHistVal"):
+for wid in (
+    "ovPlayersVal",
+    "ovScoreVal",
+    "ovVolumeVal",
+    "histPlayersVal",
+    "histScoreVal",
+    "m-priceHistVal",
+):
     assert f'id="{wid}"' in html, f"missing readout {wid}"
 assert ".trendval" in html and "setTrendVal" in html
 # Sort rule: every data table sortable + div-list controls present.
-for tid in ("perf", "agents", "orders", "tradeHistory", "bosses",
-            "matSupply", "matOrders", "questCatalog", "recipeRows",
-            "steamOrders"):
+for tid in (
+    "perf",
+    "agents",
+    "orders",
+    "tradeHistory",
+    "bosses",
+    "matSupply",
+    "matOrders",
+    "questCatalog",
+    "recipeRows",
+    "steamOrders",
+):
     assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
-for wid in ("questFeedSort", "agentActivitySort", "activitySort",
-            "dungeonSort"):
+for wid in ("questFeedSort", "agentActivitySort", "activitySort", "dungeonSort"):
     assert f'id="{wid}"' in html, f"missing sort control {wid}"
 assert "function sortRows" in html and "bindSortTables()" in html
 # Recipe spec: ingredients column last, sortable result/tier/category.
@@ -136,9 +196,18 @@ ri = html.index('data-sort="recipeRows"')
 assert ri < html.index("<th>tier</th>") < html.index("<th>category</th>")
 assert html.index("<th>category</th>") < html.index("<th>ingredients</th>")
 # Steam-market panel: picker, range, stats, ladder, orders, median/volume.
-for wid in ("steamItem", "steamRange", "st-lowask", "st-med", "st-vol",
-            "st-chart", "st-ladder", "st-ladderHead", "steamOrders",
-            "noSteamOrders"):
+for wid in (
+    "steamItem",
+    "steamRange",
+    "st-lowask",
+    "st-med",
+    "st-vol",
+    "st-chart",
+    "st-ladder",
+    "st-ladderHead",
+    "steamOrders",
+    "noSteamOrders",
+):
     assert f'id="{wid}"' in html, f"missing steam widget {wid}"
 assert "uPlot.paths.bars" in html and "Item market" in html
 # Hover readouts: cursor + setCursor hook + timestamps on every chart.
@@ -147,7 +216,7 @@ assert "fmtTs" in html and ".u-cursor-x" in html
 # Theme micro-fix: toggle invalidates the map key AND repaints at once.
 assert 'lastMapKey = "";' in html
 i = html.index('$("themeToggle").addEventListener')
-assert "renderAll(lastState)" in html[i:i + 1200], "toggle does not repaint at once"
+assert "renderAll(lastState)" in html[i : i + 1200], "toggle does not repaint at once"
 assert "drag: {x: false, y: false}" in html
 assert 'id="st-tip"' in html
 # Commissions board: Quests-adjacent sortable panel + snapshot key.
@@ -158,8 +227,10 @@ assert "renderCommissions" in html
 assert "<th>posted</th>" in html and "fmtAge" in html
 assert "<th>progress</th>" in html, "progress column missing"
 assert "progFrac" in html and "hpbar" in html, "progress bar wiring missing"
-for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot",
-            '"created_ts": c.get("created_ts", 0)',
+for tok in (
+    '"commissions": _commission_snapshot()',
+    "def _commission_snapshot",
+    '"created_ts": c.get("created_ts", 0)',
     '"progress": _commission_progress(c)',
     "def _commission_progress",
 ):
@@ -167,8 +238,15 @@ for tok in ('"commissions": _commission_snapshot()', "def _commission_snapshot",
 # PERF pass: guarded DOM writes, chart/map repaint skips, activity cap,
 # throttled poll loop with hidden-tab slowdown.
 assert "setInterval(tick" not in html, "1s setInterval loop still present"
-for tok in ("function setHTML", "lastMapKey", "_dataKey", "slice(-80)",
-            "visibilitychange", "schedulePoll", "10000 : 2000"):
+for tok in (
+    "function setHTML",
+    "lastMapKey",
+    "_dataKey",
+    "slice(-80)",
+    "visibilitychange",
+    "schedulePoll",
+    "10000 : 2000",
+):
     assert tok in html, f"perf token {tok} missing"
 # Trends moved to uPlot: no canvas line-chart helper may remain.
 assert "drawLineChart" not in html, "legacy canvas charts still present"
@@ -203,7 +281,9 @@ assert '"g-treasury"' in rtb, "g-treasury write missing"
 assert "updateGMCosts" in rtb, "cost labels not refreshed"
 gmsec = re.search(r"gm: \[(.*?)\n  \],", html, re.DOTALL)
 assert gmsec and "renderTreasury" in gmsec.group(1), "gm tab has no treasury section"
-assert re.search(r"gmws\.onmessage[\s\S]{0,400}?tick\(\)", html), "GM ack does not pull a fresh tick"
+assert re.search(
+    r"gmws\.onmessage[\s\S]{0,400}?tick\(\)", html
+), "GM ack does not pull a fresh tick"
 print("TREASURY_LIVE_OK")
 
 # --- bughunt milestone: issue #376 (8 fixes + dungeon_clears) ---
@@ -229,7 +309,9 @@ assert "A-Za-z0-9" in cc.group(1), "cmdClass does not sanitize"
 print("CMDCLASS_OK")
 
 # 4. gmOpen tolerates snapshots without a server block.
-assert "(lastState.server || {}).gm_port" in gm.group(1), "gmOpen crashes without server"
+assert "(lastState.server || {}).gm_port" in gm.group(
+    1
+), "gmOpen crashes without server"
 print("GM_PORT_OK")
 
 # 5. renderRoomDrawer must not stack duplicate roomClose listeners.
@@ -272,8 +354,14 @@ assert "innerHTML" not in dc.group(1), "clears risk layout shift"
 print("CLEARS_OK")
 
 # --- History rings (#333): craft + commission activity tables ---
-for wid in ("craftHistory", "noCraftHistory", "craftHistoryCount",
-            "commHistory", "noCommHistory", "commHistoryCount"):
+for wid in (
+    "craftHistory",
+    "noCraftHistory",
+    "craftHistoryCount",
+    "commHistory",
+    "noCommHistory",
+    "commHistoryCount",
+):
     assert f'id="{wid}"' in html, f"missing history widget {wid}"
 assert 'data-sort="craftHistory"' in html
 assert 'data-sort="commHistory"' in html
@@ -286,8 +374,12 @@ ch = re.search(r"craft_history", html)
 assert ch, "craft_history not consumed"
 assert "commission_history" in html, "commission_history not consumed"
 assert "refund" in html and "forfeit" in html, "cancel economics not rendered"
-for tok in ('"craft_history": list(craft_feed)', '"commission_history": list(comm_feed)',
-            "craft_feed_seq", "comm_feed_seq"):
+for tok in (
+    '"craft_history": list(craft_feed)',
+    '"commission_history": list(comm_feed)',
+    "craft_feed_seq",
+    "comm_feed_seq",
+):
     assert tok in _srv, f"server: history token {tok} missing"
 print("HISTORY_TABLES_OK")
 
@@ -296,14 +388,37 @@ assert '<div class="tab" data-tab="runs">Runs</div>' in html
 assert '<div id="view-runs" class="tabview">' in html
 for tid in ("runsTable", "runCmpTable"):
     assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
-for wid in ("runsCount", "runsMetric", "runsBest", "runsTotal", "runsSelCount",
-            "runsRunning", "runsHead", "runsBody", "noRuns", "runsCmpNote",
-            "runsCmpMetric", "runCmpVal", "runCmp", "runCmpLegend",
-            "runCmpHead", "runCmpBody", "noRunCmp"):
+for wid in (
+    "runsCount",
+    "runsMetric",
+    "runsBest",
+    "runsTotal",
+    "runsSelCount",
+    "runsRunning",
+    "runsHead",
+    "runsBody",
+    "noRuns",
+    "runsCmpNote",
+    "runsCmpMetric",
+    "runCmpVal",
+    "runCmp",
+    "runCmpLegend",
+    "runCmpHead",
+    "runCmpBody",
+    "noRunCmp",
+):
     assert f'id="{wid}"' in html, f"missing runs widget {wid}"
 assert 'runs: [["runs", s => renderRuns(s)]]' in html, "runs tab has no section"
-for fn in ("renderRuns", "loadRuns", "scheduleRunsPoll", "compareChart",
-           "markSorted", "specHead", "specRow", "bestRunNote"):
+for fn in (
+    "renderRuns",
+    "loadRuns",
+    "scheduleRunsPoll",
+    "compareChart",
+    "markSorted",
+    "specHead",
+    "specRow",
+    "bestRunNote",
+):
     assert f"function {fn}" in html, f"{fn} missing"
 assert 'fetch("/api/runs"' in html, "runs tab does not read /api/runs"
 for tok in ("def _runs_payload", '"/api/runs"', "runlog.runs_payload"):
@@ -312,12 +427,16 @@ for tok in ("def _runs_payload", '"/api/runs"', "runlog.runs_payload"):
 # drifted apart would sort by the wrong field with no error. The runs table
 # sorts by runCols (identity + per-kind metrics), not the identity-only base.
 assert "runCols.map(c => c.key)" in html and "RUN_CMP_COLS.map(c => c.key)" in html
-assert 'sortRows("runsTable"' in html and 'sortRows("runCmpTable"' in html, \
-    "runs tables sort on a key bindSortTables never writes"
+assert (
+    'sortRows("runsTable"' in html and 'sortRows("runCmpTable"' in html
+), "runs tables sort on a key bindSortTables never writes"
 # The static pre-render must be the first bindSortTables() call, or the initial
 # header walk sees an empty row and the table is never sortable.
-assert re.search(r'specHead\(RUN_COLS\)\);\s*\nsetHTML\("runCmpHead".*?\nbindSortTables\(\);',
-                 html, re.DOTALL), "runs headers built after the sorter binds"
+assert re.search(
+    r'specHead\(RUN_COLS\)\);\s*\nsetHTML\("runCmpHead".*?\nbindSortTables\(\);',
+    html,
+    re.DOTALL,
+), "runs headers built after the sorter binds"
 # The client cap is a duplicate of runlog.MAX_RUN_IDS on purpose (the page
 # cannot import it), so it is asserted against the server value instead of a
 # second hardcoded literal.
@@ -337,16 +456,18 @@ def _runs_section(h, marker):
 # Per-trainer columns: a fixed score/steps/score_hr list read "-" for every
 # botfarm and soak run, and the header could not be rebuilt per kind.
 assert "runTableCols" in html and "kind_fields" in html
-assert "runsData.root_name" in html and "runsData.root " not in html, \
-    "runs payload path leak"
+assert (
+    "runsData.root_name" in html and "runsData.root " not in html
+), "runs payload path leak"
 # A second poll must not attach a second click handler to a rebuilt <th>.
 assert "dataset.sortBound" in html
 # The server caps a request at MAX_RUN_IDS; a client that allowed more would
 # show a checked box the payload has no series for.
 assert "MAX_RUN_IDS" in html and f"MAX_RUN_IDS = {RL_MAX_RUN_IDS}" in html
 # bestRunNote lands in textContent, so esc() would print its entities.
-assert not re.search(r"esc\(", _runs_section(html, "bestRunNote")), \
-    "bestRunNote escapes into textContent"
+assert not re.search(
+    r"esc\(", _runs_section(html, "bestRunNote")
+), "bestRunNote escapes into textContent"
 # The verdict ranks on a metric the owner picks, with direction from the
 # server -- never a hardcoded assumption that score is what matters.
 assert 'runsMetric = "score"' in html and "higher_is_better" in html
@@ -360,8 +481,9 @@ assert '$("runsBody").addEventListener("change"' in html
 # The catalog outlives the snapshot, so it polls only while its tab is up.
 sp = re.search(r"function scheduleRunsPoll\(\) \{(.*?)\n\}\n", html, re.DOTALL)
 assert sp and 'if (activeTab !== "runs") return;' in sp.group(1), "runs polls off-tab"
-assert re.search(r'activeTab === "runs"\) \{\s*(?://[^\n]*\n\s*)*loadRuns\(\);', html), \
-    "switching to Runs does not load"
+assert re.search(
+    r'activeTab === "runs"\) \{\s*(?://[^\n]*\n\s*)*loadRuns\(\);', html
+), "switching to Runs does not load"
 # One dropped poll keeps the last good payload instead of blanking the table.
 assert "runsError = String(e.message || e)" in html and "let runsData = null" in html
 # Multi-series chart reuses the themed palette instead of hardcoding colors.
@@ -377,25 +499,29 @@ assert 'id="runsCmpAxis"' in html and "runsCmpAxis" in html, "no x-axis picker"
 assert '["time", "steps"].map(a' in html, "axis options not built"
 # The axis has to come from the recorded x values, not a re-generated index.
 assert "Array.from({length: n}, (_, i) => i)" not in cc.replace(
-    "Array.from({length: n}, (_, i) => i))\n", ""), \
-    "compareChart still plots a sample index"
+    "Array.from({length: n}, (_, i) => i))\n", ""
+), "compareChart still plots a sample index"
 assert "cmpXGrid(xsList)" in cc and "const data = [grid]" in cc, "x grid unused"
 assert "byX.has(x) ? byX.get(x) : null" in cc, "series values not placed on their own x"
 # #428 stands: a slot a run never recorded is a gap, never an invented value.
 assert "byX.set(x, s[j])" in cc and cc.count("null") >= 2
-assert "scales: {x: {time: mode === \"time\"}}" in cc, "time axis not honoured"
+assert 'scales: {x: {time: mode === "time"}}' in cc, "time axis not honoured"
 # The scale's time flag is creation-time config, so switching axes rebuilds.
 assert "u._axisMode !== mode" in cc and "u._axisMode = mode" in cc
-assert "u._dataKey === dataKey" in cc and "mode + \"::\" + grid.join" in cc
+assert "u._dataKey === dataKey" in cc and 'mode + "::" + grid.join' in cc
 # Steps only offered when a run actually logs them; no timestamp falls back to
 # the index rather than pretending a timeline exists.
 assert 'mode === "steps" ? "steps" : "_ts"' in ca, "axis values not read from steps/_ts"
 assert "pickSample(x, key)" in ca and "numOrNull" in ca, "axis values not numeric"
-assert 'const axisAvail = { time: anyTs, steps: anySteps };' in html, "axis availability map missing"
+assert (
+    "const axisAvail = { time: anyTs, steps: anySteps };" in html
+), "axis availability map missing"
 assert 'axisAvail[a] ? "" : " disabled"' in html, "axis offered with no data"
 # select.options is an HTMLOptionsCollection; the headless smoke test drives
 # this page through a DOM stub that has none, so touching it throws there.
-assert "axisSel.options" not in html, "select.options must not be touched (absent from the smoke DOM stub)"
+assert (
+    "axisSel.options" not in html
+), "select.options must not be touched (absent from the smoke DOM stub)"
 assert 'axisMode = wantsSteps ? "steps" : (anyTs ? "time" : "sample")' in html
 assert 'runsCmpAxis === "steps" && anySteps' in html
 # Hover names the x the value was recorded at, not a position in the array.
@@ -417,10 +543,11 @@ assert "cfgForm" in html and "cfgSave" in html and "cfgFile" in html
 ts = re.search(r"const TAB_SECTIONS = \{(.*?)\n\};", html, re.DOTALL)
 assert ts, "TAB_SECTIONS not found"
 assert "config: []" in ts.group(1), "config still renders per tick"
-assert re.search(r'activeTab === "config"\) loadConfig\(\);', html), \
-    "switching to Config does not load"
+assert re.search(
+    r'activeTab === "config"\) loadConfig\(\);', html
+), "switching to Config does not load"
 # Writes go through POST; a GET-only dashboard could never save.
-assert 'method: "POST"' in html and "Content-Type\": \"application/json\"" in html
+assert 'method: "POST"' in html and 'Content-Type": "application/json"' in html
 # The server's loopback verdict gates the form: off-box viewers get every field
 # with the inputs disabled rather than a form that fails on submit.
 ce = _runs_section(html, "renderConfigEditor")
@@ -446,27 +573,42 @@ print("CONFIG_EDITOR_OK")
 # --- one-click training (#64, control plane for #177) ---------------------
 # The Start Training panel lives in the Agents tab; it posts field VALUES and
 # the server builds argv, so the page never assembles a command line.
-for wid in ("trainState", "trainAbout", "trainPresets", "trainForm",
-            "trainCheckpoints", "trainMsg", "trainStart", "trainStop",
-            "trainStatus"):
+for wid in (
+    "trainState",
+    "trainAbout",
+    "trainPresets",
+    "trainForm",
+    "trainCheckpoints",
+    "trainMsg",
+    "trainStart",
+    "trainStop",
+    "trainStatus",
+):
     assert f'id="{wid}"' in html, f"missing training widget {wid}"
 # Four endpoints: two LAN reads, two loopback writes.
-for tok in ('fetch("/api/trainers"', 'fetch("/api/train/status"',
-            'fetch("/api/train/start"', 'fetch("/api/train/stop"'):
+for tok in (
+    'fetch("/api/trainers"',
+    'fetch("/api/train/status"',
+    'fetch("/api/train/start"',
+    'fetch("/api/train/stop"',
+):
     assert tok in html, f"training endpoint {tok} unused"
 assert 'method: "POST"' in html and "JSON.stringify(trainValues())" in html
 # The server's editable verdict gates the buttons, like the config editor:
 # off-box viewers see the form but cannot launch.
 tr = _runs_section(html, "renderTrainStatus")
-assert "trainData.editable" in tr and ".disabled" in tr, \
-    "training ignores the editable verdict"
+assert (
+    "trainData.editable" in tr and ".disabled" in tr
+), "training ignores the editable verdict"
 rf = _runs_section(html, "renderTrainForm")
-assert "trainData.editable" in rf and "disabled" in rf, \
-    "training presets ignore the editable verdict"
+assert (
+    "trainData.editable" in rf and "disabled" in rf
+), "training presets ignore the editable verdict"
 # Presets stage values into the form; nothing launches until Start is pressed.
 ap = _runs_section(html, "applyTrainPreset")
-assert "el.value" in ap and 'fetch("/api/train/start"' not in ap, \
-    "training preset launches instead of staging"
+assert (
+    "el.value" in ap and 'fetch("/api/train/start"' not in ap
+), "training preset launches instead of staging"
 # Delegated listeners, like every other re-rendered surface: per-row binding
 # would stack a handler on every status poll.
 for fn in ("renderTrainForm", "renderTrainStatus"):
@@ -476,19 +618,31 @@ assert 'document.addEventListener("click"' in html and "data-trainpreset" in htm
 # The options fetch is lazy and the status poll stops off-tab.
 assert re.search(
     r'activeTab === "agents"\) \{\s*(?://[^\n]*\n\s*)*if \(!trainData\) loadTrainers\(\);',
-    html), "switching to Agents does not load training options"
+    html,
+), "switching to Agents does not load training options"
 sp = re.search(r"function scheduleTrainPoll\(\) \{(.*?)\n\}", html, re.DOTALL)
-assert sp and 'if (activeTab !== "agents") return;' in sp.group(1), \
-    "training polls off-tab"
+assert sp and 'if (activeTab !== "agents") return;' in sp.group(
+    1
+), "training polls off-tab"
 # Server side: start/stop ride the same loopback + content-type gate.
-for tok in ('"/api/train/start"', '"/api/train/stop"', '"/api/train/status"',
-            '"/api/trainers"', "_train_start", "_train_stop",
-            "_trainers_payload", "_train_payload", "launching = path"):
+for tok in (
+    '"/api/train/start"',
+    '"/api/train/stop"',
+    '"/api/train/status"',
+    '"/api/trainers"',
+    "_train_start",
+    "_train_stop",
+    "_trainers_payload",
+    "_train_payload",
+    "launching = path",
+):
     assert tok in _srv, f"server: training token {tok} missing"
 # (status, payload) is the helper convention; _send_json takes (payload,
 # status). Unpacking with * flipped the two and every reply 500'd at
 # send_response(dict). Live-proof caught it, so pin the unpack here too.
-assert "_send_json(*_train" not in _srv, "training reply must not splat (status, payload)"
+assert (
+    "_send_json(*_train" not in _srv
+), "training reply must not splat (status, payload)"
 for tok in ("status, result = _train_start", "status, result = _train_stop"):
     assert tok in _srv, f"server: training dispatch {tok!r} missing"
 print("TRAINING_PANEL_OK")

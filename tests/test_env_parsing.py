@@ -7,19 +7,41 @@ parameterized bounties; merchant/affordability/party gates (#194);
 remedy/tonic quest mirror, stages, transitions, events, obs (#183); and
 dynamic-shard valuation through live ITEM_DEFS (#194).
 """
+
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml")
+)
 
 import ml_env
-from ml_env import (GOAL_AXES, ITEM_ID_TO_NAME, ITEM_LIST,
-                    MERCHANT_NAMES, N_ACTIONS, OBS_SIZE, QUESTS, TextMMOEnv,
-                    _parse_commissions, best_market_ask, flatten_obs,
-                    flip_margin, goal_reward, inventory_value, merchant_value,
-                    mutate_goal, pack_full, pack_units, quest_stage,
-                    quest_transitions, reward_vector, sample_goal)
-import server as srv  # noqa: E402  (ml_env extends sys.path on import)
+from ml_env import (
+    GOAL_AXES,
+    ITEM_ID_TO_NAME,
+    ITEM_LIST,
+    MERCHANT_NAMES,
+    N_ACTIONS,
+    OBS_SIZE,
+    QUESTS,
+    TextMMOEnv,
+    _parse_commissions,
+    best_market_ask,
+    flatten_obs,
+    flip_margin,
+    goal_reward,
+    inventory_value,
+    merchant_value,
+    mutate_goal,
+    pack_full,
+    pack_units,
+    quest_stage,
+    quest_transitions,
+    reward_vector,
+    sample_goal,
+)
+
+import server as srv
 
 
 def test_discounted_commission_parses():
@@ -28,10 +50,16 @@ def test_discounted_commission_parses():
     hyphen = "#14: slay 1x Wolf - reward 10g + 5xp (your rate: x0.1) (posted by Bob)"
     rows = _parse_commissions("\n".join([plain, disc, hyphen]))
     assert len(rows) == 3, rows
-    assert rows[0]["id"] == 12 and rows[0]["rate"] is None and rows[0]["poster"] == "Alice"
-    assert rows[1]["id"] == 13 and rows[1]["rate"] == 0.5 and rows[1]["poster"] == "Alice"
+    assert (
+        rows[0]["id"] == 12 and rows[0]["rate"] is None and rows[0]["poster"] == "Alice"
+    )
+    assert (
+        rows[1]["id"] == 13 and rows[1]["rate"] == 0.5 and rows[1]["poster"] == "Alice"
+    )
     assert rows[1]["gold"] == 25 and rows[1]["xp"] == 50
-    assert rows[2]["id"] == 14 and rows[2]["rate"] == 0.1 and rows[2]["target"] == "Wolf"
+    assert (
+        rows[2]["id"] == 14 and rows[2]["rate"] == 0.1 and rows[2]["target"] == "Wolf"
+    )
     assert _parse_commissions("No open commissions right now.") == []
     print("COMMISSION_PARSE_OK")
 
@@ -86,14 +114,18 @@ def _econ_env(**over):
 
 def test_priced_market_post():
     # Listed ask 20, herb value 1: margin 17 > 0, undercut to 19.
-    e = _econ_env(inv_names=["Healing Herb", "Healing Herb"],
-                  market_state={"orders": [{"item": "Healing Herb", "price": 20,
-                                             "seller": "Other"}]})
+    e = _econ_env(
+        inv_names=["Healing Herb", "Healing Herb"],
+        market_state={
+            "orders": [{"item": "Healing Herb", "price": 20, "seller": "Other"}]
+        },
+    )
     cmd = e._action_to_cmd("market_post")
     assert cmd == {"cmd": "market_post", "item": "Healing Herb", "price": 19}, cmd
     # Unlisted: merchant value + 1 (value defaults to 1 without a value key).
-    e = _econ_env(inv_names=["Healing Herb", "Healing Herb"],
-                  market_state={"orders": []})
+    e = _econ_env(
+        inv_names=["Healing Herb", "Healing Herb"], market_state={"orders": []}
+    )
     cmd = e._action_to_cmd("market_post")
     assert cmd == {"cmd": "market_post", "item": "Healing Herb", "price": 2}, cmd
     print("PRICED_POST_OK")
@@ -102,28 +134,41 @@ def test_priced_market_post():
 def test_parameterized_bounty():
     e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="guild_hall")
     cmd = e._action_to_cmd("commission_post")
-    assert cmd == {"cmd": "commission_post", "target": "Giant Rat",
-                   "required_kills": 1, "reward_gold": 10,
-                   "reward_xp": 0}, cmd
+    assert cmd == {
+        "cmd": "commission_post",
+        "target": "Giant Rat",
+        "required_kills": 1,
+        "reward_gold": 10,
+        "reward_xp": 0,
+    }, cmd
     # Broke: masked (a zero-reward post would be rejected, #337 item 3).
     e = _econ_env(npc_names=["Giant Rat"], gold=0, room_id="guild_hall")
     assert e._action_to_cmd("commission_post") is None
     # Blind but funded: server's own "rat" default.
-    cmd = _econ_env(npc_names=[], gold=50,
-                    room_id="guild_hall")._action_to_cmd("commission_post")
+    cmd = _econ_env(npc_names=[], gold=50, room_id="guild_hall")._action_to_cmd(
+        "commission_post"
+    )
     assert cmd["target"] == "rat" and cmd["reward_gold"] == 10, cmd
     # Away from the guild hall: post is presence-gated (#337).
     e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="town_square")
     assert e._action_to_cmd("commission_post") is None
-    e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="town_square",
-                   open_commissions=[{"id": 1, "poster": "Other",
-                                      "gold": 5, "xp": 0}])
+    e = _econ_env(
+        npc_names=["Giant Rat"],
+        gold=50,
+        room_id="town_square",
+        open_commissions=[{"id": 1, "poster": "Other", "gold": 5, "xp": 0}],
+    )
     assert e._action_to_cmd("commission_fill") is None
-    e = _econ_env(npc_names=["Giant Rat"], gold=50, room_id="guild_hall",
-                   open_commissions=[{"id": 1, "poster": "Other",
-                                      "gold": 5, "xp": 0}])
+    e = _econ_env(
+        npc_names=["Giant Rat"],
+        gold=50,
+        room_id="guild_hall",
+        open_commissions=[{"id": 1, "poster": "Other", "gold": 5, "xp": 0}],
+    )
     assert e._action_to_cmd("commission_fill") == {
-        "cmd": "commission_fill", "commission_id": 1}
+        "cmd": "commission_fill",
+        "commission_id": 1,
+    }
     print("BOUNTY_PARAMS_OK")
 
 
@@ -137,10 +182,22 @@ def test_gate_matrix():
         ("buy_arrows", {"npc_names": []}, True),
         ("buy_arrows", {"npc_names": ["Wandering Merchant"]}, False),
         ("market_buy", {"market_state": {"orders": []}, "gold": 100}, True),
-        ("market_buy", {"market_state": {"orders": [{"item": "X", "price": 50, "seller": "O"}]},
-                        "gold": 10}, True),
-        ("market_buy", {"market_state": {"orders": [{"item": "X", "price": 50, "seller": "O"}]},
-                        "gold": 100}, False),
+        (
+            "market_buy",
+            {
+                "market_state": {"orders": [{"item": "X", "price": 50, "seller": "O"}]},
+                "gold": 10,
+            },
+            True,
+        ),
+        (
+            "market_buy",
+            {
+                "market_state": {"orders": [{"item": "X", "price": 50, "seller": "O"}]},
+                "gold": 100,
+            },
+            False,
+        ),
         # party_leave/info are deliberately UNGATED (membership isn't
         # client-verifiable: room-event party_size lags joins, so gating
         # blocks the valid info right after accept -- proven by live test).
@@ -148,13 +205,17 @@ def test_gate_matrix():
     for action, over, expect_none in rows:
         got = _econ_env(**over)._action_to_cmd(action)
         assert (got is None) == expect_none, (action, over, got)
-    assert _econ_env(party_size=1)._action_to_cmd("party_leave") == {"cmd": "party_leave"}
+    assert _econ_env(party_size=1)._action_to_cmd("party_leave") == {
+        "cmd": "party_leave"
+    }
     assert _econ_env(party_size=1)._action_to_cmd("party_info") == {"cmd": "party_info"}
     # Mappable states produce real commands, not just non-None.
-    assert _econ_env(npc_names=["Wandering Merchant"],
-                     inv_names=herbs)._action_to_cmd("sell") == {"cmd": "sell", "item": "Healing Herb"}
-    assert _econ_env(market_state={"orders": [{"item": "X", "price": 50, "seller": "O"}]},
-                     gold=100)._action_to_cmd("market_buy") == {"cmd": "market_buy"}
+    assert _econ_env(npc_names=["Wandering Merchant"], inv_names=herbs)._action_to_cmd(
+        "sell"
+    ) == {"cmd": "sell", "item": "Healing Herb"}
+    assert _econ_env(
+        market_state={"orders": [{"item": "X", "price": 50, "seller": "O"}]}, gold=100
+    )._action_to_cmd("market_buy") == {"cmd": "market_buy"}
     print("GATES_MATRIX_OK")
 
 
@@ -170,34 +231,65 @@ def test_maren_mirror_and_stages():
     assert QUESTS["tonic"]["reward_points"] == srv.QUEST_TONIC_POINTS == 12
     assert QUESTS["tonic"]["inputs"] == ["fortitude_tonic"]
     for qid, pre in (("remedy", "quest3"), ("tonic", "quest4")):
-        assert quest_stage({pre + "_active": True, pre + "_ready": True}, qid) == "ready_turn_in"
+        assert (
+            quest_stage({pre + "_active": True, pre + "_ready": True}, qid)
+            == "ready_turn_in"
+        )
         assert quest_stage({pre + "_active": True}, qid) == "collect"
         assert quest_stage({}, qid) == "no_quest"
     print("MAREN_MIRROR_OK")
 
 
 def test_quest_transitions_all_four():
-    specs = (("guard_charm", "quest_guard_active", "guard_charm_crafted"),
-             ("delver", "quest_delver_active", "quest_delver_ready"),
-             ("remedy", "quest_remedy_active", "quest_remedy_ready"),
-             ("tonic", "quest_tonic_active", "quest_tonic_ready"))
+    specs = (
+        ("guard_charm", "quest_guard_active", "guard_charm_crafted"),
+        ("delver", "quest_delver_active", "quest_delver_ready"),
+        ("remedy", "quest_remedy_active", "quest_remedy_ready"),
+        ("tonic", "quest_tonic_active", "quest_tonic_ready"),
+    )
     for qid, akey, rkey in specs:
         t = quest_transitions({akey: False}, {akey: True})
-        assert t[qid] == {"accepted": True, "turned_in": False, "became_ready": False}, (qid, t)
+        assert t[qid] == {
+            "accepted": True,
+            "turned_in": False,
+            "became_ready": False,
+        }, (qid, t)
         t = quest_transitions({akey: True}, {akey: False})
-        assert t[qid] == {"accepted": False, "turned_in": True, "became_ready": False}, (qid, t)
+        assert t[qid] == {
+            "accepted": False,
+            "turned_in": True,
+            "became_ready": False,
+        }, (qid, t)
         t = quest_transitions({rkey: False}, {rkey: True})
-        assert t[qid] == {"accepted": False, "turned_in": False, "became_ready": True}, (qid, t)
+        assert t[qid] == {
+            "accepted": False,
+            "turned_in": False,
+            "became_ready": True,
+        }, (qid, t)
         t = quest_transitions({}, {})
-        assert t[qid] == {"accepted": False, "turned_in": False, "became_ready": False}, (qid, t)
+        assert t[qid] == {
+            "accepted": False,
+            "turned_in": False,
+            "became_ready": False,
+        }, (qid, t)
     print("QUEST_TRANSITIONS_OK")
 
 
 def test_event_parsing_maren_combat_inventory():
     e = TextMMOEnv("ParseEv")
-    e._apply_event({"type": "stats", "hp": 20, "max_hp": 20, "gold": 5, "score": 1.0,
-                    "quest_remedy_active": True, "quest_remedy_ready": False,
-                    "quest_tonic_active": True, "quest_tonic_ready": True})
+    e._apply_event(
+        {
+            "type": "stats",
+            "hp": 20,
+            "max_hp": 20,
+            "gold": 5,
+            "score": 1.0,
+            "quest_remedy_active": True,
+            "quest_remedy_ready": False,
+            "quest_tonic_active": True,
+            "quest_tonic_ready": True,
+        }
+    )
     assert e._state["quest_remedy_active"] is True
     assert e._state["quest_remedy_ready"] is False
     assert e._state["quest_tonic_active"] is True
@@ -261,9 +353,18 @@ def _pendings(e):
 
 def test_wild_indoor_flags_observed():
     e = TextMMOEnv("WildObs")
-    base = {"type": "room", "exits": {}, "npcs": [], "items": [],
-            "gold": 0, "players": [], "is_dungeon": False, "dungeon_floor": 0,
-            "party_size": 1, "gatherables": []}
+    base = {
+        "type": "room",
+        "exits": {},
+        "npcs": [],
+        "items": [],
+        "gold": 0,
+        "players": [],
+        "is_dungeon": False,
+        "dungeon_floor": 0,
+        "party_size": 1,
+        "gatherables": [],
+    }
     e._apply_event(dict(base, id="town_square", shelter=False, wild=False))
     assert e._state["wild"] is False and e._state["shelter"] is False
     # an indoor wild gate: both axes true at once (orthogonal flags)
@@ -379,6 +480,7 @@ def test_goal_vector_and_dot():
 
 def test_goal_sampling():
     import random as _random
+
     for seed in range(5):
         _random.seed(seed)
         g = sample_goal()
@@ -397,6 +499,7 @@ def test_goal_sampling():
 
 def test_env_goal_carriage():
     import random as _random
+
     _random.seed(3)
     g = sample_goal()
     e = TextMMOEnv("GoalT", goal=g)
@@ -405,13 +508,18 @@ def test_env_goal_carriage():
     print("GOAL_CARRIAGE_OK")
 
 
-
 def test_readme_ml_dimensions_match_env():
-    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), encoding="utf-8") as readme:
+    with open(
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"
+        ),
+        encoding="utf-8",
+    ) as readme:
         docs = readme.read()
     expected = f"({OBS_SIZE} obs dims, {N_ACTIONS} actions)"
     assert expected in docs, (expected, "README ML dimensions are stale")
     print("README_ML_DIMENSIONS_OK")
+
 
 test_readme_ml_dimensions_match_env()
 test_discounted_commission_parses()

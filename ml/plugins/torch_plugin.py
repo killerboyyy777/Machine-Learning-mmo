@@ -70,7 +70,6 @@ class TorchPlugin(AgentPlugin):
         type(self)._shared_learn_steps += 1
         if type(self)._shared_learn_steps % max(1, self.learn_every) == 0:
             self._agent.learn()
-        return None
 
     def save(self, path):
         self._agent.save_weights(path)

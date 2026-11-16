@@ -5,6 +5,7 @@ Covers the wedge fix: _close_ws() abandons a hung socket within
 close_timeout, and reset() raises ConnectionError (instead of hanging)
 when the server is unreachable.
 """
+
 import asyncio
 import os
 import sys
@@ -35,8 +36,9 @@ print("CLOSE_TIMEOUT_OK")
 
 
 async def _refused_check():
-    env = TextMMOEnv("RefusedTest", url="ws://127.0.0.1:1",
-                     connect_timeout=0.5, connect_retries=2)
+    env = TextMMOEnv(
+        "RefusedTest", url="ws://127.0.0.1:1", connect_timeout=0.5, connect_retries=2
+    )
     t0 = time.time()
     try:
         await env.reset()
@@ -44,6 +46,7 @@ async def _refused_check():
     except ConnectionError:
         pass
     assert time.time() - t0 < 10.0
+
 
 asyncio.run(_refused_check())
 print("CONNECT_RETRIES_OK")

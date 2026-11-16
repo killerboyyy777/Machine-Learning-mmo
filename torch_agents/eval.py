@@ -52,7 +52,9 @@ def _load_agent(policy, checkpoint):
 async def eval_seed(act_fn, url, seed, steps, reward_mode, tag=""):
     random.seed(seed)
     torch.manual_seed(seed)
-    env = TextMMOEnv(f"Eval{tag}{seed}", url=url, max_steps=steps, reward_mode=reward_mode)
+    env = TextMMOEnv(
+        f"Eval{tag}{seed}", url=url, max_steps=steps, reward_mode=reward_mode
+    )
     obs = await env.reset()
     feats = flatten_obs(obs)
     done = False
@@ -99,6 +101,7 @@ def report(name, scores):
 # Implemented exactly (regularized incomplete beta + bisection for the
 # critical value) so no scipy dependency is needed.
 # ---------------------------------------------------------------------------
+
 
 def _betacf(a, b, x):
     """Continued fraction for the incomplete beta function."""
@@ -224,19 +227,26 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
         return out
     if sd == 0.0:
         # Identical diffs: difference is exact (or exactly zero).
-        out.update(t=float("inf") if mean_d != 0.0 else 0.0,
-                   p_value=0.0 if mean_d != 0.0 else 1.0,
-                   cohen_d=float("inf") if mean_d > 0 else
-                   (float("-inf") if mean_d < 0 else 0.0),
-                   ci95=[mean_d, mean_d])
+        out.update(
+            t=float("inf") if mean_d != 0.0 else 0.0,
+            p_value=0.0 if mean_d != 0.0 else 1.0,
+            cohen_d=(
+                float("inf") if mean_d > 0 else (float("-inf") if mean_d < 0 else 0.0)
+            ),
+            ci95=[mean_d, mean_d],
+        )
         out["verdict"] = "SIGNIFICANT" if mean_d != 0.0 else "INCONCLUSIVE"
         return out
     se = sd / math.sqrt(n)
     t = mean_d / se
     p = _t_sf(t, n - 1)
     crit = _t_crit(alpha, n - 1)
-    out.update(t=t, p_value=p, cohen_d=mean_d / sd,
-               ci95=[mean_d - crit * se, mean_d + crit * se])
+    out.update(
+        t=t,
+        p_value=p,
+        cohen_d=mean_d / sd,
+        ci95=[mean_d - crit * se, mean_d + crit * se],
+    )
     out["verdict"] = "SIGNIFICANT" if p < alpha else "INCONCLUSIVE"
     return out
 
@@ -257,8 +267,11 @@ def main():
         help="paired significance test (isolated worlds only; "
         "live eval reports comparative-only)",
     )
-    p.add_argument("--out", default=None,
-                   help="write run record JSON (scores + comparison for #65)")
+    p.add_argument(
+        "--out",
+        default=None,
+        help="write run record JSON (scores + comparison for #65)",
+    )
     args = p.parse_args()
 
     seeds = list(range(args.seeds))
@@ -267,15 +280,26 @@ def main():
     )
     champ = asyncio.run(
         evaluate(
-            args.checkpoint, args.policy, args.url, seeds, args.steps, args.reward_mode,
+            args.checkpoint,
+            args.policy,
+            args.url,
+            seeds,
+            args.steps,
+            args.reward_mode,
             _run_tag(args.checkpoint),
         )
     )
     m, _s = report("challenger", champ)
-    record = {"checkpoint": args.checkpoint, "baseline": args.baseline,
-              "policy": args.policy, "seeds": seeds, "steps": args.steps,
-              "reward_mode": args.reward_mode, "challenger": champ,
-              "comparison": None}
+    record = {
+        "checkpoint": args.checkpoint,
+        "baseline": args.baseline,
+        "policy": args.policy,
+        "seeds": seeds,
+        "steps": args.steps,
+        "reward_mode": args.reward_mode,
+        "challenger": champ,
+        "comparison": None,
+    }
     if args.baseline:
         print(f"[eval] baseline {args.baseline}")
         base = asyncio.run(
@@ -309,10 +333,12 @@ def main():
                 print(f"test: INCONCLUSIVE ({comp['reason']})")
             else:
                 lo, hi = comp["ci95"]
-                print(f"test: {comp['verdict']} "
-                      f"(paired t={comp['t']:.3f}, p={comp['p_value']:.4f}, "
-                      f"d={comp['cohen_d']:.3f}, "
-                      f"95% CI [{lo:+.2f}, {hi:+.2f}])")
+                print(
+                    f"test: {comp['verdict']} "
+                    f"(paired t={comp['t']:.3f}, p={comp['p_value']:.4f}, "
+                    f"d={comp['cohen_d']:.3f}, "
+                    f"95% CI [{lo:+.2f}, {hi:+.2f}])"
+                )
     if args.out:
         with open(args.out, "w") as f:
             json.dump(record, f, indent=2)

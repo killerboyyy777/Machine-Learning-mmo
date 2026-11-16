@@ -6,8 +6,9 @@ must stay additive -- required keys present with JSON scalar/container
 types, extra keys always allowed. Run from the repo root:
     python tests/test_snapshot_contract.py
 """
-import sys
+
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server as srv
@@ -21,34 +22,70 @@ def need(d, keys, where):
 s = srv.world_snapshot()
 
 # --- top level: additive subset, extras allowed ---
-need(s, {"server", "rooms", "players", "scores", "activity", "market",
-          "buffs", "bosses", "dungeons", "quests", "recipes",
-          "commissions", "guilds", "catalog", "history", "craft_history",
-          "commission_history", "intel"}, "snapshot")
+need(
+    s,
+    {
+        "server",
+        "rooms",
+        "players",
+        "scores",
+        "activity",
+        "market",
+        "buffs",
+        "bosses",
+        "dungeons",
+        "quests",
+        "recipes",
+        "commissions",
+        "guilds",
+        "catalog",
+        "history",
+        "craft_history",
+        "commission_history",
+        "intel",
+    },
+    "snapshot",
+)
 
 # --- server block: header stats, ports, uptime ticker seed ---
-need(s["server"], {"ws_port", "gm_port", "uptime", "start_ts",
-                   "players_online", "connections"}, "server")
+need(
+    s["server"],
+    {"ws_port", "gm_port", "uptime", "start_ts", "players_online", "connections"},
+    "server",
+)
 assert isinstance(s["server"]["start_ts"], (int, float))
 
 # --- rooms: all 43 (32 map + guild_hall + 6 wilds + 4 wild-interior chain rooms), map + drawer fields, shelter bool ---
 assert len(s["rooms"]) == 43, f"room count {len(s['rooms'])}"
 for r in s["rooms"]:
-    need(r, {"id", "name", "exits", "players", "npcs", "items",
-             "gold", "shelter", "wild"}, f"room {r.get('id')}")
+    need(
+        r,
+        {"id", "name", "exits", "players", "npcs", "items", "gold", "shelter", "wild"},
+        f"room {r.get('id')}",
+    )
     assert isinstance(r["shelter"], bool), f"room {r['id']} shelter not bool"
     assert isinstance(r["wild"], bool), f"room {r['id']} wild not bool"
     for p in r["players"]:
         need(p, {"name", "level"}, f"room {r['id']} player")
 
 # --- market block + orders + fills ---
-need(s["market"], {"treasury", "collected_lifetime", "tax_rate",
-                   "tax_min", "trade_count", "orders", "history"}, "market")
+need(
+    s["market"],
+    {
+        "treasury",
+        "collected_lifetime",
+        "tax_rate",
+        "tax_min",
+        "trade_count",
+        "orders",
+        "history",
+    },
+    "market",
+)
 for o in s["market"]["orders"]:
     need(o, {"id", "seller", "item", "price", "ts"}, "order")
 for h in s["market"]["history"]:
-    need(h, {"time", "ts", "buyer", "seller", "item", "price",
-             "tax", "payout"}, "fill")
+    need(h, {"time", "ts", "buyer", "seller", "item", "price", "tax", "payout"}, "fill")
 
 # --- buffs / bosses / dungeons ---
 need(s["buffs"], {"xp", "gold"}, "buffs")
@@ -58,12 +95,18 @@ for d in s["dungeons"]:
     need(d, {"id", "party", "max_floor_reached", "floors"}, "dungeon")
 
 # --- quests: catalog + live counts + turn-in feed ---
-need(s["quests"], {"catalog", "active", "completions",
-                   "turnins_last_min", "recent_turnins"}, "quests")
+need(
+    s["quests"],
+    {"catalog", "active", "completions", "turnins_last_min", "recent_turnins"},
+    "quests",
+)
 assert s["quests"]["catalog"], "quest catalog empty"
 for c in s["quests"]["catalog"]:
-    need(c, {"id", "giver_name", "room", "reward_xp",
-             "reward_gold"}, f"quest {c.get('id')}")
+    need(
+        c,
+        {"id", "giver_name", "room", "reward_xp", "reward_gold"},
+        f"quest {c.get('id')}",
+    )
 for t in s["quests"]["recent_turnins"]:
     need(t, {"t", "name", "qid"}, "turn-in")
 
@@ -88,8 +131,11 @@ assert [c["seq"] for c in s["commission_history"]] == sorted(
 # --- recipes: browser fields, names resolved ---
 assert s["recipes"], "recipe list empty"
 for r in s["recipes"]:
-    need(r, {"id", "result", "result_qty", "inputs",
-             "tier", "category"}, f"recipe {r.get('id')}")
+    need(
+        r,
+        {"id", "result", "result_qty", "inputs", "tier", "category"},
+        f"recipe {r.get('id')}",
+    )
     for i in r["inputs"]:
         need(i, {"item", "qty"}, f"recipe {r['id']} input")
 
@@ -183,8 +229,7 @@ for key, value in s["intel"]["counters"].items():
 
 # --- history samples (may be empty on fresh boot) ---
 for h in s["history"]:
-    need(h, {"ts", "players_online", "top_scores",
-             "market_orders"}, "history sample")
+    need(h, {"ts", "players_online", "top_scores", "market_orders"}, "history sample")
 
 # --- live activity entry shape, seeded then cleaned up ---
 n_log = len(srv.command_log)
@@ -193,11 +238,11 @@ had_score = "contractprobe" in {k.lower() for k in srv.SCORES}
 try:
     srv.log_command("ContractProbe", "look", {})
     entry = srv.command_log[-1]
-    need(entry, {"seq", "time", "name", "cmd", "detail",
-                 "level"}, "activity entry")
+    need(entry, {"seq", "time", "name", "cmd", "detail", "level"}, "activity entry")
     assert isinstance(entry["seq"], int) and entry["seq"] > 0
     # Same dicts feed the SSE stream: JSON-serializable as one frame.
     import json as _json
+
     frame = f"id: {entry['seq']}\ndata: {_json.dumps(entry)}\n\n"
     assert frame.startswith("id: ")
 finally:
@@ -212,9 +257,23 @@ finally:
 
 # --- players/scores entries, if anyone is online ---
 for p in s["players"]:
-    need(p, {"name", "level", "score", "kills", "deaths", "gold",
-             "hp", "max_hp", "room", "last_action",
-             "recent_actions"}, f"player {p.get('name')}")
+    need(
+        p,
+        {
+            "name",
+            "level",
+            "score",
+            "kills",
+            "deaths",
+            "gold",
+            "hp",
+            "max_hp",
+            "room",
+            "last_action",
+            "recent_actions",
+        },
+        f"player {p.get('name')}",
+    )
 for e in s["scores"]:
     need(e, {"name", "score", "level"}, "score entry")
 

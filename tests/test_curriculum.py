@@ -4,6 +4,7 @@ Run from the repo root:  python tests/test_curriculum.py
 Covers #59: stage validation, per-stage action gating, mask integration,
 and score-threshold auto-advance.
 """
+
 import os
 import sys
 
@@ -35,12 +36,34 @@ print("CURR_FULL_OK")
 
 # --- stage 0: dungeons, crafting, economy locked; basics open ---
 env0 = TextMMOEnv("Curr0", curriculum_stage=0)
-for a in ("move_enter", "move_down", "quest2_accept", "craft", "craft_charm",
-          "gather", "quest_accept", "market_post", "market_buy",
-          "commission_post", "commission_fill"):
+for a in (
+    "move_enter",
+    "move_down",
+    "quest2_accept",
+    "craft",
+    "craft_charm",
+    "gather",
+    "quest_accept",
+    "market_post",
+    "market_buy",
+    "commission_post",
+    "commission_fill",
+):
     assert env0._curriculum_gated(a), a
-for a in ("attack", "take", "rest", "look", "buy", "sell", "equip", "use",
-          "heal", "quest_list", "market_list", "party_invite"):
+for a in (
+    "attack",
+    "take",
+    "rest",
+    "look",
+    "buy",
+    "sell",
+    "equip",
+    "use",
+    "heal",
+    "quest_list",
+    "market_list",
+    "party_invite",
+):
     assert not env0._curriculum_gated(a), a
 print("CURR_STAGE0_OK")
 

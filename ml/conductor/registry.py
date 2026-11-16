@@ -7,13 +7,13 @@ Each agent type (linear, torch) has two branches:
 Holdout episodes alternate between branches to score which is better.
 When experimental outperforms stable over a window, it gets promoted.
 """
-import os
-import json
-import shutil
-import time
-import threading
-from pathlib import Path
 
+import json
+import os
+import shutil
+import threading
+import time
+from pathlib import Path
 
 # Reset ladder for the resume CLI (#290, slice 6/6): increasing wipe
 # scope over the registry tree, applied before load. Modes after `none`
@@ -26,15 +26,34 @@ RESET_MODES = ("none", "lineage", "cell", "all")
 class AgentEntry:
     """One agent in the registry."""
 
-    __slots__ = ("agent_id", "agent_type", "branch", "checkpoint_path",
-                 "created_at", "episodes", "total_reward", "last_active",
-                 "alive", "goal", "character", "parent_id")
+    __slots__ = (
+        "agent_id",
+        "agent_type",
+        "alive",
+        "branch",
+        "character",
+        "checkpoint_path",
+        "created_at",
+        "episodes",
+        "goal",
+        "last_active",
+        "parent_id",
+        "total_reward",
+    )
 
-    def __init__(self, agent_id, agent_type, branch, checkpoint_path, goal=None,
-                 character=None, parent_id=None):
+    def __init__(
+        self,
+        agent_id,
+        agent_type,
+        branch,
+        checkpoint_path,
+        goal=None,
+        character=None,
+        parent_id=None,
+    ):
         self.agent_id = agent_id
         self.agent_type = agent_type  # "linear" or "torch"
-        self.branch = branch          # "stable" or "experimental"
+        self.branch = branch  # "stable" or "experimental"
         self.checkpoint_path = checkpoint_path
         # Inheritable goal weights (#162 Phase 1): {w_axis: float} simplex,
         # sampled/mutated at spawn, persisted below, logged per episode.
@@ -85,8 +104,16 @@ class Registry:
         self._lock = threading.RLock()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def register(self, agent_id, agent_type, branch="experimental", checkpoint=None,
-                 goal=None, character=None, parent_id=None):
+    def register(
+        self,
+        agent_id,
+        agent_type,
+        branch="experimental",
+        checkpoint=None,
+        goal=None,
+        character=None,
+        parent_id=None,
+    ):
         """Register a new agent. Returns the AgentEntry."""
         with self._lock:
             if agent_id in self._agents:
@@ -100,8 +127,15 @@ class Registry:
             cp_dir = self.base_dir / agent_id
             cp_dir.mkdir(parents=True, exist_ok=True)
             cp = checkpoint or str(cp_dir / "checkpoint.pt")
-            entry = AgentEntry(agent_id, agent_type, branch, cp, goal=goal,
-                               character=character, parent_id=parent_id)
+            entry = AgentEntry(
+                agent_id,
+                agent_type,
+                branch,
+                cp,
+                goal=goal,
+                character=character,
+                parent_id=parent_id,
+            )
             self._agents[agent_id] = entry
             return entry
 
@@ -114,8 +148,9 @@ class Registry:
         when the pool (sized by max_agents) is full -- callers fall back
         to the incarnation id as the login name."""
         with self._lock:
-            taken = {a.character for a in self._agents.values()
-                     if a.alive and a.character}
+            taken = {
+                a.character for a in self._agents.values() if a.alive and a.character
+            }
             for i in range(self.max_agents):
                 name = f"role_{i}"
                 if name not in taken:
@@ -246,8 +281,11 @@ class Registry:
         except OSError:
             parent_id = None
         ckpt = d / "ckpt"
-        return {"goal": goal, "parent_id": parent_id,
-                "ckpt": str(ckpt) if ckpt.is_file() else None}
+        return {
+            "goal": goal,
+            "parent_id": parent_id,
+            "ckpt": str(ckpt) if ckpt.is_file() else None,
+        }
 
     def prune_lineages(self):
         """Drop lineage dirs for ids no longer in the registry (removed
@@ -268,8 +306,7 @@ class Registry:
         """Wipe persisted state per the reset ladder. Returns the list of
         removed paths (for logging). Unknown modes fail fast."""
         if mode not in RESET_MODES:
-            raise ValueError(
-                f"unknown reset mode {mode!r} (want one of {RESET_MODES})")
+            raise ValueError(f"unknown reset mode {mode!r} (want one of {RESET_MODES})")
         removed = []
         with self._lock:
             if mode == "none":
@@ -320,7 +357,8 @@ class Registry:
         with self._lock:
             for a in data.get("agents", []):
                 entry = AgentEntry(
-                    a["agent_id"], a["agent_type"],
+                    a["agent_id"],
+                    a["agent_type"],
                     a.get("branch", "experimental"),
                     a.get("checkpoint", ""),
                     goal=a.get("goal"),

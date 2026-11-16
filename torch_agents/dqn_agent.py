@@ -59,25 +59,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml"))
 
 import torch
-import torch.nn as nn
-import torch.optim as optim
-
 from ml_env import (
-    CONNECTION_ERRORS,
-    TextMMOEnv,
     ACTIONS,
+    CONNECTION_ERRORS,
     N_ACTIONS,
     OBS_SIZE,
+    QUEST_DELVER_REWARD_POINTS,
+    QUEST_REWARD_POINTS,
+    QUESTS,
+    TextMMOEnv,
     flatten_obs,
     market_net,
-    QUESTS,
-    QUEST_REWARD_POINTS,
-    QUEST_DELVER_REWARD_POINTS,
     quest_charm_cost,
     quest_charm_net,
     reset_with_retry,
 )
 from runlog import seed_everything, start_run
+from torch import nn, optim
 from versioning import checkpoint_version, version_notes
 
 
@@ -976,8 +974,8 @@ async def _demo():
     from ml_env import (
         ACTIONS,
         N_ACTIONS,
-        flatten_obs,
         QUESTS,
+        flatten_obs,
         quest_charm_net,
     )
 

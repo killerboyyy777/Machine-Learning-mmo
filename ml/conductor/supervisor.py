@@ -4,12 +4,12 @@ Each agent runs in its own isolated task (asyncio Task). If an agent crashes,
 the supervisor catches the exception, marks it dead, and spawns a replacement
 without affecting other agents.
 """
+
 import asyncio
 import inspect
 import traceback
 
 import websockets
-
 
 # Reconnect backoff for dropped server connections (#290, slice 6/6):
 # exponential per consecutive failure, capped, plus a deterministic
@@ -18,8 +18,12 @@ _RECONNECT_BASE_S = 1.0
 _RECONNECT_MAX_S = 60.0
 # A disconnect is never a crash: these escape neither reset (retried
 # below) nor the step loop (they end the episode instead).
-_CONNECTION_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError,
-                      websockets.ConnectionClosed)
+_CONNECTION_ERRORS = (
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+    websockets.ConnectionClosed,
+)
 
 
 def _env_floor(env):
@@ -36,8 +40,16 @@ def _env_floor(env):
 class AgentTask:
     """Wraps one agent's episode loop with fault isolation."""
 
-    def __init__(self, agent_id, env, policy_fn, max_steps=2000, step_timeout=None,
-                 learn_hook=None, reward_hook=None):
+    def __init__(
+        self,
+        agent_id,
+        env,
+        policy_fn,
+        max_steps=2000,
+        step_timeout=None,
+        learn_hook=None,
+        reward_hook=None,
+    ):
         self.agent_id = agent_id
         self.env = env
         self.policy_fn = policy_fn
@@ -80,13 +92,17 @@ class AgentTask:
                     # agent) and retry. A disconnect is not a death, so
                     # it never escapes to the crash path below.
                     self.reconnects += 1
-                    delay = min(
-                        _RECONNECT_MAX_S,
-                        _RECONNECT_BASE_S * 2 ** min(self.reconnects, 6),
-                    ) + (hash(self.agent_id) % 1000) / 1000.0
+                    delay = (
+                        min(
+                            _RECONNECT_MAX_S,
+                            _RECONNECT_BASE_S * 2 ** min(self.reconnects, 6),
+                        )
+                        + (hash(self.agent_id) % 1000) / 1000.0
+                    )
                     self.last_error = (
                         f"disconnected, reconnecting in {delay:.1f}s "
-                        f"(attempt {self.reconnects})")
+                        f"(attempt {self.reconnects})"
+                    )
                     await asyncio.sleep(delay)
                     continue
                 self.reconnects = 0
@@ -108,8 +124,7 @@ class AgentTask:
                         except Exception:
                             mask = None
                         if self._policy_arity >= 4:
-                            action = self.policy_fn(obs, self.agent_id, mask,
-                                                    self.env)
+                            action = self.policy_fn(obs, self.agent_id, mask, self.env)
                         else:
                             action = self.policy_fn(obs, self.agent_id, mask)
                     else:
@@ -118,13 +133,15 @@ class AgentTask:
                     try:
                         if self.step_timeout is not None:
                             obs, reward, done, info = await asyncio.wait_for(
-                                self.env.step(action), self.step_timeout)
+                                self.env.step(action), self.step_timeout
+                            )
                         else:
                             obs, reward, done, info = await self.env.step(action)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         self.last_error = (
                             f"step timeout after {self.step_timeout}s "
-                            f"(episode {self.episodes + 1})")
+                            f"(episode {self.episodes + 1})"
+                        )
                         break
                     except (OSError, websockets.ConnectionClosed):
                         # Socket died mid-episode (ml_env converts
@@ -133,22 +150,26 @@ class AgentTask:
                         # Not a crash, not a death.
                         self.last_error = (
                             f"connection lost mid-episode "
-                            f"(episode {self.episodes + 1})")
+                            f"(episode {self.episodes + 1})"
+                        )
                         break
                     episode_reward += reward
                     self.steps += 1
                     if self.learn_hook is not None:
                         try:
-                            self.learn_hook(prev_obs, action, reward, obs,
-                                            done)
+                            self.learn_hook(prev_obs, action, reward, obs, done)
                         except Exception:
                             pass
                     if done:
                         break
                 self.episodes += 1
                 self.total_reward += episode_reward
-                yield {"agent_id": self.agent_id, "episode": self.episodes,
-                       "reward": episode_reward, "steps": self.steps}
+                yield {
+                    "agent_id": self.agent_id,
+                    "episode": self.episodes,
+                    "reward": episode_reward,
+                    "steps": self.steps,
+                }
         except Exception:
             # Record, then re-raise: an escaping exception is a task-killing
             # crash, and the supervisor (not this generator) owns the
@@ -180,8 +201,16 @@ class AgentTask:
 class Supervisor:
     """Manages isolated agent tasks with fault recovery."""
 
-    def __init__(self, registry, max_concurrent=50, mixer=None, floor_fn=None,
-                 step_timeout=None, metrics=None, episode_hook=None):
+    def __init__(
+        self,
+        registry,
+        max_concurrent=50,
+        mixer=None,
+        floor_fn=None,
+        step_timeout=None,
+        metrics=None,
+        episode_hook=None,
+    ):
         self.registry = registry
         self.max_concurrent = max_concurrent
         # Mixer auto-integration (#51): every completed episode is fed to
@@ -201,15 +230,16 @@ class Supervisor:
         # fresh envs/policies that reload the copied weights (#228).
         # policy_factory(checkpoint_path, hparams) rebuilds the policy
         # from the loser's checkpoint file; None keeps the stored closure.
-        self._specs = {}  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook)
+        self._specs = (
+            {}
+        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook)
         self._lock = asyncio.Lock()
 
     def _log_death(self, agent_id, episodes, total_reward, error=None):
         if self._metrics is None:
             return
         try:
-            self._metrics.log_agent_death(agent_id, episodes, total_reward,
-                                          error=error)
+            self._metrics.log_agent_death(agent_id, episodes, total_reward, error=error)
         except Exception:
             pass
 
@@ -224,15 +254,27 @@ class Supervisor:
         try:
             entry = self.registry.get(agent_id)
             goal = entry.goal if entry is not None else None
-            self._metrics.log_episode(agent_id, event["episode"],
-                                      event["reward"], event.get("steps", 0),
-                                      goal=goal)
+            self._metrics.log_episode(
+                agent_id,
+                event["episode"],
+                event["reward"],
+                event.get("steps", 0),
+                goal=goal,
+            )
         except Exception:
             pass
 
-    async def start_agent(self, agent_id, env_factory, policy_fn, max_steps=2000,
-                           step_timeout=None, policy_factory=None,
-                           learn_hook=None, reward_hook=None):
+    async def start_agent(
+        self,
+        agent_id,
+        env_factory,
+        policy_fn,
+        max_steps=2000,
+        step_timeout=None,
+        policy_factory=None,
+        learn_hook=None,
+        reward_hook=None,
+    ):
         """Start an isolated task for one agent.
 
         Returns True when a task is running afterwards, False when the
@@ -267,14 +309,27 @@ class Supervisor:
                     env.reward_fn = reward_hook
             except Exception:
                 pass
-            at = AgentTask(agent_id, env, policy_fn, max_steps,
-                            step_timeout=step_timeout if step_timeout is not None
-                            else self._step_timeout,
-                            learn_hook=learn_hook, reward_hook=reward_hook)
+            at = AgentTask(
+                agent_id,
+                env,
+                policy_fn,
+                max_steps,
+                step_timeout=(
+                    step_timeout if step_timeout is not None else self._step_timeout
+                ),
+                learn_hook=learn_hook,
+                reward_hook=reward_hook,
+            )
             self._tasks[agent_id] = at
-            self._specs[agent_id] = (env_factory, policy_fn, max_steps,
-                                      step_timeout, policy_factory, learn_hook,
-                                      reward_hook)
+            self._specs[agent_id] = (
+                env_factory,
+                policy_fn,
+                max_steps,
+                step_timeout,
+                policy_factory,
+                learn_hook,
+                reward_hook,
+            )
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
             return True
 
@@ -302,8 +357,9 @@ class Supervisor:
             entry = self.registry.get(at.agent_id)
             if entry:
                 entry.alive = False
-            self._log_death(at.agent_id, at.episodes, at.total_reward,
-                            error=traceback.format_exc())
+            self._log_death(
+                at.agent_id, at.episodes, at.total_reward, error=traceback.format_exc()
+            )
         finally:
             self._tasks.pop(at.agent_id, None)
             # The agent isn't running anymore (cancelled, crashed, or
@@ -361,20 +417,30 @@ class Supervisor:
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
         await self._shutdown(at)
-        (env_factory, policy_fn, max_steps, step_timeout, policy_factory,
-         learn_hook, reward_hook) = spec
+        (
+            env_factory,
+            policy_fn,
+            max_steps,
+            step_timeout,
+            policy_factory,
+            learn_hook,
+            reward_hook,
+        ) = spec
         if policy_factory is not None:
             try:
-                policy_fn = policy_factory(entry.checkpoint_path,
-                                            hparams or {})
+                policy_fn = policy_factory(entry.checkpoint_path, hparams or {})
             except Exception:
                 policy_fn = spec[1]
-        started = await self.start_agent(agent_id, env_factory, policy_fn,
-                                          max_steps=max_steps,
-                                          step_timeout=step_timeout,
-                                          policy_factory=policy_factory,
-                                          learn_hook=learn_hook,
-                                          reward_hook=reward_hook)
+        started = await self.start_agent(
+            agent_id,
+            env_factory,
+            policy_fn,
+            max_steps=max_steps,
+            step_timeout=step_timeout,
+            policy_factory=policy_factory,
+            learn_hook=learn_hook,
+            reward_hook=reward_hook,
+        )
         if started and self._mixer is not None:
             try:
                 # Shutdown already dropped the id from floor lists, but
@@ -412,6 +478,8 @@ class Supervisor:
     def status(self):
         return {
             "running": len(self._tasks),
-            "agents": {aid: {"episodes": at.episodes, "reward": round(at.total_reward, 2)}
-                       for aid, at in self._tasks.items()},
+            "agents": {
+                aid: {"episodes": at.episodes, "reward": round(at.total_reward, 2)}
+                for aid, at in self._tasks.items()
+            },
         }

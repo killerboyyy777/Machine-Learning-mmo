@@ -7,6 +7,7 @@ is debited only when something is actually delivered), gm_tables counts,
 and gm_kick delivery. Complements the buff/boss/announce/heal/teleport/
 slay coverage already in test_server_unit.py.
 """
+
 import asyncio
 import json
 import os
@@ -132,7 +133,10 @@ async def main():
         n_inv = len(rich.inventory)
         await srv.cmd_gm_reward(gm, {"item": "healing_herb", "player": "Paid1"})
         assert len(rich.inventory) == n_inv + 1 and rich.inventory[-1] == "healing_herb"
-        assert srv.tax_treasury == round(before - herb_value, 2), (before, srv.tax_treasury)
+        assert srv.tax_treasury == round(before - herb_value, 2), (
+            before,
+            srv.tax_treasury,
+        )
         print("GM_ITEM_ONLINE_OK")
 
         # --- insufficient treasury: error, no debit ---
@@ -145,8 +149,9 @@ async def main():
         # --- gm_tables: staged state counted exactly ---
         cid = next(srv._commission_counter)
         srv._commissions[cid] = {"id": cid, "poster": "Paid1", "status": "open"}
-        srv.market_orders.append({"id": 424242, "seller": "Paid1",
-                                  "item": "arrow", "price": 3, "ts": 0.0})
+        srv.market_orders.append(
+            {"id": 424242, "seller": "Paid1", "item": "arrow", "price": 3, "ts": 0.0}
+        )
         srv._pending_party_invites["ghosttest"] = {"party": None, "ts": 0.0}
         srv.room_gold["d_9_f9"] = 5
         try:

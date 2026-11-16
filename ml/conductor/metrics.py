@@ -4,10 +4,11 @@ Writes one JSON object per line, suitable for offline analysis with
 jq, pandas, or custom tools. Events include agent spawn/death,
 episode completions, promotions, and rebalance moves.
 """
+
 import json
-import time
 import os
 import threading
+import time
 
 
 class MetricsLogger:
@@ -20,8 +21,9 @@ class MetricsLogger:
     a run ever rotates twice (none has).
     """
 
-    def __init__(self, path, buffer_size=50, flush_every=60.0,
-                 rotate_mb=50, keep_files=5):
+    def __init__(
+        self, path, buffer_size=50, flush_every=60.0, rotate_mb=50, keep_files=5
+    ):
         self.path = path
         self.buffer_size = buffer_size
         self.flush_every = flush_every
@@ -43,8 +45,10 @@ class MetricsLogger:
         event = {"event": event_type, **kwargs}
         with self._lock:
             self._buffer.append(event)
-            if (len(self._buffer) >= self.buffer_size
-                    or time.time() - self._last_flush >= self.flush_every):
+            if (
+                len(self._buffer) >= self.buffer_size
+                or time.time() - self._last_flush >= self.flush_every
+            ):
                 self.flush()
 
     def _maybe_rotate(self):
@@ -83,23 +87,38 @@ class MetricsLogger:
         kw = {}
         if error:
             kw["error"] = str(error)[-500:]  # traceback tail, if any
-        self.log("agent_death", agent_id=agent_id, episodes=episodes,
-                 total_reward=round(total_reward, 4), **kw)
+        self.log(
+            "agent_death",
+            agent_id=agent_id,
+            episodes=episodes,
+            total_reward=round(total_reward, 4),
+            **kw,
+        )
 
     def log_episode(self, agent_id, episode, reward, steps, goal=None):
         kw = {}
         if goal:
             kw["goal"] = dict(goal)
-        self.log("episode", agent_id=agent_id, episode=episode,
-                 reward=round(reward, 4), steps=steps, **kw)
+        self.log(
+            "episode",
+            agent_id=agent_id,
+            episode=episode,
+            reward=round(reward, 4),
+            steps=steps,
+            **kw,
+        )
 
     def log_promotion(self, agent_id, from_branch, to_branch):
-        self.log("promotion", agent_id=agent_id,
-                 from_branch=from_branch, to_branch=to_branch)
+        self.log(
+            "promotion", agent_id=agent_id, from_branch=from_branch, to_branch=to_branch
+        )
 
     def log_rebalance(self, moves):
-        self.log("rebalance", moves=[{"agent": a, "from": f, "to": t} for a, f, t in moves])
+        self.log(
+            "rebalance", moves=[{"agent": a, "from": f, "to": t} for a, f, t in moves]
+        )
 
     def log_wave(self, wave_num, agents_added, total_alive):
-        self.log("wave", wave=wave_num, agents_added=agents_added,
-                 total_alive=total_alive)
+        self.log(
+            "wave", wave=wave_num, agents_added=agents_added, total_alive=total_alive
+        )

@@ -6,6 +6,7 @@ feeds the mixer + writes episode metrics rows (#210) + fires the churn
 episode hook; Conductor.run performs wave startup, churn turnover, and
 persists the registry -- all against fake envs.
 """
+
 import asyncio
 import json
 import os
@@ -14,7 +15,14 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ml.conductor import ChurnManager, Conductor, MetricsLogger, Mixer, Registry, Supervisor
+from ml.conductor import (
+    ChurnManager,
+    Conductor,
+    MetricsLogger,
+    Mixer,
+    Registry,
+    Supervisor,
+)
 
 
 class FakeEnv:
@@ -62,10 +70,17 @@ async def _supervisor_flow(tmpdir):
 
 async def _conductor_run(tmpdir):
     cond = Conductor(
-        os.path.join(tmpdir, "cond"), max_agents=3,
-        arrivals_per_minute=6000, mean_lifetime_episodes=2,
-        runners=[{"env_factory": lambda i: FakeEnv(),
-                  "policy_fn": lambda o, a: 0, "weight": 1}],
+        os.path.join(tmpdir, "cond"),
+        max_agents=3,
+        arrivals_per_minute=6000,
+        mean_lifetime_episodes=2,
+        runners=[
+            {
+                "env_factory": lambda i: FakeEnv(),
+                "policy_fn": lambda o, a: 0,
+                "weight": 1,
+            }
+        ],
         url="ws://localhost:9",
     )
     await cond.run(duration_seconds=4, wave_size=10, wave_delay=0.01)
@@ -74,8 +89,9 @@ async def _conductor_run(tmpdir):
     assert snap["alive"] >= 1, snap
     assert total_eps >= 3, snap  # real episodes completed, not just spawns
     assert os.path.isfile(os.path.join(tmpdir, "cond", "registry", "registry.json"))
-    rows = [json.loads(line) for line in
-            open(os.path.join(tmpdir, "cond", "metrics.jsonl"))]
+    rows = [
+        json.loads(line) for line in open(os.path.join(tmpdir, "cond", "metrics.jsonl"))
+    ]
     assert any(r["event"] == "episode" for r in rows)
     st = cond.status()
     assert st["supervisor"]["running"] == 0  # clean shutdown, no stray tasks
