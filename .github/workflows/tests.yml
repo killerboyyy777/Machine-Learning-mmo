@@ -165,8 +165,7 @@ jobs:
           replacements = {
               'ml/conductor/conductor.py': (
                   '                env_factory = lambda aid, _f=base_factory, _n=login: _f(_n)',
-                  '                def env_factory(aid, _f=base_factory, _n=login):' + nl
-                  '                    return _f(_n)',
+                  '                def env_factory(aid, _f=base_factory, _n=login):' + nl + '                    return _f(_n)',
               ),
               'ml/ml_botfarm.py': (
                   '    stop_setter = lambda: farm.stop.set()',
