@@ -964,7 +964,7 @@ async def main():
     assert not any(i.startswith("dungeon_blade_") for i in d.floors[1].items)
     g0 = d.floors[1].guards[0]
     srv.respawn_npc(g0)
-    assert d.floors[1].cleared == False
+    assert d.floors[1].cleared is False
     print("DUNGEON_SEAL_OK")
 
     # --- Warden boss on the last floor: fixed stats, trophy loot, no scaling ---

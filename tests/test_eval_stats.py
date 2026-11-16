@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 sys.path.insert(0, ROOT)
 
-from dqn_agent import TorchDQNAgent  # noqa: F401  (import shape check only)
+from dqn_agent import TorchDQNAgent  # noqa: E402, F401  (import shape check only)
 from eval import _beta_reg, _run_tag, _t_crit, compare, report  # noqa: E402
 from ml_env import PROTOCOL_VERSION as ENV_PROTO  # noqa: E402
 from ml_env import TextMMOEnv  # noqa: E402
