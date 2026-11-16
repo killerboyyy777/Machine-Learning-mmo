@@ -145,7 +145,11 @@ async def main():
                         srv.COMPANION_PLAYERS[companion_key]
                     )
                     yield json.dumps(
-                        {"cmd": "companion", "action": "adopt", "species": "wolf"}
+                        {
+                            "cmd": "companion",
+                            "action": "adopt",
+                            "species": "wolf",
+                        }
                     )
                     # The dispatcher has resumed the iterator only after it
                     # has either invoked the handler or rejected the command.
