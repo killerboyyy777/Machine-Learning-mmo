@@ -328,6 +328,7 @@ assert parse_roles(farm.args.roles, farm.args.bots) == farm.role_list
 print("ROLES_SPLIT_OK")
 
 assert set(SCRIPTED_POLICIES) == {
+    "arena",
     "gather",
     "dungeon",
     "hunter",

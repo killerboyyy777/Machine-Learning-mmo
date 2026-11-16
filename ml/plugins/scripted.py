@@ -939,6 +939,63 @@ class PartyLeaderPlugin(ScriptedPolicy):
         yield self._first_valid(env, self.WANDER, mask)
 
 
+@register
+class ArenaPlugin(ScriptedPolicy):
+    """Arena role (#655): queue when healthy and idle, leave when not.
+
+    Constants, not policy: the thresholds below are the only knobs. A bot
+    never adds a new env action -- arena enter/leave travel as ordinary
+    commands through the env's pending-command channel, so the action
+    mask and observation schema stay untouched.
+
+    State is keyed by character name because the plugin instance is shared
+    across every agent on its slot; a shared scalar would corrupt across
+    agents. A bot that dies in a match is restored to a world room by the
+    server, and the next select() sees that and resets to idle, so it
+    never re-enters a match that no longer exists.
+    """
+
+    name = "arena"
+    HEALTHY_HP_FRAC = 0.8
+
+    def __init__(self, **config):
+        super().__init__(**config)
+        self._arena_state = {}
+
+    def _state_for(self, env):
+        key = getattr(env, "name", None) or id(env)
+        return self._arena_state.setdefault(key, {"phase": "idle"})
+
+    def plan(self, env, mask):
+        s = env._state
+        room = s.get("room_id")
+        in_arena = isinstance(room, str) and room.startswith("a_")
+        st = self._state_for(env)
+        # A match that ended (or a death) puts us back in a world room.
+        if st["phase"] in ("queued", "fighting") and not in_arena:
+            st["phase"] = "idle"
+        hp = s.get("hp", 1) or 1
+        max_hp = max(1, s.get("max_hp", 1) or 1)
+        healthy = (hp / max_hp) >= self.HEALTHY_HP_FRAC
+        hostile_room = bool(self._room_hostiles(room)) if room else False
+        idle = not hostile_room and not s.get("is_dungeon")
+        if in_arena:
+            # Fighting: attack, else wander. Never queue/leave mid-match.
+            yield self._first_valid(env, ("attack",), mask)
+            yield self._first_valid(env, self.WANDER, mask)
+            return
+        if healthy and idle and st["phase"] == "idle":
+            env._pending_arena = {"action": "enter", "mode": "2v2"}
+            st["phase"] = "queued"
+        elif (not healthy or not idle) and st["phase"] in ("queued", "fighting"):
+            env._pending_arena = {"action": "leave"}
+            st["phase"] = "idle"
+        yield self._heal_first(env, mask)
+        yield self._flee_unwinnable(env, mask)
+        yield self._safe_random_move(env, mask)
+        yield self._first_valid(env, self.WANDER, mask)
+
+
 # Backward-compatible aliases (ml_botfarm and its tests import these).
 GatherSellPolicy = GatherPlugin
 DungeonClearerPolicy = DungeonPlugin
@@ -960,5 +1017,6 @@ SCRIPTED_POLICIES = {
     "crafter": CrafterPolicy,
     "party_leader": PartyLeaderPolicy,
     "guild": GuildFounderPolicy,
+    "arena": ArenaPlugin,
 }
 SCRIPTED_NAMES = tuple(SCRIPTED_POLICIES)
