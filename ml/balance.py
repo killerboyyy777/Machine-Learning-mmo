@@ -751,39 +751,41 @@ def _guild_skip_reason(probe):
 
 
 def _death_attribution(samples):
-    """Deduplicate the rolling death-log snapshots and group their evidence."""
+    """Summarize process-respawn deaths; arena match deaths are not in DEATH_LOG."""
     events, seen = [], set()
     for sample in samples:
         state = sample.get("state") or {}
         for event in state.get("death_log") or []:
             if not isinstance(event, dict):
                 continue
-            key = json.dumps(event, sort_keys=True, separators=(",", ":"))
+            key = event.get("id") or json.dumps(
+                event, sort_keys=True, separators=(",", ":")
+            )
             if key in seen:
                 continue
             seen.add(key)
             events.append(event)
 
-    def counts(field, fallback):
+    def counts(field):
         result = {}
         for event in events:
-            value = event.get(field) or fallback
+            value = event.get(field) or "unknown"
             result[value] = result.get(value, 0) + 1
         return dict(sorted(result.items(), key=lambda item: (-item[1], str(item[0]))))
 
     return {
         "count": len(events),
-        "by_room": counts("room", "unknown"),
-        "by_killer": counts("killer", "unknown"),
-        "events": events,
+        "by_room": counts("room"),
+        "by_killer": counts("killer"),
     }
 
 
 def _telemetry(samples):
-    """Telemetry block from the last sample's state (GM tables as fallback).
+    """Combine sampled counters with deduplicated process-respawn death evidence.
 
-    Same source of truth as the companion damage share folded in below: the
-    counters are lifetime server globals, so the last sample is the final read.
+    Companion and other lifetime counters come from the last sample. Death-log
+    events are accumulated across samples because the server exposes a rolling
+    window; arena match deaths bypass respawn_player and are not included.
     """
     if not samples:
         return {}
@@ -1858,10 +1860,36 @@ def fetch_state(http_url, timeout=10.0):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _trim_state(state):
-    """Keep only the fields the derivation reads, so reports stay small."""
+def _trim_state(state, seen_death_ids=None):
+    """Keep only derivation inputs and newly observed death-log rows."""
     market = state.get("market") or {}
     quests = state.get("quests") or {}
+    death_log = []
+    for entry in (state.get("death_log") or [])[-400:]:
+        if not isinstance(entry, dict):
+            continue
+        event = {
+            key: entry.get(key)
+            for key in (
+                "id",
+                "t",
+                "player",
+                "level",
+                "room",
+                "killer",
+                "killer_room",
+                "dmg",
+                "hp_before",
+            )
+        }
+        if seen_death_ids is not None:
+            key = event.get("id") or json.dumps(
+                event, sort_keys=True, separators=(",", ":")
+            )
+            if key in seen_death_ids:
+                continue
+            seen_death_ids.add(key)
+        death_log.append(event)
     return {
         "server": {"players_online": (state.get("server") or {}).get("players_online")},
         "combat": {
@@ -1870,23 +1898,7 @@ def _trim_state(state):
         },
         "acquisition": state.get("acquisition") or {},
         "npc_ai": state.get("npc_ai") or {},
-        "death_log": [
-            {
-                key: entry.get(key)
-                for key in (
-                    "t",
-                    "player",
-                    "level",
-                    "room",
-                    "killer",
-                    "killer_room",
-                    "dmg",
-                    "hp_before",
-                )
-            }
-            for entry in (state.get("death_log") or [])[-400:]
-            if isinstance(entry, dict)
-        ],
+        "death_log": death_log,
         # Client-side evidence from the guild probe: the server publishes vault
         # totals, never the per-op purse deltas the conservation identity needs.
         "guilds": state.get("guilds") or {},
@@ -1957,7 +1969,9 @@ def _gm_snapshot(gm_url):
     return gm_tables_snapshot(gm_url)
 
 
-async def _sample(cond, http_url, gm_url, started, state=None):
+async def _sample(
+    cond, http_url, gm_url, started, state=None, seen_death_ids=None
+):
     if state is None:
         state = await asyncio.to_thread(fetch_state, http_url)
     tables = await _gm_snapshot(gm_url)
@@ -1968,16 +1982,22 @@ async def _sample(cond, http_url, gm_url, started, state=None):
         "t": round(time.time() - started, 1),
         "alive": int(status["registry"]["alive"]),
         "episodes": episodes,
-        "state": _trim_state(state),
+        "state": _trim_state(state, seen_death_ids),
         "tables": tables,
     }
 
 
-async def _sample_loop(cond, http_url, gm_url, interval, stop, started):
+async def _sample_loop(
+    cond, http_url, gm_url, interval, stop, started, seen_death_ids=None
+):
     samples = []
     while not stop.is_set():
         try:
-            samples.append(await _sample(cond, http_url, gm_url, started))
+            samples.append(
+                await _sample(
+                    cond, http_url, gm_url, started, seen_death_ids=seen_death_ids
+                )
+            )
         except (urllib.error.URLError, OSError, ValueError) as exc:
             print(f"[balance] sample failed: {type(exc).__name__}: {exc}", flush=True)
         try:
@@ -1987,7 +2007,7 @@ async def _sample_loop(cond, http_url, gm_url, interval, stop, started):
     return samples
 
 
-async def _guild_sample(args, cond, seed, started):
+async def _guild_sample(args, cond, seed, started, seen_death_ids=None):
     """Run the guild probe and turn it into one sample of the run.
 
     The probe's peak /api/state read lands here, so the guild rows travel the
@@ -2015,10 +2035,16 @@ async def _guild_sample(args, cond, seed, started):
     snapshot = dict(snapshot)
     snapshot["guild_probe"] = probe
     try:
-        return await _sample(cond, args.http_url, args.gm_url, started, state=snapshot)
+        return await _sample(
+            cond, args.http_url, args.gm_url, started,
+            state=snapshot, seen_death_ids=seen_death_ids
+        )
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"[balance] guild sample failed: {exc}", flush=True)
-        return await _sample(cond, args.http_url, args.gm_url, started)
+        return await _sample(
+            cond, args.http_url, args.gm_url, started,
+            seen_death_ids=seen_death_ids
+        )
 
 
 def _slots(profile, args):
@@ -2065,13 +2091,17 @@ async def collect(args, profile, seed):
     duration = args.duration or spec["duration_s"]
     stop = asyncio.Event()
     started = time.time()
+    seen_death_ids = set()
     print(
         f"[balance] {profile} seed={seed} {args.agents or spec['agents']} agents "
         f"for {duration:.0f}s",
         flush=True,
     )
     sampler = asyncio.create_task(
-        _sample_loop(cond, args.http_url, args.gm_url, args.sample_every, stop, started)
+        _sample_loop(
+            cond, args.http_url, args.gm_url, args.sample_every, stop, started,
+            seen_death_ids
+        )
     )
     try:
         await cond.run(duration_seconds=duration, wave_size=10, wave_delay=1.0)
@@ -2079,9 +2109,14 @@ async def collect(args, profile, seed):
         stop.set()
     samples = await sampler
     if "guilds" in spec["scenarios"]:
-        samples.append(await _guild_sample(args, cond, seed, started))
+        samples.append(await _guild_sample(args, cond, seed, started, seen_death_ids))
     try:
-        samples.append(await _sample(cond, args.http_url, args.gm_url, started))
+        samples.append(
+            await _sample(
+                cond, args.http_url, args.gm_url, started,
+                seen_death_ids=seen_death_ids
+            )
+        )
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"[balance] final sample failed: {exc}", flush=True)
 
