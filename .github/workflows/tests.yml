@@ -141,7 +141,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install black==24.8.0 ruff==0.6.9
-      - name: Fix remaining legacy Ruff findings (push events only)
+      - name: Fix remaining legacy Ruff findings
         if: github.event_name == 'pull_request'
         run: |
           ruff check . --output-format=json > /tmp/ruff.json || true
@@ -197,7 +197,8 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add -u
             git commit -m "style: resolve remaining configured Ruff findings"
-            git push origin "HEAD:${GITHUB_REF#refs/heads/}"
+            target="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
+            git push origin "HEAD:${target}"
           fi
       - name: Check all Python files with Ruff
         run: ruff check .
