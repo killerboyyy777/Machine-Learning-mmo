@@ -20,6 +20,8 @@ const html = fs.readFileSync(path.join(ROOT, "dashboard.html"), "utf8");
 const realIds = new Set([...html.matchAll(/id="([\w-]+)"/g)].map(m => m[1]));
 
 const PERF = { htmlWrites: 0, mapRepaints: 0, sized: 0 };
+const intervalTimers = new Map();
+let nextIntervalId = 1;
 function makeEl(id) {
   return {
     _html: "", _text: "",
@@ -69,7 +71,9 @@ const sandbox = {
   },
   EventSource: undefined,
   fetch: async () => { throw new Error("no network in smoke"); },
-  setInterval: () => 0, setTimeout: () => 0, clearTimeout: () => {},
+  setInterval: (fn, ms) => { const id = nextIntervalId++; intervalTimers.set(id, { fn, ms }); return id; },
+  setTimeout: () => 0, clearTimeout: () => {},
+  clearInterval: id => { intervalTimers.delete(id); },
   WebSocket: function () { throw new Error("no sockets in smoke"); },
 };
 sandbox.globalThis = sandbox;
@@ -630,11 +634,48 @@ for (let i = 0; i < ids.length; i++) {
 if (geoFail) { console.error(`GEO_FAIL (${geoFail})`); process.exit(1); }
   console.log(`GEO_OK (north-up, deterministic, no overlap at tile ${TW}x${TH})`);
 
-  if (failed) { console.error("PROVE_FAIL (" + failed + ")"); process.exit(1); }
-  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config)");
 }
 
-configCase().then(geoCase).catch(e => {
+async function arenaFollowLifecycleCase() {
+  // A completed match returns 404. That is terminal, unlike a transient
+  // network/5xx error, so the dashboard must release its 2s polling timer.
+  sandbox.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+  vm.runInContext('arenaFollowStart("404")', sandbox);
+  const endedTimer = vm.runInContext("arenaFollowTimer", sandbox);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  if (endedTimer === null || intervalTimers.has(endedTimer) ||
+      vm.runInContext("arenaFollowTimer", sandbox) !== null) {
+    failed++; console.error("ARENA_FOLLOW_404_FAIL: completed match left polling active");
+  } else {
+    console.log("ARENA_FOLLOW_404_STOP_OK");
+  }
+
+  // A 503 can be a short-lived concurrent-read race. Keep polling so the
+  // dashboard can recover when the next snapshot succeeds.
+  sandbox.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  vm.runInContext('arenaFollowStart("503")', sandbox);
+  const retryTimer = vm.runInContext("arenaFollowTimer", sandbox);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  if (retryTimer === null || !intervalTimers.has(retryTimer) ||
+      vm.runInContext("arenaFollowTimer", sandbox) !== retryTimer) {
+    failed++; console.error("ARENA_FOLLOW_503_FAIL: transient error stopped polling");
+  } else {
+    console.log("ARENA_FOLLOW_503_RETRY_OK");
+  }
+  vm.runInContext("arenaFollowStop()", sandbox);
+  if (intervalTimers.has(retryTimer)) {
+    failed++; console.error("ARENA_FOLLOW_STOP_FAIL: explicit stop left polling active");
+  }
+}
+
+configCase().then(geoCase).then(arenaFollowLifecycleCase).then(() => {
+  if (failed) {
+    console.error("PROVE_FAIL (" + failed + ")");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow)");
+}).catch(e => {
   console.error("SMOKE_THREW " + ((e && e.stack) || e));
   process.exit(1);
 });
