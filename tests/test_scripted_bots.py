@@ -24,7 +24,12 @@ from ml.ml_botfarm import (
     parse_roles,
 )
 from ml.ml_env import ACTIONS, QUEST_GIVER_NAME, TextMMOEnv
-from ml.plugins.scripted import CrafterPolicy, PartyLeaderPolicy, QuesterPolicy
+from ml.plugins.scripted import (
+    ArenaPlugin,
+    CrafterPolicy,
+    PartyLeaderPolicy,
+    QuesterPolicy,
+)
 
 
 def fresh_env():
@@ -327,7 +332,64 @@ assert Counter(got) == {
 assert parse_roles(farm.args.roles, farm.args.bots) == farm.role_list
 print("ROLES_SPLIT_OK")
 
+# --- arena role lifecycle (#655, #679): one enter while the queue waits, one
+# leave on losing eligibility, a fresh queue only after a match ends ---
+
+
+def arena_tick(policy, env):
+    """One selection as the supervisor makes it: plan runs, step sends."""
+    env._pending_arena = None
+    env._step_count += 1
+    selected(policy, env)
+    return env._pending_arena
+
+
+def arena_env():
+    env = fresh_env()
+    env._state["room_id"] = srv.START_ROOM
+    env._state["exits"] = []
+    env._step_count = 0
+    return env
+
+
+env = arena_env()
+arena = ArenaPlugin()
+assert arena_tick(arena, env) == {"action": "enter", "mode": "2v2"}
+# The bot waits in a world room until the server pairs it, so the queued
+# phase has to survive plain selections or the role re-sends enter.
+for _ in range(5):
+    assert arena_tick(arena, env) is None, env._pending_arena
+env._state["hp"] = 2
+assert arena_tick(arena, env) == {"action": "leave"}
+for _ in range(3):
+    assert arena_tick(arena, env) is None, env._pending_arena
+print("ARENA_QUEUE_OK")
+
+env = arena_env()
+arena = ArenaPlugin()
+assert arena_tick(arena, env) == {"action": "enter", "mode": "2v2"}
+env._state["room_id"] = "a_9001"
+assert arena_tick(arena, env) is None
+assert arena._state_for(env)["phase"] == "fighting"
+# The match ends and the server restores the bot to the world: it queues
+# again for a new match, and never keeps a finished match's phase.
+env._state["room_id"] = srv.START_ROOM
+assert arena_tick(arena, env) == {"action": "enter", "mode": "2v2"}
+print("ARENA_MATCH_CYCLE_OK")
+
+env = arena_env()
+arena = ArenaPlugin()
+arena.QUEUE_WAIT_SELECTS = 3
+assert arena_tick(arena, env) == {"action": "enter", "mode": "2v2"}
+assert arena_tick(arena, env) is None
+assert arena_tick(arena, env) is None
+assert arena_tick(arena, env) is None
+assert arena_tick(arena, env) == {"action": "leave"}
+assert arena_tick(arena, env) == {"action": "enter", "mode": "2v2"}
+print("ARENA_QUEUE_TIMEOUT_OK")
+
 assert set(SCRIPTED_POLICIES) == {
+    "arena",
     "gather",
     "dungeon",
     "hunter",

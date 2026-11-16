@@ -1196,6 +1196,7 @@ class TextMMOEnv:
         self._pending_market_list = (
             False  # refresh market snapshot after market actions
         )
+        self._pending_arena = None  # queued arena command (enter/leave/status)
         # Per-step death economics (#68). The server already sends the whole
         # accounting on the death event; the env read only the counter, so a
         # formula had no way to ask what a death cost.
@@ -1566,6 +1567,13 @@ class TextMMOEnv:
             self._pending_market_list = False
             try:
                 await self._send("market_list")
+            except CONNECTION_ERRORS:
+                episode_done = True
+        pending_arena = self._pending_arena
+        if pending_arena is not None:
+            self._pending_arena = None
+            try:
+                await self._send("arena", **pending_arena)
             except CONNECTION_ERRORS:
                 episode_done = True
         action = ACTIONS[action_idx]
