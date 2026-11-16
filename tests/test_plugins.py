@@ -26,8 +26,9 @@ from ml.plugins import (
 
 # --- built-ins registered ---
 discover()
-assert {"linear", "torch", "gather", "dungeon", "market",
-        "commissioner"} <= set(REGISTRY)
+assert {"linear", "torch", "gather", "dungeon", "market", "commissioner"} <= set(
+    REGISTRY
+)
 print("BUILTINS_OK")
 
 # --- config validation ---
@@ -367,7 +368,8 @@ def _reward_dsl_68():
 
     # raw runner slots have no plugin, so no reward hook
     raw = _materialize_slot(
-        {"env_factory": lambda a: None, "policy_fn": lambda *a: 0}, "ws://x:1")
+        {"env_factory": lambda a: None, "policy_fn": lambda *a: 0}, "ws://x:1"
+    )
     assert raw["reward_hook"] is None, raw["reward_hook"]
     print("REWARD_HOOK_SLOT_OK")
 
@@ -400,8 +402,12 @@ def _reward_dsl_68():
         reg.register("r1", "custom")
         sup = Supervisor(reg)
         ok = await sup.start_agent(
-            "r1", lambda aid: env, lambda o, a: 0, max_steps=1,
-            reward_hook=slot["reward_hook"])
+            "r1",
+            lambda aid: env,
+            lambda o, a: 0,
+            max_steps=1,
+            reward_hook=slot["reward_hook"],
+        )
         assert ok, "start_agent refused the agent"
         assert env.reward_fn is not None, "hook never reached the env"
         # the hook is stored for PBT restart, which must not lose it
@@ -412,7 +418,9 @@ def _reward_dsl_68():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         env = asyncio.run(_run(tmpdir))
-    assert env.rewarded and abs(env.rewarded[0] - (0.5 * 1.0 + 1.2 * 2.0)) < 1e-9, env.rewarded
+    assert (
+        env.rewarded and abs(env.rewarded[0] - (0.5 * 1.0 + 1.2 * 2.0)) < 1e-9
+    ), env.rewarded
     assert _Rew_calls, "plugin reward() was never called"
     assert "xp_delta" in _Rew_calls[0]
     del REGISTRY["rewtest"]
@@ -425,9 +433,13 @@ def _reward_dsl_68():
         sup = Supervisor(reg)
         env2 = _RE()
         envs = iter([_RE(), env2])
-        await sup.start_agent("r2", lambda aid: next(envs), lambda o, a: 0,
-                              max_steps=1,
-                              reward_hook=slot["reward_hook"])
+        await sup.start_agent(
+            "r2",
+            lambda aid: next(envs),
+            lambda o, a: 0,
+            max_steps=1,
+            reward_hook=slot["reward_hook"],
+        )
         assert await sup.restart_agent("r2") is True
         assert env2.reward_fn is not None, "restart lost the reward hook"
         await sup._shutdown(sup._tasks["r2"])
@@ -438,8 +450,8 @@ def _reward_dsl_68():
 
     # --- slot spec carries a formula with commas intact (#68) ---
     s = parse_slot(
-        "torch:env_reward_formula=clamp(0.5*xp_delta, 0, 2) - 0.1*deaths,"
-        "epsilon=0.1")
+        "torch:env_reward_formula=clamp(0.5*xp_delta, 0, 2) - 0.1*deaths," "epsilon=0.1"
+    )
     assert s["env"]["reward_formula"] == "clamp(0.5*xp_delta, 0, 2) - 0.1*deaths", s
     assert s["config"] == {"epsilon": 0.1}, s
     # and the comma split still separates plain params
@@ -469,9 +481,12 @@ def _reward_dsl_68():
     def _dead_env(aid):
         # Nothing listens here: this test only needs a real TextMMOEnv, and
         # the assertions run before any await, so no socket is opened.
-        env = make_env_factory(url="ws://127.0.0.1:1", connect_timeout=0.05,
-                               close_timeout=0.05,
-                               connect_retries=0)(aid)
+        env = make_env_factory(
+            url="ws://127.0.0.1:1",
+            connect_timeout=0.05,
+            close_timeout=0.05,
+            connect_retries=0,
+        )(aid)
         _MADE.append(env)
         return env
 
@@ -481,22 +496,41 @@ def _reward_dsl_68():
         reg = Registry(os.path.join(tmpdir, "rl"), max_agents=5)
         reg.register("r3", "custom")
         sup = Supervisor(reg)
-        ok = await sup.start_agent("r3", lambda aid: real, lambda o, a: 0,
-                                   max_steps=1,
-                                   reward_hook=slot["reward_hook"])
+        ok = await sup.start_agent(
+            "r3",
+            lambda aid: real,
+            lambda o, a: 0,
+            max_steps=1,
+            reward_hook=slot["reward_hook"],
+        )
         assert ok, "start_agent refused the agent"
         # No await between here and the asserts: the task body has not run.
         assert real._reward_fn is slot["reward_hook"], "hook missed the real env"
-        assert real._has_custom_reward is True, (
-            "the real env would have paid the mode reward instead")
+        assert (
+            real._has_custom_reward is True
+        ), "the real env would have paid the mode reward instead"
         sig = real._reward_signals(
-            score_gain=5.0, xp_gain=1.0, levels=0, gold_delta=0.0,
-            inv_delta=0.0, deaths=0, gold_lost=0.0, gold_dropped=0.0,
-            xp_lost=0.0, steps_since_death=0)
+            score_gain=5.0,
+            xp_gain=1.0,
+            levels=0,
+            gold_delta=0.0,
+            inv_delta=0.0,
+            deaths=0,
+            gold_lost=0.0,
+            gold_dropped=0.0,
+            xp_lost=0.0,
+            steps_since_death=0,
+        )
         assert sig["xp_delta"] == 1.0 and "profit" in sig, sig
-        r = real._compute_reward(score_gain=5.0, xp_gain=1.0, levels=0,
-                                 gold_delta=0.0, inv_delta=0.0, party_before=1,
-                                 signals=sig)
+        r = real._compute_reward(
+            score_gain=5.0,
+            xp_gain=1.0,
+            levels=0,
+            gold_delta=0.0,
+            inv_delta=0.0,
+            party_before=1,
+            signals=sig,
+        )
         assert abs(r - 0.5) < 1e-9, (r, "hook value was not delivered")
         assert _Rew_calls and _Rew_calls[-1]["xp_delta"] == 1.0
         assert real.custom_reward_errors == 0, real.custom_reward_errors
@@ -513,12 +547,18 @@ def _reward_dsl_68():
         sup = Supervisor(reg)
         _MADE.clear()
         envs = iter([_dead_env("first"), _dead_env("second")])
-        await sup.start_agent("r4", lambda aid: next(envs), lambda o, a: 0,
-                              max_steps=1, reward_hook=slot["reward_hook"])
+        await sup.start_agent(
+            "r4",
+            lambda aid: next(envs),
+            lambda o, a: 0,
+            max_steps=1,
+            reward_hook=slot["reward_hook"],
+        )
         assert await sup.restart_agent("r4") is True
         second = _MADE[-1]
-        assert second._reward_fn is slot["reward_hook"], (
-            "restart lost the hook on a real env")
+        assert (
+            second._reward_fn is slot["reward_hook"]
+        ), "restart lost the hook on a real env"
         assert second._has_custom_reward is True
         await sup._shutdown(sup._tasks["r4"])
 
@@ -529,17 +569,22 @@ def _reward_dsl_68():
     # --- text-valued slot keys stay text (#68 send-back): a numeric
     # formula is degenerate, but it must not be typed into an int that
     # compile_formula rejects, which killed the agent at startup.
-    _num = parse_slot("linear:env_reward_formula=42,env_max_steps=7,"
-                      "env_step_delay=0.25")
-    assert _num["env"] == {"reward_formula": "42", "max_steps": 7,
-                           "step_delay": 0.25}, _num["env"]
+    _num = parse_slot(
+        "linear:env_reward_formula=42,env_max_steps=7," "env_step_delay=0.25"
+    )
+    assert _num["env"] == {
+        "reward_formula": "42",
+        "max_steps": 7,
+        "step_delay": 0.25,
+    }, _num["env"]
     assert isinstance(_num["env"]["max_steps"], int)
     assert isinstance(_num["env"]["step_delay"], float)
     assert parse_slot("gather:env_url=1.5")["env"]["url"] == "1.5"
     # non-text keys are still coerced, so plugin config is unaffected
     _cfg = parse_slot("linear:checkpoint=a.pt,epsilon=0.2,flag=true")
-    assert _cfg["config"] == {"checkpoint": "a.pt", "epsilon": 0.2,
-                              "flag": True}, _cfg["config"]
+    assert _cfg["config"] == {"checkpoint": "a.pt", "epsilon": 0.2, "flag": True}, _cfg[
+        "config"
+    ]
     TextMMOEnv("SlotNum", reward_formula=_num["env"]["reward_formula"])
     print("SLOT_TEXT_VALUES_OK")
 

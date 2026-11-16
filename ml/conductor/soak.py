@@ -62,11 +62,17 @@ def parse_args():
     p.add_argument("--agents", type=int, default=50)
     p.add_argument("--duration", type=float, default=3600.0, help="seconds")
     p.add_argument("--url", default="ws://localhost:8765")
-    p.add_argument("--gm-url", default="ws://localhost:8767",
-                   help="loopback GM stream for the end-of-run tables snapshot")
-    p.add_argument("--server-log", default=None,
-                   help="server stdout log path; when given, the report counts "
-                        "handler-error lines and tracebacks in it")
+    p.add_argument(
+        "--gm-url",
+        default="ws://localhost:8767",
+        help="loopback GM stream for the end-of-run tables snapshot",
+    )
+    p.add_argument(
+        "--server-log",
+        default=None,
+        help="server stdout log path; when given, the report counts "
+        "handler-error lines and tracebacks in it",
+    )
     p.add_argument("--base-dir", default="soak_run")
     p.add_argument(
         "--min-agents",
@@ -82,13 +88,21 @@ def parse_args():
         help="env steps per episode (episodes drive mixer/PBT/status)",
     )
     p.add_argument("--step-timeout", type=float, default=30.0)
-    p.add_argument("--arrivals", type=float, default=5.0,
-                   help="arrivals per minute (default 5: episode-driven deaths "
-                        "run ~2.2/min at 50 agents, so 2/min bleeds -- 5 holds "
-                        "the cap with headroom for churn dips; see #214)")
-    p.add_argument("--lifetime", type=int, default=15,
-                   help="mean lifetime in completed episodes (episode-based "
-                        "churn: ~15 episodes sustains turnover in an hour)")
+    p.add_argument(
+        "--arrivals",
+        type=float,
+        default=5.0,
+        help="arrivals per minute (default 5: episode-driven deaths "
+        "run ~2.2/min at 50 agents, so 2/min bleeds -- 5 holds "
+        "the cap with headroom for churn dips; see #214)",
+    )
+    p.add_argument(
+        "--lifetime",
+        type=int,
+        default=15,
+        help="mean lifetime in completed episodes (episode-based "
+        "churn: ~15 episodes sustains turnover in an hour)",
+    )
     p.add_argument("--wave-size", type=int, default=10, help="agents per startup wave")
     p.add_argument(
         "--wave-delay", type=float, default=2.0, help="seconds between waves"
@@ -123,27 +137,37 @@ def parse_args():
         help="JSONL status log (default: <base-dir>/soak_status.jsonl)",
     )
     p.add_argument(
-        "--reset", default="none", choices=("none", "lineage", "cell", "all"),
+        "--reset",
+        default="none",
+        choices=("none", "lineage", "cell", "all"),
         help="pre-run wipe ladder over the registry tree (#290): none "
-             "resumes as-is (default); lineage forgets ancestry; cell "
-             "additionally forgets learned weights; all starts fresh.",
+        "resumes as-is (default); lineage forgets ancestry; cell "
+        "additionally forgets learned weights; all starts fresh.",
     )
     p.add_argument(
-        "--resume", dest="resume", action=argparse.BooleanOptionalAction,
+        "--resume",
+        dest="resume",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="resume the previous run's population (default on; "
-             "--no-resume starts empty; --reset all implies fresh).",
+        "--no-resume starts empty; --reset all implies fresh).",
     )
     p.add_argument(
-        "--seed", type=int, default=None,
+        "--seed",
+        type=int,
+        default=None,
         help="RNG seed, recorded in the run record so two soaks are comparable (#65)",
     )
     p.add_argument(
-        "--runs-dir", default=None,
+        "--runs-dir",
+        default=None,
         help="run-record index directory (default <repo>/runs)",
     )
     p.add_argument(
-        "--no-run-record", dest="run_record", action="store_false", default=True,
+        "--no-run-record",
+        dest="run_record",
+        action="store_false",
+        default=True,
         help="do not write a run record to the dashboard index (#65)",
     )
     args = p.parse_args()
@@ -158,8 +182,9 @@ def summarize(cond):
     st = cond.status()
     agents = st["registry"]["agents"]
     episodes = sum(a["episodes"] for a in agents)
-    total_r = sum(a.get("total_reward", a["mean_reward"] * a["episodes"])
-                  for a in agents)
+    total_r = sum(
+        a.get("total_reward", a["mean_reward"] * a["episodes"]) for a in agents
+    )
     mean_r = total_r / max(1, episodes)
     return {
         "ts": time.time(),
@@ -225,6 +250,7 @@ async def gm_tables_snapshot(gm_url, timeout=10.0):
     the snapshot is observability, not a gate)."""
     try:
         import websockets
+
         ws = await asyncio.wait_for(websockets.connect(gm_url), timeout)
         try:
             await ws.send(json.dumps({"cmd": "gm_tables"}))
@@ -253,8 +279,10 @@ def count_server_errors(log_path):
             text = f.read()
     except OSError:
         return None
-    return {"handler_errors": text.count("handler error on"),
-            "tracebacks": text.count("Traceback (most recent call last)")}
+    return {
+        "handler_errors": text.count("handler error on"),
+        "tracebacks": text.count("Traceback (most recent call last)"),
+    }
 
 
 async def main():
@@ -377,9 +405,14 @@ async def main():
             "alive": alive,
             "supervisor_running": running,
             "episodes": sum(c.get("episodes", 0) for c in by_type.values()),
-            "by_type": {k: {"alive": c.get("alive"), "episodes": c.get("episodes"),
-                            "mean_reward": c.get("mean_reward")}
-                        for k, c in by_type.items()},
+            "by_type": {
+                k: {
+                    "alive": c.get("alive"),
+                    "episodes": c.get("episodes"),
+                    "mean_reward": c.get("mean_reward"),
+                }
+                for k, c in by_type.items()
+            },
             "tables": tables,
             "server_log_errors": log_errors,
         }
@@ -394,8 +427,11 @@ async def main():
                 episodes=report["episodes"],
                 mean_reward=(
                     round(
-                        sum(c.get("mean_reward", 0) * c.get("episodes", 0)
-                            for c in by_type.values()) / max(1, report["episodes"]),
+                        sum(
+                            c.get("mean_reward", 0) * c.get("episodes", 0)
+                            for c in by_type.values()
+                        )
+                        / max(1, report["episodes"]),
                         4,
                     )
                 ),

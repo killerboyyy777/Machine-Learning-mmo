@@ -7,17 +7,20 @@ online update (ml_client), the shared-farm policy math (ml_botfarm), and
 (torch_agents). Torch sections skip cleanly without torch so this file
 runs in the offline CI job too.
 """
+
 import os
 import random
 import sys
 import tempfile
 import types
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml")
+)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ml_client import LinearQAgent  # noqa: E402
-from ml_env import N_ACTIONS, OBS_SIZE  # noqa: E402
+from ml_client import LinearQAgent
+from ml_env import N_ACTIONS, OBS_SIZE
 
 random.seed(7)
 
@@ -30,6 +33,7 @@ d1 = lin.update(feats, 0, 2.5, feats, True)
 d2 = lin.update(feats, 0, 2.5, feats, True)
 assert isinstance(d1, float) and abs(d2) < abs(d1), (d1, d2)
 print("LINEAR_UPDATE_OK")
+
 
 # --- masked bootstrap: update() maxes over mask-valid actions only ---
 def _mask_probe(_mask):
@@ -73,10 +77,18 @@ import ml_botfarm as farm_mod  # noqa: E402
 farm_mod.BEST_FILE = os.path.join(tmpdir, "best.json")
 farm_mod.WEIGHTS_FILE = os.path.join(tmpdir, "farm_weights.json")
 args = types.SimpleNamespace(
-    name_prefix="T", url="ws://x:1", scripted="none", reward_window=200,
-    epsilon_start=1.0, epsilon_end=0.05, epsilon_decay_steps=100,
-    weights=os.path.join(tmpdir, "missing.json"), checkpoint_every=50,
-    eval_every=9999, steps=0, bots=2,
+    name_prefix="T",
+    url="ws://x:1",
+    scripted="none",
+    reward_window=200,
+    epsilon_start=1.0,
+    epsilon_end=0.05,
+    epsilon_decay_steps=100,
+    weights=os.path.join(tmpdir, "missing.json"),
+    checkpoint_every=50,
+    eval_every=9999,
+    steps=0,
+    bots=2,
 )
 farm = farm_mod.Farm(args)
 assert farm.best_fitness == float("-inf")  # fresh start, no checkpoints
@@ -90,7 +102,8 @@ bot.recent_rewards = [0.5] * 200
 assert bot.fitness() == 0.5
 farm.promote(0.5, 10.0)
 assert farm.best_fitness == 0.5
-import json as _json
+import json as _json  # noqa: E402
+
 assert _json.load(open(farm_mod.BEST_FILE))["fitness"] == 0.5
 farm.save_weights()
 assert os.path.isfile(farm_mod.WEIGHTS_FILE)
@@ -98,8 +111,14 @@ print("FARM_MATH_OK")
 
 # --- torch DQN store/learn/save (skips cleanly without torch) ---
 try:
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"))
-    from dqn_agent import TorchDQNAgent  # noqa: E402
+    sys.path.insert(
+        0,
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"
+        ),
+    )
+    from dqn_agent import TorchDQNAgent
+
     HAVE_TORCH = True
 except ImportError as e:
     print(f"TORCH_LOOP_SKIP (no torch: {e})")
@@ -149,35 +168,47 @@ if HAVE_TORCH:
     assert 0 <= tagent.act([0.0] * OBS_SIZE, 0.0, None) < N_ACTIONS
     assert tagent.rnd_bonus([0.0] * OBS_SIZE) >= 0.0
     for _ in range(64):
-        tagent.store({
-            "state": [random.uniform(-1.0, 1.0) for _ in range(OBS_SIZE)],
-            "action": random.randrange(N_ACTIONS),
-            "reward": random.uniform(-1.0, 1.0),
-            "next_state": [random.uniform(-1.0, 1.0) for _ in range(OBS_SIZE)],
-            "done": False,
-            "gold_delta": 0.0, "loot_delta": 0.0, "market_pnl": 0.0,
-            "quest_reward": 0.0, "quest_intrinsic": 0.0, "rnd_bonus": 0.0,
-        })
+        tagent.store(
+            {
+                "state": [random.uniform(-1.0, 1.0) for _ in range(OBS_SIZE)],
+                "action": random.randrange(N_ACTIONS),
+                "reward": random.uniform(-1.0, 1.0),
+                "next_state": [random.uniform(-1.0, 1.0) for _ in range(OBS_SIZE)],
+                "done": False,
+                "gold_delta": 0.0,
+                "loot_delta": 0.0,
+                "market_pnl": 0.0,
+                "quest_reward": 0.0,
+                "quest_intrinsic": 0.0,
+                "rnd_bonus": 0.0,
+            }
+        )
     tagent.t_step = 64
     losses = tagent.learn()
     assert set(losses) == {
-        "td", "gold", "loot", "market", "quest", "rnd",
-        "adv_scale", "adv_clip_frac",
+        "td",
+        "gold",
+        "loot",
+        "market",
+        "quest",
+        "rnd",
+        "adv_scale",
+        "adv_clip_frac",
     }, losses
     assert all(isinstance(v, float) for v in losses.values()), losses
     tpath = os.path.join(tmpdir, "torch.pt")
     tagent.save_weights(tpath)
     tloaded = TorchDQNAgent(replay_size=64, batch_size=8)
     assert tloaded.load_weights(tpath)
-    assert (tloaded.q.q_head.bias.detach().tolist() ==
-            tagent.q.q_head.bias.detach().tolist())
+    assert (
+        tloaded.q.q_head.bias.detach().tolist()
+        == tagent.q.q_head.bias.detach().tolist()
+    )
     print("TORCH_LOOP_OK")
 
     # --- RND curiosity schedule: linear start->floor over
     # rnd_decay_steps by t_step; zero start disables entirely.
-    _ragent = TorchDQNAgent(
-        rnd_lambda=1.0, rnd_lambda_min=0.1, rnd_decay_steps=100
-    )
+    _ragent = TorchDQNAgent(rnd_lambda=1.0, rnd_lambda_min=0.1, rnd_decay_steps=100)
     _ragent.t_step = 0
     assert _ragent._rnd_weight() == 1.0
     _ragent.t_step = 50
@@ -204,15 +235,21 @@ if HAVE_TORCH:
     dagent.intrinsic_lambda = 0.0
     dagent.rnd_lambda = 0.0
     for _ in range(16):
-        dagent.store({
-            "state": [0.1] * OBS_SIZE,
-            "action": 0,
-            "reward": 1.0,
-            "next_state": [0.1] * OBS_SIZE,
-            "done": False,
-            "gold_delta": 0.0, "loot_delta": 0.0, "market_pnl": 0.0,
-            "quest_reward": 100.0, "quest_intrinsic": 0.0, "rnd_bonus": 0.0,
-        })
+        dagent.store(
+            {
+                "state": [0.1] * OBS_SIZE,
+                "action": 0,
+                "reward": 1.0,
+                "next_state": [0.1] * OBS_SIZE,
+                "done": False,
+                "gold_delta": 0.0,
+                "loot_delta": 0.0,
+                "market_pnl": 0.0,
+                "quest_reward": 100.0,
+                "quest_intrinsic": 0.0,
+                "rnd_bonus": 0.0,
+            }
+        )
     dagent.t_step = 16
     # Isolate the target arithmetic from #416b's advantage conditioning:
     # with normalization off and gamma=0 the fit target is the raw TD target,
@@ -241,15 +278,21 @@ if HAVE_TORCH:
     dagent2.rnd_lambda = 0.0
     dagent2.td_norm = True
     for _ in range(16):
-        dagent2.store({
-            "state": [0.1] * OBS_SIZE,
-            "action": 0,
-            "reward": 1.0,
-            "next_state": [0.1] * OBS_SIZE,
-            "done": False,
-            "gold_delta": 0.0, "loot_delta": 0.0, "market_pnl": 0.0,
-            "quest_reward": 100.0, "quest_intrinsic": 0.0, "rnd_bonus": 0.0,
-        })
+        dagent2.store(
+            {
+                "state": [0.1] * OBS_SIZE,
+                "action": 0,
+                "reward": 1.0,
+                "next_state": [0.1] * OBS_SIZE,
+                "done": False,
+                "gold_delta": 0.0,
+                "loot_delta": 0.0,
+                "market_pnl": 0.0,
+                "quest_reward": 100.0,
+                "quest_intrinsic": 0.0,
+                "rnd_bonus": 0.0,
+            }
+        )
     dagent2.t_step = 16
     _seen2 = {}
 
@@ -260,9 +303,9 @@ if HAVE_TORCH:
     with _patch.object(_torch.nn.functional, "smooth_l1_loss", _spy2):
         _l2 = dagent2.learn()
     assert _seen2, "normalized td loss never computed"
-    assert _seen2["tgt"].abs().max() < 5.0 + 1e-3, (
-        f"normalized fit must stay inside the clip: {_seen2['tgt']}"
-    )
+    assert (
+        _seen2["tgt"].abs().max() < 5.0 + 1e-3
+    ), f"normalized fit must stay inside the clip: {_seen2['tgt']}"
     print("TD_DEDUP_OK")
 
 print("ALL_TRAINING_LOOPS_OK")

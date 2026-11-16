@@ -331,7 +331,7 @@ async def main():
             "params": {"name": "game_look", "arguments": {}},
         }
     )
-    assert looked["result"]["isError"] == False, f"LOOK failed: {looked}"
+    assert looked["result"]["isError"] is False, f"LOOK failed: {looked}"
     print("LOOK: OK - room state received")
 
     # 2. Move west to Old Shop
@@ -343,7 +343,7 @@ async def main():
             "params": {"name": "game_move", "arguments": {"dir": "west"}},
         }
     )
-    assert moved["result"]["isError"] == False, f"MOVE failed: {moved}"
+    assert moved["result"]["isError"] is False, f"MOVE failed: {moved}"
     print("MOVE: OK - moved to Old Shop")
 
     # 3. Attack the rat NPC
@@ -355,7 +355,7 @@ async def main():
             "params": {"name": "game_attack", "arguments": {"target": "rat"}},
         }
     )
-    assert attacked["result"]["isError"] == False, f"ATTACK failed: {attacked}"
+    assert attacked["result"]["isError"] is False, f"ATTACK failed: {attacked}"
     print("ATTACK: OK - attacked rat")
 
     # 4. Take a herb from the ground (if available)
@@ -367,7 +367,7 @@ async def main():
             "params": {"name": "game_take", "arguments": {"item": "herb"}},
         }
     )
-    assert taken["result"]["isError"] == False, f"TAKE failed: {taken}"
+    assert taken["result"]["isError"] is False, f"TAKE failed: {taken}"
     print("TAKE: OK - took herb")
 
     # 5. Rest to recover HP
@@ -379,7 +379,7 @@ async def main():
             "params": {"name": "game_rest", "arguments": {}},
         }
     )
-    assert rested["result"]["isError"] == False, f"REST failed: {rested}"
+    assert rested["result"]["isError"] is False, f"REST failed: {rested}"
     print("REST: OK - rested")
 
     # 6. Buy a potion
@@ -391,7 +391,7 @@ async def main():
             "params": {"name": "game_buy", "arguments": {"item": "potion"}},
         }
     )
-    assert bought["result"]["isError"] == False, f"BUY failed: {bought}"
+    assert bought["result"]["isError"] is False, f"BUY failed: {bought}"
     print("BUY: OK - bought potion")
 
     # 7. Use the potion
@@ -403,7 +403,7 @@ async def main():
             "params": {"name": "game_use", "arguments": {"item": "potion"}},
         }
     )
-    assert used["result"]["isError"] == False, f"USE failed: {used}"
+    assert used["result"]["isError"] is False, f"USE failed: {used}"
     print("USE: OK - used potion")
 
     # 8. Sell the potion back
@@ -415,7 +415,7 @@ async def main():
             "params": {"name": "game_sell", "arguments": {"item": "potion"}},
         }
     )
-    assert sold["result"]["isError"] == False, f"SELL failed: {sold}"
+    assert sold["result"]["isError"] is False, f"SELL failed: {sold}"
     print("SELL: OK - sold potion back")
 
     # 9. Gather resources
@@ -427,7 +427,7 @@ async def main():
             "params": {"name": "game_gather", "arguments": {}},
         }
     )
-    assert gathered["result"]["isError"] == False, f"GATHER failed: {gathered}"
+    assert gathered["result"]["isError"] is False, f"GATHER failed: {gathered}"
     print("GATHER: OK - gathered resources")
 
     # 10. Craft sharpening oil
@@ -439,7 +439,7 @@ async def main():
             "params": {"name": "game_craft", "arguments": {"recipe": "sharpening_oil"}},
         }
     )
-    assert crafted["result"]["isError"] == False, f"CRAFT failed: {crafted}"
+    assert crafted["result"]["isError"] is False, f"CRAFT failed: {crafted}"
     print("CRAFT: OK - crafted sharpening_oil")
 
     # 11. Check companion script set
@@ -455,7 +455,7 @@ async def main():
         }
     )
     assert (
-        script_set["result"]["isError"] == False
+        script_set["result"]["isError"] is False
     ), f"COMPANION_SCRIPT_SET failed: {script_set}"
     print("COMPANION_SCRIPT_SET: OK - set script")
 
@@ -469,7 +469,7 @@ async def main():
         }
     )
     assert (
-        script_show["result"]["isError"] == False
+        script_show["result"]["isError"] is False
     ), f"COMPANION_SCRIPT_SHOW failed: {script_show}"
     print("COMPANION_SCRIPT_SHOW: OK - showed script")
 
@@ -483,7 +483,7 @@ async def main():
         }
     )
     assert (
-        script_clear["result"]["isError"] == False
+        script_clear["result"]["isError"] is False
     ), f"COMPANION_SCRIPT_CLEAR failed: {script_clear}"
     print("COMPANION_SCRIPT_CLEAR: OK - cleared script")
 
@@ -496,7 +496,7 @@ async def main():
             "params": {"name": "companion_status", "arguments": {}},
         }
     )
-    assert status["result"]["isError"] == False, f"COMPANION_STATUS failed: {status}"
+    assert status["result"]["isError"] is False, f"COMPANION_STATUS failed: {status}"
     print("COMPANION_STATUS: OK - checked status")
 
     # 15. Equip an item (herb, which was gathered)
@@ -508,7 +508,7 @@ async def main():
             "params": {"name": "game_equip", "arguments": {"item": "herb"}},
         }
     )
-    assert equipped["result"]["isError"] == False, f"EQUIP failed: {equipped}"
+    assert equipped["result"]["isError"] is False, f"EQUIP failed: {equipped}"
     print("EQUIP: OK - equipped herb")
 
     # 16. Drop an item
@@ -520,7 +520,7 @@ async def main():
             "params": {"name": "game_drop", "arguments": {"item": "herb"}},
         }
     )
-    assert dropped["result"]["isError"] == False, f"DROP failed: {dropped}"
+    assert dropped["result"]["isError"] is False, f"DROP failed: {dropped}"
     print("DROP: OK - dropped herb")
 
     # 17. Heal at Sister Maren (costs 10 gold)
@@ -532,7 +532,7 @@ async def main():
             "params": {"name": "game_heal", "arguments": {}},
         }
     )
-    assert healed["result"]["isError"] == False, f"HEAL failed: {healed}"
+    assert healed["result"]["isError"] is False, f"HEAL failed: {healed}"
     print("HEAL: OK - healed")
 
     proc.stdin.close()

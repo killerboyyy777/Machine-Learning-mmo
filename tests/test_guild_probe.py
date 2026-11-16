@@ -13,8 +13,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import ml.balance as bal
-import ml.guild_probe as probe
+import ml.balance as bal  # noqa: E402
+import ml.guild_probe as probe  # noqa: E402
 
 ROOMS = {
     "town_square": {"west": "market"},

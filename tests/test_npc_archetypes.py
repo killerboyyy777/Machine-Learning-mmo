@@ -16,10 +16,10 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import npc_tick_fixture
-from npc_tick_fixture import GOLDEN
+import npc_tick_fixture  # noqa: E402
+from npc_tick_fixture import GOLDEN  # noqa: E402
 
-import server as srv
+import server as srv  # noqa: E402
 
 with open(os.path.join(ROOT, "world.json"), encoding="utf-8") as fh:
     WORLD = json.load(fh)

@@ -14,6 +14,7 @@ becoming the optimal grind:
 Uses the same record_action + award_points sequence handle_connection runs
 per command, with a fresh character so history starts empty.
 """
+
 import asyncio
 import os
 import random
@@ -45,14 +46,19 @@ async def main():
 
     # 2. Varied earns more than pure repeat at equal base points.
     varied_pool = [
-        ("quest_accept", "accept"), ("quest_turn_in", "turn_in"),
-        ("craft", "ancient_guardian_charm"), ("move", "north"),
-        ("attack", "rat"), ("take", "sword"),
+        ("quest_accept", "accept"),
+        ("quest_turn_in", "turn_in"),
+        ("craft", "ancient_guardian_charm"),
+        ("move", "north"),
+        ("attack", "rat"),
+        ("take", "sword"),
     ]
     varied_sigs = [varied_pool[i % len(varied_pool)] for i in range(25)]
     varied_gains = await _run_sequence(name_varied, varied_sigs)
     assert sum(varied_gains) > sum(repeat_gains), (sum(varied_gains), sum(repeat_gains))
-    print(f"VARIETY_WINS_OK varied_total={sum(varied_gains):.2f} repeat_total={sum(repeat_gains):.2f}")
+    print(
+        f"VARIETY_WINS_OK varied_total={sum(varied_gains):.2f} repeat_total={sum(repeat_gains):.2f}"
+    )
 
     # 3. Even varied gains diminish marginally as score grows.
     first5 = sum(varied_gains[:5]) / 5
@@ -61,5 +67,6 @@ async def main():
     print(f"DIMINISH_OK first5avg={first5:.3f} last5avg={last5:.3f}")
 
     print("ALL_GRIND_OK")
+
 
 asyncio.run(main())

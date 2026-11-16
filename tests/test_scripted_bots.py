@@ -99,8 +99,9 @@ print("MARKET_BUY_MASKED_OK")
 # --- market role: affordable order on the book -> buy ---
 env = fresh_env()
 env._state["gold"] = 100
-env._state["market_state"] = {"orders": [{"item": "Healing Herb", "price": 10,
-                                           "seller": "Other"}]}
+env._state["market_state"] = {
+    "orders": [{"item": "Healing Herb", "price": 10, "seller": "Other"}]
+}
 assert selected(MarketFlipperPolicy(), env) == "market_buy"
 print("MARKET_BUY_OK")
 
@@ -138,6 +139,7 @@ got = pol.select(env)
 assert got == 0, got
 print("ESCALATE_ZERO_OK")
 
+
 # --- stuck signature sees book churn, node changes, bounty values (#358) ---
 def _sig(**kw):
     e = fresh_env()
@@ -151,10 +153,8 @@ _book6 = {"orders": [{"seller": "Other", "item": "Rat Tail", "price": 6}]}
 assert _sig() != _sig(market_state=_book5)
 assert _sig(market_state=_book5) != _sig(market_state=_book6)
 assert _sig() != _sig(gatherables=["Iron Vein"])
-_c1 = [{"id": 1, "poster": "Other", "target": "rat", "kills": 3,
-        "gold": 10}]
-_c2 = [{"id": 1, "poster": "Other", "target": "rat", "kills": 2,
-        "gold": 10}]
+_c1 = [{"id": 1, "poster": "Other", "target": "rat", "kills": 3, "gold": 10}]
+_c2 = [{"id": 1, "poster": "Other", "target": "rat", "kills": 2, "gold": 10}]
 assert _sig() != _sig(open_commissions=_c1)
 assert _sig(open_commissions=_c1) != _sig(open_commissions=_c2)
 print("SIG_COVERAGE_OK")
@@ -187,8 +187,15 @@ print("COMM_ATTACK_OK")
 env = fresh_env()
 env._state["room_id"] = "guild_hall"  # fill is guild-gated
 env._state["open_commissions"] = [
-    {"id": 7, "kills": 1, "target": "rat", "gold": 10, "xp": 0,
-     "rate": 1.0, "poster": "Other"},
+    {
+        "id": 7,
+        "kills": 1,
+        "target": "rat",
+        "gold": 10,
+        "xp": 0,
+        "rate": 1.0,
+        "poster": "Other",
+    },
 ]
 assert selected(CommissionerPolicy(), env) == "commission_fill"
 print("COMM_FILL_OK")
@@ -196,8 +203,15 @@ print("COMM_FILL_OK")
 # --- commissioner role: only own bounty -> cancel oldest ---
 env = fresh_env()
 env._state["open_commissions"] = [
-    {"id": 9, "kills": 1, "target": "rat", "gold": 0, "xp": 0,
-     "rate": None, "poster": "ScriptTest"},
+    {
+        "id": 9,
+        "kills": 1,
+        "target": "rat",
+        "gold": 0,
+        "xp": 0,
+        "rate": None,
+        "poster": "ScriptTest",
+    },
 ]
 assert selected(CommissionerPolicy(), env) == "commission_cancel"
 print("COMM_CANCEL_OK")
@@ -267,15 +281,24 @@ print("PARTY_LEADER_DESCEND_OK")
 
 # --- mixed assignment round-robins roles ---
 farm = types.SimpleNamespace(
-    args=types.SimpleNamespace(name_prefix="T", url="ws://x", scripted="mixed",
-                               bots=8, roles=None),
+    args=types.SimpleNamespace(
+        name_prefix="T", url="ws://x", scripted="mixed", bots=8, roles=None
+    ),
     role_list=build_role_list(
         types.SimpleNamespace(scripted="mixed", bots=8, roles=None)
     ),
 )
 roles = [BotRunner(i, farm).policy.name for i in range(8)]
-assert roles == ["gather", "dungeon", "hunter", "market", "commissioner",
-                 "quester", "crafter", "party_leader"], roles
+assert roles == [
+    "gather",
+    "dungeon",
+    "hunter",
+    "market",
+    "commissioner",
+    "quester",
+    "crafter",
+    "party_leader",
+], roles
 farm.args.scripted = "dungeon"
 farm.role_list = build_role_list(farm.args)
 assert BotRunner(0, farm).policy.name == "dungeon"
@@ -295,12 +318,24 @@ farm.args.roles = "gather:8,dungeon:4,market:7,commissioner:2,flex:gather"
 farm.args.bots = 24
 farm.role_list = build_role_list(farm.args)
 got = [BotRunner(i, farm).policy.name for i in range(24)]
-assert Counter(got) == {"gather": 11, "dungeon": 4, "market": 7,
-                        "commissioner": 2}, Counter(got)
+assert Counter(got) == {
+    "gather": 11,
+    "dungeon": 4,
+    "market": 7,
+    "commissioner": 2,
+}, Counter(got)
 assert parse_roles(farm.args.roles, farm.args.bots) == farm.role_list
 print("ROLES_SPLIT_OK")
 
-assert set(SCRIPTED_POLICIES) == {"gather", "dungeon", "hunter", "market",
-                                  "commissioner", "quester", "crafter",
-                                  "party_leader", "guild"}
+assert set(SCRIPTED_POLICIES) == {
+    "gather",
+    "dungeon",
+    "hunter",
+    "market",
+    "commissioner",
+    "quester",
+    "crafter",
+    "party_leader",
+    "guild",
+}
 print("ALL_SCRIPTED_OK")

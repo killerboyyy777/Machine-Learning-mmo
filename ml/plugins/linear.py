@@ -39,8 +39,9 @@ class LinearPlugin(AgentPlugin):
 
     def learn(self, prev_obs, action, reward, next_obs, done):
         """One Q-learning step on this transition (#292)."""
-        return self._agent.update(flatten_obs(prev_obs), action, reward,
-                                  flatten_obs(next_obs), done)
+        return self._agent.update(
+            flatten_obs(prev_obs), action, reward, flatten_obs(next_obs), done
+        )
 
     def save(self, path):
         self._agent.save(path)

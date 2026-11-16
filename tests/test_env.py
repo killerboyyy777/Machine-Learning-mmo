@@ -19,7 +19,7 @@ sys.path.insert(
 )
 
 import websockets
-from ml_env import TextMMOEnv, ACTIONS, flatten_obs, OBS_SIZE, N_ACTIONS
+from ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
 
 A2IDX = {a: i for i, a in enumerate(ACTIONS)}
 GM_URI = "ws://127.0.0.1:8767"

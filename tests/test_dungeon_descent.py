@@ -16,10 +16,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "ml"))
 
-from ml_env import ACTIONS, TextMMOEnv
-from plugins.scripted import DungeonPlugin, ScriptedPolicy
+from ml_env import ACTIONS, TextMMOEnv  # noqa: E402
+from plugins.scripted import DungeonPlugin, ScriptedPolicy  # noqa: E402
 
-import server as srv
+import server as srv  # noqa: E402
 
 
 def _env(room, hp, npcs=(), is_dungeon=False):

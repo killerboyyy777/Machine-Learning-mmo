@@ -13,7 +13,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import server as srv
+import server as srv  # noqa: E402
 
 
 def _npc(**fields):

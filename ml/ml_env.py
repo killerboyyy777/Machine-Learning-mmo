@@ -141,6 +141,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import websockets
+
 import server as srv
 
 # Absolute, not relative: this module is imported both as ml.ml_env and as a
@@ -174,10 +175,12 @@ ROOM_LIST = sorted(srv.ROOMS.keys())
 
 # Shopkeepers and their wares, read live from world.json (server is
 # authoritative; this only mirrors it so buy decisions can weigh needs).
-MERCHANT_NAMES = sorted({v["name"] for v in srv.WORLD["npcs"].values() if v.get("shop")})
+MERCHANT_NAMES = sorted(
+    {v["name"] for v in srv.WORLD["npcs"].values() if v.get("shop")}
+)
 MERCHANT_PRICES = {}
 for _npc in srv.WORLD["npcs"].values():
-    for _iid, _price in ((_npc.get("shop") or {}).items()):
+    for _iid, _price in (_npc.get("shop") or {}).items():
         MERCHANT_PRICES.setdefault(_iid, _price)
 
 # Display names of items that heal (mirror server.py heal_amount), used to
@@ -204,16 +207,22 @@ def merchant_value(iid):
 def best_market_ask(orders, iid, exclude_seller=None):
     """Cheapest open ask for an item from other sellers (None if unlisted)."""
     name = srv.ITEM_DEFS.get(iid, {}).get("name", iid)
-    asks = [o["price"] for o in orders or []
-            if o.get("item") == name and o.get("seller") != exclude_seller]
+    asks = [
+        o["price"]
+        for o in orders or []
+        if o.get("item") == name and o.get("seller") != exclude_seller
+    ]
     return min(asks) if asks else None
 
 
 def best_market_bid(bids, iid, exclude_buyer=None):
     """Highest open bid for an item from other buyers (None if no bids)."""
     name = srv.ITEM_DEFS.get(iid, {}).get("name", iid)
-    prices = [b["price"] for b in bids or []
-              if b.get("item") == name and b.get("buyer") != exclude_buyer]
+    prices = [
+        b["price"]
+        for b in bids or []
+        if b.get("item") == name and b.get("buyer") != exclude_buyer
+    ]
     return max(prices) if prices else None
 
 
@@ -234,7 +243,9 @@ _HEALING_HERB_ID = srv.find_item_by_name(list(srv.ITEM_DEFS), "healing herb")
 # Display names that must never be attacked (merchants, quest givers,
 # healers). Everything else in a room -- hostile static NPCs and unknown
 # dynamic ones like dungeon guards -- is a legal target.
-NON_HOSTILE_NAMES = {v["name"] for v in srv.WORLD["npcs"].values() if not v.get("hostile")}
+NON_HOSTILE_NAMES = {
+    v["name"] for v in srv.WORLD["npcs"].values() if not v.get("hostile")
+}
 
 # Open-commission list lines look like:
 #   #12: slay 5x Giant Rat -- reward 25g + 50xp (posted by Alice)
@@ -256,11 +267,19 @@ def _parse_commissions(text):
     out = []
     for m in _COMMISSION_RE.finditer(text or ""):
         cid, kills, target, gold, xp, rate, poster = m.groups()
-        out.append({"id": int(cid), "kills": int(kills), "target": target.strip(),
-                    "gold": int(gold), "xp": int(xp),
-                    "rate": float(rate) if rate else None,
-                    "poster": poster.strip()})
+        out.append(
+            {
+                "id": int(cid),
+                "kills": int(kills),
+                "target": target.strip(),
+                "gold": int(gold),
+                "xp": int(xp),
+                "rate": float(rate) if rate else None,
+                "poster": poster.strip(),
+            }
+        )
     return out
+
 
 # Market tax terms, mirroring server.py so the env (and any importer) can
 # compute exactly what a trade nets. The getattr fallbacks keep this file
@@ -317,20 +336,34 @@ GOAL_AXES = ("score", "xp", "gold", "inv", "social", "quest", "novelty")
 OFFSPRING_FRACTION = 0.5  # new spawns mutating a recent goal vs fresh Dirichlet
 
 
-def reward_vector(score_gain=0.0, xp_gain=0.0, gold_delta=0.0, inv_delta=0.0,
-                  social=0.0, quest=0.0, novelty=0.0):
+def reward_vector(
+    score_gain=0.0,
+    xp_gain=0.0,
+    gold_delta=0.0,
+    inv_delta=0.0,
+    social=0.0,
+    quest=0.0,
+    novelty=0.0,
+):
     """Per-step reward vector as a plain dict (pure, unit-testable)."""
-    return {"score": float(score_gain), "xp": float(xp_gain),
-            "gold": float(gold_delta), "inv": float(inv_delta),
-            "social": float(social), "quest": float(quest),
-            "novelty": float(novelty)}
+    return {
+        "score": float(score_gain),
+        "xp": float(xp_gain),
+        "gold": float(gold_delta),
+        "inv": float(inv_delta),
+        "social": float(social),
+        "quest": float(quest),
+        "novelty": float(novelty),
+    }
 
 
 def goal_reward(vector, goal):
     """Dot product of a reward vector with goal weights (missing keys read
     0 on both sides, so partial goals and vectors compose safely)."""
-    return sum(float((vector or {}).get(k, 0.0)) * float((goal or {}).get("w_" + k, 0.0))
-               for k in GOAL_AXES)
+    return sum(
+        float((vector or {}).get(k, 0.0)) * float((goal or {}).get("w_" + k, 0.0))
+        for k in GOAL_AXES
+    )
 
 
 def sample_goal(rng=None):
@@ -348,12 +381,15 @@ def mutate_goal(goal, scale=0.2, rng=None):
     if not goal:
         return {"w_" + a: 1.0 / len(GOAL_AXES) for a in GOAL_AXES}
     r = rng or random
-    vals = [max(0.0, float(goal.get("w_" + k, 0.0)) + r.gauss(0.0, scale))
-            for k in GOAL_AXES]
+    vals = [
+        max(0.0, float(goal.get("w_" + k, 0.0)) + r.gauss(0.0, scale))
+        for k in GOAL_AXES
+    ]
     total = sum(vals)
     if total <= 0:
         return {"w_" + a: 1.0 / len(GOAL_AXES) for a in GOAL_AXES}
     return {"w_" + k: v / total for k, v in zip(GOAL_AXES, vals)}
+
 
 # Curriculum stages (progressive action-space unlock, #59): 0 = surface
 # rats (combat/loot/rest/heal/shop/party only), 1 adds dungeon travel and
@@ -371,7 +407,10 @@ CURRICULUM_THRESHOLDS = (0, 10, 30, 60)  # min score to enter each stage
 # ---------------------------------------------------------------------------
 # Optional config file: ml_config.json overrides reward shaping constants.
 # ---------------------------------------------------------------------------
-_ML_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml_config.json")
+_ML_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ml_config.json"
+)
+
 
 def _apply_ml_config():
     if not os.path.isfile(_ML_CONFIG_FILE):
@@ -391,8 +430,11 @@ def _apply_ml_config():
             try:
                 g[key] = type(g[key])(val)
             except (TypeError, ValueError) as e:
-                print(f"Warning: ml_config.json: skipping {key}={val!r} "
-                      f"({e}); keeping default {g[key]!r}")
+                print(
+                    f"Warning: ml_config.json: skipping {key}={val!r} "
+                    f"({e}); keeping default {g[key]!r}"
+                )
+
 
 _apply_ml_config()
 
@@ -435,6 +477,7 @@ def inventory_value(names):
             total += merchant_value(iid)
     return total
 
+
 # --- Quest catalog (mirrors server.py QUESTS) --------------------------------
 # What the Town Guard quest IS, in one place, so models (and their trainers)
 # don't have to reverse-engineer it from reward traces:
@@ -450,7 +493,11 @@ QUEST_GIVER_ID = getattr(srv, "QUEST_GUARD_NPC", "guard")
 QUEST_GIVER_NAME = "Town Guard"
 QUEST_GIVER_ROOM = "town_square"
 QUEST_RESULT_ID = getattr(srv, "QUEST_CHARM_RESULT", "ancient_guardian_charm")
-QUEST_INPUT_IDS = list(getattr(srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1}).keys())
+QUEST_INPUT_IDS = list(
+    getattr(
+        srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1}
+    ).keys()
+)
 QUEST_REWARD_XP = getattr(srv, "QUEST_GUARD_XP", 50)
 QUEST_REWARD_GOLD = getattr(srv, "QUEST_GUARD_GOLD", 25)
 QUEST_REWARD_POINTS = getattr(srv, "QUEST_GUARD_POINTS", 15)
@@ -487,30 +534,36 @@ MAREN_ID = "healer"
 MAREN_NAME = _HEALER.get("name", "Sister Maren")
 MAREN_ROOM = _HEALER.get("room", "healing_spring")
 
-QUESTS.update({
-    "remedy": {
-        "giver_id": MAREN_ID,
-        "giver_name": MAREN_NAME,
-        "room": MAREN_ROOM,
-        "inputs": list(getattr(srv, "QUEST_REMEDY_INPUTS", {"healing_herb": 3}).keys()),
-        "result": None,
-        "reward_xp": getattr(srv, "QUEST_REMEDY_XP", 20),
-        "reward_gold": getattr(srv, "QUEST_REMEDY_GOLD", 10),
-        "reward_points": getattr(srv, "QUEST_REMEDY_POINTS", 8),
-        "repeatable": True,
-    },
-    "tonic": {
-        "giver_id": MAREN_ID,
-        "giver_name": MAREN_NAME,
-        "room": MAREN_ROOM,
-        "inputs": list(getattr(srv, "QUEST_TONIC_INPUTS", {"fortitude_tonic": 1}).keys()),
-        "result": None,
-        "reward_xp": getattr(srv, "QUEST_TONIC_XP", 40),
-        "reward_gold": getattr(srv, "QUEST_TONIC_GOLD", 20),
-        "reward_points": getattr(srv, "QUEST_TONIC_POINTS", 12),
-        "repeatable": True,
-    },
-})
+QUESTS.update(
+    {
+        "remedy": {
+            "giver_id": MAREN_ID,
+            "giver_name": MAREN_NAME,
+            "room": MAREN_ROOM,
+            "inputs": list(
+                getattr(srv, "QUEST_REMEDY_INPUTS", {"healing_herb": 3}).keys()
+            ),
+            "result": None,
+            "reward_xp": getattr(srv, "QUEST_REMEDY_XP", 20),
+            "reward_gold": getattr(srv, "QUEST_REMEDY_GOLD", 10),
+            "reward_points": getattr(srv, "QUEST_REMEDY_POINTS", 8),
+            "repeatable": True,
+        },
+        "tonic": {
+            "giver_id": MAREN_ID,
+            "giver_name": MAREN_NAME,
+            "room": MAREN_ROOM,
+            "inputs": list(
+                getattr(srv, "QUEST_TONIC_INPUTS", {"fortitude_tonic": 1}).keys()
+            ),
+            "result": None,
+            "reward_xp": getattr(srv, "QUEST_TONIC_XP", 40),
+            "reward_gold": getattr(srv, "QUEST_TONIC_GOLD", 20),
+            "reward_points": getattr(srv, "QUEST_TONIC_POINTS", 12),
+            "repeatable": True,
+        },
+    }
+)
 
 QUEST_DELVER_REWARD_XP = QUESTS["delver"]["reward_xp"]
 QUEST_DELVER_REWARD_GOLD = QUESTS["delver"]["reward_gold"]
@@ -524,7 +577,9 @@ def quest_charm_cost():
     profitability: the charm turn-in pays QUEST_REWARD_GOLD gold, so the
     gold-terms trade is reward minus cost (currently negative -- the quest
     pays in XP/score instead, which is exactly the tradeoff to learn)."""
-    need = getattr(srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1})
+    need = getattr(
+        srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1}
+    )
     total = 0
     for iid, qty in need.items():
         total += srv.ITEM_DEFS.get(iid, {}).get("value", 0) * qty
@@ -554,9 +609,11 @@ def quest_transitions(before, after):
     for qid, akey, rkey in _QUEST_FLAG_SPECS:
         ab, aa = bool(before.get(akey)), bool(after.get(akey))
         rb, ra = bool(before.get(rkey)), bool(after.get(rkey))
-        out[qid] = {"accepted": (not ab) and aa,
-                    "turned_in": ab and (not aa),
-                    "became_ready": (not rb) and ra}
+        out[qid] = {
+            "accepted": (not ab) and aa,
+            "turned_in": ab and (not aa),
+            "became_ready": (not rb) and ra,
+        }
     return out
 
 
@@ -598,6 +655,7 @@ def quest_stage(obs, quest="guard_charm"):
     if has_charm:
         return "charm_no_quest"
     return "no_quest"
+
 
 # Every direction used anywhere in world.json -- including the dungeon
 # travel spellings "up"/"down" and the graveyard dungeon doorway "enter".
@@ -777,69 +835,129 @@ GUILD_INVITE_TTL_SECONDS = 300
 GUILD_OUTRANK = ("leader", "officer")
 GUILD_WITHDRAW_STEP = 40
 
-ACTIONS = (
-    [f"move_{d}" for d in DIRECTIONS]
-    + ["attack", "take", "rest", "look",
-       "buy", "sell", "equip", "use", "craft",
-       "market_post", "market_buy", "market_cancel", "market_list",
-       "party_invite", "party_accept", "party_leave", "party_info",
-        # Quest + gear-craft actions appended last so existing indices never shift.
-        "quest_accept", "quest_turn_in", "quest_list", "craft_charm",
-        "quest2_accept", "quest2_turn_in", "craft_iron", "buy_arrows",
-        "craft_arrows",
-        # New crafting actions for buffs and ammo.
-        "craft_sharpening_oil", "craft_fortitude_tonic", "craft_greater_sharpening_oil",
-        "craft_ironhide_draught",
-        # Gathering and commission actions.
-        "gather", "commission_post", "commission_list", "commission_fill", "commission_cancel",
-        # Market stall expansion (buy +1 sell-order slot; fee -> treasury).
-        "market_expand",
-        # Healer visit (full heal, but only on Sister Maren's tile).
-        "heal",
-        # Endgame craft: Warden's Trophy + mats -> fixed-damage blade.
-        "craft_wardens_blade",
-        # Ammo variant crafts (feed the ammo family) + mid-tier blade.
-        "craft_iron_arrow", "craft_steel_arrow", "craft_serpentbrand",
-        # Shedding load: only valid with a full pack (server rule).
-        "drop",
-        # Sister Maren's chains (#183): accept/turn_in mirror the guard and
-        # delver actions. Appended last (never-shift rule); pre-#194
-        # checkpoints restart fresh.
-        "quest3_accept", "quest3_turn_in", "quest4_accept", "quest4_turn_in",
-        # Standing buy order (#158): escrowed bid from the market room.
-        "market_buy_order",
-        # Flee combat when hurt or outnumbered.
-        "flee",
-        # Companion playstyle (#535): acquire, summon, dismiss, inspect.
-        "companion_adopt", "companion_summon", "companion_dismiss", "companion_status",
-        # Guild play (#591). Appended last (never-shift rule), so a pre-#591
-        # checkpoint keeps its action indices; the action space itself grows,
-        # which is why this lands in its own release.
-        "guild_create", "guild_invite", "guild_join",
-        "guild_deposit", "guild_withdraw", "guild_disband", "guild_leave",
-        # Refresh: the server pushes guild state only when asked, so the role
-        # needs one action that asks. Appended after the verbs above.
-        "guild_info"]
-)
+ACTIONS = [f"move_{d}" for d in DIRECTIONS] + [
+    "attack",
+    "take",
+    "rest",
+    "look",
+    "buy",
+    "sell",
+    "equip",
+    "use",
+    "craft",
+    "market_post",
+    "market_buy",
+    "market_cancel",
+    "market_list",
+    "party_invite",
+    "party_accept",
+    "party_leave",
+    "party_info",
+    # Quest + gear-craft actions appended last so existing indices never shift.
+    "quest_accept",
+    "quest_turn_in",
+    "quest_list",
+    "craft_charm",
+    "quest2_accept",
+    "quest2_turn_in",
+    "craft_iron",
+    "buy_arrows",
+    "craft_arrows",
+    # New crafting actions for buffs and ammo.
+    "craft_sharpening_oil",
+    "craft_fortitude_tonic",
+    "craft_greater_sharpening_oil",
+    "craft_ironhide_draught",
+    # Gathering and commission actions.
+    "gather",
+    "commission_post",
+    "commission_list",
+    "commission_fill",
+    "commission_cancel",
+    # Market stall expansion (buy +1 sell-order slot; fee -> treasury).
+    "market_expand",
+    # Healer visit (full heal, but only on Sister Maren's tile).
+    "heal",
+    # Endgame craft: Warden's Trophy + mats -> fixed-damage blade.
+    "craft_wardens_blade",
+    # Ammo variant crafts (feed the ammo family) + mid-tier blade.
+    "craft_iron_arrow",
+    "craft_steel_arrow",
+    "craft_serpentbrand",
+    # Shedding load: only valid with a full pack (server rule).
+    "drop",
+    # Sister Maren's chains (#183): accept/turn_in mirror the guard and
+    # delver actions. Appended last (never-shift rule); pre-#194
+    # checkpoints restart fresh.
+    "quest3_accept",
+    "quest3_turn_in",
+    "quest4_accept",
+    "quest4_turn_in",
+    # Standing buy order (#158): escrowed bid from the market room.
+    "market_buy_order",
+    # Flee combat when hurt or outnumbered.
+    "flee",
+    # Companion playstyle (#535): acquire, summon, dismiss, inspect.
+    "companion_adopt",
+    "companion_summon",
+    "companion_dismiss",
+    "companion_status",
+    # Guild play (#591). Appended last (never-shift rule), so a pre-#591
+    # checkpoint keeps its action indices; the action space itself grows,
+    # which is why this lands in its own release.
+    "guild_create",
+    "guild_invite",
+    "guild_join",
+    "guild_deposit",
+    "guild_withdraw",
+    "guild_disband",
+    "guild_leave",
+    # Refresh: the server pushes guild state only when asked, so the role
+    # needs one action that asks. Appended after the verbs above.
+    "guild_info",
+]
 N_ACTIONS = len(ACTIONS)
 
 # Curriculum unlock sets (action names gated below their stage).
 STAGE1_UNLOCK = {"move_enter", "move_down", "quest2_accept", "quest2_turn_in"}
-STAGE2_UNLOCK = ({"gather", "quest_accept", "quest_turn_in",
-                  "quest3_accept", "quest3_turn_in",
-                  "quest4_accept", "quest4_turn_in"}
-                 | {a for a in ACTIONS if a == "craft" or a.startswith("craft_")})
-STAGE3_UNLOCK = {"market_post", "market_buy", "market_cancel", "market_expand",
-                 "commission_post", "commission_list", "commission_fill",
-                 "commission_cancel", "market_buy_order"}
+STAGE2_UNLOCK = {
+    "gather",
+    "quest_accept",
+    "quest_turn_in",
+    "quest3_accept",
+    "quest3_turn_in",
+    "quest4_accept",
+    "quest4_turn_in",
+} | {a for a in ACTIONS if a == "craft" or a.startswith("craft_")}
+STAGE3_UNLOCK = {
+    "market_post",
+    "market_buy",
+    "market_cancel",
+    "market_expand",
+    "commission_post",
+    "commission_list",
+    "commission_fill",
+    "commission_cancel",
+    "market_buy_order",
+}
 
 # Recipe ids the generic "craft" action may emit (kept in check so it never
 # picks an unmapped recipe like mule_deed). Simpler recipes first.
 _GENERIC_CRAFT_RECIPES = [
-    "arrows", "field_ration", "iron_arrows", "sharpening_oil",
-    "bandage", "fortitude_tonic", "reinforced_leather",
-    "greater_sharpening_oil", "ironhide_draught", "iron_plate",
-    "serpentbrand", "ancient_guardian_charm", "wardens_blade", "steel_arrows",
+    "arrows",
+    "field_ration",
+    "iron_arrows",
+    "sharpening_oil",
+    "bandage",
+    "fortitude_tonic",
+    "reinforced_leather",
+    "greater_sharpening_oil",
+    "ironhide_draught",
+    "iron_plate",
+    "serpentbrand",
+    "ancient_guardian_charm",
+    "wardens_blade",
+    "steel_arrows",
 ]
 
 
@@ -857,15 +975,33 @@ def flatten_obs(obs):
         + obs["item_presence"]
         + obs["inv_presence"]
         + [obs["equipped_flag"], obs["inv_unknown_flag"]]
-        + [obs["hp_frac"], obs["gold_norm"], obs["score_norm"], obs["variety"],
-           obs["allies_norm"], obs["party_norm"], obs["level_norm"],
-           obs["xp_progress"], obs["market_norm"], obs["market_any"],
-           obs["tax_rate"], obs["tax_min_norm"], obs["own_net_norm"],
-           obs["flip_margin_norm"], obs["inv_value_norm"]]
+        + [
+            obs["hp_frac"],
+            obs["gold_norm"],
+            obs["score_norm"],
+            obs["variety"],
+            obs["allies_norm"],
+            obs["party_norm"],
+            obs["level_norm"],
+            obs["xp_progress"],
+            obs["market_norm"],
+            obs["market_any"],
+            obs["tax_rate"],
+            obs["tax_min_norm"],
+            obs["own_net_norm"],
+            obs["flip_margin_norm"],
+            obs["inv_value_norm"],
+        ]
         # Quest block appended last so earlier indices never shift.
-        + [obs["quest_active"], obs["quest_ready"], obs["quest_has_charm"],
-           obs["quest_mat_bark"], obs["quest_mat_hide"], obs["quest_mat_ecto"],
-           obs["quest_giver_here"]]
+        + [
+            obs["quest_active"],
+            obs["quest_ready"],
+            obs["quest_has_charm"],
+            obs["quest_mat_bark"],
+            obs["quest_mat_hide"],
+            obs["quest_mat_ecto"],
+            obs["quest_giver_here"],
+        ]
         + [obs["quest2_active"], obs["quest2_ready"], obs["quest2_giver_here"]]
         # Maren chains (#183) appended last, same never-shift rule.
         # Breaks pre-#194 checkpoints (fixed-size input); they restart
@@ -875,7 +1011,9 @@ def flatten_obs(obs):
         + [obs["arrows_norm"]]
         + [obs["buff_attack"], obs["buff_dr"]]
         + [obs["ammo_best_norm"], obs["defense_norm"]]
-        + [obs.get("adaptive_score", 0.0)]  # descent-readiness hint (#335), appended last
+        + [
+            obs.get("adaptive_score", 0.0)
+        ]  # descent-readiness hint (#335), appended last
         # Terrain flags (#424) appended last, same never-shift rule; .get so a
         # hand-built obs dict (tests) predating the flag still flattens.
         + [obs.get("wild_flag", 0.0), obs.get("indoor_flag", 0.0)]
@@ -883,22 +1021,26 @@ def flatten_obs(obs):
 
 
 OBS_SIZE = (
-    len(ROOM_LIST) + 2                     # room one-hot + is_dungeon + floor
-    + len(DIRECTIONS)                      # exit mask
-    + len(NPC_LIST) + 1                    # npc presence + unknown-npc count
-    + len(ITEM_LIST) + len(ITEM_LIST) + 2  # ground + inventory presence + flags
-    + 15                                   # scalars (hp_frac, gold_norm, score_norm, variety,
-                                           # allies_norm, party_norm, level_norm, xp_progress,
-                                           # market_norm, market_any, tax_rate, tax_min_norm,
-                                           # own_net_norm, flip_margin_norm, inv_value_norm)
-    + 7                                    # quest block (active/ready/has_charm/3 mats/giver_here)
-    + 3                                    # delver quest block (active/ready/giver_here)
-    + 6                                    # Maren chains (remedy + tonic active/ready/giver_here)
-    + 1                                    # arrows_norm (ammo-family count; bows eat one per shot)
-    + 2                                    # buff block (attack active, damage-reduction active)
-    + 2                                    # gear block (best ammo bonus, worn defense)
-    + 1                                    # adaptive descent-readiness hint (#335)
-    + 2                                    # terrain flags (#424): wild, indoor
+    len(ROOM_LIST)
+    + 2  # room one-hot + is_dungeon + floor
+    + len(DIRECTIONS)  # exit mask
+    + len(NPC_LIST)
+    + 1  # npc presence + unknown-npc count
+    + len(ITEM_LIST)
+    + len(ITEM_LIST)
+    + 2  # ground + inventory presence + flags
+    + 15  # scalars (hp_frac, gold_norm, score_norm, variety,
+    # allies_norm, party_norm, level_norm, xp_progress,
+    # market_norm, market_any, tax_rate, tax_min_norm,
+    # own_net_norm, flip_margin_norm, inv_value_norm)
+    + 7  # quest block (active/ready/has_charm/3 mats/giver_here)
+    + 3  # delver quest block (active/ready/giver_here)
+    + 6  # Maren chains (remedy + tonic active/ready/giver_here)
+    + 1  # arrows_norm (ammo-family count; bows eat one per shot)
+    + 2  # buff block (attack active, damage-reduction active)
+    + 2  # gear block (best ammo bonus, worn defense)
+    + 1  # adaptive descent-readiness hint (#335)
+    + 2  # terrain flags (#424): wild, indoor
 )
 
 
@@ -909,13 +1051,27 @@ class TextMMOEnv:
     multiple ML agents (and/or bots, and/or humans) can occupy it together
     -- including sharing party dungeons and trading on the same market."""
 
-    def __init__(self, name, url=DEFAULT_URL, step_delay=0.15, max_steps=None,
-                 reward_mode="score", curriculum_stage=3, curriculum_auto=False,
-                 connect_timeout=10.0, close_timeout=5.0, connect_retries=3,
-                 goal=None, spawn_room=None, reward_formula=None,
-                 reward_fn=None):
+    def __init__(
+        self,
+        name,
+        url=DEFAULT_URL,
+        step_delay=0.15,
+        max_steps=None,
+        reward_mode="score",
+        curriculum_stage=3,
+        curriculum_auto=False,
+        connect_timeout=10.0,
+        close_timeout=5.0,
+        connect_retries=3,
+        goal=None,
+        spawn_room=None,
+        reward_formula=None,
+        reward_fn=None,
+    ):
         if reward_mode not in REWARD_MODES:
-            raise ValueError(f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}")
+            raise ValueError(
+                f"reward_mode must be one of {REWARD_MODES}, got {reward_mode!r}"
+            )
         if curriculum_stage not in (0, 1, 2, 3):
             raise ValueError(f"curriculum_stage must be 0-3, got {curriculum_stage!r}")
         if spawn_room is not None and spawn_room not in srv.ROOMS:
@@ -925,9 +1081,7 @@ class TextMMOEnv:
         # are not rejected by the token-takeover protection added in #557.
         # Harness names are not human accounts; determinism from the name is
         # enough to keep the same character authenticated across episodes.
-        self._auth_token = hashlib.sha256(
-            f"harness:{name}".encode()
-        ).hexdigest()[:32]
+        self._auth_token = hashlib.sha256(f"harness:{name}".encode()).hexdigest()[:32]
         self.url = url
         self.step_delay = step_delay
         self.max_steps = max_steps
@@ -965,40 +1119,70 @@ class TextMMOEnv:
         self.ws = None
         self._reader_task = None
         self._state = {
-            "room_id": None, "exits": [], "npc_names": [], "item_names": [],
-            "player_names": [], "is_dungeon": False, "dungeon_floor": 0,
-            "party_size": 1, "shelter": False, "wild": False,
-            "hp": 0, "max_hp": 1, "gold": 0, "score": 0.0, "variety": 1.0,
-            "level": 1, "xp": 0.0, "xp_to_next": 100.0,
-            "equipped": None, "armor": None, "offhand": None, "defense": 0,
+            "room_id": None,
+            "exits": [],
+            "npc_names": [],
+            "item_names": [],
+            "player_names": [],
+            "is_dungeon": False,
+            "dungeon_floor": 0,
+            "party_size": 1,
+            "shelter": False,
+            "wild": False,
+            "hp": 0,
+            "max_hp": 1,
+            "gold": 0,
+            "score": 0.0,
+            "variety": 1.0,
+            "level": 1,
+            "xp": 0.0,
+            "xp_to_next": 100.0,
+            "equipped": None,
+            "armor": None,
+            "offhand": None,
+            "defense": 0,
             "inv_names": [],
             "deaths": 0,
             # Server-authoritative pack load + cap from the stats event
             # (None until the first stats lands; pack_units() falls back
             # to counting inv_names meanwhile).
-            "pack_units": None, "pack_max": INVENTORY_CAP,
-            "market_orders": 0, "market_state": None,
-            "tax_rate": TAX_RATE, "tax_min": TAX_MINIMUM,
+            "pack_units": None,
+            "pack_max": INVENTORY_CAP,
+            "market_orders": 0,
+            "market_state": None,
+            "tax_rate": TAX_RATE,
+            "tax_min": TAX_MINIMUM,
             "other_players": 0,
             # Guild state (#591), mirrored from the guild event payload and
             # from the server's own reply text: guild verbs predate the env,
             # so most of the signal arrives as prose.
-            "guild_name": "", "guild_rank": "", "guild_members": 0,
-            "guild_vault_gold": 0, "guild_invite": "",
-            "guild_invite_at": 0.0, "guild_cycle": 0,
+            "guild_name": "",
+            "guild_rank": "",
+            "guild_members": 0,
+            "guild_vault_gold": 0,
+            "guild_invite": "",
+            "guild_invite_at": 0.0,
+            "guild_cycle": 0,
             # Quest state, mirrored from the server's stats event. Until the
             # first stats lands these stay False (no quest assumed).
-            "quest_guard_active": False, "guard_charm_crafted": False,
-            "quest_delver_active": False, "quest_delver_ready": False,
-            "quest_remedy_active": False, "quest_remedy_ready": False,
-            "quest_tonic_active": False, "quest_tonic_ready": False,
+            "quest_guard_active": False,
+            "guard_charm_crafted": False,
+            "quest_delver_active": False,
+            "quest_delver_ready": False,
+            "quest_remedy_active": False,
+            "quest_remedy_ready": False,
+            "quest_tonic_active": False,
+            "quest_tonic_ready": False,
             # Last combat text seen (trainer signal; empty until first hit).
             "last_combat": "",
-            "buff_attack_amount": 0, "buff_damage_reduction_amount": 0,
+            "buff_attack_amount": 0,
+            "buff_damage_reduction_amount": 0,
             # Market/gathering/commission mirrors (server is authoritative;
             # these only let action mapping see what events already said).
-            "room_gold": 0, "gatherables": [],
-            "market_slots": 3, "open_commissions": [],
+            "room_gold": 0,
+            "gatherables": [],
+            "market_slots": 3,
+            "open_commissions": [],
             # Protocol handshake (#72): server's version from the welcome
             # event (None until login lands).
             "server_version": None,
@@ -1009,7 +1193,9 @@ class TextMMOEnv:
         self._login_error = None
         self._pending_xp = 0.0  # accumulated "xp" event gains (for "xp" mode)
         self._pending_levels = 0  # accumulated "level_up" events (for "xp" mode)
-        self._pending_market_list = False  # refresh market snapshot after market actions
+        self._pending_market_list = (
+            False  # refresh market snapshot after market actions
+        )
         # Per-step death economics (#68). The server already sends the whole
         # accounting on the death event; the env read only the counter, so a
         # formula had no way to ask what a death cost.
@@ -1019,7 +1205,7 @@ class TextMMOEnv:
         self._pending_xp_lost = 0.0
         self._steps_since_death = 0
         self._step_count = 0
-        self._last_formation_step = -10 ** 9  # paid-formation cooldown cursor
+        self._last_formation_step = -(10**9)  # paid-formation cooldown cursor
         self._mask_cache = None  # refreshed by every _build_obs()
         self._inv_type_cache = {}  # ditto: item-type -> first display name
         self._flip_table = []  # ditto: per-holding value/margin rows
@@ -1069,8 +1255,12 @@ class TextMMOEnv:
             self._state["variety"] = event.get("variety", 1.0) or 1.0
             self._state["level"] = event.get("level", self._state["level"])
             self._state["xp"] = event.get("xp", self._state["xp"])
-            self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
-            self._state["party_size"] = event.get("party_size", self._state["party_size"])
+            self._state["xp_to_next"] = event.get(
+                "xp_to_next", self._state["xp_to_next"]
+            )
+            self._state["party_size"] = event.get(
+                "party_size", self._state["party_size"]
+            )
             self._state["inv_names"] = event.get("inv", [])
             # The name list truncates at 20 while the cap is 24, so
             # masks must use the server's own unit count (#191).
@@ -1083,7 +1273,9 @@ class TextMMOEnv:
             self._state["offhand"] = event.get("offhand")
             self._state["defense"] = event.get("defense", 0)
             self._state["market_orders"] = event.get("market_orders", 0)
-            self._state["market_slots"] = event.get("market_slots", self._state.get("market_slots", 3))
+            self._state["market_slots"] = event.get(
+                "market_slots", self._state.get("market_slots", 3)
+            )
             if "companion" in event:
                 self._state["companion"] = event.get("companion")
             # Quest flags ride along on every stats event (server's
@@ -1110,8 +1302,12 @@ class TextMMOEnv:
             buffs = event.get("buffs") or {}
             atk = buffs.get("attack") or {}
             dr = buffs.get("damage_reduction") or {}
-            self._state["buff_attack_amount"] = int(atk.get("amount", 0)) if atk.get("remaining", 0) > 0 else 0
-            self._state["buff_damage_reduction_amount"] = int(dr.get("amount", 0)) if dr.get("remaining", 0) > 0 else 0
+            self._state["buff_attack_amount"] = (
+                int(atk.get("amount", 0)) if atk.get("remaining", 0) > 0 else 0
+            )
+            self._state["buff_damage_reduction_amount"] = (
+                int(dr.get("amount", 0)) if dr.get("remaining", 0) > 0 else 0
+            )
         elif t == "combat":
             # Trainer signal only: last combat text (hits, deaths).
             # Reward still flows through score/xp/gold events.
@@ -1157,17 +1353,21 @@ class TextMMOEnv:
             elif "No open commissions" in text:
                 self._state["open_commissions"] = []
             elif " invites you to join " in text:
-                invited = text.split(" invites you to join ", 1)[1].split(".")[0].strip()
+                invited = (
+                    text.split(" invites you to join ", 1)[1].split(".")[0].strip()
+                )
                 if invited:
                     self._state["guild_invite"] = invited
                     self._state["guild_invite_at"] = time.time()
             elif text.startswith("Guild ") and " founded." in text:
-                self._state["guild_name"] = text[len("Guild "): text.index(" founded.")]
+                self._state["guild_name"] = text[
+                    len("Guild ") : text.index(" founded.")
+                ]
                 self._state["guild_rank"] = "leader"
                 self._state["guild_members"] = 1
                 self._state["guild_invite"] = ""
             elif text.startswith("You join "):
-                self._state["guild_name"] = text[len("You join "):].split(" as ")[0]
+                self._state["guild_name"] = text[len("You join ") :].split(" as ")[0]
                 self._state["guild_rank"] = "member"
                 self._state["guild_invite"] = ""
                 self._state["guild_members"] = max(
@@ -1196,7 +1396,9 @@ class TextMMOEnv:
             self._pending_xp += event.get("gained", 0.0) or 0.0
             self._state["level"] = event.get("level", self._state["level"])
             self._state["xp"] = event.get("total", self._state["xp"])
-            self._state["xp_to_next"] = event.get("xp_to_next", self._state["xp_to_next"])
+            self._state["xp_to_next"] = event.get(
+                "xp_to_next", self._state["xp_to_next"]
+            )
         elif t == "level_up":
             self._pending_levels += 1
             self._state["level"] = event.get("level", self._state["level"])
@@ -1215,9 +1417,9 @@ class TextMMOEnv:
             elif "disbanded recently" in text:
                 # The server tombstones a disbanded name for thirty days, so
                 # the next founding attempt needs a different one.
-                self._state["guild_cycle"] = int(
-                    self._state.get("guild_cycle", 0) or 0
-                ) + 1
+                self._state["guild_cycle"] = (
+                    int(self._state.get("guild_cycle", 0) or 0) + 1
+                )
             elif "not in a guild" in text and self._state.get("guild_name"):
                 self._clear_guild()
             elif "already in " in text and not self._state.get("guild_name"):
@@ -1226,7 +1428,7 @@ class TextMMOEnv:
                 # the sentence continues (". Leave it first."), so take the
                 # name up to the first full stop.
                 self._state["guild_name"] = (
-                    text[len("You are already in "):].split(". ")[0].rstrip(".")
+                    text[len("You are already in ") :].split(". ")[0].rstrip(".")
                 )
 
     async def _send(self, cmd, **kwargs):
@@ -1300,7 +1502,7 @@ class TextMMOEnv:
         self.custom_reward_errors = 0
         if getattr(self, "_formula", None) is not None:
             self._formula.zero_divisions = 0
-        self._last_formation_step = -10 ** 9
+        self._last_formation_step = -(10**9)
 
     async def reset(self):
         await self._close_ws()
@@ -1310,19 +1512,24 @@ class TextMMOEnv:
         for _ in range(max(1, self.connect_retries)):
             try:
                 self.ws = await asyncio.wait_for(
-                    websockets.connect(self.url), self.connect_timeout)
+                    websockets.connect(self.url), self.connect_timeout
+                )
                 break
             except Exception as e:
                 last_error = e
                 self.ws = None
         else:
             raise ConnectionError(
-                f"{self.name}: connect failed after {self.connect_retries} tries: {last_error}")
+                f"{self.name}: connect failed after {self.connect_retries} tries: {last_error}"
+            )
 
         self._reader_task = asyncio.create_task(self._reader())
-        await self._send("login", name=self.name,
-                         protocol_version=PROTOCOL_VERSION,
-                         token=self._auth_token)
+        await self._send(
+            "login",
+            name=self.name,
+            protocol_version=PROTOCOL_VERSION,
+            token=self._auth_token,
+        )
         await self._send("stats")
         await self._send("market_list")
         await asyncio.sleep(self.step_delay * 2)  # let the initial snapshot land
@@ -1347,9 +1554,13 @@ class TextMMOEnv:
 
     async def step(self, action_idx):
         if not isinstance(action_idx, int):
-            raise TypeError(f"{self.name}: action_idx must be int, got {type(action_idx).__name__}")
+            raise TypeError(
+                f"{self.name}: action_idx must be int, got {type(action_idx).__name__}"
+            )
         if not (0 <= action_idx < N_ACTIONS):
-            raise ValueError(f"{self.name}: action index {action_idx} out of range (0..{N_ACTIONS-1})")
+            raise ValueError(
+                f"{self.name}: action index {action_idx} out of range (0..{N_ACTIONS-1})"
+            )
         episode_done = False
         if self._pending_market_list:
             self._pending_market_list = False
@@ -1362,9 +1573,11 @@ class TextMMOEnv:
         gold_before = self._state["gold"]
         inv_before = list(self._state["inv_names"] or [])
         inv_value_before = inventory_value(inv_before)
-        flags_before = {k: bool(self._state.get(k))
-                        for _, akey, rkey in _QUEST_FLAG_SPECS
-                        for k in (akey, rkey)}
+        flags_before = {
+            k: bool(self._state.get(k))
+            for _, akey, rkey in _QUEST_FLAG_SPECS
+            for k in (akey, rkey)
+        }
         party_before = self._state.get("party_size", 1)
         if cmd:
             try:
@@ -1387,15 +1600,26 @@ class TextMMOEnv:
             # Read before the bump, so a step carrying a death reports 0.
             steps_since_death = self._steps_since_death
             signals = self._reward_signals(
-                score_gain, xp_gained, levels_gained, gold_delta, inv_delta,
+                score_gain,
+                xp_gained,
+                levels_gained,
+                gold_delta,
+                inv_delta,
                 deaths=self._pending_deaths,
                 gold_lost=self._pending_gold_lost,
                 gold_dropped=self._pending_gold_dropped,
                 xp_lost=self._pending_xp_lost,
-                steps_since_death=steps_since_death)
+                steps_since_death=steps_since_death,
+            )
         reward = self._compute_reward(
-            self._pending_reward, xp_gained, levels_gained,
-            gold_delta, inv_delta, party_before, signals)
+            self._pending_reward,
+            xp_gained,
+            levels_gained,
+            gold_delta,
+            inv_delta,
+            party_before,
+            signals,
+        )
         self._pending_reward = 0.0
         self._pending_xp = 0.0
         self._pending_levels = 0
@@ -1410,9 +1634,11 @@ class TextMMOEnv:
             done = True
         else:
             done = self.max_steps is not None and self._step_count >= self.max_steps
-        flags_after = {k: bool(self._state.get(k))
-                       for _, akey, rkey in _QUEST_FLAG_SPECS
-                       for k in (akey, rkey)}
+        flags_after = {
+            k: bool(self._state.get(k))
+            for _, akey, rkey in _QUEST_FLAG_SPECS
+            for k in (akey, rkey)
+        }
         qt = quest_transitions(flags_before, flags_after)
         guard_accepted = qt["guard_charm"]["accepted"]
         guard_turned = qt["guard_charm"]["turned_in"]
@@ -1441,13 +1667,30 @@ class TextMMOEnv:
         # rate), and computing it here would double-apply its cooldown.
         # Novelty is always 0.0 from the env; trainers supply it.
         _allies = self._state.get("party_size", 1) - 1
-        _social = (SOCIAL_PER_ALLY * _allies * diminish_factor(self._state.get("score", 0.0))
-                   if self._state.get("other_players", 0) > 0 and _allies > 0 else 0.0)
-        _quest_pts = sum(float(QUESTS[q]["reward_points"]) for q, t in
-                         (("guard_charm", guard_turned), ("delver", delver_turned),
-                          ("remedy", remedy_turned), ("tonic", tonic_turned)) if t)
-        vector = reward_vector(score_gain, xp_gained + XP_LEVEL_BONUS * levels_gained,
-                               gold_delta, inv_delta, _social, _quest_pts, 0.0)
+        _social = (
+            SOCIAL_PER_ALLY * _allies * diminish_factor(self._state.get("score", 0.0))
+            if self._state.get("other_players", 0) > 0 and _allies > 0
+            else 0.0
+        )
+        _quest_pts = sum(
+            float(QUESTS[q]["reward_points"])
+            for q, t in (
+                ("guard_charm", guard_turned),
+                ("delver", delver_turned),
+                ("remedy", remedy_turned),
+                ("tonic", tonic_turned),
+            )
+            if t
+        )
+        vector = reward_vector(
+            score_gain,
+            xp_gained + XP_LEVEL_BONUS * levels_gained,
+            gold_delta,
+            inv_delta,
+            _social,
+            _quest_pts,
+            0.0,
+        )
         info = {
             "action": action,
             "gold_delta": gold_delta,
@@ -1470,8 +1713,13 @@ class TextMMOEnv:
             # sellable beats the merchant): trainers can attribute whether a
             # sell/post/hold step matched the opportunity.
             "flip_margin": max(
-                [(r["margin"] if r["margin"] is not None else 1) for r in self._holdings()
-                 if self._sellable(r)], default=0),
+                [
+                    (r["margin"] if r["margin"] is not None else 1)
+                    for r in self._holdings()
+                    if self._sellable(r)
+                ],
+                default=0,
+            ),
             # Quest transitions this step, for reward shaping / logging.
             # accepted: False->True on quest_accept; turned_in: True->False
             # on quest_turn_in (reward lands via score/xp/gold events);
@@ -1479,16 +1727,29 @@ class TextMMOEnv:
             # Top-level keys are any-quest (backward compatible); by_quest
             # breaks them out per quest id for multi-quest shaping.
             "quest": {
-                "accepted": (guard_accepted or delver_accepted
-                             or remedy_accepted or tonic_accepted),
-                "turned_in": (guard_turned or delver_turned
-                              or remedy_turned or tonic_turned),
+                "accepted": (
+                    guard_accepted
+                    or delver_accepted
+                    or remedy_accepted
+                    or tonic_accepted
+                ),
+                "turned_in": (
+                    guard_turned or delver_turned or remedy_turned or tonic_turned
+                ),
                 "crafted_charm": guard_crafted,
                 "delver_became_ready": delver_became_ready,
-                "active": (quest_active_after or delver_active_after
-                           or remedy_active_after or tonic_active_after),
-                "ready": (quest_crafted_after or delver_ready_after
-                          or remedy_ready_after or tonic_ready_after),
+                "active": (
+                    quest_active_after
+                    or delver_active_after
+                    or remedy_active_after
+                    or tonic_active_after
+                ),
+                "ready": (
+                    quest_crafted_after
+                    or delver_ready_after
+                    or remedy_ready_after
+                    or tonic_ready_after
+                ),
                 "stage": quest_stage(next_obs),
                 "stage2": quest_stage(next_obs, "delver"),
                 "stage3": quest_stage(next_obs, "remedy"),
@@ -1517,7 +1778,9 @@ class TextMMOEnv:
                 },
             },
         }
-        done = episode_done or (self.max_steps is not None and self._step_count >= self.max_steps)
+        done = episode_done or (
+            self.max_steps is not None and self._step_count >= self.max_steps
+        )
         info.update(self._version_info())
         info["action_mask"] = 1 if cmd is not None else 0
         if signals is not None:
@@ -1528,18 +1791,29 @@ class TextMMOEnv:
             info["reward_signals"] = signals
             info["custom_reward_errors"] = self.custom_reward_errors
             info["zero_divisions"] = (
-                self._formula.zero_divisions if self._formula else 0)
+                self._formula.zero_divisions if self._formula else 0
+            )
         return next_obs, reward, done, info
 
     def _version_info(self):
         """Protocol handshake status (pure, unit-testable)."""
         server = self._state.get("server_version")
-        return {"protocol_version": PROTOCOL_VERSION,
-                "server_version": server,
-                "version_match": server in (None, PROTOCOL_VERSION)}
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "server_version": server,
+            "version_match": server in (None, PROTOCOL_VERSION),
+        }
 
-    def _compute_reward(self, score_gain, xp_gain, levels, gold_delta,
-                        inv_delta, party_before, signals=None):
+    def _compute_reward(
+        self,
+        score_gain,
+        xp_gain,
+        levels,
+        gold_delta,
+        inv_delta,
+        party_before,
+        signals=None,
+    ):
         """Step reward for the configured `reward_mode`, from accumulated
         event pendings and state diffs (pure function of its arguments plus
         the social/formation state -- no I/O, unit-testable).
@@ -1555,13 +1829,21 @@ class TextMMOEnv:
         """
         if self._has_custom_reward:
             return self._resolve_custom_reward(
-                signals, score_gain, xp_gain, levels, gold_delta, inv_delta,
-                party_before)
+                signals,
+                score_gain,
+                xp_gain,
+                levels,
+                gold_delta,
+                inv_delta,
+                party_before,
+            )
         return self._mode_reward(
-            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before
+        )
 
-    def _mode_reward(self, score_gain, xp_gain, levels, gold_delta,
-                     inv_delta, party_before):
+    def _mode_reward(
+        self, score_gain, xp_gain, levels, gold_delta, inv_delta, party_before
+    ):
         """The reward_mode computation on its own, so the custom-reward
         fallback below can reach it without re-entering the dispatch."""
         if self.reward_mode == "xp":
@@ -1575,21 +1857,40 @@ class TextMMOEnv:
         # Scaled by the server's difficulty curve so it tracks the score
         # signal instead of dwarfing it late in a run, and by group size so
         # bigger parties pay more than duos.
-        if self._state.get("other_players", 0) > 0 and self._state.get("party_size", 1) > 1:
+        if (
+            self._state.get("other_players", 0) > 0
+            and self._state.get("party_size", 1) > 1
+        ):
             allies = self._state.get("party_size", 1) - 1
-            reward += SOCIAL_PER_ALLY * allies * diminish_factor(self._state.get("score", 0.0))
+            reward += (
+                SOCIAL_PER_ALLY
+                * allies
+                * diminish_factor(self._state.get("score", 0.0))
+            )
         # Formation bonus: joining/forming a party pays once per cooldown so
         # the act of grouping is discoverable through the reward trace.
         party_now = self._state.get("party_size", 1)
         if party_now > 1 and party_before <= 1:
             if self._step_count - self._last_formation_step >= FORMATION_COOLDOWN_STEPS:
-                reward += FORMATION_BONUS * diminish_factor(self._state.get("score", 0.0))
+                reward += FORMATION_BONUS * diminish_factor(
+                    self._state.get("score", 0.0)
+                )
                 self._last_formation_step = self._step_count
         return reward
 
-    def _reward_signals(self, score_gain, xp_gain, levels, gold_delta,
-                        inv_delta, deaths, gold_lost, gold_dropped, xp_lost,
-                        steps_since_death):
+    def _reward_signals(
+        self,
+        score_gain,
+        xp_gain,
+        levels,
+        gold_delta,
+        inv_delta,
+        deaths,
+        gold_lost,
+        gold_dropped,
+        xp_lost,
+        steps_since_death,
+    ):
         """The per-step signal dict a custom reward sees (#68).
 
         `social` and `formation` are the exact terms the "score" mode would
@@ -1603,9 +1904,10 @@ class TextMMOEnv:
             allies = state.get("party_size", 1) - 1
             social = SOCIAL_PER_ALLY * allies * diminish_factor(state.get("score", 0.0))
         formation = 0.0
-        if (state.get("party_size", 1) > 1
-                and self._step_count - self._last_formation_step
-                >= FORMATION_COOLDOWN_STEPS):
+        if (
+            state.get("party_size", 1) > 1
+            and self._step_count - self._last_formation_step >= FORMATION_COOLDOWN_STEPS
+        ):
             formation = FORMATION_BONUS * diminish_factor(state.get("score", 0.0))
         max_hp = state.get("max_hp") or 0.0
         return {
@@ -1630,8 +1932,9 @@ class TextMMOEnv:
             "steps_since_death": float(steps_since_death),
         }
 
-    def _resolve_custom_reward(self, signals, score_gain, xp_gain, levels,
-                               gold_delta, inv_delta, party_before):
+    def _resolve_custom_reward(
+        self, signals, score_gain, xp_gain, levels, gold_delta, inv_delta, party_before
+    ):
         """Resolve a custom reward (#68): plugin hook, then formula, then the
         mode reward.
 
@@ -1664,7 +1967,8 @@ class TextMMOEnv:
         if failures:
             self._note_custom_reward_error("; ".join(failures))
         return self._mode_reward(
-            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before)
+            score_gain, xp_gain, levels, gold_delta, inv_delta, party_before
+        )
 
     def _consume_formation_pulse(self, signals):
         """Move the formation cursor once a formula has been paid for it.
@@ -1676,9 +1980,11 @@ class TextMMOEnv:
         hook path is opaque, and there the hook's own return value, not the
         signal, is the reward.
         """
-        if (self._formula is not None
-                and "formation" in self._formula.signals_used
-                and signals.get("formation")):
+        if (
+            self._formula is not None
+            and "formation" in self._formula.signals_used
+            and signals.get("formation")
+        ):
             self._last_formation_step = self._step_count
 
     # The supervisor attaches a plugin's reward hook by plain assignment
@@ -1730,8 +2036,11 @@ class TextMMOEnv:
         # Once is enough to be diagnosed; a per-step wall of the same line
         # would bury the training log it is corrupting.
         if self.custom_reward_errors == 1:
-            print(f"Warning: {self.name}: custom reward fell back to "
-                  f"reward_mode={self.reward_mode!r}: {message}", flush=True)
+            print(
+                f"Warning: {self.name}: custom reward fell back to "
+                f"reward_mode={self.reward_mode!r}: {message}",
+                flush=True,
+            )
 
     def _own_orders(self):
         """Our standing sell orders with exact after-tax net, from the latest
@@ -1741,7 +2050,9 @@ class TextMMOEnv:
         for o in ms.get("orders") or []:
             if o.get("seller") == self.name:
                 price = o.get("price", 0)
-                out.append({"id": o.get("id"), "price": price, "net": market_net(price)})
+                out.append(
+                    {"id": o.get("id"), "price": price, "net": market_net(price)}
+                )
         return out
 
     def _holdings(self):
@@ -1757,7 +2068,9 @@ class TextMMOEnv:
         never the quest charm, never a last healing herb, never bow arrows
         while running low."""
         s = self._state
-        if row["name"] in {s.get("equipped"), s.get("armor"), s.get("offhand")} - {None}:
+        if row["name"] in {s.get("equipped"), s.get("armor"), s.get("offhand")} - {
+            None
+        }:
             return False
         if row["iid"] == QUEST_RESULT_ID:
             return False
@@ -1765,24 +2078,33 @@ class TextMMOEnv:
             if sum(1 for r in self._holdings() if r["iid"] == _HEALING_HERB_ID) <= 1:
                 return False
         if "arrow" in row["name"].lower():
-            equipped_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped") or "")
+            equipped_iid = srv.find_item_by_name(
+                list(srv.ITEM_DEFS), s.get("equipped") or ""
+            )
             if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
-                arrows = sum(1 for r in self._holdings() if "arrow" in r["name"].lower())
+                arrows = sum(
+                    1 for r in self._holdings() if "arrow" in r["name"].lower()
+                )
                 if arrows <= 5:
                     return False
         return True
 
     def _refresh_holdings(self):
         s = self._state
-        orders = ((s.get("market_state") or {}).get("orders") or [])
+        orders = (s.get("market_state") or {}).get("orders") or []
         rows = []
         for name in s.get("inv_names") or []:
             iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
             if not iid:
                 continue
-            rows.append({"name": name, "iid": iid,
-                         "value": merchant_value(iid),
-                         "margin": flip_margin(iid, orders, exclude_seller=self.name)})
+            rows.append(
+                {
+                    "name": name,
+                    "iid": iid,
+                    "value": merchant_value(iid),
+                    "margin": flip_margin(iid, orders, exclude_seller=self.name),
+                }
+            )
         self._flip_table = rows
 
     def _detect_fill(self, action, gold_before, inv_before):
@@ -1837,7 +2159,9 @@ class TextMMOEnv:
                 if not hasattr(self, attr):
                     setattr(self, attr, default)
             self._refresh_holdings()
-            self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
+            self._mask_cache = [
+                1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS
+            ]
         return list(self._mask_cache)
 
     def _curriculum_gated(self, action):
@@ -1859,8 +2183,7 @@ class TextMMOEnv:
         if len(th) < 4:
             return  # misconfigured thresholds: stay put instead of crashing
         score = self._state.get("score", 0.0)
-        while (self.curriculum_stage < 3
-               and score >= th[self.curriculum_stage + 1]):
+        while self.curriculum_stage < 3 and score >= th[self.curriculum_stage + 1]:
             self.curriculum_stage += 1
 
     def _guild_name(self):
@@ -1891,17 +2214,23 @@ class TextMMOEnv:
         if action.startswith("move_"):
             # Only exits that actually exist here; walking into walls would
             # just bounce off a server error.
-            if action[len("move_"):] in (s.get("exits") or []):
-                return {"cmd": "move", "dir": action[len("move_"):]}
+            if action[len("move_") :] in (s.get("exits") or []):
+                return {"cmd": "move", "dir": action[len("move_") :]}
             return None
         if action == "rest":
             # Rest areas only, and only if we can pay the fee.
-            if srv.ROOMS.get(s.get("room_id"), {}).get("rest_area") and s.get("gold", 0) >= REST_COST:
+            if (
+                srv.ROOMS.get(s.get("room_id"), {}).get("rest_area")
+                and s.get("gold", 0) >= REST_COST
+            ):
                 return {"cmd": "rest"}
             return None
         if action == "heal":
             # Sister Maren's tile only, and only if we can pay her fee.
-            if HEALER_NAME in (s.get("npc_names") or []) and s.get("gold", 0) >= HEAL_COST:
+            if (
+                HEALER_NAME in (s.get("npc_names") or [])
+                and s.get("gold", 0) >= HEAL_COST
+            ):
                 return {"cmd": "heal"}
             return None
         if action == "attack":
@@ -1912,8 +2241,7 @@ class TextMMOEnv:
             # Unknown names (dungeon guards) have no static stats, so they
             # stay attackable: dungeons are the intended hard content.
             defs_by_name = {
-                npc.get("name"): npc
-                for npc in (srv.WORLD.get("npcs") or {}).values()
+                npc.get("name"): npc for npc in (srv.WORLD.get("npcs") or {}).values()
             }
             player_atk = 3 + srv.LEVEL_ATK_PER_LEVEL * (max(1, s.get("level", 1)) - 1)
             equipped = s.get("equipped")
@@ -1926,9 +2254,7 @@ class TextMMOEnv:
                 int(s.get("other_players", 0) or 0),
                 getattr(srv, "ALLY_ATTACK_BONUS_CAP", 0),
             ) * getattr(srv, "ALLY_ATTACK_BONUS_PER_PLAYER", 0)
-            player_hp = max(
-                1, min(s.get("hp", 1) or 1, s.get("max_hp", 1) or 1)
-            )
+            player_hp = max(1, min(s.get("hp", 1) or 1, s.get("max_hp", 1) or 1))
             player_avg = max(1.0, (1 + max(1, player_atk)) / 2.0)
             # Every hostile instance in the room swings each tick, and
             # MOB_EXTRA_SPAWNS stacks up to four copies of one template in a
@@ -1985,7 +2311,11 @@ class TextMMOEnv:
             if not pack_full(s):
                 return None
             cands = sorted(
-                ((r["value"], r["name"]) for r in self._holdings() if self._sellable(r)),
+                (
+                    (r["value"], r["name"])
+                    for r in self._holdings()
+                    if self._sellable(r)
+                ),
                 key=lambda t: t[0],
             )
             if not cands:
@@ -1997,28 +2327,49 @@ class TextMMOEnv:
             # Need-aware, cheapest-first: a weapon when barehanded, a healing
             # herb when hurt or herb-less, arrows when the wielded bow runs
             # low. Merchant presence and gold still validated server-side.
-            if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+            if MERCHANT_NAMES and not any(
+                m in (s.get("npc_names") or []) for m in MERCHANT_NAMES
+            ):
                 return None
             if pack_full(s):
                 return None
             gold = s.get("gold", 0)
 
             def _cheapest(pred):
-                cands = [(iid, MERCHANT_PRICES[iid]) for iid in MERCHANT_PRICES if pred(iid)]
+                cands = [
+                    (iid, MERCHANT_PRICES[iid]) for iid in MERCHANT_PRICES if pred(iid)
+                ]
                 return min(cands, key=lambda t: t[1], default=(None, None))
 
             if not s.get("equipped"):
-                iid, price = _cheapest(lambda i: srv.ITEM_DEFS.get(i, {}).get("type") == "weapon")
+                iid, price = _cheapest(
+                    lambda i: srv.ITEM_DEFS.get(i, {}).get("type") == "weapon"
+                )
                 if iid and gold >= price:
                     return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
-            herbs = sum(1 for n in (s.get("inv_names") or []) if "healing herb" in n.lower())
-            iid, price = _cheapest(lambda i: srv.ITEM_DEFS.get(i, {}).get("type") == "consumable")
-            if iid and gold >= price and (s.get("hp", 1) < s.get("max_hp", 1) or herbs == 0):
+            herbs = sum(
+                1 for n in (s.get("inv_names") or []) if "healing herb" in n.lower()
+            )
+            iid, price = _cheapest(
+                lambda i: srv.ITEM_DEFS.get(i, {}).get("type") == "consumable"
+            )
+            if (
+                iid
+                and gold >= price
+                and (s.get("hp", 1) < s.get("max_hp", 1) or herbs == 0)
+            ):
                 return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
-            equipped_iid = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped") or "")
+            equipped_iid = srv.find_item_by_name(
+                list(srv.ITEM_DEFS), s.get("equipped") or ""
+            )
             if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
-                arrows = sum(1 for n in (s.get("inv_names") or []) if "arrow" in n.lower())
-                iid, price = _cheapest(lambda i: "arrow" in srv.ITEM_DEFS.get(i, {}).get("name", "").lower())
+                arrows = sum(
+                    1 for n in (s.get("inv_names") or []) if "arrow" in n.lower()
+                )
+                iid, price = _cheapest(
+                    lambda i: "arrow"
+                    in srv.ITEM_DEFS.get(i, {}).get("name", "").lower()
+                )
                 if iid and arrows < 5 and gold >= price:
                     return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
             return None
@@ -2027,7 +2378,9 @@ class TextMMOEnv:
             # shot; attacking empty-handed errors). Merchant-gated like buy
             # (#194): without a merchant in view this always errors.
             # Pack-full buys bounce server-side; gold validated there.
-            if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+            if MERCHANT_NAMES and not any(
+                m in (s.get("npc_names") or []) for m in MERCHANT_NAMES
+            ):
                 return None
             if pack_full(s):
                 return None
@@ -2040,12 +2393,19 @@ class TextMMOEnv:
             # Keep rules: worn gear, the quest charm, a last healing herb,
             # and bow arrows while low never quicksell. Merchant-gated like
             # buy (#194): selling needs the merchant in the room.
-            if MERCHANT_NAMES and not any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES):
+            if MERCHANT_NAMES and not any(
+                m in (s.get("npc_names") or []) for m in MERCHANT_NAMES
+            ):
                 return None
             cands = [r for r in self._holdings() if self._sellable(r)]
             if not cands:
                 return None
-            cands.sort(key=lambda r: (r["margin"] if r["margin"] is not None else -1, -r["value"]))
+            cands.sort(
+                key=lambda r: (
+                    r["margin"] if r["margin"] is not None else -1,
+                    -r["value"],
+                )
+            )
             return {"cmd": "sell", "item": cands[0]["name"]}
         if action == "equip":
             # One action fills all three gear slots over successive steps:
@@ -2097,7 +2457,11 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = getattr(srv, "QUEST_CHARM_INPUTS", {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1})
+            need = getattr(
+                srv,
+                "QUEST_CHARM_INPUTS",
+                {"treant_bark": 1, "troll_hide": 1, "ectoplasm": 1},
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "ancient_guardian_charm"}
             return None
@@ -2110,7 +2474,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("iron_plate", {}).get("inputs", {"iron_ore": 2, "wolf_pelt": 1})
+            need = srv.RECIPES.get("iron_plate", {}).get(
+                "inputs", {"iron_ore": 2, "wolf_pelt": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "iron_plate"}
             return None
@@ -2118,8 +2484,10 @@ class TextMMOEnv:
             # One Iron Ore produces five Arrows (recipe output_qty) through
             # the server's generic recipe system. Gate on ore so the agent
             # avoids guaranteed errors.
-            if any(srv.find_item_by_name(list(srv.ITEM_DEFS), name) == "iron_ore"
-                   for name in (s["inv_names"] or [])):
+            if any(
+                srv.find_item_by_name(list(srv.ITEM_DEFS), name) == "iron_ore"
+                for name in (s["inv_names"] or [])
+            ):
                 return {"cmd": "craft", "recipe": "arrows"}
             return None
         if action == "craft_sharpening_oil":
@@ -2129,7 +2497,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("sharpening_oil", {}).get("inputs", {"iron_ore": 1, "wolf_pelt": 1})
+            need = srv.RECIPES.get("sharpening_oil", {}).get(
+                "inputs", {"iron_ore": 1, "wolf_pelt": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "sharpening_oil"}
             return None
@@ -2153,7 +2523,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("greater_sharpening_oil", {}).get("inputs", {"iron_ore": 2, "serpent_scale": 1})
+            need = srv.RECIPES.get("greater_sharpening_oil", {}).get(
+                "inputs", {"iron_ore": 2, "serpent_scale": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "greater_sharpening_oil"}
             return None
@@ -2164,7 +2536,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("ironhide_draught", {}).get("inputs", {"troll_hide": 1, "iron_ore": 1, "ectoplasm": 1})
+            need = srv.RECIPES.get("ironhide_draught", {}).get(
+                "inputs", {"troll_hide": 1, "iron_ore": 1, "ectoplasm": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "ironhide_draught"}
             return None
@@ -2176,7 +2550,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("wardens_blade", {}).get("inputs", {"warden_trophy": 1, "iron_ore": 2, "serpent_scale": 1})
+            need = srv.RECIPES.get("wardens_blade", {}).get(
+                "inputs", {"warden_trophy": 1, "iron_ore": 2, "serpent_scale": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "wardens_blade"}
             return None
@@ -2198,7 +2574,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("steel_arrows", {}).get("inputs", {"iron_ore": 2, "serpent_scale": 1, "heron_feather": 1})
+            need = srv.RECIPES.get("steel_arrows", {}).get(
+                "inputs", {"iron_ore": 2, "serpent_scale": 1, "heron_feather": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "steel_arrows"}
             return None
@@ -2209,7 +2587,9 @@ class TextMMOEnv:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     have[iid] = have.get(iid, 0) + 1
-            need = srv.RECIPES.get("serpentbrand", {}).get("inputs", {"serpent_scale": 2, "iron_ore": 2, "resin": 1})
+            need = srv.RECIPES.get("serpentbrand", {}).get(
+                "inputs", {"serpent_scale": 2, "iron_ore": 2, "resin": 1}
+            )
             if all(have.get(iid, 0) >= qty for iid, qty in need.items()):
                 return {"cmd": "craft", "recipe": "serpentbrand"}
             return None
@@ -2233,14 +2613,19 @@ class TextMMOEnv:
             # Never masked otherwise: affordability is priced in.
             if s.get("room_id") != getattr(srv, "GUILD_ROOM", "guild_hall"):
                 return None
-            hostiles = [n for n in (s.get("npc_names") or [])
-                        if n not in NON_HOSTILE_NAMES]
+            hostiles = [
+                n for n in (s.get("npc_names") or []) if n not in NON_HOSTILE_NAMES
+            ]
             escrow = max(0, min(s.get("gold", 0), 10))
             if escrow <= 0:
                 return None
-            return {"cmd": "commission_post",
-                    "target": hostiles[0] if hostiles else "rat",
-                    "required_kills": 1, "reward_gold": escrow, "reward_xp": 0}
+            return {
+                "cmd": "commission_post",
+                "target": hostiles[0] if hostiles else "rat",
+                "required_kills": 1,
+                "reward_gold": escrow,
+                "reward_xp": 0,
+            }
         if action == "commission_list":
             return {"cmd": "commission_list"}
         if action == "commission_fill":
@@ -2249,17 +2634,24 @@ class TextMMOEnv:
             # MASKED away from the guild hall (fill is presence-gated, #337).
             if s.get("room_id") != getattr(srv, "GUILD_ROOM", "guild_hall"):
                 return None
-            cands = [c for c in (s.get("open_commissions") or []) if c["poster"] != self.name]
+            cands = [
+                c for c in (s.get("open_commissions") or []) if c["poster"] != self.name
+            ]
             if not cands:
                 return None
             best = max(cands, key=lambda c: (c["gold"] + c["xp"], -c["id"]))
             return {"cmd": "commission_fill", "commission_id": best["id"]}
         if action == "commission_cancel":
             # Cancel our own oldest open bounty, if the last listing showed one.
-            mine = [c for c in (s.get("open_commissions") or []) if c["poster"] == self.name]
+            mine = [
+                c for c in (s.get("open_commissions") or []) if c["poster"] == self.name
+            ]
             if not mine:
                 return None
-            return {"cmd": "commission_cancel", "commission_id": min(m["id"] for m in mine)}
+            return {
+                "cmd": "commission_cancel",
+                "commission_id": min(m["id"] for m in mine),
+            }
         if action == "quest_accept":
             # Accept the Town Guard's guard_charm quest. The server requires
             # standing in the guard's room; sending it elsewhere just yields
@@ -2296,21 +2688,36 @@ class TextMMOEnv:
             # respected -- expand instead once full. Same keep rules as sell.
             # Priced, not zero (#194): undercut the best ask by 1 when the
             # book prices the item, else merchant value + 1.
-            own_open = (sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
-                             if o.get("seller") == self.name)
-                        + sum(1 for b in ((s.get("market_state") or {}).get("bids") or [])
-                              if b.get("buyer") == self.name))
+            own_open = sum(
+                1
+                for o in ((s.get("market_state") or {}).get("orders") or [])
+                if o.get("seller") == self.name
+            ) + sum(
+                1
+                for b in ((s.get("market_state") or {}).get("bids") or [])
+                if b.get("buyer") == self.name
+            )
             if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
                 return None
-            cands = [(r["margin"] if r["margin"] is not None else 1, r["value"], r["name"])
-                     for r in self._holdings() if self._sellable(r)]
+            cands = [
+                (r["margin"] if r["margin"] is not None else 1, r["value"], r["name"])
+                for r in self._holdings()
+                if self._sellable(r)
+            ]
             cands = [c for c in cands if c[0] > 0]
             if not cands:
                 return None
             cands.sort(key=lambda c: (-c[0], -c[1]))
             best = next((r for r in self._holdings() if r["name"] == cands[0][2]), None)
-            ask = best_market_ask((s.get("market_state") or {}).get("orders"),
-                                  best["iid"], exclude_seller=self.name) if best else None
+            ask = (
+                best_market_ask(
+                    (s.get("market_state") or {}).get("orders"),
+                    best["iid"],
+                    exclude_seller=self.name,
+                )
+                if best
+                else None
+            )
             price = max(1, ask - 1) if ask else max(1, cands[0][1] + 1)
             self._pending_market_list = True
             return {"cmd": "market_post", "item": cands[0][2], "price": price}
@@ -2342,8 +2749,9 @@ class TextMMOEnv:
             ms = s.get("market_state") or {}
             bids = ms.get("bids") or []
             asks = ms.get("orders") or []
-            own_open = (sum(1 for o in asks if o.get("seller") == self.name)
-                        + sum(1 for b in bids if b.get("buyer") == self.name))
+            own_open = sum(1 for o in asks if o.get("seller") == self.name) + sum(
+                1 for b in bids if b.get("buyer") == self.name
+            )
             if own_open >= s.get("market_slots", MARKET_SLOTS_BASE):
                 return None
             others = [o for o in asks if o.get("seller") != self.name]
@@ -2380,10 +2788,15 @@ class TextMMOEnv:
             # and the next slot is affordable (mirrors the server's doubling
             # price from the 50g base; the server has the final word).
             slots = s.get("market_slots", MARKET_SLOTS_BASE)
-            own_open = (sum(1 for o in ((s.get("market_state") or {}).get("orders") or [])
-                             if o.get("seller") == self.name)
-                        + sum(1 for b in ((s.get("market_state") or {}).get("bids") or [])
-                              if b.get("buyer") == self.name))
+            own_open = sum(
+                1
+                for o in ((s.get("market_state") or {}).get("orders") or [])
+                if o.get("seller") == self.name
+            ) + sum(
+                1
+                for b in ((s.get("market_state") or {}).get("bids") or [])
+                if b.get("buyer") == self.name
+            )
             if own_open < slots:
                 return None
             if s.get("gold", 0) >= market_slot_price(slots):
@@ -2445,7 +2858,12 @@ class TextMMOEnv:
                 spare = int(s.get("gold", 0) or 0) - GUILD_RESERVE_GOLD
                 if spare <= 0:
                     return None
-                return {"cmd": "guild", "action": "vault", "op": "deposit", "gold": spare}
+                return {
+                    "cmd": "guild",
+                    "action": "vault",
+                    "op": "deposit",
+                    "gold": spare,
+                }
             if action == "guild_withdraw":
                 if not guild or not in_hall or rank not in GUILD_OUTRANK:
                     return None
@@ -2454,8 +2872,10 @@ class TextMMOEnv:
                 if int(s.get("guild_vault_gold", 0) or 0) < GUILD_WITHDRAW_STEP:
                     return None
                 return {
-                    "cmd": "guild", "action": "vault",
-                    "op": "withdraw", "gold": GUILD_WITHDRAW_STEP,
+                    "cmd": "guild",
+                    "action": "vault",
+                    "op": "withdraw",
+                    "gold": GUILD_WITHDRAW_STEP,
                 }
             if action == "guild_disband":
                 if not guild or not in_hall or s.get("guild_rank") != "leader":
@@ -2472,8 +2892,7 @@ class TextMMOEnv:
             hp = s.get("hp", 0)
             max_hp = s.get("max_hp", 1) or 1
             hostile_count = sum(
-                1 for n in (s.get("npc_names") or [])
-                if n not in NON_HOSTILE_NAMES
+                1 for n in (s.get("npc_names") or []) if n not in NON_HOSTILE_NAMES
             )
             if hostile_count <= 0:
                 return None
@@ -2488,8 +2907,12 @@ class TextMMOEnv:
             if hostile_count > friendly:
                 return {"cmd": "flee"}
             return None
-        if action in ("companion_adopt", "companion_summon",
-                      "companion_dismiss", "companion_status"):
+        if action in (
+            "companion_adopt",
+            "companion_summon",
+            "companion_dismiss",
+            "companion_status",
+        ):
             comp = s.get("companion") or {}
             if action == "companion_status":
                 return {"cmd": "companion", "action": "status"}
@@ -2507,21 +2930,27 @@ class TextMMOEnv:
             if comp:
                 return None
             inv_ids = set()
-            for name in (s.get("inv_names") or []):
+            for name in s.get("inv_names") or []:
                 iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
                 if iid:
                     inv_ids.add(iid)
             for iid, species in (
-                ("wolf_pup", "wolf"), ("mule_deed", "mule"), ("sheep_deed", "sheep")
+                ("wolf_pup", "wolf"),
+                ("mule_deed", "mule"),
+                ("sheep_deed", "sheep"),
             ):
                 if iid in inv_ids:
                     return {"cmd": "companion", "action": "adopt", "species": species}
-            if (MERCHANT_NAMES
-                    and any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES)
-                    and s.get("gold", 0) >= MERCHANT_PRICES.get("wolf_pup", 30)
-                    and not pack_full(s)):
-                return {"cmd": "buy",
-                        "item": srv.ITEM_DEFS.get("wolf_pup", {}).get("name", "Wolf Pup")}
+            if (
+                MERCHANT_NAMES
+                and any(m in (s.get("npc_names") or []) for m in MERCHANT_NAMES)
+                and s.get("gold", 0) >= MERCHANT_PRICES.get("wolf_pup", 30)
+                and not pack_full(s)
+            ):
+                return {
+                    "cmd": "buy",
+                    "item": srv.ITEM_DEFS.get("wolf_pup", {}).get("name", "Wolf Pup"),
+                }
             return None
         return None
 
@@ -2534,12 +2963,23 @@ class TextMMOEnv:
         exits_mask = [1.0 if d in s["exits"] else 0.0 for d in DIRECTIONS]
         static_names = set(NPC_ID_TO_NAME.values())
         unknown_npcs = [n for n in s["npc_names"] if n not in static_names]
-        npc_presence = [1.0 if NPC_ID_TO_NAME[nid] in s["npc_names"] else 0.0 for nid in NPC_LIST]
-        item_presence = [1.0 if ITEM_ID_TO_NAME[i] in s["item_names"] else 0.0 for i in ITEM_LIST]
+        npc_presence = [
+            1.0 if NPC_ID_TO_NAME[nid] in s["npc_names"] else 0.0 for nid in NPC_LIST
+        ]
+        item_presence = [
+            1.0 if ITEM_ID_TO_NAME[i] in s["item_names"] else 0.0 for i in ITEM_LIST
+        ]
 
-        inv_presence = [1.0 if ITEM_ID_TO_NAME[i] in (s["inv_names"] or []) else 0.0 for i in ITEM_LIST]
+        inv_presence = [
+            1.0 if ITEM_ID_TO_NAME[i] in (s["inv_names"] or []) else 0.0
+            for i in ITEM_LIST
+        ]
         equipped_flag = 1.0 if s["equipped"] else 0.0
-        inv_unknown = 1.0 if any(n not in ITEM_ID_TO_NAME.values() for n in (s["inv_names"] or [])) else 0.0
+        inv_unknown = (
+            1.0
+            if any(n not in ITEM_ID_TO_NAME.values() for n in (s["inv_names"] or []))
+            else 0.0
+        )
 
         ms = s.get("market_state")
         market_norm = min(s["market_orders"], 20) / 20.0
@@ -2558,8 +2998,10 @@ class TextMMOEnv:
         # disposition pays instead of acting blind.
         self._refresh_holdings()
         sellable = [r for r in self._flip_table if self._sellable(r)]
-        best_margin = max([(r["margin"] if r["margin"] is not None else 1)
-                           for r in sellable], default=0)
+        best_margin = max(
+            [(r["margin"] if r["margin"] is not None else 1) for r in sellable],
+            default=0,
+        )
         flip_margin_norm = min(max(0.0, best_margin) / 50.0, 1.0)
         inv_value_norm = min(sum(r["value"] for r in self._flip_table) / 200.0, 1.0)
 
@@ -2569,7 +3011,7 @@ class TextMMOEnv:
         quest_active = 1.0 if s.get("quest_guard_active") else 0.0
         quest_ready = 1.0 if s.get("guard_charm_crafted") else 0.0
         inv_ids = set()
-        for n in (s["inv_names"] or []):
+        for n in s["inv_names"] or []:
             iid = srv.find_item_by_name(list(srv.ITEM_DEFS), n)
             if iid:
                 inv_ids.add(iid)
@@ -2595,9 +3037,13 @@ class TextMMOEnv:
         # where binary presence suffices -- hence a scalar, not just the
         # inv_presence flag. Counts the whole ammo family (any variant
         # fires); ammo_best tracks the best loaded bonus (+0/+1/+2).
-        ammo_bonus = getattr(srv, "AMMO_BONUS", {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2})
-        held_bonus = [ammo_bonus.get(srv.find_item_by_name(list(srv.ITEM_DEFS), n), -1)
-                      for n in (s["inv_names"] or [])]
+        ammo_bonus = getattr(
+            srv, "AMMO_BONUS", {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2}
+        )
+        held_bonus = [
+            ammo_bonus.get(srv.find_item_by_name(list(srv.ITEM_DEFS), n), -1)
+            for n in (s["inv_names"] or [])
+        ]
         held_bonus = [b for b in held_bonus if b >= 0]
         arrows_norm = min(len(held_bonus), 20) / 20.0
         ammo_best_norm = (max(held_bonus) / 2.0) if held_bonus else 0.0
@@ -2675,28 +3121,41 @@ class TextMMOEnv:
             "level": s["level"],
             "gold_raw": s["gold"],
             "inv_names": list(s["inv_names"] or []),
-            "quest_stage": quest_stage({
-                "quest_active": quest_active,
-                "quest_ready": quest_ready,
-                "quest_has_charm": quest_has_charm,
-            }),
-            "quest2_stage": quest_stage({
-                "quest2_active": quest2_active,
-                "quest2_ready": quest2_ready,
-            }, "delver"),
-            "quest3_stage": quest_stage({
-                "quest3_active": quest3_active,
-                "quest3_ready": quest3_ready,
-            }, "remedy"),
-            "quest4_stage": quest_stage({
-                "quest4_active": quest4_active,
-                "quest4_ready": quest4_ready,
-            }, "tonic"),
+            "quest_stage": quest_stage(
+                {
+                    "quest_active": quest_active,
+                    "quest_ready": quest_ready,
+                    "quest_has_charm": quest_has_charm,
+                }
+            ),
+            "quest2_stage": quest_stage(
+                {
+                    "quest2_active": quest2_active,
+                    "quest2_ready": quest2_ready,
+                },
+                "delver",
+            ),
+            "quest3_stage": quest_stage(
+                {
+                    "quest3_active": quest3_active,
+                    "quest3_ready": quest3_ready,
+                },
+                "remedy",
+            ),
+            "quest4_stage": quest_stage(
+                {
+                    "quest4_active": quest4_active,
+                    "quest4_ready": quest4_ready,
+                },
+                "tonic",
+            ),
         }
         # Refresh per-observation caches for the mask below (holdings table
         # is already fresh from the disposition features above).
         self._inv_type_cache = {}
-        self._mask_cache = [1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS]
+        self._mask_cache = [
+            1 if self._action_to_cmd(a) is not None else 0 for a in ACTIONS
+        ]
         return obs
 
 
@@ -2705,10 +3164,13 @@ class TextMMOEnv:
 # to show the minimum viable training loop shape.
 # ---------------------------------------------------------------------------
 
+
 async def _demo():
     env = TextMMOEnv(f"MLDemo{random.randint(1000,9999)}", max_steps=40)
     obs = await env.reset()
-    print(f"Observation size: {len(flatten_obs(obs))} floats, {N_ACTIONS} actions: {ACTIONS}")
+    print(
+        f"Observation size: {len(flatten_obs(obs))} floats, {N_ACTIONS} actions: {ACTIONS}"
+    )
 
     total_reward = 0.0
     done = False
@@ -2717,7 +3179,9 @@ async def _demo():
         obs, reward, done, info = await env.step(action)
         total_reward += reward
         if reward:
-            print(f"  action={ACTIONS[action]:<16} reward={reward:+.3f}  room={obs['room_id']}  hp_frac={obs['hp_frac']:.2f}")
+            print(
+                f"  action={ACTIONS[action]:<16} reward={reward:+.3f}  room={obs['room_id']}  hp_frac={obs['hp_frac']:.2f}"
+            )
 
     print(f"\nTotal reward over {env._step_count} random steps: {total_reward:.2f}")
     print(f"Final score: {obs['score_raw']:.2f}")

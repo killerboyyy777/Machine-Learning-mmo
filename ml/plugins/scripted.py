@@ -39,9 +39,9 @@ except ImportError:
         reachable_path,
     )
 
-import server as srv
+import server as srv  # noqa: E402
 
-from . import AgentPlugin, register
+from . import AgentPlugin, register  # noqa: E402
 
 
 class ScriptedPolicy(AgentPlugin):
@@ -67,12 +67,31 @@ class ScriptedPolicy(AgentPlugin):
     STUCK_BAN_STEPS = 60
     STUCK_IDLE = ("look", "rest")
     STUCK_KEYS = (
-        "score", "level", "xp", "gold", "room_id", "hp", "max_hp",
-        "party_size", "is_dungeon", "dungeon_floor", "room_gold",
-        "equipped", "armor", "offhand", "deaths", "last_combat",
-        "market_orders", "quest_guard_active", "guard_charm_crafted",
-        "quest_delver_active", "quest_delver_ready", "quest_remedy_active",
-        "quest_remedy_ready", "quest_tonic_active", "quest_tonic_ready",
+        "score",
+        "level",
+        "xp",
+        "gold",
+        "room_id",
+        "hp",
+        "max_hp",
+        "party_size",
+        "is_dungeon",
+        "dungeon_floor",
+        "room_gold",
+        "equipped",
+        "armor",
+        "offhand",
+        "deaths",
+        "last_combat",
+        "market_orders",
+        "quest_guard_active",
+        "guard_charm_crafted",
+        "quest_delver_active",
+        "quest_delver_ready",
+        "quest_remedy_active",
+        "quest_remedy_ready",
+        "quest_tonic_active",
+        "quest_tonic_ready",
     )
 
     def __init__(self, **config):
@@ -169,7 +188,9 @@ class ScriptedPolicy(AgentPlugin):
         seen = {start}
         while queue:
             room_id, path = queue.pop(0)
-            for direction, dest in (srv.ROOMS.get(room_id, {}).get("exits") or {}).items():
+            for direction, dest in (
+                srv.ROOMS.get(room_id, {}).get("exits") or {}
+            ).items():
                 if dest in seen or dest not in srv.ROOMS:
                     continue
                 next_path = path + [direction]
@@ -261,13 +282,13 @@ class ScriptedPolicy(AgentPlugin):
             return 0
         path = reachable_path(srv.ROOMS, start, target)
         if not path:
-            return 10 ** 6
+            return 10**6
         cost = 0
         here = start
         for direction in path:
             dest = (srv.ROOMS.get(here, {}).get("exits") or {}).get(direction)
             if dest is None:
-                return 10 ** 6
+                return 10**6
             cost += self._room_incoming(dest)
             here = dest
         return cost
@@ -351,14 +372,20 @@ class ScriptedPolicy(AgentPlugin):
         # Full order tuples, not just the count: a refresh that swaps orders
         # at a constant count is still a changed world (#358). Bids ride
         # alongside asks (#158) so bidding bots see their own book move.
-        market = tuple(sorted(
-            [("ask", str(o.get("seller")), str(o.get("item")), o.get("price"))
-             for o in ((s.get("market_state") or {}).get("orders") or [])
-             if isinstance(o, dict)]
-            + [("bid", str(b.get("buyer")), str(b.get("item")), b.get("price"))
-               for b in ((s.get("market_state") or {}).get("bids") or [])
-               if isinstance(b, dict)]
-        ))
+        market = tuple(
+            sorted(
+                [
+                    ("ask", str(o.get("seller")), str(o.get("item")), o.get("price"))
+                    for o in ((s.get("market_state") or {}).get("orders") or [])
+                    if isinstance(o, dict)
+                ]
+                + [
+                    ("bid", str(b.get("buyer")), str(b.get("item")), b.get("price"))
+                    for b in ((s.get("market_state") or {}).get("bids") or [])
+                    if isinstance(b, dict)
+                ]
+            )
+        )
         gather = tuple(sorted(str(g) for g in (s.get("gatherables") or [])))
         return (tuple(vals), inv, npc, exits, comms, market, gather)
 
@@ -394,9 +421,15 @@ class ScriptedPolicy(AgentPlugin):
         pick = self._heal_first(env, mask)
         if pick is not None and pick != banned:
             return pick
-        moves = [i for i, a in enumerate(ACTIONS)
-                 if a.startswith("move_") and mask and i < len(mask)
-                 and mask[i] and i != banned]
+        moves = [
+            i
+            for i, a in enumerate(ACTIONS)
+            if a.startswith("move_")
+            and mask
+            and i < len(mask)
+            and mask[i]
+            and i != banned
+        ]
         if moves:
             return moves[0]
         look = self._idx("look")
@@ -569,9 +602,7 @@ class HunterPlugin(ScriptedPolicy):
             yield self._first_valid(env, ("equip",), mask)
             yield self._first_valid(env, ("buy",), mask)
         if not s.get("companion"):
-            has_deed = any(
-                "wolf pup" in n.lower() for n in (s.get("inv_names") or [])
-            )
+            has_deed = any("wolf pup" in n.lower() for n in (s.get("inv_names") or []))
             if self._in_room(env, "market") or has_deed:
                 yield self._first_valid(env, ("companion_adopt",), mask)
             elif s.get("gold", 0) >= 10:
@@ -658,8 +689,9 @@ class CommissionerPlugin(ScriptedPolicy):
             yield from self._navigate_toward(env, "guild_hall", mask)
         # Fill is guild-gated via the env mask; cancel/list stay global.
         yield self._first_valid(env, ("commission_fill",), mask)
-        mine = [c for c in (s.get("open_commissions") or [])
-                if c.get("poster") == env.name]
+        mine = [
+            c for c in (s.get("open_commissions") or []) if c.get("poster") == env.name
+        ]
         if not mine:
             yield self._first_valid(env, ("commission_post",), mask)
         else:
@@ -803,8 +835,12 @@ class QuesterPlugin(ScriptedPolicy):
                 yield self._first_valid(env, ("quest4_turn_in",), mask)
             elif not s.get("quest_tonic_active"):
                 yield self._first_valid(env, ("quest4_accept",), mask)
-        elif (s.get("quest_remedy_active") or s.get("quest_remedy_ready")
-                or s.get("quest_tonic_active") or s.get("quest_tonic_ready")):
+        elif (
+            s.get("quest_remedy_active")
+            or s.get("quest_remedy_ready")
+            or s.get("quest_tonic_active")
+            or s.get("quest_tonic_ready")
+        ):
             yield from self._navigate_toward(env, MAREN_ROOM, mask)
 
         yield self._first_valid(
@@ -837,9 +873,7 @@ class CrafterPlugin(ScriptedPolicy):
         "craft",
     )
 
-    SOURCE_ROOMS = (
-        ("smithy", ("iron_ore",)),
-    )
+    SOURCE_ROOMS = (("smithy", ("iron_ore",)),)
 
     def plan(self, env, mask):
         s = env._state

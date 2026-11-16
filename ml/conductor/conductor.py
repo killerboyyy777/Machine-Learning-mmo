@@ -3,16 +3,17 @@
 Stage 1: 50 agents, wave startup under 60s, fault isolation,
 holdout-gated promotion, market-volume hour soak.
 """
+
 import asyncio
 import time
 from pathlib import Path
 
+from .churn import ChurnManager, wave_startup
+from .metrics import MetricsLogger
+from .mixer import Mixer
+from .pbt import PBTManager
 from .registry import Registry
 from .supervisor import Supervisor
-from .churn import ChurnManager, wave_startup
-from .mixer import Mixer
-from .metrics import MetricsLogger
-from .pbt import PBTManager
 
 
 def _plugin_policy_factory(name, base_config):
@@ -28,6 +29,7 @@ def _plugin_policy_factory(name, base_config):
 
     def build(checkpoint_path, hparams):
         from ml.plugins import get, instantiate
+
         schema = get(name).config_schema()
         config = dict(base_config)
         for key, value in (hparams or {}).items():
@@ -55,9 +57,11 @@ def _materialize_slot(slot, url):
     instance is built once and shared across the
     slot's agents (policies are stateless at act time)."""
     from .runners import make_env_factory
+
     weight = max(1, int(slot.get("weight", 1)))
     if "plugin" in slot:
         from ml.plugins import instantiate
+
         plugin = instantiate(slot["plugin"], **slot.get("config", {}))
         env_kwargs = {"url": url}
         env_kwargs.update(slot.get("env", {}))
@@ -70,7 +74,8 @@ def _materialize_slot(slot, url):
             # Fresh per-agent rebuilds on PBT restart (shared slot
             # instance must never reload: it serves the whole slot).
             "policy_factory": _plugin_policy_factory(
-                slot["plugin"], slot.get("config", {})),
+                slot["plugin"], slot.get("config", {})
+            ),
             "learn_hook": plugin.learn,
             # #68: a plugin may supply its own reward function. Attached
             # to the env by the supervisor, so it must not be a bound
@@ -95,10 +100,20 @@ def _materialize_slot(slot, url):
 class Conductor:
     """Top-level orchestrator for large-scale agent management."""
 
-    def __init__(self, base_dir, max_agents=50, arrivals_per_minute=2.0,
-                 mean_lifetime_episodes=100, floors=None, pbt=None, runner=None,
-                 runners=None, url="ws://localhost:8765", resume=True,
-                 reset="none"):
+    def __init__(
+        self,
+        base_dir,
+        max_agents=50,
+        arrivals_per_minute=2.0,
+        mean_lifetime_episodes=100,
+        floors=None,
+        pbt=None,
+        runner=None,
+        runners=None,
+        url="ws://localhost:8765",
+        resume=True,
+        reset="none",
+    ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -114,12 +129,20 @@ class Conductor:
             # starting empty. Missing registry.json (first run) is a
             # no-op; pass resume=False for a guaranteed-fresh population.
             self.registry.load()
-        self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d_10_f1"])
+        self.mixer = Mixer(
+            self.registry, floors or ["town_square", "graveyard", "d_10_f1"]
+        )
         self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
-        self.churn = ChurnManager(self.registry, arrivals_per_minute, mean_lifetime_episodes)
-        self.supervisor = Supervisor(self.registry, max_concurrent=max_agents,
-                                     mixer=self.mixer, metrics=self.metrics,
-                                     episode_hook=self.churn.report_episode)
+        self.churn = ChurnManager(
+            self.registry, arrivals_per_minute, mean_lifetime_episodes
+        )
+        self.supervisor = Supervisor(
+            self.registry,
+            max_concurrent=max_agents,
+            mixer=self.mixer,
+            metrics=self.metrics,
+            episode_hook=self.churn.report_episode,
+        )
         # Slots (#152): weighted round-robin over agent kinds. `runners`
         # is a list of slot specs (plugin or raw); legacy `runner` is one
         # slot. Empty = track-only mode (no supervised tasks).
@@ -127,12 +150,13 @@ class Conductor:
         if runner is not None:
             raw_slots.append(runner)
         self._slots = [_materialize_slot(s, url) for s in raw_slots]
-        self._cycle = [i for i, s in enumerate(self._slots)
-                       for _ in range(s["weight"])]
+        self._cycle = [i for i, s in enumerate(self._slots) for _ in range(s["weight"])]
         self._cursor = 0
         # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
         # enable exploit/explore rounds, or None to run without a population.
-        self.pbt = PBTManager(self.registry, self.metrics, **pbt) if pbt is not None else None
+        self.pbt = (
+            PBTManager(self.registry, self.metrics, **pbt) if pbt is not None else None
+        )
 
         self._running = False
         self._start_time = None
@@ -171,7 +195,10 @@ class Conductor:
             login = (entry.character if entry is not None else None) or agent_id
             base_factory = slot["env_factory"]
             if login != agent_id:
-                env_factory = lambda aid, _f=base_factory, _n=login: _f(_n)
+
+                def env_factory(aid, _f=base_factory, _n=login):
+                    return _f(_n)
+
             else:
                 env_factory = base_factory
             started = await self.supervisor.start_agent(
@@ -181,14 +208,14 @@ class Conductor:
                 step_timeout=slot.get("step_timeout"),
                 policy_factory=slot.get("policy_factory"),
                 learn_hook=slot.get("learn_hook"),
-                reward_hook=slot.get("reward_hook"))
+                reward_hook=slot.get("reward_hook"),
+            )
             if not started:
                 self.registry.mark_dead(agent_id)
             return started
         except Exception as e:
             try:
-                self.metrics.log("spawn_error", agent_id=agent_id,
-                                 error=str(e)[-300:])
+                self.metrics.log("spawn_error", agent_id=agent_id, error=str(e)[-300:])
             except Exception:
                 pass
             self.registry.mark_dead(agent_id)
@@ -235,7 +262,9 @@ class Conductor:
                 print(f"[conductor] Wave complete: {alive}/{target} agents alive")
                 self.metrics.log_wave(wave_count // wave_size, wave_size, alive)
 
-        print(f"[conductor] Startup complete: {len(self.registry.alive_agents())} agents")
+        print(
+            f"[conductor] Startup complete: {len(self.registry.alive_agents())} agents"
+        )
 
         # Main loop: churn + rebalance + PBT exploit/explore
         end_time = self._start_time + duration_seconds
@@ -271,15 +300,19 @@ class Conductor:
                     # Reload the loser's task so the copied weights +
                     # hparams actually take effect at runtime (#228).
                     restarted = await self.supervisor.restart_agent(
-                        op["loser"], hparams=op.get("hparams"))
+                        op["loser"], hparams=op.get("hparams")
+                    )
                     try:
-                        self.metrics.log("pbt_reload", agent_id=op["loser"],
-                                         restarted=restarted)
+                        self.metrics.log(
+                            "pbt_reload", agent_id=op["loser"], restarted=restarted
+                        )
                     except Exception:
                         pass
                 if ops:
-                    print(f"[conductor] PBT: {len(ops)} exploit(s) "
-                          + ", ".join(f"{o['loser']}<-{o['winner']}" for o in ops))
+                    print(
+                        f"[conductor] PBT: {len(ops)} exploit(s) "
+                        + ", ".join(f"{o['loser']}<-{o['winner']}" for o in ops)
+                    )
                 last_pbt = now
 
             # Periodic status
@@ -293,8 +326,10 @@ class Conductor:
         self.registry.save()
         self.metrics.flush()
         elapsed = time.time() - self._start_time
-        print(f"[conductor] Run complete: {elapsed:.0f}s, "
-              f"{self.registry.snapshot()['alive']} agents alive")
+        print(
+            f"[conductor] Run complete: {elapsed:.0f}s, "
+            f"{self.registry.snapshot()['alive']} agents alive"
+        )
 
     def stop(self):
         self._running = False
@@ -303,8 +338,9 @@ class Conductor:
         snap = self.registry.snapshot()
         by_type = {}
         for a in snap["agents"]:
-            cell = by_type.setdefault(a["agent_type"],
-                                      {"alive": 0, "episodes": 0, "reward": 0.0})
+            cell = by_type.setdefault(
+                a["agent_type"], {"alive": 0, "episodes": 0, "reward": 0.0}
+            )
             cell["episodes"] += a["episodes"]
             cell["reward"] += a.get("total_reward", a["mean_reward"] * a["episodes"])
             if a["alive"]:

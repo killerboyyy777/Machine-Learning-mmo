@@ -129,49 +129,18 @@ jobs:
       - run: pip-audit -r requirements.txt
 
   lint:
-    # No-new-violations gate (file-level black --check punishes touching
-    # legacy files, proven by 106 on server.py/registry.py): for each
-    # changed file, black must not go clean->dirty vs merge-base, and ruff
-    # must not gain violations vs merge-base. New files must be clean.
-    # mypy stays advisory (not gated).
-    name: Lint changed Python files (no-new-violations black + ruff)
+    name: Full-repository Ruff + Black
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install black ruff
-      - run: |
-          base=$(git merge-base origin/master HEAD)
-          files=$(git diff --name-only "$base"...HEAD -- '*.py')
-          if [ -z "$files" ]; then echo "no python files changed"; exit 0; fi
-          echo "$files"
-          fail=0
-          for f in $files; do
-            [ -f "$f" ] || continue
-            # black: fail only on clean(base)->dirty(head) transitions.
-            base_ok=0
-            if git show "$base:$f" 2>/dev/null | black --check - >/dev/null 2>&1; then
-              base_ok=1
-            fi
-            if [ "$base_ok" = "1" ] && ! black --check "$f" >/dev/null 2>&1; then
-              echo "BLACK-REGRESSION: $f clean at base, dirty at head"
-              black --check --diff "$f" || true
-              fail=1
-            fi
-            # ruff: fail only when the violation count grows vs base.
-            base_n=$(git show "$base:$f" 2>/dev/null | ruff check --output-format=concise --stdin-filename "$f" - 2>/dev/null | grep -cE ':[0-9]+:[0-9]+: ' || true)
-            head_n=$(ruff check --output-format=concise -- "$f" 2>/dev/null | grep -cE ':[0-9]+:[0-9]+: ' || true)
-            if [ "${head_n:-0}" -gt "${base_n:-0}" ]; then
-              echo "RUFF-REGRESSION: $f base=$base_n head=$head_n"
-              ruff check -- "$f" || true
-              fail=1
-            fi
-          done
-          exit $fail
+      - run: pip install black==24.8.0 ruff==0.6.9
+      - name: Check all Python files with Ruff
+        run: ruff check .
+      - name: Check all Python files with Black
+        run: black --check .
 
   node-harness:
     name: Dashboard smoke (node stub + headless Firefox)

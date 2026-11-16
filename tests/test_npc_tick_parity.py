@@ -17,10 +17,10 @@ import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import npc_tick_fixture
-from npc_tick_fixture import GOLDEN
+import npc_tick_fixture  # noqa: E402
+from npc_tick_fixture import GOLDEN  # noqa: E402
 
-import server as srv
+import server as srv  # noqa: E402
 
 
 def _fake_victim(player_id=9001, name="ParityVictim", hp=500):
