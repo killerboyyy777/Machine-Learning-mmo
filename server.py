@@ -11581,6 +11581,7 @@ ARENA_BLOCKED_COMMANDS = frozenset(
         "commission_cancel",
         "guild",
         "intel",
+        "companion",
     }
 )
 
