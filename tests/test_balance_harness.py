@@ -593,8 +593,8 @@ def test_death_log_is_bounded_deduplicated_and_restart_safe():
     ]
     attribution = bal._death_attribution(samples)
     assert attribution["count"] == 2
-    assert attribution["by_room"] == {"same_room": 2}
-    assert attribution["by_killer"] == {"unknown": 2}
+    assert attribution["by_room"] == {"other_room": 1, "same_room": 1}
+    assert attribution["by_killer"] == {"Wolf": 1, "unknown": 1}
     assert "events" not in attribution
     print("DEATH_LOG_BOUNDS_AND_IDS_OK")
 
