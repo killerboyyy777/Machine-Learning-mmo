@@ -648,11 +648,11 @@ for tok in ("status, result = _train_start", "status, result = _train_stop"):
 print("TRAINING_PANEL_OK")
 
 # --- player combat status (#13): identical data on the roster and tracker ---
-perf = re.search(r"function renderPerf\\(players\\) \\{(.*?)\\n\\}", html, re.DOTALL)
+perf = re.search(r"function renderPerf\(players\) \{(.*?)\n\}", html, re.DOTALL)
 assert perf, "renderPerf missing"
 assert "p.ammo" in perf.group(1) and "p.buffs" in perf.group(1)
 assert "esc(ammo)" in perf.group(1) and "esc(buffs)" in perf.group(1)
-tracker = re.search(r"function renderTracker\\(players\\) \\{(.*?)\\n\\}", html, re.DOTALL)
+tracker = re.search(r"function renderTracker\(players\) \{(.*?)\n\}", html, re.DOTALL)
 assert tracker, "renderTracker missing"
 assert "p.ammo" in tracker.group(1) and "p.buffs" in tracker.group(1)
 assert "<th>ammo</th><th>buffs</th>" in html
