@@ -553,6 +553,69 @@ def test_death_log_survives_trim_and_attributes_deaths():
     print("DEATH_LOG_ATTRIBUTION_OK")
 
 
+def test_death_log_is_bounded_deduplicated_and_restart_safe():
+    samples = make_samples()
+    rows = [
+        {
+            "id": f"boot-a:{i}",
+            "t": 1.0,
+            "player": f"player-{i}",
+            "room": "same_room" if i % 2 else "other_room",
+            "killer": None if i % 2 else "Wolf",
+        }
+        for i in range(401)
+    ]
+    state = dict(samples[0]["state"], death_log=rows + ["not-an-event"])
+    seen = set()
+    first = bal._trim_state(state, seen)
+    second = bal._trim_state(state, seen)
+    assert len(first["death_log"]) == 399
+    assert second["death_log"] == []
+    assert first["death_log"][0]["id"] == "boot-a:2"
+    assert first["death_log"][-1]["id"] == "boot-a:400"
+
+    restarted = dict(samples[1])
+    restarted["state"] = dict(
+        samples[1]["state"],
+        death_log=[
+            {
+                "id": "boot-b:1",
+                "t": 1.0,
+                "player": "player-0",
+                "room": "same_room",
+                "killer": None,
+            }
+        ],
+    )
+    samples = [
+        {"state": {"death_log": [first["death_log"][0]]}},
+        restarted,
+    ]
+    attribution = bal._death_attribution(samples)
+    assert attribution["count"] == 2
+    assert attribution["by_room"] == {"same_room": 2}
+    assert attribution["by_killer"] == {"unknown": 1, "Wolf": 1}
+    assert "events" not in attribution
+    print("DEATH_LOG_BOUNDS_AND_IDS_OK")
+
+
+def test_death_attribution_tie_order_is_stable():
+    samples = [
+        {
+            "state": {
+                "death_log": [
+                    {"id": "1", "room": "z_room", "killer": "Wolf"},
+                    {"id": "2", "room": "a_room", "killer": "Bear"},
+                ]
+            }
+        }
+    ]
+    result = bal._death_attribution(samples)
+    assert list(result["by_room"]) == ["a_room", "z_room"]
+    assert list(result["by_killer"]) == ["Bear", "Wolf"]
+    print("DEATH_ATTRIBUTION_TIE_ORDER_OK")
+
+
 def test_npc_ai_telemetry_survives_trim_and_derive():
     # The same pin for the NPC AI v2 counters: they must reach derive() from
     # a sample state just like acquisition's do, or the gate measures zero.
@@ -984,6 +1047,8 @@ def main():
     test_gate_coverage_guard()
     test_acquisition_telemetry_survives_trim_and_derive()
     test_death_log_survives_trim_and_attributes_deaths()
+    test_death_log_is_bounded_deduplicated_and_restart_safe()
+    test_death_attribution_tie_order_is_stable()
     test_npc_ai_telemetry_survives_trim_and_derive()
     test_guilds_telemetry_survives_trim_and_derive()
     test_guild_absence_and_zero_world_fail_gate()
