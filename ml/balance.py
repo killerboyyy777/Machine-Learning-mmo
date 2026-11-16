@@ -750,6 +750,35 @@ def _guild_skip_reason(probe):
     return ""
 
 
+def _death_attribution(samples):
+    """Deduplicate the rolling death-log snapshots and group their evidence."""
+    events, seen = [], set()
+    for sample in samples:
+        state = sample.get("state") or {}
+        for event in state.get("death_log") or []:
+            if not isinstance(event, dict):
+                continue
+            key = json.dumps(event, sort_keys=True, separators=(",", ":"))
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(event)
+
+    def counts(field, fallback):
+        result = {}
+        for event in events:
+            value = event.get(field) or fallback
+            result[value] = result.get(value, 0) + 1
+        return dict(sorted(result.items(), key=lambda item: (-item[1], str(item[0]))))
+
+    return {
+        "count": len(events),
+        "by_room": counts("room", "unknown"),
+        "by_killer": counts("killer", "unknown"),
+        "events": events,
+    }
+
+
 def _telemetry(samples):
     """Telemetry block from the last sample's state (GM tables as fallback).
 
@@ -782,6 +811,7 @@ def _telemetry(samples):
     guilds = _guild_telemetry(samples)
     return {
         "drop_rate": drop_rate,
+        "death_attribution": _death_attribution(samples),
         "craft_cost_ratio": _num(acquisition.get("craft_cost_ratio")),
         "shop_time_to_earn_s": _num(shop.get("first_earn_s")),
         "acquisition": acquisition,
@@ -1041,6 +1071,7 @@ def derive(samples, ledger=None, telemetry=None):
         "combat": {
             "deaths": round(deaths, 3),
             "kills": round(kills, 3),
+            "death_attribution": telemetry.get("death_attribution") or {},
             "agent_hours": round(agent_seconds / 3600.0, 3),
             "deaths_per_hour": deaths_per_hour,
             "deaths_per_kill": deaths_per_kill,
@@ -1839,6 +1870,23 @@ def _trim_state(state):
         },
         "acquisition": state.get("acquisition") or {},
         "npc_ai": state.get("npc_ai") or {},
+        "death_log": [
+            {
+                key: entry.get(key)
+                for key in (
+                    "t",
+                    "player",
+                    "level",
+                    "room",
+                    "killer",
+                    "killer_room",
+                    "dmg",
+                    "hp_before",
+                )
+            }
+            for entry in (state.get("death_log") or [])[-400:]
+            if isinstance(entry, dict)
+        ],
         # Client-side evidence from the guild probe: the server publishes vault
         # totals, never the per-op purse deltas the conservation identity needs.
         "guilds": state.get("guilds") or {},
