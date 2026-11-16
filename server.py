@@ -9445,7 +9445,9 @@ async def cmd_help(player, msg):
     )
     ammo_names = [_iname(ammo_id) for ammo_id in AMMO_BONUS]
     buff_names = sorted(
-        _iname(item_id) for item_id, item in ITEM_DEFS.items() if item.get("buff")
+        _iname(item_id)
+        for item_id, item in ITEM_DEFS.items()
+        if item.get("buff")
     )
     await send(
         player,
