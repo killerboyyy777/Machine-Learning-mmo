@@ -72,7 +72,7 @@ assert loaded.training_steps == 20
 print("LINEAR_LOOP_OK")
 
 # --- shared-farm policy math (no server): epsilon schedule, fitness gate ---
-import ml_botfarm as farm_mod
+import ml_botfarm as farm_mod  # noqa: E402
 
 farm_mod.BEST_FILE = os.path.join(tmpdir, "best.json")
 farm_mod.WEIGHTS_FILE = os.path.join(tmpdir, "farm_weights.json")
@@ -102,7 +102,7 @@ bot.recent_rewards = [0.5] * 200
 assert bot.fitness() == 0.5
 farm.promote(0.5, 10.0)
 assert farm.best_fitness == 0.5
-import json as _json
+import json as _json  # noqa: E402
 
 assert _json.load(open(farm_mod.BEST_FILE))["fitness"] == 0.5
 farm.save_weights()

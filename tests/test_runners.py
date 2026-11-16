@@ -95,7 +95,7 @@ sys.path.insert(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "torch_agents"
     ),
 )
-from torch_farm import Runner as TorchRunner
+from torch_farm import Runner as TorchRunner  # noqa: E402
 
 _farm = types.SimpleNamespace(
     args=types.SimpleNamespace(

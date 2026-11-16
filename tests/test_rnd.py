@@ -13,9 +13,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
-import torch
-from dqn_agent import TorchDQNAgent
-from ml_env import OBS_SIZE
+import torch  # noqa: E402
+from dqn_agent import TorchDQNAgent  # noqa: E402
+from ml_env import OBS_SIZE  # noqa: E402
 
 # Seeded init so the novelty ordering below is reproducible (#378).
 torch.manual_seed(0)

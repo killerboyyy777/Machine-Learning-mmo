@@ -123,8 +123,8 @@ for tok in (
 assert chr(0x25B2) not in html, "non-ASCII wild marker in dashboard"
 # Spawn-border fix: outdoor-home tile carries accent AND dash.
 assert "ctx.setLineDash(outdoor ? [5, 4] : []);" in html
-import json as _json
-import os as _os
+import json as _json  # noqa: E402
+import os as _os  # noqa: E402
 
 _world = _json.load(open(_os.path.join(_os.path.dirname(__file__), "..", "world.json")))
 assert (

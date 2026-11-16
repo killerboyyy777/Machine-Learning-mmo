@@ -92,7 +92,7 @@ assert c.status()["pbt"]["c1"]["fitness"] == 4.0
 print("PBT_CONDUCTOR_OK")
 
 # --- goal-weighted fitness: weights influence selection (#288) ---
-from ml.ml_env import GOAL_AXES, reward_vector
+from ml.ml_env import GOAL_AXES, reward_vector  # noqa: E402
 
 reg3 = Registry(os.path.join(tmpdir, "reg3"), max_agents=10)
 _gold_goal = {"w_" + k: (1.0 if k == "gold" else 0.0) for k in GOAL_AXES}

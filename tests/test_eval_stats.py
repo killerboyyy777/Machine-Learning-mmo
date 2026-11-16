@@ -15,11 +15,11 @@ sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 sys.path.insert(0, ROOT)
 
 from dqn_agent import TorchDQNAgent  # noqa: F401  (import shape check only)
-from eval import _beta_reg, _run_tag, _t_crit, compare, report
-from ml_env import PROTOCOL_VERSION as ENV_PROTO
-from ml_env import TextMMOEnv
+from eval import _beta_reg, _run_tag, _t_crit, compare, report  # noqa: E402
+from ml_env import PROTOCOL_VERSION as ENV_PROTO  # noqa: E402
+from ml_env import TextMMOEnv  # noqa: E402
 
-import server as srv
+import server as srv  # noqa: E402
 
 # --- #72: client and server speak the same version ---
 assert ENV_PROTO == srv.PROTOCOL_VERSION == 2
@@ -78,7 +78,7 @@ json.dumps(c)  # still serializable for --out run records
 print("COMPARATIVE_SCHEMA_OK")
 
 # --- #247: report uses sample std, matching compare() ---
-import statistics as _statistics
+import statistics as _statistics  # noqa: E402
 
 _mean, _std = report("probe", [3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
 assert _std == _statistics.stdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3]), _std

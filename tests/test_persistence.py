@@ -13,10 +13,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
-import runlog
-from dqn_agent import TorchDQNAgent
-from ml_client import LinearQAgent
-from ml_env import N_ACTIONS, OBS_SIZE
+import runlog  # noqa: E402
+from dqn_agent import TorchDQNAgent  # noqa: E402
+from ml_client import LinearQAgent  # noqa: E402
+from ml_env import N_ACTIONS, OBS_SIZE  # noqa: E402
 
 
 def linear_check(folder):

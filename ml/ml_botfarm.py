@@ -505,7 +505,10 @@ async def main():
     farm.bots = [BotRunner(i, farm) for i in range(args.bots)]
 
     loop = asyncio.get_running_loop()
-    stop_setter = lambda: farm.stop.set()
+
+    def stop_setter():
+        farm.stop.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop_setter)

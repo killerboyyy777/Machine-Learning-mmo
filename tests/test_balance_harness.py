@@ -18,7 +18,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import ml.balance as bal
+import ml.balance as bal  # noqa: E402
 
 
 def _player(name, deaths, level=1, wild_deaths=None, civ_deaths=None, kills=None):

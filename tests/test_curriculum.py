@@ -111,7 +111,7 @@ assert manual.curriculum_stage == 0
 print("CURR_AUTO_OK")
 
 # --- misconfigured thresholds never crash auto-advance ---
-import ml.ml_env as _envmod
+import ml.ml_env as _envmod  # noqa: E402
 
 _saved = _envmod.CURRICULUM_THRESHOLDS
 _envmod.CURRICULUM_THRESHOLDS = (0, 10)

@@ -16,9 +16,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "ml"))
 
-from ml_env import ACTIONS, TextMMOEnv
+from ml_env import ACTIONS, TextMMOEnv  # noqa: E402
 
-import server as srv
+import server as srv  # noqa: E402
 
 ATTACK = ACTIONS.index("attack")
 

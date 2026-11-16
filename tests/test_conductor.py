@@ -70,10 +70,10 @@ assert reg2.get("a1").mean_reward == 15.0
 print("REGISTRY_OK")
 
 # --- #293 lineage checkpoints + atomic round-trip + resume ---
-import json as _json3
-from unittest import mock as _mock
+import json as _json3  # noqa: E402
+from unittest import mock as _mock  # noqa: E402
 
-import ml.conductor.churn as _churn
+import ml.conductor.churn as _churn  # noqa: E402
 
 regr = Registry(os.path.join(tmpdir, "lineage"), max_agents=5)
 cml = ChurnManager(regr, arrivals_per_minute=0)
@@ -122,7 +122,7 @@ intervals = [poisson_interval(60.0) for _ in range(100)]
 assert all(i >= 0 for i in intervals)
 assert 0.3 < sum(intervals) / len(intervals) < 2.0
 lifetimes = [geometric_lifetime(50) for _ in range(200)]
-assert all(l >= 1 for l in lifetimes)
+assert all(lifetime >= 1 for lifetime in lifetimes)
 assert 30 < sum(lifetimes) / len(lifetimes) < 80
 delays = list(wave_startup(25, 10, 5.0))
 assert len(delays) == 25
@@ -173,9 +173,9 @@ assert len(regt.alive_agents()) == 5
 print("CHURN_TOP_UP_OK")
 
 # --- #277 _spawn_one is collision-proof under forced id reuse ---
-from unittest import mock as _mock
+from unittest import mock as _mock  # noqa: E402
 
-import ml.conductor.churn as _churn
+import ml.conductor.churn as _churn  # noqa: E402
 
 regr = Registry(os.path.join(tmpdir, "collide"), max_agents=10)
 cmc = ChurnManager(regr, arrivals_per_minute=0, top_up_per_tick=5)
@@ -259,7 +259,7 @@ mlog3 = MetricsLogger(
 for i in range(300):
     mlog3.log("tick", i=i, pad="x" * 100)
 mlog3.flush()
-import json as _json2
+import json as _json2  # noqa: E402
 
 seen = []
 for suffix in ("", ".1", ".2"):
@@ -324,7 +324,7 @@ assert len(r_full.alive_agents()) == 1 and r_full.snapshot()["total"] == 2
 print("CHURN_FULL_OK")
 
 # --- rebalance always terminates: uniform no-signal hung the old loop ---
-import threading as _th
+import threading as _th  # noqa: E402
 
 mxu = Mixer(Registry(os.path.join(tmpdir, "mxu"), max_agents=50), ["f1", "f2", "f3"])
 mxu._floor_rewards = {"f1": [0, 0], "f2": [0, 0], "f3": [0, 0]}
@@ -387,7 +387,7 @@ asyncio.run(_stop_check())
 print("STOP_CLOSES_ENV_OK")
 
 # --- #135 death accounting: crashes log agent_death with traceback ---
-import json as _json
+import json as _json  # noqa: E402
 
 
 class _CrashEnv(_FakeEnv):
@@ -509,7 +509,9 @@ async def _restart_rebuilds_weights():
     ckpt = entry.checkpoint_path
 
     def _obs():
-        z = lambda n: [0.0] * n
+        def z(n):
+            return [0.0] * n
+
         return {
             "room_onehot": z(len(ROOM_LIST)),
             "is_dungeon": 0.0,
@@ -697,7 +699,7 @@ asyncio.run(_hook_check())
 print("EPISODE_HOOK_OK")
 
 # --- #50 watchdog: hung env.step ends the episode instead of wedging ---
-import time as _time
+import time as _time  # noqa: E402
 
 
 class _SlowEnv:
@@ -780,10 +782,10 @@ async def _no_ghosts():
 asyncio.run(_no_ghosts())
 print("NO_GHOSTS_OK")
 # --- #162 Phase 1: registry carries goals through save/load round-trip ---
-import random as _random
+import random as _random  # noqa: E402
 
 _random.seed(11)
-from ml.ml_env import GOAL_AXES, sample_goal
+from ml.ml_env import GOAL_AXES, sample_goal  # noqa: E402
 
 g_reg = sample_goal()
 reg_goal = Registry(os.path.join(tmpdir, "reg_goal"), max_agents=5)
@@ -908,9 +910,9 @@ for _i289, _a289 in enumerate(GOAL_AXES):
 print("GOAL_DIST_OK")
 
 # --- #289: offspring mutate the parent goal (mechanism + fraction) ---
-from unittest import mock as _mock289
+from unittest import mock as _mock289  # noqa: E402
 
-import ml.conductor.churn as _churn289
+import ml.conductor.churn as _churn289  # noqa: E402
 
 r_os = Registry(os.path.join(tmpdir, "reg_os"), max_agents=60)
 _parent289 = {"w_" + _a: (1.0 if _a == "score" else 0.0) for _a in GOAL_AXES}
@@ -942,9 +944,9 @@ assert 95 <= _dom289 <= 135, _dom289
 print("GOAL_OFFSPRING_OK")
 
 # --- #292 supervisor per-step learn hook (throttled, slice 5/6) ---
-from ml.ml_env import TextMMOEnv as _HookEnv
-from ml.plugins.linear import LinearPlugin as _LinearPlugin
-from ml.plugins.torch_plugin import TorchPlugin as _TorchPlugin
+from ml.ml_env import TextMMOEnv as _HookEnv  # noqa: E402
+from ml.plugins.linear import LinearPlugin as _LinearPlugin  # noqa: E402
+from ml.plugins.torch_plugin import TorchPlugin as _TorchPlugin  # noqa: E402
 
 # linear: one update moves zeroed weights, td_error exact (reward 1.0,
 # zeroed next-q) -- previously dead code from the conductor
@@ -1014,7 +1016,7 @@ for _p, _a, _r, _n, _d in _hook_calls:
     assert _n == {"obs": 1} and _d is True
 print("LEARN_HOOK_OK")
 # --- #290 reset ladder: none|lineage|cell|all wipe before resume ---
-from ml.conductor.registry import RESET_MODES
+from ml.conductor.registry import RESET_MODES  # noqa: E402
 
 assert RESET_MODES == ("none", "lineage", "cell", "all")
 rr = Registry(os.path.join(tmpdir, "resetmodes"), max_agents=5)
@@ -1052,7 +1054,7 @@ assert _bad_conductor
 _cc = Conductor(os.path.join(tmpdir, "creset"), reset="all")
 assert _cc.registry.snapshot()["total"] == 0  # wiped, load no-ops
 # Soak CLI: --reset/--no-resume parse, defaults resume as-is.
-import ml.conductor.soak as _soak
+import ml.conductor.soak as _soak  # noqa: E402
 
 with _mock.patch.object(
     sys, "argv", ["soak", "--reset", "cell", "--no-resume", "--agents", "3"]
@@ -1065,7 +1067,7 @@ assert (_sa.reset, _sa.resume) == ("none", True)
 print("RESET_MODES_OK")
 
 # --- #290 disconnect != death: dropped sockets reconnect, never death-log ---
-import ml.conductor.supervisor as _sup
+import ml.conductor.supervisor as _sup  # noqa: E402
 
 
 class _DropEnv(_FakeEnv):

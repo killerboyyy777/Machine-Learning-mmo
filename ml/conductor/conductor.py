@@ -195,7 +195,10 @@ class Conductor:
             login = (entry.character if entry is not None else None) or agent_id
             base_factory = slot["env_factory"]
             if login != agent_id:
-                env_factory = lambda aid, _f=base_factory, _n=login: _f(_n)
+
+                def env_factory(aid, _f=base_factory, _n=login):
+                    return _f(_n)
+
             else:
                 env_factory = base_factory
             started = await self.supervisor.start_agent(

@@ -39,9 +39,9 @@ except ImportError:
         reachable_path,
     )
 
-import server as srv
+import server as srv  # noqa: E402
 
-from . import AgentPlugin, register
+from . import AgentPlugin, register  # noqa: E402
 
 
 class ScriptedPolicy(AgentPlugin):

@@ -17,7 +17,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import server as srv
+import server as srv  # noqa: E402
 
 # Both archetypes leash; the hunters get a single hop so a wolf cannot chase a
 # role into the graveyard and farm it there.
