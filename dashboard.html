@@ -405,7 +405,7 @@
     <p class="empty" id="arenaNoLive" style="display:none">No live matches.</p>
   </div>
   <div class="panel">
-    <h2>Ladder <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">zero-sum Elo, floor 100, top 20</span></h2>
+    <h2>Ladder <span class="legend" id="arenaLadderLegend" style="font-size:11px;color:var(--dim);font-weight:normal">zero-sum Elo, floor 100, top 20</span></h2>
     <div class="tscroll"><table>
       <thead><tr><th>#</th><th>character</th><th>rating</th><th>peak</th><th>W</th><th>L</th><th>D</th><th>matches</th></tr></thead>
       <tbody id="arenaLadder"></tbody>
@@ -2679,6 +2679,7 @@ const TAB_SECTIONS = {
 let arenaFollowTimer = null;
 
 function renderArena(a) {
+  a = a || {};
   const live = a.live || [];
   $("arenaNoLive").style.display = live.length ? "none" : "";
   setHTML("arenaLive", live.map(m => {
@@ -2688,7 +2689,12 @@ function renderArena(a) {
   }).join(""));
   const ladder = a.ladder || [];
   $("arenaNoLadder").style.display = ladder.length ? "none" : "";
-  setHTML("arenaLadder", ladder.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name)}</td><td>${fmtNum(r.rating)}</td><td>${fmtNum(r.peak)}</td><td>${fmtNum(r.wins)}</td><td>${fmtNum(r.losses)}</td><td>${fmtNum(r.draws)}</td><td>${fmtNum(r.matches)}</td></tr>`).join(""));
+  setHTML("arenaLadder", ladder.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name)}${r.provisional ? ' <span class="dim">prov.</span>' : ""}</td><td>${fmtNum(r.rating)}</td><td>${fmtNum(r.peak)}</td><td>${fmtNum(r.wins)}</td><td>${fmtNum(r.losses)}</td><td>${fmtNum(r.draws)}</td><td>${fmtNum(r.matches)}</td></tr>`).join(""));
+  const legend = $("arenaLadderLegend");
+  if (legend && a.min_matches != null) {
+    const text = `zero-sum Elo, floor 100, top 20, full rank after ${fmtNum(a.min_matches)} matches (${fmtNum(a.ranked_size)} ranked, ${fmtNum(a.provisional_size)} provisional)`;
+    if (legend.textContent !== text) legend.textContent = text;
+  }
   const recent = a.recent || [];
   setHTML("arenaRecent", recent.length ? recent.slice().reverse().map(row => {
     const t1 = (row.teams && row.teams.team1) || [];
