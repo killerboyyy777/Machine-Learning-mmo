@@ -1871,7 +1871,6 @@ def _trim_state(state, seen_death_ids=None):
         event = {
             key: entry.get(key)
             for key in (
-                "id",
                 "t",
                 "player",
                 "level",
@@ -1882,6 +1881,8 @@ def _trim_state(state, seen_death_ids=None):
                 "hp_before",
             )
         }
+        if "id" in entry:
+            event["id"] = entry["id"]
         if seen_death_ids is not None:
             key = event.get("id") or json.dumps(
                 event, sort_keys=True, separators=(",", ":")
