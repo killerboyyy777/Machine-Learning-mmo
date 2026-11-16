@@ -4336,6 +4336,24 @@ def _clear_reward_due(floor):
     return floor is not None and not floor.clear_rewarded
 
 
+def _player_status_view(player):
+    return {
+        "buffs": {
+            category: {"amount": value["amount"], "remaining": value["remaining"]}
+            for category, value in player.active_buffs.items()
+            if value.get("remaining", 0) > 0
+        },
+        "ammo": [
+            {
+                "id": ammo_id,
+                "name": _iname(ammo_id),
+                "count": player.inventory.count(ammo_id),
+            }
+            for ammo_id in AMMO_BONUS
+        ],
+    }
+
+
 def stats_view(player):
     entry = get_score_entry(player.name) if player.name else None
     party = None
@@ -4398,11 +4416,7 @@ def stats_view(player):
             if entry
             else False
         ),
-        "buffs": {
-            category: {"amount": value["amount"], "remaining": value["remaining"]}
-            for category, value in player.active_buffs.items()
-            if value.get("remaining", 0) > 0
-        },
+        **_player_status_view(player),
         "companion": _companion_view(player),
         "death_preview": death_preview(player),
     }
@@ -9425,6 +9439,13 @@ async def cmd_companion(player, msg):
 
 
 async def cmd_help(player, msg):
+    recipe_names = sorted(
+        _iname(recipe.get("result", recipe_id)) for recipe_id, recipe in RECIPES.items()
+    )
+    ammo_names = [_iname(ammo_id) for ammo_id in AMMO_BONUS]
+    buff_names = sorted(
+        _iname(item_id) for item_id, item in ITEM_DEFS.items() if item.get("buff")
+    )
     await send(
         player,
         {
@@ -9439,6 +9460,9 @@ async def cmd_help(player, msg):
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
                 "market_post market_list market_cancel market_buy market_expand market_buy_order market_buy_modify quest "
                 "arena [enter|leave|status|ladder|watch|unwatch]. "
+                f"Recipes: {', '.join(recipe_names)}. "
+                f"Ammo: {', '.join(ammo_names)}. "
+                f"Buff consumables: {', '.join(buff_names)}. "
                 "stats lists your active companion: name, species, level, hp, attack, "
                 "defense, passive, script state."
             ),
@@ -12584,6 +12608,7 @@ def world_snapshot():
                 "hp": p.hp,
                 "max_hp": p.max_hp,
                 "defense": _player_defense(p),
+                **_player_status_view(p),
                 "adaptive_score": adaptive_score(p),
                 "variety": round(compute_variety(e), 2),
                 "room": p.room,
