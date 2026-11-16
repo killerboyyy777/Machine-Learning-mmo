@@ -648,6 +648,61 @@ async def main():
 
     p = srv.Player(ws=FakeWS(), id=9999, name="Tester", logged_in=True)
     srv.add_member(p)
+
+    # Help catalogs are derived from the world definitions (#12).
+    await srv.cmd_help(p, {})
+    help_text = inbox[-1]["text"]
+    recipe_names = {
+        srv._iname(recipe.get("result", recipe_id))
+        for recipe_id, recipe in srv.RECIPES.items()
+    }
+    ammo_names = {srv._iname(ammo_id) for ammo_id in srv.AMMO_BONUS}
+    buff_names = {
+        srv._iname(item_id)
+        for item_id, item in srv.ITEM_DEFS.items()
+        if item.get("buff")
+    }
+    assert all(name in help_text for name in recipe_names), help_text
+    assert all(name in help_text for name in ammo_names), help_text
+    assert all(name in help_text for name in buff_names), help_text
+    print("HELP_CATALOG_OK")
+
+    # The WebSocket stats event and dashboard player row share one combat
+    # status shape, including zero counts for every known ammo variant (#13).
+    old_inventory = list(p.inventory)
+    old_active_buffs = p.active_buffs
+    old_registered = srv.players.get(p.id)
+    p.inventory = ["arrow", "arrow", "iron_arrow", "steel_arrow"]
+    p.active_buffs = {
+        "attack": {"amount": 2, "remaining": 4},
+        "damage_reduction": {"amount": 1, "remaining": 0},
+    }
+    srv.players[p.id] = p
+    stats = srv.stats_view(p)
+    dashboard_row = next(
+        row for row in srv.world_snapshot()["players"] if row["name"] == p.name
+    )
+    expected_ammo = [
+        {
+            "id": ammo_id,
+            "name": srv._iname(ammo_id),
+            "count": p.inventory.count(ammo_id),
+        }
+        for ammo_id in srv.AMMO_BONUS
+    ]
+    expected_buffs = {"attack": {"amount": 2, "remaining": 4}}
+    assert stats["ammo"] == expected_ammo, stats["ammo"]
+    assert stats["buffs"] == expected_buffs, stats["buffs"]
+    assert dashboard_row["ammo"] == stats["ammo"]
+    assert dashboard_row["buffs"] == stats["buffs"]
+    p.inventory = old_inventory
+    p.active_buffs = old_active_buffs
+    if old_registered is None:
+        srv.players.pop(p.id, None)
+    else:
+        srv.players[p.id] = old_registered
+    print("PLAYER_STATUS_SURFACES_OK")
+
     entry = srv.get_score_entry("Tester")
     entry["level"] = 1
     entry["xp"] = 0.0
