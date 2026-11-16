@@ -135,12 +135,14 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref || github.ref }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install black==24.8.0 ruff==0.6.9
       - name: Fix remaining legacy Ruff findings (push events only)
-        if: github.event_name == 'push'
+        if: github.event_name == 'pull_request'
         run: |
           ruff check . --output-format=json > /tmp/ruff.json || true
           python - <<'PY'
