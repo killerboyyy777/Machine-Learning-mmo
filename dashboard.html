@@ -293,7 +293,7 @@
         <div class="tscroll"><table data-sort="perf">
           <thead><tr><th>#</th><th>player</th><th>lv</th><th>score</th>
                  <th>kills</th><th>deaths</th><th>gold</th><th>hp</th>
-                 <th>room</th></tr></thead>
+                 <th>room</th><th>ammo</th><th>buffs</th></tr></thead>
           <tbody id="perf"></tbody>
         </table></div>
         <p class="empty" id="noPerf" style="display:none">No online players.</p>
@@ -1181,10 +1181,18 @@ const PLAYER_COLS = [
   p => p.gold ?? 0,
   p => p.max_hp ? p.hp / p.max_hp : 0,
   p => p.room || "",
+  p => (p.ammo || []).reduce((total, item) => total + (item.count || 0), 0),
+  p => Object.keys(p.buffs || {}).length,
 ];
 function renderPerf(players) {
   const rows = sortRows("perf", players, PLAYER_COLS, 3, -1);
-  setHTML("perf", rows.map((p, i) => `
+  setHTML("perf", rows.map((p, i) => {
+    const ammo = (p.ammo || []).filter(item => item.count > 0)
+      .map(item => `${item.name} x${item.count}`).join(", ") || "none";
+    const buffs = Object.entries(p.buffs || {})
+      .map(([category, buff]) => `${category} +${buff.amount} (${buff.remaining})`)
+      .join(", ") || "none";
+    return `
     <tr>
       <td>${i+1}</td>
       <td>${esc(p.name)}</td>
@@ -1195,7 +1203,10 @@ function renderPerf(players) {
       <td>${p.gold}</td>
       <td>${p.hp}/${p.max_hp} ${hpbar(p.hp, p.max_hp)}</td>
       <td>${esc(p.room)}</td>
-    </tr>`).join(""));
+      <td>${esc(ammo)}</td>
+      <td>${esc(buffs)}</td>
+    </tr>`;
+  }).join(""));
   $("noPerf").style.display = players.length ? "none" : "";
 }
 
@@ -2252,10 +2263,16 @@ function renderTracker(players) {
     return;
   }
   const acts = p.recent_actions || [];
+  const ammo = (p.ammo || []).filter(item => item.count > 0)
+    .map(item => `${item.name} x${item.count}`).join(", ") || "none";
+  const buffs = Object.entries(p.buffs || {})
+    .map(([category, buff]) => `${category} +${buff.amount} (${buff.remaining})`)
+    .join(", ") || "none";
   setHTML("trackDetail", `
     <div class="tmeta"><b>${esc(p.name)}</b> (lv${p.level ?? 1}) · ${esc(p.room)} ·
       score <b>${(p.score ?? 0).toFixed(1)}</b> · ${p.hp}/${p.max_hp} HP ${hpbar(p.hp, p.max_hp)} ·
-      ${p.gold} gold · ${acts.length} recent action${acts.length === 1 ? "" : "s"}</div>` +
+      ${p.gold} gold · ammo ${esc(ammo)} · buffs ${esc(buffs)} ·
+      ${acts.length} recent action${acts.length === 1 ? "" : "s"}</div>` +
     (acts.length ? acts.map(a => `
       <div class="row">
         <span class="t">${esc(a.time)}</span>
