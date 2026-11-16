@@ -149,6 +149,52 @@ GUILD_PROBE = {
     "error": "",
 }
 
+# What the arena probe leaves behind after two scripted matches (#656): the
+# rating delta is a transfer, and no gold, item or death counter moved.
+ARENA_PROBE = {
+    "pairs_matched": True,
+    "matches_completed": 2,
+    "rating_delta_sum": 0.0,
+    "rating_conserved": True,
+    "gold_delta": 0.0,
+    "items_delta": 0,
+    "deaths_delta": 0,
+    "civ_deaths_delta": 0,
+    "wild_deaths_delta": 0,
+    "determinism": True,
+    "fingerprint": "0f1e2d3c4b5a6978",
+    "fingerprint_second": "0f1e2d3c4b5a6978",
+    "steps": 18,
+    "problems": [],
+    "skipped": False,
+    "skip_reason": None,
+    "error": None,
+}
+
+ARENA_SNAPSHOT = {
+    "version": 1,
+    "queues": {"1v1": 0, "2v2": 0},
+    "live": [],
+    "ladder": [],
+    "ladder_size": 8,
+    "ranked_size": 0,
+    "provisional_size": 8,
+    "min_matches": 5,
+    "recent": [],
+    "rating_clamps": 0,
+}
+
+
+def with_arena(samples, probe=None):
+    """Attach the probe's ledger to the final sample, the way ``collect`` does.
+
+    In place on purpose: the arena probe runs before the closing sample, so
+    its rows share that timestamp and do not stretch the run's agent-hours.
+    """
+    samples[-1]["state"]["arena"] = dict(ARENA_SNAPSHOT)
+    samples[-1]["state"]["arena_probe"] = dict(ARENA_PROBE if probe is None else probe)
+    return samples
+
 
 def with_guilds(samples, peak=None, probe=None, empty_after=False):
     """Add the probe's peak sample, the way ``collect`` does."""
@@ -179,7 +225,7 @@ def with_guilds(samples, peak=None, probe=None, empty_after=False):
 
 
 def make_measurements(profile="smoke", seed=700, alive=8):
-    samples = with_guilds(make_samples(alive=alive))
+    samples = with_arena(with_guilds(make_samples(alive=alive)))
     telemetry = dict(TELEMETRY)
     telemetry.update(bal._telemetry(samples))
     return {
