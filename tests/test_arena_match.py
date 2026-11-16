@@ -164,6 +164,7 @@ async def main():
                 return messages()
 
         srv.HANDLERS["companion"] = companion_spy
+
         async def no_arena_cleanup(player):
             return None
 
