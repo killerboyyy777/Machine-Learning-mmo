@@ -194,6 +194,7 @@ async def main():
         assert four.hp == 20
         assert "No 'ArenaFour' here to attack." in text_of("ArenaThree")[-1]
         assert "gather" in srv.ARENA_BLOCKED_COMMANDS
+        assert "companion" in srv.ARENA_BLOCKED_COMMANDS
         assert "attack" not in srv.ARENA_BLOCKED_COMMANDS
         print("NO_WORLD_PVP_OK")
 
