@@ -157,8 +157,11 @@ jobs:
                   path = Path(item['filename'])
                   lines = by_file.setdefault(path, path.read_text().splitlines())
                   index = item['location']['row'] - 1
-                  if '# noqa' not in lines[index]:
-                      lines[index] = lines[index].rstrip() + '  # noqa: E402'
+                  if 'E402' not in lines[index]:
+                      if '# noqa:' in lines[index]:
+                          lines[index] = lines[index].replace('# noqa:', '# noqa: E402,')
+                      else:
+                          lines[index] = lines[index].rstrip() + '  # noqa: E402'
           for path, lines in by_file.items():
               path.write_text(nl.join(lines) + nl)
           
@@ -189,6 +192,16 @@ jobs:
           if old not in current:
               raise SystemExit('Expected ambiguous lifetime variable not found')
           path.write_text(current.replace(old, 'assert all(lifetime >= 1 for lifetime in lifetimes)', 1))
+
+          for filename, expected in {
+              "tests/test_mcp_client.py": 17,
+              "tests/test_server_unit.py": 1,
+          }.items():
+              path = Path(filename)
+              current = path.read_text()
+              if current.count(" == False") != expected:
+                  raise SystemExit(f"Unexpected False-comparison count in {filename}")
+              path.write_text(current.replace(" == False", " is False"))
           PY
           ruff check . --select E712 --fix || true
           black .
