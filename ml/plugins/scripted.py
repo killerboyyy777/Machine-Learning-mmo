@@ -950,13 +950,21 @@ class ArenaPlugin(ScriptedPolicy):
 
     State is keyed by character name because the plugin instance is shared
     across every agent on its slot; a shared scalar would corrupt across
-    agents. A bot that dies in a match is restored to a world room by the
-    server, and the next select() sees that and resets to idle, so it
-    never re-enters a match that no longer exists.
+    agents. The phase moves idle -> queued -> fighting -> idle. A queued bot
+    keeps queueing only while it waits, because the room stays a world room
+    until the server pairs it into an a_<match id> room; only leaving that
+    room (match over, or a death restoring the bot to the world) ends the
+    cycle. Resetting on any world room would drop the queue on the very next
+    selection and re-send enter at a queue it is already in (#679).
     """
 
     name = "arena"
     HEALTHY_HP_FRAC = 0.8
+    # A queue entry that never pairs (pruned session, server restart, an
+    # enter the server refused) would otherwise hold "queued" for the whole
+    # run and the bot would never queue again. Selections, not seconds: the
+    # policy has no clock, and one selection is one env step.
+    QUEUE_WAIT_SELECTS = 120
 
     def __init__(self, **config):
         super().__init__(**config)
@@ -964,32 +972,62 @@ class ArenaPlugin(ScriptedPolicy):
 
     def _state_for(self, env):
         key = getattr(env, "name", None) or id(env)
-        return self._arena_state.setdefault(key, {"phase": "idle"})
+        return self._arena_state.setdefault(
+            key, {"phase": "idle", "wait": 0, "sent_step": None}
+        )
+
+    def _arena_command(self, env, st, command):
+        """Queue one arena command per selection.
+
+        select() stops at the first action plan() yields, but the stuck
+        breaker calls plan() again inside the same selection; without this
+        guard a leave could be followed by an immediate re-enter.
+        """
+        step = getattr(env, "_step_count", 0)
+        if st["sent_step"] == step:
+            return
+        st["sent_step"] = step
+        env._pending_arena = command
+
+    def _sync_phase(self, st, in_arena):
+        if in_arena:
+            if st["phase"] != "fighting":
+                st["phase"] = "fighting"
+                st["wait"] = 0
+        elif st["phase"] == "fighting":
+            # The match ended, or a death put the bot back in the world.
+            st["phase"] = "idle"
+            st["wait"] = 0
+        elif st["phase"] == "queued":
+            st["wait"] += 1
 
     def plan(self, env, mask):
         s = env._state
         room = s.get("room_id")
         in_arena = isinstance(room, str) and room.startswith("a_")
         st = self._state_for(env)
-        # A match that ended (or a death) puts us back in a world room.
-        if st["phase"] in ("queued", "fighting") and not in_arena:
-            st["phase"] = "idle"
-        hp = s.get("hp", 1) or 1
-        max_hp = max(1, s.get("max_hp", 1) or 1)
-        healthy = (hp / max_hp) >= self.HEALTHY_HP_FRAC
-        hostile_room = bool(self._room_hostiles(room)) if room else False
-        idle = not hostile_room and not s.get("is_dungeon")
+        self._sync_phase(st, in_arena)
         if in_arena:
             # Fighting: attack, else wander. Never queue/leave mid-match.
             yield self._first_valid(env, ("attack",), mask)
             yield self._first_valid(env, self.WANDER, mask)
             return
-        if healthy and idle and st["phase"] == "idle":
-            env._pending_arena = {"action": "enter", "mode": "2v2"}
+        hp = s.get("hp", 1) or 1
+        max_hp = max(1, s.get("max_hp", 1) or 1)
+        healthy = (hp / max_hp) >= self.HEALTHY_HP_FRAC
+        hostile_room = bool(self._room_hostiles(room)) if room else False
+        idle = not hostile_room and not s.get("is_dungeon")
+        if st["phase"] == "queued":
+            # Still queued: leave once eligibility is gone, or when the wait
+            # has run longer than a real pairing should take.
+            if not healthy or not idle or st["wait"] > self.QUEUE_WAIT_SELECTS:
+                self._arena_command(env, st, {"action": "leave"})
+                st["phase"] = "idle"
+                st["wait"] = 0
+        elif healthy and idle:
+            self._arena_command(env, st, {"action": "enter", "mode": "2v2"})
             st["phase"] = "queued"
-        elif (not healthy or not idle) and st["phase"] in ("queued", "fighting"):
-            env._pending_arena = {"action": "leave"}
-            st["phase"] = "idle"
+            st["wait"] = 0
         yield self._heal_first(env, mask)
         yield self._flee_unwinnable(env, mask)
         yield self._safe_random_move(env, mask)
