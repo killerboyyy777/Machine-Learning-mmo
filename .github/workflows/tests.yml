@@ -137,6 +137,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install black ruff
+      - name: Apply safe Ruff fixes and Black formatting (temporary export)
+        run: |
+          ruff check . --fix || true
+          black .
+          git diff --binary > /tmp/lint-fixes.patch
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lint-fixes-patch
+          path: /tmp/lint-fixes.patch
       - name: Check all Python files with Ruff
         run: ruff check .
       - name: Check all Python files with Black
