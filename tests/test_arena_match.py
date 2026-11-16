@@ -118,9 +118,7 @@ async def main():
         saved_companion_handler = srv.HANDLERS["companion"]
         saved_arena_disconnect = srv.arena_on_disconnect
         companion_key = "arenadispatchguard"
-        companion_store_before = copy.deepcopy(
-            srv.COMPANION_PLAYERS.get(companion_key)
-        )
+        companion_store_before = copy.deepcopy(srv.COMPANION_PLAYERS.get(companion_key))
         acquisition_stats_before = copy.deepcopy(srv.ACQUISITION_STATS)
 
         async def companion_spy(player, msg):
@@ -129,9 +127,7 @@ async def main():
         class ArenaCommandWS(FakeWS):
             def __aiter__(self):
                 async def messages():
-                    player = next(
-                        p for p in srv.players.values() if p.ws is self
-                    )
+                    player = next(p for p in srv.players.values() if p.ws is self)
                     player.name = "ArenaDispatchGuard"
                     player.logged_in = True
                     player.arena_match = match.id
@@ -156,8 +152,7 @@ async def main():
                     assert not handler_calls
                     assert player.gold == 123
                     assert (
-                        srv.COMPANION_PLAYERS[companion_key]
-                        == companion_store_expected
+                        srv.COMPANION_PLAYERS[companion_key] == companion_store_expected
                     )
                     assert srv.ACQUISITION_STATS == acquisition_stats_before
 
