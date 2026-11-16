@@ -129,7 +129,7 @@ jobs:
       - run: pip-audit -r requirements.txt
 
   lint:
-    name: Full-repository Black + Ruff
+    name: Full-repository Ruff + Black
     runs-on: ubuntu-latest
     permissions:
       contents: write
