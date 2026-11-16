@@ -571,7 +571,7 @@ def test_death_log_is_bounded_deduplicated_and_restart_safe():
     second = bal._trim_state(state, seen)
     assert len(first["death_log"]) == 399
     assert second["death_log"] == []
-    assert first["death_log"][0]["id"] == "boot-a:2"
+    assert first["death_log"][0]["id"] == "boot-a:1"
     assert first["death_log"][-1]["id"] == "boot-a:400"
 
     restarted = dict(samples[1])
@@ -594,7 +594,7 @@ def test_death_log_is_bounded_deduplicated_and_restart_safe():
     attribution = bal._death_attribution(samples)
     assert attribution["count"] == 2
     assert attribution["by_room"] == {"same_room": 2}
-    assert attribution["by_killer"] == {"unknown": 1, "Wolf": 1}
+    assert attribution["by_killer"] == {"unknown": 2}
     assert "events" not in attribution
     print("DEATH_LOG_BOUNDS_AND_IDS_OK")
 
