@@ -141,6 +141,9 @@ async def main():
                         "active": 0,
                         "updated_at": time.time(),
                     }
+                    companion_store_expected = copy.deepcopy(
+                        srv.COMPANION_PLAYERS[companion_key]
+                    )
                     yield json.dumps(
                         {"cmd": "companion", "action": "adopt", "species": "wolf"}
                     )
@@ -148,13 +151,10 @@ async def main():
                     # has either invoked the handler or rejected the command.
                     assert not handler_calls
                     assert player.gold == 123
-                    assert srv.COMPANION_PLAYERS[companion_key] == {
-                        "companions": [],
-                        "active": 0,
-                        "updated_at": srv.COMPANION_PLAYERS[companion_key][
-                            "updated_at"
-                        ],
-                    }
+                    assert (
+                        srv.COMPANION_PLAYERS[companion_key]
+                        == companion_store_expected
+                    )
                     assert srv.ACQUISITION_STATS == acquisition_stats_before
 
                 return messages()
