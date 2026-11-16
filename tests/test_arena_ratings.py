@@ -286,7 +286,14 @@ async def main():
         }
         await srv.cmd_arena(looker, {"action": "ladder"})
         bottom = [f for f in inbox["RateLooker"] if f.get("type") == "arena_ladder"][-1]
-        assert bottom["you"]["rank"] == bottom["ladder_size"], bottom
+        rank = bottom["you"]["rank"]
+        assert 1 <= rank <= bottom["ranked_size"], (rank, bottom["ranked_size"])
+        assert bottom["you"]["provisional"] is False, bottom["you"]
+        assert bottom["you"]["matches"] == 9, bottom["you"]
+        shown = bottom["ladder"]
+        assert all(not row["provisional"] for row in shown[: rank - 1]), shown
+        if rank <= len(shown):
+            assert shown[rank - 1]["name"] == "RateLooker", shown[rank - 1]
         assert len(bottom["ladder"]) == min(
             bottom["ladder_size"], srv.ARENA_LADDER_SHOW
         )
@@ -333,6 +340,77 @@ async def main():
         assert round(sum(row["deltas"].values()), 2) == 0.0, row["deltas"]
         assert dropper.arena_match == 0 and team_match.id not in srv.ARENA_MATCHES
         print("FORFEIT_DISCONNECT_OK")
+
+        # --- A first win cannot outrank an established record -------------
+        srv.ARENA_RATINGS.clear()
+        srv.ARENA_RATINGS["luckyshot"] = {
+            "name": "LuckyShot",
+            "rating": 1200.0,
+            "peak": 1200.0,
+            "wins": 1,
+            "losses": 0,
+            "matches": 1,
+        }
+        srv.ARENA_RATINGS["veteran"] = {
+            "name": "Veteran",
+            "rating": 1100.0,
+            "peak": 1300.0,
+            "wins": 40,
+            "losses": 20,
+            "matches": srv.ARENA_LADDER_MIN_MATCHES,
+        }
+        standings = srv.arena_ladder()
+        assert [row["name"] for row in standings] == ["Veteran", "LuckyShot"], standings
+        assert standings[0]["provisional"] is False, standings[0]
+        assert standings[1]["provisional"] is True, standings[1]
+        assert srv.arena_rank("veteran") == 1, srv.arena_rank("veteran")
+        assert srv.arena_rank("luckyshot") == 2, srv.arena_rank("luckyshot")
+        assert srv.arena_rank("nobody") is None
+        standing_snap = srv.world_snapshot()["arena"]
+        assert standing_snap["ladder_size"] == 2, standing_snap
+        assert standing_snap["ranked_size"] == 1, standing_snap
+        assert standing_snap["provisional_size"] == 1, standing_snap
+        assert standing_snap["min_matches"] == srv.ARENA_LADDER_MIN_MATCHES
+
+        newcomer = mkplayer("RateStanding", 63210)
+        await srv.cmd_arena(newcomer, {"action": "status"})
+        fresh = [f for f in inbox["RateStanding"] if f.get("type") == "arena"][-1]
+        assert fresh["matches"] == 0 and fresh["rank"] is None, fresh
+        assert fresh["provisional"] is False, fresh
+        srv.ARENA_RATINGS["ratestanding"] = {
+            "name": "RateStanding",
+            "rating": 1250.0,
+            "peak": 1250.0,
+            "wins": 1,
+            "losses": 0,
+            "matches": 1,
+        }
+        await srv.cmd_arena(newcomer, {"action": "ladder"})
+        frame = [f for f in inbox["RateStanding"] if f.get("type") == "arena_ladder"][
+            -1
+        ]
+        assert frame["you"]["rank"] == 2, frame
+        assert frame["you"]["provisional"] is True, frame
+        assert frame["ranked_size"] == 1, frame
+        assert frame["min_matches"] == srv.ARENA_LADDER_MIN_MATCHES, frame
+        assert [row["name"] for row in frame["ladder"]] == [
+            "Veteran",
+            "RateStanding",
+            "LuckyShot",
+        ], frame["ladder"]
+        srv.ARENA_RATINGS["ratestanding"]["matches"] = srv.ARENA_LADDER_MIN_MATCHES
+        await srv.cmd_arena(newcomer, {"action": "ladder"})
+        frame = [f for f in inbox["RateStanding"] if f.get("type") == "arena_ladder"][
+            -1
+        ]
+        assert frame["you"]["provisional"] is False, frame
+        assert srv.arena_rank("ratestanding") == 1, srv.arena_rank("ratestanding")
+        assert [row["name"] for row in frame["ladder"]] == [
+            "RateStanding",
+            "Veteran",
+            "LuckyShot",
+        ], frame["ladder"]
+        print("STANDING_OK")
 
         print("ARENA_RATINGS_OK")
     finally:

@@ -110,7 +110,8 @@ refused during a match.
 The room view for an arena room carries an `arena` block
 (`match_id, team_size, state, round, rounds_to_win, scores, teams, hp`), and
 `arena status` replies with a `{"type": "arena"}` event carrying the same
-shape plus the player's own team and rating.
+shape plus the player's own team, rating, rank, match count and whether that
+standing is still provisional.
 
 ### Ratings
 
@@ -128,9 +129,18 @@ future-versioned file loads as an empty ladder with a warning instead of
 stopping the server. A forfeit or a disconnect is a loss with the ordinary
 delta, so leaving is never cheaper than losing.
 
-`arena ladder` returns `{"type": "arena_ladder", "ladder", "you"}`, and
-`/api/state` carries an additive `arena` block (`queues`, `live`, `ladder`,
-`ladder_size`, `recent`, `rating_clamps`) for the dashboard next release.
+A player who has finished fewer than five matches is provisional. Their rating
+still moves and still shows, but every provisional row sorts below every
+established one, so one lucky first win cannot outrank a season of them. The
+count of matches needed is `min_matches` in the payloads below.
+
+`arena ladder` returns
+`{"type": "arena_ladder", "ladder", "ladder_size", "ranked_size", "min_matches", "you"}`,
+and `/api/state` carries an additive `arena` block (`queues`, `live`, `ladder`,
+`ladder_size`, `ranked_size`, `provisional_size`, `min_matches`, `recent`,
+`rating_clamps`) for the dashboard. Provisional ladder rows carry
+`"provisional": true`, and `you` carries `rank` (null while unrated) next to
+`rating`, `matches` and `provisional`.
 
 ### Watching
 
