@@ -690,9 +690,12 @@ def _arena_ladder(arena):
         wins = int(_as_float(row.get("wins")))
         losses = int(_as_float(row.get("losses")))
         draws = int(_as_float(row.get("draws")))
+        name = str(row.get("name") or "?")
+        if row.get("provisional"):
+            name += " (prov)"
         table.add_row(
             str(place),
-            str(row.get("name") or "?"),
+            name,
             f"{_as_float(row.get('rating')):.0f}",
             f"{_as_float(row.get('peak')):.0f}",
             f"{wins}/{losses}/{draws}",

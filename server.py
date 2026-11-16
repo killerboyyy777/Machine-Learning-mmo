@@ -11208,6 +11208,7 @@ ARENA_RATINGS_MAX = 5000
 ARENA_COUNT_MAX = 1000000
 ARENA_SAVE_SECONDS = 5.0
 ARENA_LADDER_SHOW = 20
+ARENA_LADDER_MIN_MATCHES = 5
 ARENA_LIVE_SHOW = 20
 ARENA_RECENT_SHOW = 10
 
@@ -11461,7 +11462,13 @@ def _arena_rate_match(match, winner_team):
 
 
 def arena_ladder():
-    """Every rated character, best first; ties broken by name for stability."""
+    """Every rated character: qualified first, then rating, then name.
+
+    A character stays provisional until ARENA_LADDER_MIN_MATCHES, and every
+    provisional row sorts below every qualified one. One lucky win against a
+    weak opponent would otherwise outrank a long record, which would make the
+    table a snapshot of luck rather than of skill.
+    """
     rows = [
         {
             "name": row.get("name") or key,
@@ -11471,11 +11478,26 @@ def arena_ladder():
             "losses": row.get("losses", 0),
             "draws": row.get("draws", 0),
             "matches": row.get("matches", 0),
+            "provisional": row.get("matches", 0) < ARENA_LADDER_MIN_MATCHES,
         }
         for key, row in ARENA_RATINGS.items()
     ]
-    rows.sort(key=lambda row: (-row["rating"], row["name"].lower()))
+    rows.sort(key=lambda row: (row["provisional"], -row["rating"], row["name"].lower()))
     return rows
+
+
+def _arena_ranked_size(rows):
+    return sum(1 for row in rows if not row["provisional"])
+
+
+def arena_rank(name, rows=None):
+    """1-based place in the ladder as the table orders it, or None if unrated."""
+    rows = arena_ladder() if rows is None else rows
+    key = (name or "").lower()
+    for index, row in enumerate(rows):
+        if row["name"].lower() == key:
+            return index + 1
+    return None
 
 
 def arena_snapshot():
@@ -11492,6 +11514,7 @@ def arena_snapshot():
         for match in list(ARENA_MATCHES.values())[:ARENA_LIVE_SHOW]
     ]
     ladder = arena_ladder()
+    ranked = _arena_ranked_size(ladder)
     return {
         "version": ARENA_VERSION,
         "queues": {
@@ -11500,6 +11523,9 @@ def arena_snapshot():
         "live": live,
         "ladder": ladder[:ARENA_LADDER_SHOW],
         "ladder_size": len(ladder),
+        "ranked_size": ranked,
+        "provisional_size": len(ladder) - ranked,
+        "min_matches": ARENA_LADDER_MIN_MATCHES,
         "recent": [dict(row) for row in ARENA_HISTORY[-ARENA_RECENT_SHOW:]],
         "rating_clamps": ARENA_RATING_CLAMPS,
     }
@@ -12140,6 +12166,12 @@ async def cmd_arena(player, msg):
         size = arena_queued_size(player)
         payload["queued"] = f"{size}v{size}" if size else None
         payload["rating"] = round(_arena_rating(player.name), 2)
+        rating_row = ARENA_RATINGS.get(player.name.lower())
+        payload["matches"] = rating_row.get("matches", 0) if rating_row else 0
+        payload["provisional"] = bool(rating_row) and (
+            rating_row.get("matches", 0) < ARENA_LADDER_MIN_MATCHES
+        )
+        payload["rank"] = arena_rank(player.name) if rating_row else None
         payload["watching"] = player.arena_watch or None
         if match is not None:
             payload.update(
@@ -12162,21 +12194,14 @@ async def cmd_arena(player, msg):
         row = ARENA_RATINGS.get(player.name.lower())
         you = None
         if row is not None:
-            rank = next(
-                (
-                    index + 1
-                    for index, entry in enumerate(rows)
-                    if entry["name"].lower() == player.name.lower()
-                ),
-                None,
-            )
             you = {
                 "name": row.get("name") or player.name,
                 "rating": round(row.get("rating", ARENA_RATING_DEFAULT), 2),
                 "wins": row.get("wins", 0),
                 "losses": row.get("losses", 0),
                 "matches": row.get("matches", 0),
-                "rank": rank,
+                "provisional": row.get("matches", 0) < ARENA_LADDER_MIN_MATCHES,
+                "rank": arena_rank(player.name, rows),
             }
         # A capped table plus the caller's own row: ARENA_RATINGS_MAX rows in
         # one frame would be half a megabyte, and the rank is all a client
@@ -12187,6 +12212,8 @@ async def cmd_arena(player, msg):
                 "type": "arena_ladder",
                 "ladder": rows[:ARENA_LADDER_SHOW],
                 "ladder_size": len(rows),
+                "ranked_size": _arena_ranked_size(rows),
+                "min_matches": ARENA_LADDER_MIN_MATCHES,
                 "you": you,
             },
         )
