@@ -122,6 +122,16 @@ DEFAULT_THRESHOLDS = {
         "min_audit_entries": 6,
         "max_conservation_drift": 0.0,
     },
+    "arena": {
+        # Probe floors, not balance floors: the probe drives two scripted
+        # matches per seed, so a zero count means the probe could not make
+        # the arena work, not that the world was quiet. A match moves no
+        # value, so the deltas are hard zeros rather than bands.
+        "min_matches": 2,
+        "max_gold_delta": 0.0,
+        "max_items_delta": 0,
+        "max_deaths": 0,
+    },
     "liveness": {
         "min_agents": 10,
     },
@@ -184,6 +194,10 @@ SCENARIOS = {
     "guilds": {
         "title": "Charter, membership, vault movement, audit log",
         "issue": "#588",
+    },
+    "arena": {
+        "title": "Pairing, rating transfer, no value moved, no deaths",
+        "issue": "#656",
     },
     "progression": {
         "title": "XP/hour, level curve, quest completion rate",
@@ -258,6 +272,7 @@ PROFILES = {
             "determinism",
             "liveness",
             "guilds",
+            "arena",
             "npc_ai_v2",
         ),
         "coverage": (
@@ -266,6 +281,7 @@ PROFILES = {
             "craft",
             "acquisition",
             "guilds",
+            "arena",
             "market",
             "liveness",
             "npc_ai_v2",
@@ -534,6 +550,51 @@ CHECKS = (
         True,
     ),
     ("guilds.gold_conserved", "guilds", "guilds.gold_conserved", "is", True, True),
+    # Arena (#656): the probe drives real matches, so every row below is a
+    # direct reading of what a match did, not an inference from world totals.
+    ("arena.pairs_matched", "arena", "arena.pairs_matched", "is", True, True),
+    (
+        "arena.matches_completed",
+        "arena",
+        "arena.matches_completed",
+        ">=",
+        ("arena", "min_matches"),
+        True,
+    ),
+    ("arena.rating_conserved", "arena", "arena.rating_conserved", "is", True, True),
+    (
+        "arena.gold_delta",
+        "arena",
+        "arena.gold_delta",
+        "<=",
+        ("arena", "max_gold_delta"),
+        True,
+    ),
+    (
+        "arena.items_delta",
+        "arena",
+        "arena.items_delta",
+        "<=",
+        ("arena", "max_items_delta"),
+        True,
+    ),
+    (
+        "arena.civ_deaths",
+        "arena",
+        "arena.civ_deaths_delta",
+        "<=",
+        ("arena", "max_deaths"),
+        True,
+    ),
+    (
+        "arena.wild_deaths",
+        "arena",
+        "arena.wild_deaths_delta",
+        "<=",
+        ("arena", "max_deaths"),
+        True,
+    ),
+    ("arena.determinism", "arena", "arena.determinism", "is", True, True),
     (
         "liveness.min_agents",
         "liveness",
@@ -585,6 +646,8 @@ OBSERVATIONS = (
     ("acquisition", "acquisition.craft_cost_ratio"),
     ("acquisition", "acquisition.shop_time_to_earn_s"),
     ("determinism", "determinism.fingerprint"),
+    ("arena", "arena.ladder_size"),
+    ("arena", "arena.steps"),
 )
 
 REQUIRED_MEASUREMENT_FIELDS = ("meta", "samples", "derived")
@@ -732,6 +795,24 @@ def _guild_telemetry(samples):
     return {"guilds": best, "guild_probe": probe}
 
 
+def _arena_telemetry(samples):
+    """The probe sample's ledger plus the server's arena slice.
+
+    Unlike guilds there is no peak to pick: the probe fights its own
+    scripted match and reports what happened, so the last sample carrying
+    ``arena_probe`` is the measurement. The ladder and queues beside it
+    come from the same snapshot the gate reads for everything else.
+    """
+    probe, snapshot = {}, {}
+    for sample in samples:
+        state = sample.get("state") or {}
+        candidate = state.get("arena_probe")
+        if isinstance(candidate, dict) and candidate:
+            probe = candidate
+            snapshot = state.get("arena") or {}
+    return {"arena": snapshot, "arena_probe": probe}
+
+
 def _vault_drift(stats):
     """vault_gold_in_total - vault_gold_out_total - vault_gold_total."""
     gold_in = _num(stats.get("vault_gold_in_total"))
@@ -747,6 +828,14 @@ def _guild_skip_reason(probe):
         return f"{GUILD_SURFACE_ISSUE} {probe['skipped']}"
     if probe.get("error"):
         return f"guild probe failed: {probe['error']}"
+    return ""
+
+
+def _arena_skip_reason(probe):
+    if probe.get("skipped"):
+        return f"#656 {probe.get('skip_reason') or 'arena probe skipped'}"
+    if probe.get("error"):
+        return f"arena probe failed: {probe['error']}"
     return ""
 
 
@@ -811,6 +900,7 @@ def _telemetry(samples):
         drop_rate = round(earned / attempts, 4)
     shop = sources.get("shop") or {}
     guilds = _guild_telemetry(samples)
+    arena = _arena_telemetry(samples)
     return {
         "drop_rate": drop_rate,
         "death_attribution": _death_attribution(samples),
@@ -819,6 +909,8 @@ def _telemetry(samples):
         "acquisition": acquisition,
         "guilds": guilds["guilds"],
         "guild_probe": guilds["guild_probe"],
+        "arena": arena["arena"],
+        "arena_probe": arena["arena_probe"],
         "npc_ai": npc_ai,
     }
 
@@ -839,6 +931,8 @@ def derive(samples, ledger=None, telemetry=None):
     acquisition_stats = telemetry.get("acquisition") or {}
     guild_stats = telemetry.get("guilds") or {}
     guild_probe = telemetry.get("guild_probe") or {}
+    arena_stats = telemetry.get("arena") or {}
+    arena_probe = telemetry.get("arena_probe") or {}
     # The dashboard exposes cumulative player/companion damage in a
     # "combat" block. Prefer that to a separately probed telemetry file so
     # the share is measured even when the harness probes only snapshots.
@@ -1148,6 +1242,25 @@ def derive(samples, ledger=None, telemetry=None):
             "steps": _num(guild_probe.get("steps")),
             "skip_reason": _guild_skip_reason(guild_probe),
         },
+        "arena": {
+            "pairs_matched": arena_probe.get("pairs_matched"),
+            "matches_completed": _num(arena_probe.get("matches_completed")),
+            "rating_delta_sum": _num(arena_probe.get("rating_delta_sum")),
+            "rating_conserved": arena_probe.get("rating_conserved"),
+            "gold_delta": _num(arena_probe.get("gold_delta")),
+            "items_delta": _num(arena_probe.get("items_delta")),
+            "deaths_delta": _num(arena_probe.get("deaths_delta")),
+            "civ_deaths_delta": _num(arena_probe.get("civ_deaths_delta")),
+            "wild_deaths_delta": _num(arena_probe.get("wild_deaths_delta")),
+            "determinism": arena_probe.get("determinism"),
+            "fingerprint": arena_probe.get("fingerprint") or "",
+            "fingerprint_second": arena_probe.get("fingerprint_second") or "",
+            "ladder_size": _num(arena_stats.get("ladder_size")),
+            "queues": arena_stats.get("queues") or {},
+            "rating_clamps": _num(arena_stats.get("rating_clamps")),
+            "steps": _num(arena_probe.get("steps")),
+            "skip_reason": _arena_skip_reason(arena_probe),
+        },
         "liveness": {
             "min_alive": _min_alive(alive_samples),
             "final_alive": int(alive_samples[-1][1]) if alive_samples else None,
@@ -1318,6 +1431,15 @@ def _metric(measurements, thresholds, name):
         return abs(value) if value is not None else None
     if name == "guilds.gold_conserved":
         return guilds.get("gold_conserved")
+    if name.startswith("arena."):
+        arena = derived.get("arena") or {}
+        field = name.split(".", 1)[1]
+        value = arena.get(field)
+        # Drift is a magnitude: gold leaving the fighters' purses is as much
+        # a broken promise as gold appearing in them.
+        if field in ("gold_delta", "items_delta"):
+            return abs(value) if value is not None else None
+        return value
     if name == "npc_ai_v2.telemetry_present":
         # Absent block is None (so the scenario is a skipped coverage gap),
         # not False: an empty run must fail coverage.npc_ai_v2, not a
@@ -1904,6 +2026,10 @@ def _trim_state(state, seen_death_ids=None):
         # totals, never the per-op purse deltas the conservation identity needs.
         "guilds": state.get("guilds") or {},
         "guild_probe": state.get("guild_probe") or {},
+        # Arena rows the gate reads: the server slice for the ladder and
+        # queues, and the probe's ledger for what its own match did.
+        "arena": state.get("arena") or {},
+        "arena_probe": state.get("arena_probe") or {},
         "market": {
             "treasury": market.get("treasury"),
             "reserve": market.get("reserve"),
@@ -2049,6 +2175,52 @@ async def _guild_sample(args, cond, seed, started, seen_death_ids=None):
         )
 
 
+async def _arena_sample(args, cond, seed, started, seen_death_ids=None):
+    """Run the arena probe and turn it into one sample of the run.
+
+    Same route as the guild sample: the probe's last /api/state read is the
+    snapshot, and its ledger rides along as ``arena_probe`` so the arena
+    rows travel trim -> telemetry -> derive like every other counter. A
+    probe that raises leaves no ledger behind, and the arena checks fail
+    with that reason instead of scoring an empty arena as a pass.
+    """
+    from ml.arena_probe import run_arena_probe
+
+    try:
+        probe = await run_arena_probe(args.url, args.http_url, seed, fetch_state)
+    except Exception as exc:  # noqa: BLE001 - a probe crash must fail the gate
+        probe = {"error": f"{type(exc).__name__}: {exc}"}
+    for problem in probe.get("problems") or []:
+        print(f"[balance] arena probe problem: {problem}", flush=True)
+    print(
+        f"[balance] arena probe: pairs={probe.get('pairs_matched')} "
+        f"matches={probe.get('matches_completed')} "
+        f"rating_conserved={probe.get('rating_conserved')} "
+        f"determinism={probe.get('determinism')} "
+        f"skipped={probe.get('skipped') or '-'} error={probe.get('error') or '-'}",
+        flush=True,
+    )
+    snapshot = probe.pop("state", None)
+    if not isinstance(snapshot, dict) or not snapshot:
+        snapshot = await asyncio.to_thread(fetch_state, args.http_url)
+    snapshot = dict(snapshot)
+    snapshot["arena_probe"] = probe
+    try:
+        return await _sample(
+            cond,
+            args.http_url,
+            args.gm_url,
+            started,
+            state=snapshot,
+            seen_death_ids=seen_death_ids,
+        )
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"[balance] arena sample failed: {exc}", flush=True)
+        return await _sample(
+            cond, args.http_url, args.gm_url, started, seen_death_ids=seen_death_ids
+        )
+
+
 def _slots(profile, args):
     from ml.plugins import parse_slot
 
@@ -2117,6 +2289,8 @@ async def collect(args, profile, seed):
     samples = await sampler
     if "guilds" in spec["scenarios"]:
         samples.append(await _guild_sample(args, cond, seed, started, seen_death_ids))
+    if "arena" in spec["scenarios"]:
+        samples.append(await _arena_sample(args, cond, seed, started, seen_death_ids))
     try:
         samples.append(
             await _sample(
