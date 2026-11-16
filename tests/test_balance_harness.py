@@ -571,7 +571,7 @@ def test_death_log_is_bounded_deduplicated_and_restart_safe():
     second = bal._trim_state(state, seen)
     assert len(first["death_log"]) == 399
     assert second["death_log"] == []
-    assert first["death_log"][0]["id"] == "boot-a:1"
+    assert first["death_log"][0]["id"] == "boot-a:2"
     assert first["death_log"][-1]["id"] == "boot-a:400"
 
     restarted = dict(samples[1])
