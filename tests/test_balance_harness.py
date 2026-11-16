@@ -519,6 +519,40 @@ def test_acquisition_telemetry_survives_trim_and_derive():
     print("ACQUISITION_TELEMETRY_OK")
 
 
+def test_death_log_survives_trim_and_attributes_deaths():
+    samples = make_samples()
+    first = {
+        "t": 100.1,
+        "player": "alpha",
+        "level": 4,
+        "room": "wild_woods",
+        "killer": "Dire Wolf",
+        "killer_room": "wild_woods",
+        "dmg": 12,
+        "hp_before": 8,
+    }
+    second = dict(first, t=101.2, player="beta", room="old_town", killer="Guard")
+    samples[0]["state"]["death_log"] = [first]
+    samples[1]["state"]["death_log"] = [first, second]
+    samples[2]["state"]["death_log"] = [first, second]
+
+    trimmed = bal._trim_state(samples[1]["state"])
+    assert trimmed["death_log"] == [first, second]
+    telemetry = bal._telemetry(samples)
+    assert telemetry["death_attribution"]["count"] == 2
+    assert telemetry["death_attribution"]["by_room"] == {
+        "old_town": 1,
+        "wild_woods": 1,
+    }
+    assert telemetry["death_attribution"]["by_killer"] == {
+        "Dire Wolf": 1,
+        "Guard": 1,
+    }
+    derived = bal.derive(samples, LEDGER, telemetry)
+    assert derived["combat"]["death_attribution"] == telemetry["death_attribution"]
+    print("DEATH_LOG_ATTRIBUTION_OK")
+
+
 def test_npc_ai_telemetry_survives_trim_and_derive():
     # The same pin for the NPC AI v2 counters: they must reach derive() from
     # a sample state just like acquisition's do, or the gate measures zero.
@@ -949,6 +983,7 @@ def main():
     test_empty_run_cannot_pass_gate()
     test_gate_coverage_guard()
     test_acquisition_telemetry_survives_trim_and_derive()
+    test_death_log_survives_trim_and_attributes_deaths()
     test_npc_ai_telemetry_survives_trim_and_derive()
     test_guilds_telemetry_survives_trim_and_derive()
     test_guild_absence_and_zero_world_fail_gate()
