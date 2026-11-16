@@ -1970,9 +1970,7 @@ def _gm_snapshot(gm_url):
     return gm_tables_snapshot(gm_url)
 
 
-async def _sample(
-    cond, http_url, gm_url, started, state=None, seen_death_ids=None
-):
+async def _sample(cond, http_url, gm_url, started, state=None, seen_death_ids=None):
     if state is None:
         state = await asyncio.to_thread(fetch_state, http_url)
     tables = await _gm_snapshot(gm_url)
@@ -2037,14 +2035,17 @@ async def _guild_sample(args, cond, seed, started, seen_death_ids=None):
     snapshot["guild_probe"] = probe
     try:
         return await _sample(
-            cond, args.http_url, args.gm_url, started,
-            state=snapshot, seen_death_ids=seen_death_ids
+            cond,
+            args.http_url,
+            args.gm_url,
+            started,
+            state=snapshot,
+            seen_death_ids=seen_death_ids,
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"[balance] guild sample failed: {exc}", flush=True)
         return await _sample(
-            cond, args.http_url, args.gm_url, started,
-            seen_death_ids=seen_death_ids
+            cond, args.http_url, args.gm_url, started, seen_death_ids=seen_death_ids
         )
 
 
@@ -2100,8 +2101,13 @@ async def collect(args, profile, seed):
     )
     sampler = asyncio.create_task(
         _sample_loop(
-            cond, args.http_url, args.gm_url, args.sample_every, stop, started,
-            seen_death_ids
+            cond,
+            args.http_url,
+            args.gm_url,
+            args.sample_every,
+            stop,
+            started,
+            seen_death_ids,
         )
     )
     try:
@@ -2114,8 +2120,7 @@ async def collect(args, profile, seed):
     try:
         samples.append(
             await _sample(
-                cond, args.http_url, args.gm_url, started,
-                seen_death_ids=seen_death_ids
+                cond, args.http_url, args.gm_url, started, seen_death_ids=seen_death_ids
             )
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:
