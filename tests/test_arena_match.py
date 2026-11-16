@@ -9,6 +9,7 @@ regression in dispatch or in the room view shows up here.
 """
 
 import asyncio
+import inspect
 import os
 import sys
 import time
@@ -109,6 +110,15 @@ async def main():
         await srv._arena_begin_round(match)
         assert match.round == 1 and match.state == "fighting"
         assert match.team_of(one.id) == 1 and match.team_of(three.id) == 2
+        # Companion actions are blocked by the real WebSocket dispatcher,
+        # before the command handler can mutate companion or treasury state.
+        assert "companion" in srv.ARENA_BLOCKED_COMMANDS
+        dispatch = inspect.getsource(srv.handle_connection)
+        arena_guard = dispatch.index(
+            "if player.arena_match and cmd in ARENA_BLOCKED_COMMANDS:"
+        )
+        handler_call = dispatch.index("await handler(player, msg)")
+        assert arena_guard < handler_call, "arena guard must run before handlers"
         # Team-mates are not targets.
         await srv.cmd_attack(one, {"target": "ArenaTwo"})
         assert "team-mate" in text_of("ArenaOne")[-1]
