@@ -3209,6 +3209,8 @@ DAMAGE_STATS = {"player": 0, "companion": 0}
 LAST_HIT = {}
 DEATH_LOG = []
 DEATH_LOG_CAP = 400
+DEATH_LOG_INSTANCE = f"{os.getpid()}-{time.time_ns()}"
+DEATH_LOG_SEQ = 0
 
 
 def _companion_store(name, create=False):
@@ -4493,8 +4495,11 @@ async def respawn_player(player):
     killer, killer_room, hit_dmg, hp_before = LAST_HIT.pop(
         player.id, (None, death_room, 0, player.hp)
     )
+    global DEATH_LOG_SEQ
+    DEATH_LOG_SEQ += 1
     DEATH_LOG.append(
         {
+            "id": f"{DEATH_LOG_INSTANCE}:{DEATH_LOG_SEQ}",
             "t": round(time.time() - START_TIME, 1),
             "player": player.name,
             "level": get_score_entry(player.name).get("level", 1),
