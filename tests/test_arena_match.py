@@ -56,10 +56,7 @@ async def main():
 
     saved_matches = dict(srv.ARENA_MATCHES)
     saved_queues = {k: list(v) for k, v in srv.ARENA_QUEUES.items()}
-    civ_before = {
-        name: (entry.get("civ_deaths", 0), entry.get("wild_deaths", 0))
-        for name, entry in srv.SCORES.items()
-    }
+    scores_before = copy.deepcopy(dict(srv.SCORES))
     deaths_before = len(srv.DEATH_LOG)
     try:
         # --- Queue and pairing -------------------------------------------
@@ -299,12 +296,19 @@ async def main():
         srv.ARENA_MATCHES.update(saved_matches)
         for size, entries in saved_queues.items():
             srv.ARENA_QUEUES[size][:0] = entries
-        for name in [n for n in srv.SCORES if n.startswith("arena")]:
+        # Remove only what this test created. A local scores.json can already
+        # hold arena-named rows (the gate and ml/arena_probe.py write
+        # Arena<seed><stamp> fighters), and deleting them by prefix would be
+        # data loss the assertion below could then no longer see.
+        for name in [n for n in srv.SCORES if n not in scores_before]:
             srv.SCORES.pop(name, None)
-        assert civ_before == {
-            name: (entry.get("civ_deaths", 0), entry.get("wild_deaths", 0))
-            for name, entry in srv.SCORES.items()
-            if name in civ_before
+        # Every row that existed before the test must still be there, unchanged:
+        # a match that moved gold, items, XP or a death counter on any of them
+        # shows up here, and so does a cleanup that removed one.
+        assert srv.SCORES == scores_before, {
+            name: (scores_before.get(name), srv.SCORES.get(name))
+            for name in set(srv.SCORES) | set(scores_before)
+            if srv.SCORES.get(name) != scores_before.get(name)
         }
 
 
