@@ -11585,6 +11585,7 @@ ARENA_BLOCKED_COMMANDS = frozenset(
     {
         "take",
         "drop",
+        "equip",
         "gather",
         "buy",
         "sell",
