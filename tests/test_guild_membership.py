@@ -74,7 +74,7 @@ async def main():
             help_text = inbox[-1]["text"]
             assert (
                 "guild [create|info|invite|join|leave|kick|promote|demote|"
-                "disband|vault|audit]" in help_text
+                "disband|vault|audit|transfer|accept|decline|cancel]" in help_text
             ), help_text
             print("SURFACE_OK")
 
@@ -367,7 +367,7 @@ async def main():
             assert texts(inbox)[-1] == (
                 "Unknown guild action 'frobnicate'. Use create, info, invite, join, "
                 "leave, kick, promote, demote, disband, vault, audit, "
-                "permissions, transfer, or accept."
+                "permissions, transfer, accept, decline, or cancel."
             )
             print("UNKNOWN_ACTION_OK")
         finally:

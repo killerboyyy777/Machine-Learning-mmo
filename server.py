@@ -1522,6 +1522,13 @@ GUILD_TRANSFER_MAX_PENDING = 20
 # One guild cannot fill another's queue (or its audit log) on its own; the
 # queue cap alone would let a single sender take every slot.
 GUILD_TRANSFER_MAX_PER_PAIR = 3
+# A proposal also writes a row into the target's audit log, so the per-pair cap
+# bounds one actor, not the aggregate: founding a guild is free, and enough
+# throwaway guilds can push a real vault history out of the 500-row log. Bound
+# the rows written per day, per pair and per target.
+GUILD_TRANSFER_INCOMING_WINDOW_SECONDS = 86400
+GUILD_TRANSFER_MAX_INCOMING_PER_PAIR = 10
+GUILD_TRANSFER_MAX_INCOMING_PER_TARGET = 20
 
 
 def _guild_permissions(guild):
@@ -7021,6 +7028,14 @@ def _guild_audit_line(entry):
         said = f"sent {amount} gold to {target}"
     elif action == "transfer_received":
         said = f"received {amount} gold from {target}"
+    elif action == "transfer_declined":
+        said = f"declined {amount} gold from {target}"
+    elif action == "transfer_refused":
+        said = f"declined our offer of {amount} gold"
+    elif action == "transfer_cancelled":
+        said = f"cancelled the offer of {amount} gold to {target}"
+    elif action == "transfer_withdrawn":
+        said = f"withdrew the offer of {amount} gold"
     elif action == "permissions":
         said = f"set {target} to need {entry.get('rank_to') or '?'}"
     elif action == "disband":
@@ -7998,6 +8013,9 @@ async def _cmd_guild_audit(player, msg):
 
 
 GUILD_TRANSFERS = {}
+# Offers made in the last day, per target guild: what has been written to their
+# queue and their audit, which the wait cap above does not limit.
+GUILD_TRANSFER_INCOMING = {}
 # A guild being torn down still sits in GUILDS until its vault has been paid
 # out, and that await is long enough for a transfer to land in a record that is
 # about to be deleted. Marking it first keeps the gold out of the void.
@@ -8021,6 +8039,43 @@ def _guild_transfer_prune(now=None):
 def _guild_transfers_for(guild_id):
     _guild_transfer_prune()
     return [row for row in GUILD_TRANSFERS.values() if row.get("to") == guild_id]
+
+
+def _guild_transfer_incoming_prune(now=None):
+    """Keep only the offers inside the window; the daily caps count this list."""
+    now = time.time() if now is None else now
+    cutoff = now - GUILD_TRANSFER_INCOMING_WINDOW_SECONDS
+    for gid in list(GUILD_TRANSFER_INCOMING):
+        kept = [
+            row
+            for row in GUILD_TRANSFER_INCOMING[gid]
+            if float(row.get("ts", 0) or 0) >= cutoff
+        ]
+        if kept:
+            GUILD_TRANSFER_INCOMING[gid] = kept
+        else:
+            GUILD_TRANSFER_INCOMING.pop(gid, None)
+
+
+def _guild_transfer_incoming_count(target_id, source_id=None, now=None):
+    _guild_transfer_incoming_prune(now)
+    rows = GUILD_TRANSFER_INCOMING.get(target_id) or []
+    if source_id is None:
+        return len(rows)
+    return sum(1 for row in rows if row.get("from") == source_id)
+
+
+async def _guild_notify_members(record, text):
+    """Tell whoever of a guild is online right now. Used by the transfer paths,
+    where the news has nowhere else to land."""
+    for other in list(players.values()):
+        if not other.logged_in or not other.name:
+            continue
+        if _guild_member_rank(record, other.name) is None:
+            continue
+        if GUILDS.get(record.get("id")) is not record:
+            break
+        await send(other, {"type": "message", "text": text})
 
 
 async def _cmd_guild_permissions(player, msg):
@@ -8145,6 +8200,34 @@ async def _cmd_guild_transfer(player, msg):
             {"type": "error", "text": f"The vault holds {held} gold, not {amount}."},
         )
         return
+    offered_today = _guild_transfer_incoming_count(target.get("id"), record.get("id"))
+    if offered_today >= GUILD_TRANSFER_MAX_INCOMING_PER_PAIR:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"You have already offered {target['name']} "
+                    f"{GUILD_TRANSFER_MAX_INCOMING_PER_PAIR} times today."
+                ),
+            },
+        )
+        return
+    if (
+        _guild_transfer_incoming_count(target.get("id"))
+        >= GUILD_TRANSFER_MAX_INCOMING_PER_TARGET
+    ):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": (
+                    f"{target['name']} has taken all the offers it will take "
+                    "today. Try again tomorrow."
+                ),
+            },
+        )
+        return
     tid = next(_guild_transfer_ids)
     GUILD_TRANSFERS[tid] = {
         "id": tid,
@@ -8156,6 +8239,9 @@ async def _cmd_guild_transfer(player, msg):
         "by": player.name,
         "ts": time.time(),
     }
+    GUILD_TRANSFER_INCOMING.setdefault(target.get("id"), []).append(
+        {"ts": time.time(), "from": record.get("id")}
+    )
     _guild_audit(
         record, player.name, "transfer_proposed", target=target["name"], amount=amount
     )
@@ -8279,6 +8365,135 @@ async def _cmd_guild_accept(player, msg):
     )
 
 
+async def _cmd_guild_decline(player, msg):
+    """The receiving side clears an offer. Nothing is escrowed, so nothing moves.
+
+    Open to an officer, not only to whoever may accept: accepting spends vault
+    gold and is gated by the transfer permission, a decline only empties a queue
+    a stranger can fill.
+    """
+    _guild_transfer_prune()
+    tid = _guild_int(msg.get("id") or msg.get("transfer"))
+    row = GUILD_TRANSFERS.get(tid)
+    if row is None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"No transfer #{tid} is waiting; offers expire after an hour.",
+            },
+        )
+        return
+    record = _guild_for_member(player.name)
+    if record is None or record.get("id") != row.get("to"):
+        await send(
+            player, {"type": "error", "text": "That transfer is not for your guild."}
+        )
+        return
+    if _guild_member_rank(record, player.name) not in ("leader", "officer"):
+        await send(
+            player, {"type": "error", "text": "Declining a transfer needs officer."}
+        )
+        return
+    source = GUILDS.get(row.get("from"))
+    amount = _guild_int(row.get("amount"))
+    GUILD_TRANSFERS.pop(tid, None)
+    _guild_audit(
+        record,
+        player.name,
+        "transfer_declined",
+        target=(source or {}).get("name") or str(row.get("from_key") or ""),
+        amount=amount,
+    )
+    if source is not None:
+        _guild_audit(
+            source,
+            player.name,
+            "transfer_refused",
+            target=record["name"],
+            amount=amount,
+        )
+        await _guild_notify_members(
+            source, f"{record['name']} declined your offer of {amount} gold."
+        )
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Declined proposal #{tid}: {amount} gold from "
+                f"{(source or {}).get('name') or 'a guild that is gone'}. "
+                "Nothing moved."
+            ),
+        },
+    )
+
+
+async def _cmd_guild_cancel(player, msg):
+    """The sending side takes its own offer back out of a target's queue."""
+    _guild_transfer_prune()
+    tid = _guild_int(msg.get("id") or msg.get("transfer"))
+    row = GUILD_TRANSFERS.get(tid)
+    if row is None:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": f"No transfer #{tid} is waiting; offers expire after an hour.",
+            },
+        )
+        return
+    record = _guild_for_member(player.name)
+    if record is None or record.get("id") != row.get("from"):
+        await send(
+            player,
+            {"type": "error", "text": "That transfer is not yours to cancel."},
+        )
+        return
+    if not _guild_allows(record, player.name, "transfer"):
+        need = _guild_permissions(record).get("transfer")
+        need = need or GUILD_PERMISSION_DEFAULTS["transfer"]
+        await send(
+            player,
+            {"type": "error", "text": f"Cancelling a transfer needs {need}."},
+        )
+        return
+    target = GUILDS.get(row.get("to"))
+    amount = _guild_int(row.get("amount"))
+    GUILD_TRANSFERS.pop(tid, None)
+    _guild_audit(
+        record,
+        player.name,
+        "transfer_cancelled",
+        target=(target or {}).get("name") or str(row.get("to_key") or ""),
+        amount=amount,
+    )
+    if target is not None:
+        _guild_audit(
+            target,
+            player.name,
+            "transfer_withdrawn",
+            target=record["name"],
+            amount=amount,
+        )
+        await _guild_notify_members(
+            target, f"{record['name']} withdrew its offer of {amount} gold."
+        )
+    mark_guilds_dirty()
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"Cancelled proposal #{tid}: {amount} gold to "
+                f"{(target or {}).get('name') or 'a guild that is gone'}. "
+                "Nothing moved."
+            ),
+        },
+    )
+
+
 async def cmd_guild(player, msg):
     action = str(msg.get("action") or "info").strip().lower()
     if action == "create":
@@ -8323,6 +8538,12 @@ async def cmd_guild(player, msg):
     if action == "accept":
         await _cmd_guild_accept(player, msg)
         return
+    if action == "decline":
+        await _cmd_guild_decline(player, msg)
+        return
+    if action == "cancel":
+        await _cmd_guild_cancel(player, msg)
+        return
     await send(
         player,
         {
@@ -8330,7 +8551,8 @@ async def cmd_guild(player, msg):
             "text": (
                 f"Unknown guild action '{action}'. "
                 "Use create, info, invite, join, leave, kick, promote, demote, "
-                "disband, vault, audit, permissions, transfer, or accept."
+                "disband, vault, audit, permissions, transfer, accept, decline, "
+                "or cancel."
             ),
         },
     )
@@ -9454,7 +9676,8 @@ async def cmd_help(player, msg):
                 "Commands: login look move attack take gather drop equip use rest heal buy sell "
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
-                "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit] "
+                "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit|"
+                "transfer|accept|decline|cancel] "
                 "intel [log|query] "
                 "freight [post|quote|accept|deliver|claim|cancel|list|status] "
                 "inventory stats who leaderboard help party_invite party_accept party_leave party_info "
