@@ -87,6 +87,22 @@ and the dashboard Agents tab plus the TUI Agents panel show the same fields.
 DroneLang scripts drive companion actions via
 `companion script set|show|clear`.
 
+## Guilds
+
+Found and run a guild at the Adventurers Guild hall: a shared vault, ranks
+(member, officer, leader), a configurable permission table and a 500-entry
+audit log. `guild transfer` proposes gold to another guild and `guild accept`
+completes it - nothing is escrowed, and the sending vault is re-checked when
+the offer is accepted. Either side can close a proposal early: the receiver
+`guild decline`s it (leader or officer) and the sender `guild cancel`s it,
+each writing terminal audit rows on both sides and notifying the other guild.
+
+An offer costs the target an audit row whether or not it is ever accepted, so
+both the queue and the day are bounded: three offers waiting with one guild
+and twenty in total, an hour to answer, and per target ten received from any
+one sender and twenty from everyone combined in a rolling day. Declining frees
+the queue, not the day. The wiki covers the vault, rank and withdrawal rules.
+
 ## Arena
 
 `arena enter` queues a session for a 1v1 (`arena enter 2v2` for two-a-side),
