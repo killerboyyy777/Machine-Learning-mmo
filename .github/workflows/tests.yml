@@ -159,7 +159,7 @@ jobs:
       # hiccup there fails the job on a commit that is fine (#633 hit it twice).
       # Retry the apt half, and cache the browser so a hit skips the download.
       - name: Cache Playwright browser
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-firefox-${{ runner.os }}-${{ hashFiles('.github/workflows/tests.yml') }}
