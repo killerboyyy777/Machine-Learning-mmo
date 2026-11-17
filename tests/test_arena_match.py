@@ -111,8 +111,8 @@ async def main():
         await srv._arena_begin_round(match)
         assert match.round == 1 and match.state == "fighting"
         assert match.team_of(one.id) == 1 and match.team_of(three.id) == 2
-        # Exercise the real WebSocket dispatcher: a companion adoption
-        # submitted during a match must be rejected before its handler runs.
+        # Exercise the real WebSocket dispatcher: companion adoption and
+        # equipment changes submitted during a match must be rejected.
         assert "companion" in srv.ARENA_BLOCKED_COMMANDS
         assert "equip" in srv.ARENA_BLOCKED_COMMANDS
         handler_calls = []
@@ -133,7 +133,11 @@ async def main():
                     player.logged_in = True
                     player.arena_match = match.id
                     player.gold = 123
-                    player.inventory = ["rusty_sword", "reinforced_leather", "old_shield"]
+                    player.inventory = [
+                        "rusty_sword",
+                        "reinforced_leather",
+                        "old_shield",
+                    ]
                     player.equipped = None
                     player.armor = None
                     player.offhand = None
