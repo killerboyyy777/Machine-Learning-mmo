@@ -278,11 +278,21 @@ async def main():
             srv.ARENA_QUEUES[size][:0] = entries
         for name in [n for n in srv.SCORES if n.startswith("arena")]:
             srv.SCORES.pop(name, None)
-        assert civ_before == {
-            name: (entry.get("civ_deaths", 0), entry.get("wild_deaths", 0))
+        # Only survivors: the cleanup above removes this test's own arena-named
+        # rows, and a local scores.json can hold arena probe entries that share
+        # the same prefix. Comparing the whole dict then fails on the missing
+        # keys, not on a counter that moved.
+        moved = {
+            name: (
+                civ_before[name],
+                (entry.get("civ_deaths", 0), entry.get("wild_deaths", 0)),
+            )
             for name, entry in srv.SCORES.items()
             if name in civ_before
+            and civ_before[name]
+            != (entry.get("civ_deaths", 0), entry.get("wild_deaths", 0))
         }
+        assert not moved, moved
 
 
 asyncio.run(main())
