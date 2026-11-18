@@ -767,20 +767,26 @@ def _refund_excess(ledger):
 
 
 def _guild_telemetry(samples):
-    """Peak guild snapshot plus the probe's own ledger.
+    """The probe's own snapshot plus its client-side ledger.
 
     Not the last sample: the probe disbands its charter, so the final read
-    always shows an empty guild world. The measurement lives in the sample
-    taken while the vault still held gold and an item. ``guild_probe`` is
+    always shows an empty guild world. Not the sample with the most guilds
+    either (#688): a bot that founds a throwaway guild outranks the probe on
+    that count while holding nothing, so a probe that moved gold reported
+    zero movement. The probe's peak read was taken while its own vault held
+    gold and an item, so that read is the measurement; the peak scan stays as
+    the fallback for a run whose probe left no snapshot. ``guild_probe`` is
     client-side evidence -- the server publishes vault totals, never the
     per-op purse deltas the conservation identity needs.
     """
-    best, best_key, probe = {}, None, {}
+    best, best_key, probe, probe_guilds, probe_key = {}, None, {}, {}, None
     for sample in samples:
         state = sample.get("state") or {}
         guilds = state.get("guilds")
         if not isinstance(guilds, dict) or not guilds:
             guilds = (sample.get("tables") or {}).get("guilds")
+        candidate = state.get("guild_probe")
+        has_probe = isinstance(candidate, dict) and bool(candidate)
         if isinstance(guilds, dict) and guilds:
             key = (
                 _num(guilds.get("count")) or 0.0,
@@ -789,10 +795,16 @@ def _guild_telemetry(samples):
             )
             if best_key is None or key >= best_key:
                 best, best_key = guilds, key
-        candidate = state.get("guild_probe")
-        if isinstance(candidate, dict) and candidate:
+            # A probe sample read after the charter disbanded carries the
+            # probe block and an empty guild world; only a read that still
+            # saw a guild can be the measurement.
+            if has_probe and key[0] >= 1.0:
+                read_key = (_num(guilds.get("audit_entries_written")) or 0.0,)
+                if probe_key is None or read_key >= probe_key:
+                    probe_guilds, probe_key = guilds, read_key
+        if has_probe:
             probe = candidate
-    return {"guilds": best, "guild_probe": probe}
+    return {"guilds": probe_guilds or best, "guild_probe": probe}
 
 
 def _arena_telemetry(samples):

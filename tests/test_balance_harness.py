@@ -745,6 +745,42 @@ def test_guilds_telemetry_survives_trim_and_derive():
     print("GUILDS_TELEMETRY_OK")
 
 
+def test_guild_telemetry_ignores_a_bot_founded_guild():
+    # #688: on seed 700 a bot-founded one-member guild pair outranked the
+    # probe on guild count while holding nothing, so the vault rows read zero
+    # for a probe that had moved gold. The probe's own peak read decides.
+    samples = with_guilds(make_samples())
+    bot = {
+        "count": 2,
+        "members_total": 2,
+        "online_members": 2,
+        "largest": 1,
+        "vault_gold_total": 0,
+        "vault_items_total": 0,
+        "invites_pending": 0,
+        "audit_entries": 2,
+        "vault_gold_in_total": 0,
+        "vault_gold_out_total": 0,
+        "audit_entries_written": 13,
+    }
+    hijack = copy.deepcopy(samples[0])
+    hijack["t"] = 1621.5
+    hijack["state"]["guilds"] = bot
+    samples.insert(0, hijack)
+    telemetry = bal._telemetry(samples)
+    assert telemetry["guilds"]["count"] == 1, telemetry["guilds"]
+    assert telemetry["guilds"]["vault_gold_in_total"] == 6
+    derived = bal.derive(samples, LEDGER, dict(TELEMETRY, **telemetry))
+    guilds = derived["guilds"]
+    assert guilds["vault_gold_in"] == 6, guilds
+    assert guilds["vault_gold_out"] == 2, guilds
+    assert guilds["vault_items"] == 1, guilds
+    assert guilds["audit_entries"] == 6, guilds
+    # The retired rule picked the bot sample; nothing else explains the zero.
+    assert bal._guild_telemetry([hijack])["guilds"]["count"] == 2
+    print("GUILD_TELEMETRY_NO_HIJACK_OK")
+
+
 def test_guild_absence_and_zero_world_fail_gate():
     # A covered scenario that ships but measures nothing must fail, never skip
     # (#589): null, an explicitly skipped probe, and a zero world all FAIL.
@@ -1097,6 +1133,7 @@ def main():
     test_death_attribution_tie_order_is_stable()
     test_npc_ai_telemetry_survives_trim_and_derive()
     test_guilds_telemetry_survives_trim_and_derive()
+    test_guild_telemetry_ignores_a_bot_founded_guild()
     test_guild_absence_and_zero_world_fail_gate()
     test_profile_overrides_and_threshold_file()
     test_determinism_repeats()
