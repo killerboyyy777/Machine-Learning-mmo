@@ -47,6 +47,7 @@ class AgentTask:
         policy_fn,
         max_steps=2000,
         step_timeout=None,
+        policy_timeout=None,
         learn_hook=None,
         reward_hook=None,
     ):
@@ -67,9 +68,14 @@ class AgentTask:
         self.reward_hook = reward_hook
         # Watchdog (#50): max wall-clock seconds per env.step; a hung
         # step ends the episode instead of wedging the task forever.
-        # None disables. Only guards the async env call -- a blocking
-        # sync policy_fn would wedge the loop itself (keep policies fast).
+        # None disables. Only guards the async env call.
         self.step_timeout = step_timeout
+        # Policy budget (#176): a sync policy_fn runs on the loop thread,
+        # so the step watchdog cannot cover it and one wedged policy takes
+        # every agent down with it. When set, the policy runs on a worker
+        # thread and this bounds the wait; the abandoned thread is the
+        # price of an in-process plugin (see the isolation plan).
+        self.policy_timeout = policy_timeout
         self._policy_arity = None  # probed from the fn signature once
         self.task = None
         self.total_reward = 0.0
@@ -80,6 +86,19 @@ class AgentTask:
         self.reconnects = 0
         self.last_error = None
         self.done = asyncio.Event()
+
+    async def _call_policy(self, args):
+        """Call the policy, off the loop when a budget is configured.
+
+        Plugins are synchronous by contract, so without a budget the call
+        happens inline exactly as it always has. With one, the call moves
+        to a worker thread and a policy that never returns costs this task
+        its episode instead of the whole fleet its event loop."""
+        if self.policy_timeout is None:
+            return self.policy_fn(*args)
+        return await asyncio.wait_for(
+            asyncio.to_thread(self.policy_fn, *args), self.policy_timeout
+        )
 
     async def run(self):
         """Run episodes until the task is cancelled or the agent dies."""
@@ -124,11 +143,22 @@ class AgentTask:
                         except Exception:
                             mask = None
                         if self._policy_arity >= 4:
-                            action = self.policy_fn(obs, self.agent_id, mask, self.env)
+                            call_args = (obs, self.agent_id, mask, self.env)
                         else:
-                            action = self.policy_fn(obs, self.agent_id, mask)
+                            call_args = (obs, self.agent_id, mask)
                     else:
-                        action = self.policy_fn(obs, self.agent_id)
+                        call_args = (obs, self.agent_id)
+                    try:
+                        action = await self._call_policy(call_args)
+                    except TimeoutError:
+                        # A budget exists to stop one plugin taking the
+                        # fleet down; the task has to die for that, or the
+                        # next episode retries the same wedged call.
+                        self.last_error = (
+                            f"policy timeout after {self.policy_timeout}s "
+                            f"(episode {self.episodes + 1})"
+                        )
+                        raise RuntimeError(self.last_error) from None
                     prev_obs = obs
                     try:
                         if self.step_timeout is not None:
@@ -208,6 +238,7 @@ class Supervisor:
         mixer=None,
         floor_fn=None,
         step_timeout=None,
+        policy_timeout=None,
         metrics=None,
         episode_hook=None,
     ):
@@ -218,6 +249,7 @@ class Supervisor:
         self._mixer = mixer
         self._floor_fn = floor_fn or _env_floor
         self._step_timeout = step_timeout
+        self._policy_timeout = policy_timeout
         # Death accounting (#135): crashes and churn reaps are logged so
         # soak metrics can tell *why* agents die, not just that they did.
         self._metrics = metrics
@@ -232,7 +264,7 @@ class Supervisor:
         # from the loser's checkpoint file; None keeps the stored closure.
         self._specs = (
             {}
-        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook)
+        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook, policy_timeout)
         self._lock = asyncio.Lock()
 
     def _log_death(self, agent_id, episodes, total_reward, error=None):
@@ -271,6 +303,7 @@ class Supervisor:
         policy_fn,
         max_steps=2000,
         step_timeout=None,
+        policy_timeout=None,
         policy_factory=None,
         learn_hook=None,
         reward_hook=None,
@@ -317,6 +350,11 @@ class Supervisor:
                 step_timeout=(
                     step_timeout if step_timeout is not None else self._step_timeout
                 ),
+                policy_timeout=(
+                    policy_timeout
+                    if policy_timeout is not None
+                    else self._policy_timeout
+                ),
                 learn_hook=learn_hook,
                 reward_hook=reward_hook,
             )
@@ -329,6 +367,7 @@ class Supervisor:
                 policy_factory,
                 learn_hook,
                 reward_hook,
+                policy_timeout,
             )
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
             return True
@@ -425,6 +464,7 @@ class Supervisor:
             policy_factory,
             learn_hook,
             reward_hook,
+            policy_timeout,
         ) = spec
         if policy_factory is not None:
             try:
@@ -437,6 +477,7 @@ class Supervisor:
             policy_fn,
             max_steps=max_steps,
             step_timeout=step_timeout,
+            policy_timeout=policy_timeout,
             policy_factory=policy_factory,
             learn_hook=learn_hook,
             reward_hook=reward_hook,

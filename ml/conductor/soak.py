@@ -92,6 +92,13 @@ def parse_args():
     )
     p.add_argument("--step-timeout", type=float, default=30.0)
     p.add_argument(
+        "--policy-timeout",
+        type=float,
+        default=5.0,
+        help="wall-clock seconds a policy may take per step; 0 runs it "
+        "inline on the event loop like a plugin written before #176",
+    )
+    p.add_argument(
         "--arrivals",
         type=float,
         default=5.0,
@@ -321,6 +328,9 @@ async def main():
             slot["env"].setdefault("reward_mode", args.reward_mode)
             slot["env"].setdefault("max_steps", args.max_steps)
             slot.setdefault("step_timeout", args.step_timeout)
+            # 0 disables the budget (the old inline call); anything else is
+            # the wall-clock ceiling for one policy step.
+            slot.setdefault("policy_timeout", args.policy_timeout or None)
     else:
         slots = [
             {
@@ -329,6 +339,7 @@ async def main():
                 "env": {"reward_mode": args.reward_mode, "max_steps": args.max_steps},
                 "weight": 1,
                 "step_timeout": args.step_timeout,
+                "policy_timeout": args.policy_timeout or None,
             }
         ]
     cond = Conductor(

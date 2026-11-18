@@ -56,6 +56,14 @@ loudly at startup, not vanish and leave a slot silently empty.
 
 ## What this does not do yet
 
-Plugins run in the conductor's process. There is no sandbox, and a policy
-that blocks or raises inside `act` can still take a run with it. Process-level
-admission and a wall-clock budget on the policy are the next phase (#176).
+Plugins run in the conductor's process. There is no sandbox: a policy that
+raises inside `act` takes its own agent down (the supervisor logs the death and
+restarts it) and a policy that hangs costs that agent its episode. Both are
+contained to one agent, not the fleet.
+
+`--policy-timeout` (default 5 seconds per step; `0` runs the policy inline on
+the event loop, the pre-#176 behaviour) bounds the hang by running the policy
+on a worker thread. A timed-out call abandons its thread, because Python cannot
+interrupt it: the agent dies, the thread leaks until the call returns. Process
+level admission, where a plugin proves it can run before the conductor trusts
+it, is the next phase (#176).
