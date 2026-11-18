@@ -13,6 +13,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -39,6 +40,7 @@ async def main():
             srv.GUILD_TOMBSTONES,
             srv.send,
             srv.GUILD_TRANSFERS,
+            srv.GUILD_TRANSFER_INCOMING,
             srv.GUILD_TRANSFERS_COMPLETED,
             srv.GUILD_TRANSFERS_EXPIRED,
             srv.GUILD_GOLD_TRANSFERRED,
@@ -78,6 +80,7 @@ async def main():
         srv.GUILDS = {}
         srv.GUILD_TOMBSTONES = []
         srv.GUILD_TRANSFERS = {}
+        srv.GUILD_TRANSFER_INCOMING = {}
         srv.GUILD_TRANSFERS_COMPLETED = 0
         srv.GUILD_TRANSFERS_EXPIRED = 0
         srv.GUILD_GOLD_TRANSFERRED = 0
@@ -347,6 +350,85 @@ async def main():
             assert len(capguild["vault_items"]) == 3, capguild["vault_items"]
             print("MEMBER_WITHDRAW_CAPPED_OK")
 
+            # --- the target can say no, and nothing moves --------------------
+            # The daily caps count proposals, not wall time: this test runs a
+            # day of narrative in a few seconds, so reset both counters here.
+            srv.GUILD_TRANSFERS.clear()
+            srv.GUILD_TRANSFER_INCOMING.clear()
+            out = await say(leader, action="transfer", guild="Salt Company", amount=7)
+            tid = int(
+                [t for t in out if "guild accept" in t][-1].split("#")[1].split(":")[0]
+            )
+            out = await say(other_member, action="decline", id=tid)
+            assert any("needs officer" in t for t in out), out
+            assert tid in srv.GUILD_TRANSFERS
+            out = await say(other_leader, action="decline", id=tid)
+            assert any("Declined proposal" in t for t in out), out
+            assert tid not in srv.GUILD_TRANSFERS
+            assert vault_gold(mine) == 175 and vault_gold(theirs) == 85
+            assert any(
+                row["action"] == "transfer_declined" for row in theirs["audit"]
+            ), theirs["audit"]
+            assert any(
+                row["action"] == "transfer_refused" for row in mine["audit"]
+            ), mine["audit"]
+            out = await say(member, action="decline", id=tid)
+            assert any("No transfer" in t for t in out), out
+            print("DECLINE_OK")
+
+            # --- the sender can take its own offer back ----------------------
+            srv.GUILD_TRANSFER_INCOMING.clear()
+            out = await say(leader, action="transfer", guild="Salt Company", amount=9)
+            tid = int(
+                [t for t in out if "guild accept" in t][-1].split("#")[1].split(":")[0]
+            )
+            out = await say(other_leader, action="cancel", id=tid)
+            assert any("not yours to cancel" in t for t in out), out
+            out = await say(member, action="cancel", id=tid)
+            assert any("needs leader" in t for t in out), out
+            assert tid in srv.GUILD_TRANSFERS
+            out = await say(leader, action="cancel", id=tid)
+            assert any("Cancelled proposal" in t for t in out), out
+            assert tid not in srv.GUILD_TRANSFERS
+            assert vault_gold(mine) == 175 and vault_gold(theirs) == 85
+            assert any(
+                row["action"] == "transfer_withdrawn" for row in theirs["audit"]
+            ), theirs["audit"]
+            assert any(
+                row["action"] == "transfer_cancelled" for row in mine["audit"]
+            ), mine["audit"]
+            print("CANCEL_OK")
+
+            # --- the daily cap bounds what a snubbed target must absorb ------
+            srv.GUILD_TRANSFERS.clear()
+            srv.GUILD_TRANSFER_INCOMING.clear()
+            gid = theirs["id"]
+            now = time.time()
+            srv.GUILD_TRANSFER_INCOMING[gid] = [
+                {"ts": now, "from": mine["id"]}
+            ] * srv.GUILD_TRANSFER_MAX_INCOMING_PER_PAIR
+            out = await say(leader, action="transfer", guild="Salt Company", amount=2)
+            assert any("times today" in t for t in out), out
+            assert srv.GUILD_TRANSFERS == {}
+            srv.GUILD_TRANSFER_INCOMING[gid] = [
+                {"ts": now, "from": 9000 + i}
+                for i in range(srv.GUILD_TRANSFER_MAX_INCOMING_PER_TARGET)
+            ]
+            out = await say(leader, action="transfer", guild="Salt Company", amount=2)
+            assert any("taken all the offers" in t for t in out), out
+            assert srv.GUILD_TRANSFERS == {}
+            srv.GUILD_TRANSFER_INCOMING[gid] = [
+                {
+                    "ts": now - srv.GUILD_TRANSFER_INCOMING_WINDOW_SECONDS - 5,
+                    "from": 9001,
+                }
+            ] * srv.GUILD_TRANSFER_MAX_INCOMING_PER_TARGET
+            out = await say(leader, action="transfer", guild="Salt Company", amount=2)
+            assert any("Proposal #" in t for t in out), out
+            assert srv._guild_transfer_incoming_count(gid, mine["id"]) == 1
+            assert srv._guild_transfer_incoming_count(gid) == 1
+            print("INCOMING_CAP_OK")
+
             print("GUILD_TRANSFERS_OK")
         finally:
             (
@@ -355,6 +437,7 @@ async def main():
                 srv.GUILD_TOMBSTONES,
                 srv.send,
                 srv.GUILD_TRANSFERS,
+                srv.GUILD_TRANSFER_INCOMING,
                 srv.GUILD_TRANSFERS_COMPLETED,
                 srv.GUILD_TRANSFERS_EXPIRED,
                 srv.GUILD_GOLD_TRANSFERRED,
