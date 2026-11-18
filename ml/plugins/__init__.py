@@ -36,6 +36,7 @@ by :func:`discover`::
 import importlib
 import os
 import pkgutil
+import subprocess
 import sys
 
 REGISTRY = {}  # plugin name -> AgentPlugin subclass
@@ -179,6 +180,51 @@ def discover(plugin_dir=None):
     return REGISTRY
 
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Long enough for a heavy import (a plugin may pull numpy or torch), short
+# enough that a wedged one is named instead of hanging the run before its
+# first agent starts.
+IMPORT_PROBE_TIMEOUT_S = 10.0
+
+# Runs in a child interpreter: import one file and exit. Nothing from the
+# plugin's module survives into the conductor, which is the point -- a module
+# that loops at import time never gets the chance to loop here.
+_PROBE_SOURCE = """
+import importlib.util
+import sys
+
+root, path = sys.argv[1], sys.argv[2]
+sys.path.insert(0, root)
+spec = importlib.util.spec_from_file_location("plugin_probe", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print("PROBE_OK")
+"""
+
+
+def probe_import(path, timeout=None):
+    """Import one plugin file in a child process; None when it imports.
+
+    Returns the reason string when it does not: a crash (an exception on
+    import) or a hang (the timeout). The file is imported here only, so a
+    plugin that is going to take the run down does it to the probe instead."""
+    budget = IMPORT_PROBE_TIMEOUT_S if timeout is None else timeout
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _PROBE_SOURCE, _ROOT, os.path.abspath(path)],
+            capture_output=True,
+            text=True,
+            timeout=budget,
+        )
+    except subprocess.TimeoutExpired:
+        return f"did not import within {budget:g}s"
+    if proc.returncode == 0:
+        return None
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return f"failed to import: {tail[-1] if tail else 'exit ' + str(proc.returncode)}"
+
+
 # Families a drop-in may declare. Per-type status and PBT read this label, so
 # a plugin that invents one lands in a bucket nothing else shares; the manifest
 # names the accepted set instead of accepting any string (#176).
@@ -230,10 +276,15 @@ def manifest_problems(plugin_cls):
 def load_plugins(plugin_dir=None):
     """Discover ``plugin_dir`` and admit only plugins with a sound manifest.
 
-    Import errors still propagate: :func:`discover` keeps its fail-loud
-    contract. A file that imports but fails its manifest is dropped from the
-    registry and returned in ``rejected`` as ``(name, reason)``, so one bad
-    drop-in does not take the others with it.
+    Every file is imported once in a child process first (:func:`probe_import`),
+    so a plugin that crashes or hangs at import is rejected with its reason
+    instead of taking the run down before the first agent starts. Survivors are
+    imported here; an import error that survived the probe still propagates,
+    because that is a different file state, not a reason to run blind.
+
+    A file that imports but fails its manifest is dropped from the registry and
+    returned in ``rejected`` as ``(name, reason)``, so one bad drop-in does not
+    take the others with it.
 
     A missing directory is not an error: container images copy ``ml/`` and not
     the top-level ``plugins/``, so the default path must stay harmless there.
@@ -244,8 +295,20 @@ def load_plugins(plugin_dir=None):
     before = set(REGISTRY)
     if plugin_dir and not os.path.isdir(plugin_dir):
         return [], []
-    discover(plugin_dir)
-    admitted, rejected = [], []
+    rejected = []
+    # Probe in a child process first: importing here would be the very hang
+    # the probe exists to catch. Survivors are imported for real below, so a
+    # file that imports once but registers nothing is harmless.
+    probe_dir = os.path.abspath(plugin_dir) if plugin_dir else None
+    if probe_dir:
+        sys.path.insert(0, probe_dir)
+        for mod in sorted(pkgutil.iter_modules([probe_dir]), key=lambda m: m.name):
+            why = probe_import(os.path.join(probe_dir, f"{mod.name}.py"))
+            if why:
+                rejected.append((mod.name, why))
+                continue
+            importlib.import_module(mod.name)
+    admitted = []
     for name in [n for n in REGISTRY if n not in before]:
         problems = manifest_problems(REGISTRY[name])
         if problems:

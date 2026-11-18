@@ -681,5 +681,45 @@ def _admission_68():
     print("PLUGIN_ADMISSION_OK")
 
 
+def _import_probe_68():
+    import ml.plugins as plugins_mod
+    from ml.plugins import load_plugins
+
+    good = (
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class ProbeGood68(AgentPlugin):\n"
+        "    name = 'probgood68'\n"
+        "    agent_type = 'custom'\n"
+        "\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return 0\n"
+    )
+    hang = "import time\n\ntime.sleep(30)\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "plugin_probe_good_68.py"), "w") as f:
+            f.write(good)
+        with open(os.path.join(tmp, "plugin_probe_hang_68.py"), "w") as f:
+            f.write(hang)
+        saved = plugins_mod.IMPORT_PROBE_TIMEOUT_S
+        plugins_mod.IMPORT_PROBE_TIMEOUT_S = 1.0
+        try:
+            admitted, rejected = load_plugins(tmp)
+        finally:
+            plugins_mod.IMPORT_PROBE_TIMEOUT_S = saved
+        reasons = dict(rejected)
+        assert "probgood68" in admitted, admitted
+        assert "plugin_probe_hang_68" in reasons, reasons
+        assert "did not import within" in reasons["plugin_probe_hang_68"], reasons
+        # The hung file was imported in the child only, so this process never
+        # paid for it: that is what the probe buys.
+        assert "plugin_probe_hang_68" not in sys.modules
+        REGISTRY.pop("probgood68", None)
+    print("PLUGIN_IMPORT_PROBE_OK")
+
+
 _admission_68()
+_import_probe_68()
 print("ALL_PLUGINS_OK")
