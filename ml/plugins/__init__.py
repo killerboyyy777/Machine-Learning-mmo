@@ -43,11 +43,14 @@ REGISTRY = {}  # plugin name -> AgentPlugin subclass
 _BUILTINS = ("linear", "torch_plugin", "scripted")
 
 __all__ = [
+    "KNOWN_AGENT_TYPES",
     "REGISTRY",
     "AgentPlugin",
     "discover",
     "get",
     "instantiate",
+    "load_plugins",
+    "manifest_problems",
     "parse_slot",
     "register",
 ]
@@ -174,6 +177,83 @@ def discover(plugin_dir=None):
         for mod in pkgutil.iter_modules([os.path.abspath(plugin_dir)]):
             importlib.import_module(mod.name)
     return REGISTRY
+
+
+# Families a drop-in may declare. Per-type status and PBT read this label, so
+# a plugin that invents one lands in a bucket nothing else shares; the manifest
+# names the accepted set instead of accepting any string (#176).
+KNOWN_AGENT_TYPES = ("linear", "scripted", "torch", "custom")
+
+
+def _name_problem(plugin_cls):
+    name = getattr(plugin_cls, "name", "")
+    if not isinstance(name, str) or not name:
+        return "has no name"
+    if name == "base":
+        return "uses the reserved name 'base'"
+    if not all(c.islower() or c.isdigit() or c in "-_" for c in name):
+        return f"name {name!r} must be lowercase letters, digits, '-' or '_'"
+    return None
+
+
+def manifest_problems(plugin_cls):
+    """Reasons a plugin cannot be admitted; an empty list means it can."""
+    problems = []
+    bad = _name_problem(plugin_cls)
+    if bad:
+        problems.append(bad)
+    kind = getattr(plugin_cls, "agent_type", "")
+    if kind not in KNOWN_AGENT_TYPES:
+        problems.append(
+            f"agent_type {kind!r} is not one of {', '.join(KNOWN_AGENT_TYPES)}"
+        )
+    schema = None
+    try:
+        schema = plugin_cls.config_schema()
+    except Exception as exc:  # a raising schema is a manifest error, not a crash
+        problems.append(f"config_schema() raised {type(exc).__name__}: {exc}")
+    if schema is not None:
+        if not isinstance(schema, dict):
+            problems.append("config_schema() must return a dict")
+        else:
+            for key, spec in schema.items():
+                if not isinstance(spec, dict) or "type" not in spec:
+                    problems.append(f"config_schema() entry {key!r} needs a 'type'")
+    if not problems:
+        try:
+            plugin_cls()
+        except Exception as exc:  # a plugin whose own defaults fail cannot run
+            problems.append(f"refuses its own default config: {exc}")
+    return problems
+
+
+def load_plugins(plugin_dir=None):
+    """Discover ``plugin_dir`` and admit only plugins with a sound manifest.
+
+    Import errors still propagate: :func:`discover` keeps its fail-loud
+    contract. A file that imports but fails its manifest is dropped from the
+    registry and returned in ``rejected`` as ``(name, reason)``, so one bad
+    drop-in does not take the others with it.
+
+    A missing directory is not an error: container images copy ``ml/`` and not
+    the top-level ``plugins/``, so the default path must stay harmless there.
+    """
+    # Built-ins first, so ``admitted`` names the drop-ins and a missing folder
+    # still leaves the standard slots selectable.
+    discover()
+    before = set(REGISTRY)
+    if plugin_dir and not os.path.isdir(plugin_dir):
+        return [], []
+    discover(plugin_dir)
+    admitted, rejected = [], []
+    for name in [n for n in REGISTRY if n not in before]:
+        problems = manifest_problems(REGISTRY[name])
+        if problems:
+            rejected.append((name, "; ".join(problems)))
+            REGISTRY.pop(name, None)
+        else:
+            admitted.append(name)
+    return admitted, rejected
 
 
 def get(name):

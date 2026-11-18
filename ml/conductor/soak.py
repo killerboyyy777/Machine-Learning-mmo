@@ -32,6 +32,9 @@ sys.path.insert(
 from ml.conductor.conductor import Conductor
 from ml.runlog import new_session_id, seed_everything, start_run
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PLUGIN_DIR = os.path.join(REPO_ROOT, "plugins")
+
 
 def setup_file_logging(base_dir):
     """Mirror all output into <base-dir>/soak.log and arm crash diagnostics.
@@ -123,7 +126,9 @@ def parse_args():
         "Example: --slot gather --slot torch:checkpoint=X,epsilon=0.1",
     )
     p.add_argument(
-        "--plugin-dir", default=None, help="extra directory of AgentPlugin *.py files"
+        "--plugin-dir",
+        default=PLUGIN_DIR,
+        help="directory of drop-in AgentPlugin *.py files (default: <repo>/plugins)",
     )
     p.add_argument(
         "--status-every",
@@ -302,9 +307,13 @@ async def main():
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cand = os.path.join(here, "ml_best.json")
         ckpt = cand if os.path.isfile(cand) else None
-    from ml.plugins import discover, parse_slot
+    from ml.plugins import load_plugins, parse_slot
 
-    discover(args.plugin_dir)
+    admitted, rejected = load_plugins(args.plugin_dir)
+    for name, why in rejected:
+        print(f"plugin {name!r} rejected: {why}", file=sys.stderr)
+    if admitted:
+        print(f"plugins admitted: {', '.join(admitted)}")
     if args.slot:
         slots = [parse_slot(spec) for spec in args.slot]
         # soak-level env/step defaults apply unless the slot overrides them
