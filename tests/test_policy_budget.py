@@ -16,7 +16,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ml.conductor.supervisor import AgentTask, Supervisor
+from ml.conductor.supervisor import (
+    POLICY_FAULT_LIMIT,
+    AgentTask,
+    PolicyFailure,
+    Supervisor,
+)
 
 
 class FakeEnv:
@@ -27,10 +32,15 @@ class FakeEnv:
         self.steps = 0
 
     async def reset(self):
+        # Yield like a real env does: AgentTask.run() loops episodes forever,
+        # so an env that never suspends turns a healthy agent into a busy loop
+        # that starves the event loop and everything watching it.
+        await asyncio.sleep(0)
         self.resets += 1
         return {"episode": self.resets}
 
     async def step(self, action):
+        await asyncio.sleep(0)
         self.steps += 1
         return {"step": self.steps}, 1.0, self.steps >= 2, {}
 
@@ -55,6 +65,7 @@ class FakeRegistry:
 class FakeMetrics:
     def __init__(self):
         self.deaths = []
+        self.events = []
 
     def log_agent_death(self, agent_id, episodes, total_reward, error=None):
         self.deaths.append((agent_id, error))
@@ -62,8 +73,8 @@ class FakeMetrics:
     def log_episode(self, *args, **kwargs):
         pass
 
-    def log(self, *args, **kwargs):
-        pass
+    def log(self, event, **fields):
+        self.events.append((event, fields))
 
 
 async def _drain(task):
@@ -121,7 +132,12 @@ def test_budget_ends_the_wait_and_keeps_the_loop_alive():
 
 
 def test_raising_policy_still_reaches_the_supervisor():
-    """Budget or not, an exception is a crash the supervisor owns."""
+    """Budget or not, an exception is a crash the supervisor owns.
+
+    Since #176 it arrives as PolicyFailure so the supervisor can tell a
+    broken plugin from a bad episode; the plugin's own exception is kept as
+    the cause and named in the message.
+    """
 
     def boom(obs, agent_id):
         raise ValueError("plugin is broken")
@@ -130,12 +146,13 @@ def test_raising_policy_still_reaches_the_supervisor():
         task = AgentTask("boom", FakeEnv(), boom, policy_timeout=1.0)
         try:
             await _drain(task)
-        except ValueError as exc:
-            return str(exc), task
+        except PolicyFailure as exc:
+            return exc, task
         raise AssertionError("the raise was swallowed")
 
-    message, task = asyncio.run(main())
-    assert message == "plugin is broken", message
+    exc, task = asyncio.run(main())
+    assert isinstance(exc.__cause__, ValueError), exc.__cause__
+    assert str(exc.__cause__) == "plugin is broken", exc.__cause__
     assert "ValueError" in task.last_error, task.last_error
     print("POLICY_BUDGET_RAISE_OK")
 
@@ -284,14 +301,95 @@ def test_policy_raising_timeout_is_not_a_budget_expiry():
         task = AgentTask("trap", FakeEnv(), trap, policy_timeout=2.0)
         try:
             await _drain(task)
-        except TimeoutError as exc:
-            return str(exc), task
+        except PolicyFailure as exc:
+            return exc, task
         raise AssertionError("the plugin's TimeoutError was swallowed")
 
-    message, task = asyncio.run(main())
-    assert message == "the plugin did not like that", message
+    exc, task = asyncio.run(main())
+    assert isinstance(exc.__cause__, TimeoutError), exc.__cause__
+    assert str(exc.__cause__) == "the plugin did not like that", exc.__cause__
     assert "policy timeout after" not in (task.last_error or ""), task.last_error
     print("POLICY_BUDGET_PLUGIN_TIMEOUT_OK")
+
+
+def test_a_raising_policy_is_retired_after_the_fault_limit():
+    """Three consecutive faults retire the plugin instead of respawning it."""
+
+    def boom(obs, agent_id):
+        raise ValueError("plugin is broken")
+
+    async def wait_for_death(sup, name):
+        for _ in range(100):
+            if name not in sup._tasks:
+                return True
+            await asyncio.sleep(0.02)
+        return False
+
+    async def main():
+        registry = FakeRegistry()
+        metrics = FakeMetrics()
+        sup = Supervisor(registry, max_concurrent=2, metrics=metrics)
+        started = 0
+        for i in range(POLICY_FAULT_LIMIT):
+            name = f"boom-{i}"
+            started += await sup.start_agent(name, lambda aid: FakeEnv(), boom)
+            assert await wait_for_death(sup, name)
+        disabled = sup.policy_disabled(boom)
+        refused = await sup.start_agent("late", lambda aid: FakeEnv(), boom)
+        return started, disabled, refused, metrics, sup
+
+    started, disabled, refused, metrics, sup = asyncio.run(main())
+    assert started == POLICY_FAULT_LIMIT, started
+    assert disabled is not None and "ValueError" in disabled, disabled
+    # A retired plugin is refused fresh agents (the conductor asks here
+    # before it would hand the slot another agent).
+    assert refused is False
+    assert [e for e, _ in metrics.events if e == "plugin_disabled"], metrics.events
+    assert len(metrics.deaths) == POLICY_FAULT_LIMIT, metrics.deaths
+    assert boom in sup.disabled_policies()
+    print("POLICY_FAULT_LIMIT_OK")
+
+
+def test_a_completed_episode_resets_the_fault_count():
+    """An occasional fault is survivable: only consecutive faults retire."""
+
+    seen = {}
+
+    def flaky(obs, agent_id):
+        # One faulted agent, three clean ones, then two more faults: three
+        # failures in total but never three in a row.
+        seen[agent_id] = seen.get(agent_id, 0) + 1
+        if agent_id in ("flaky-0", "flaky-4", "flaky-5") and seen[agent_id] == 1:
+            raise ValueError("not this one")
+        return 0
+
+    async def run_one(sup, registry, name):
+        """Let one agent run until it records an episode, then stop it.
+
+        An agent that keeps completing episodes never goes idle on its own,
+        so the test has to stop it rather than wait for the task to end.
+        """
+        before = len(registry.episodes)
+        await sup.start_agent(name, lambda aid: FakeEnv(), flaky)
+        for _ in range(100):
+            if len(registry.episodes) > before or name not in sup._tasks:
+                break
+            await asyncio.sleep(0.02)
+        await sup.stop_agent(name)
+
+    async def main():
+        registry = FakeRegistry()
+        sup = Supervisor(registry, max_concurrent=1)
+        for i in range(6):
+            await run_one(sup, registry, f"flaky-{i}")
+        return sup, registry
+
+    sup, registry = asyncio.run(main())
+    assert sup.policy_disabled(flaky) is None, sup.disabled_policies()
+    # Flaky-1..3 and the second step of each ran a full episode, which is
+    # what cleared the count between the faults.
+    assert len(registry.episodes) >= 3, registry.episodes
+    print("POLICY_FAULT_RESET_OK")
 
 
 test_inline_budget_is_unchanged()
@@ -302,4 +400,6 @@ test_supervisor_carries_the_budget_and_its_specs()
 test_shared_policy_is_called_one_at_a_time()
 test_wedged_plugins_do_not_starve_healthy_ones()
 test_policy_raising_timeout_is_not_a_budget_expiry()
+test_a_raising_policy_is_retired_after_the_fault_limit()
+test_a_completed_episode_resets_the_fault_count()
 print("ALL_POLICY_BUDGET_OK")

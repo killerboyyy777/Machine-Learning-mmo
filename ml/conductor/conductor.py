@@ -165,12 +165,23 @@ class Conductor:
         self._start_time = None
 
     def _next_slot(self):
-        """Next slot in weighted round-robin order (None when slotless)."""
+        """Next slot in weighted round-robin order (None when slotless).
+
+        Slots whose policy the supervisor retired are skipped (#176): a
+        plugin that raised on every attempt is not handed another agent.
+        When every slot is retired this returns None, and the caller's
+        existing "no slot" path marks the agent dead instead of silently
+        respawning it into the same failure.
+        """
         if not self._cycle:
             return None
-        slot = self._slots[self._cycle[self._cursor % len(self._cycle)]]
-        self._cursor += 1
-        return slot
+        for _ in range(len(self._cycle)):
+            slot = self._slots[self._cycle[self._cursor % len(self._cycle)]]
+            self._cursor += 1
+            if self.supervisor.policy_disabled(slot["policy_fn"]):
+                continue
+            return slot
+        return None
 
     async def _maybe_start(self, agent_id):
         """Start a supervised task for a fresh agent.
