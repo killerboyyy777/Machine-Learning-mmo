@@ -45,9 +45,13 @@ CSI_KEYS = {"[C": "right", "[D": "left", "[Z": "shift+tab"}
 SEQ_TIMEOUT = 0.05  # seconds to wait for the rest of an escape sequence
 
 # Tabs whose payload is not in /api/state. The dashboard loads these on tab
-# entry (config on entry, runs on a 5s poll while active), so the TUI does a
-# one-shot fetch when the tab opens rather than polling every state tick.
-EXTRA_LOADERS = {"config": "fetch_config", "runs": "fetch_runs"}
+# entry (config and plugins once, runs on a 5s poll while active), so the TUI
+# does a one-shot fetch when the tab opens rather than polling every tick.
+EXTRA_LOADERS = {
+    "config": "fetch_config",
+    "runs": "fetch_runs",
+    "plugins": "fetch_plugins",
+}
 
 
 def load_extra(client, tab):

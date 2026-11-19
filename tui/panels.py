@@ -10,13 +10,14 @@ for Players, treasury/book/trades/by-item for Market,
 buffs/bosses/clears/instances for Dungeon, roster/action feed for
 Agents, catalog/commissions for Quests, recipes/history/supply/flow for
 Crafting, guild totals/audit feed for Guilds, sections/overrides for
-Config, run index/metrics for Runs, treasury/catalog for GM.
+Config, run index/metrics for Runs, treasury/catalog for GM, and the
+admission list for Plugins (read-only, #177).
 
-Snapshot-backed panels read /api/state. Config and Runs need their own
-one-shot payloads (/api/config, /api/runs), passed as `extras` because
-the dashboard also loads them on tab entry rather than polling. Every
-panel takes `(snapshot)` and returns a rich renderable, so panels compose
-into one frame and stay testable without a terminal.
+Snapshot-backed panels read /api/state. Config, Runs and Plugins need
+their own one-shot payloads (/api/config, /api/runs, /api/plugins), passed
+as `extras` because the dashboard also loads them on tab entry rather than
+polling. Every panel takes `(snapshot)` and returns a rich renderable, so
+panels compose into one frame and stay testable without a terminal.
 """
 
 import time
@@ -97,6 +98,8 @@ def render_panel(tab, snapshot, rows=ACTIVITY_ROWS, extras=None):
         return render_arena(snapshot, rows)
     if tab == "agents":
         return render_agents(snapshot, rows)
+    if tab == "plugins":
+        return render_plugins(snapshot, rows, extras.get("plugins"))
     if tab == "quests":
         return render_quests(snapshot, rows)
     if tab == "crafting":
@@ -938,6 +941,53 @@ def _agent_feed(snapshot, rows=ACTIVITY_ROWS):
 
 def _action_seq(action):
     return _as_float(action.get("seq"))
+
+
+# --- plugins -------------------------------------------------------------
+def render_plugins(snapshot, rows=ACTIVITY_ROWS, plugins=None):
+    """Plugins tab (#177): admission list and refused files, read-only.
+
+    The TUI lists what the conductor would admit, but never starts a plugin:
+    the config forms and the start/stop controls stay in the browser.
+    """
+    if not plugins:
+        return Text("plugins not loaded yet", style="dim italic")
+    if plugins.get("error"):
+        return Text(str(plugins["error"]), style="bold red")
+    admitted = plugins.get("plugins") or []
+    refused = plugins.get("rejected") or []
+    body = Table(show_header=True, header_style="bold", box=None)
+    body.add_column("Plugin", style="cyan")
+    body.add_column("Source")
+    body.add_column("Agent type")
+    body.add_column("Config fields")
+    for plugin in admitted:
+        fields = plugin.get("config_schema") or {}
+        body.add_row(
+            str(plugin.get("name", "")),
+            str(plugin.get("source", "")),
+            str(plugin.get("agent_type", "")),
+            ", ".join(sorted(fields)) or "-",
+        )
+    if not admitted:
+        body.add_row("-", "-", "-", "no plugins admitted")
+    parts = [Text("Plugins", style="bold"), body, Text("")]
+    parts.append(
+        Text(
+            f"{len(admitted)} admitted from {plugins.get('plugin_dir', '')} "
+            "(read-only; start and stop in the dashboard)"
+        )
+    )
+    parts.append(Text(""))
+    parts.append(Text("Refused files", style="bold"))
+    if refused:
+        for item in refused:
+            parts.append(
+                Text(f"{item.get('name', '')} - {item.get('reason', '')}", style="red")
+            )
+    else:
+        parts.append(Text("none", style="dim"))
+    return Group(*parts)
 
 
 # --- quests --------------------------------------------------------------
