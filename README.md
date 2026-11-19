@@ -190,7 +190,7 @@ matches and fights with the normal attack action. An agent queues only when it
 has at least 80% HP and is idle in a non-hostile, non-dungeon room. It stays
 queued while waiting, leaves if it loses that eligibility, and abandons a queue
 when the wait exceeds 120 agent selections. While fighting it attacks when
-possible and otherwise uses its normal fallback movement. The role sends
+possible and otherwise uses its normal idle fallback (`rest`/`look`). The role sends
 ordinary arena commands through the pending-command channel; it does not add
 environment actions or observation fields.
 
