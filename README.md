@@ -77,6 +77,29 @@ TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
 
+## Drop-in agents
+
+The conductor can load custom agents from Python files in the repository's
+top-level `plugins/` directory. Each file registers an `AgentPlugin`
+subclass with a unique ASCII name, an `agent_type` (`linear`, `scripted`,
+`torch` or `custom`), a typed `config_schema()`, and an `act()` policy.
+The admission check rejects invalid manifests and reports the reason without
+discarding other valid plugins. The full contract and a runnable example are
+in [plugins/README.md](plugins/README.md).
+
+Start a conductor with a plugin slot (the directory defaults to
+`<repo>/plugins`; override it with `--plugin-dir`):
+
+```bash
+python3 ml/conductor/soak.py --agents 4 --slot hello:speed=5
+```
+
+A plugin may also implement the optional episode, reward, learning and
+checkpoint hooks described in the plugin guide. Plugins currently execute
+inside the conductor process: admission validates a plugin before use, but it
+is not a security sandbox, and a blocking or failing policy can still affect
+the run.
+
 ## Companions
 
 Adopt a wolf, mule, or sheep companion, then summon it. Companions earn a
