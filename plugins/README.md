@@ -39,9 +39,9 @@ of `act` gets a policy built from it.
 
 ## What admission checks
 
-On startup every newly imported plugin is checked, and one that fails is
-dropped from the registry with its reason printed, without stopping the
-others:
+On startup each file is imported once in a child process first; the survivors
+are imported here and checked. One that fails is dropped from the registry
+with its reason printed, without stopping the others:
 
 - the name is a non-empty string of lowercase letters, digits, `-` or `_`,
   and not the reserved `base` (duplicates are refused at import time);
@@ -51,8 +51,8 @@ others:
 - `config_schema()` returns a dict of `{name: {"type": ...}}` entries;
 - the plugin can be built from its own defaults.
 
-A file that does not even import stops the run: a broken drop-in should fail
-loudly at startup, not vanish and leave a slot silently empty.
+A file that crashes or hangs on import is caught by that probe and named as
+rejected, so a broken drop-in costs its own slot instead of the whole run.
 
 ## What this does not do yet
 
@@ -73,5 +73,8 @@ no lock -- and a plugin that wedges only blocks itself: it cannot occupy the
 threads a healthy plugin behind a different slot needs. A policy that raises
 `TimeoutError` itself is reported as its own crash, not as a budget expiry.
 
-Process level admission, where a plugin proves it can run before the conductor
-trusts it, is the next phase (#176).
+The import probe runs in a child process, but a plugin's policy does not: the
+first `act` still happens in the conductor's process, so a policy that only
+fails on a real observation gets no rehearsal. Running a policy against a
+fixture in a child, and isolating a plugin process for the whole run, remain
+(#176).
