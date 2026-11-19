@@ -8,6 +8,7 @@ slot specs, weighted conductor slots, 4-arg supervisor delivery.
 import asyncio
 import inspect
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -594,4 +595,152 @@ def _reward_dsl_68():
 _reward_dsl_68()
 print("REWARD_DSL_68_OK")
 
+
+def _admission_68():
+    """#176: a drop-in is admitted only when its manifest holds up."""
+    from ml.plugins import load_plugins
+
+    body = (
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "@register\n"
+        "class {cls}(AgentPlugin):\n"
+        "    name = '{name}'\n"
+        "    agent_type = '{agent_type}'\n"
+        "    @classmethod\n"
+        "    def config_schema(cls):\n"
+        "        return {schema}\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return 0\n"
+    )
+    good = body.format(
+        cls="GoodBot68",
+        name="goodbot68",
+        agent_type="custom",
+        schema="{'speed': {'type': int, 'default': 3, 'help': 'pace'}}",
+    )
+    bad_type = body.format(
+        cls="BadType68",
+        name="badtype68",
+        agent_type="invented",
+        schema="{'speed': {'type': int, 'default': 3, 'help': 'pace'}}",
+    )
+    bad_schema = body.format(
+        cls="BadSchema68",
+        name="badschema68",
+        agent_type="custom",
+        schema="{'speed': 3}",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        for module, source in (
+            ("plugin_good_68", good),
+            ("plugin_bad_type_68", bad_type),
+            ("plugin_bad_schema_68", bad_schema),
+        ):
+            with open(os.path.join(tmp, module + ".py"), "w", encoding="utf-8") as fh:
+                fh.write(source)
+        admitted, rejected = load_plugins(tmp)
+        # Fresh process: startup imports the built-ins before it snapshots, so
+        # `admitted` names the drop-in only. In this process discover() already
+        # ran at import, which would hide a regression to the buggy order.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        probe = (
+            "import sys\n"
+            f"sys.path.insert(0, {root!r})\n"
+            "from ml.plugins import load_plugins\n"
+            f"admitted, rejected = load_plugins({tmp!r})\n"
+            "print('|'.join(admitted))\n"
+        )
+        fresh = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        )
+        assert fresh.returncode == 0, fresh.stderr
+        # Importing the plugin package can print its own banner; the admitted
+        # line is the last one.
+        tail = fresh.stdout.strip().splitlines()[-1]
+        assert tail.split("|") == ["goodbot68"], fresh.stdout
+    assert "goodbot68" in admitted, admitted
+    reasons = dict(rejected)
+    assert "badtype68" in reasons, reasons
+    assert "agent_type" in reasons["badtype68"], reasons["badtype68"]
+    assert "badschema68" in reasons, reasons
+    assert "config_schema" in reasons["badschema68"], reasons["badschema68"]
+    # One bad file does not stop the good one in the same directory.
+    assert isinstance(get("goodbot68")(), object)
+    # A rejected plugin is not selectable.
+    try:
+        get("badtype68")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("a rejected plugin must not be selectable")
+    # A container image copies ml/ but not plugins/, so absence is not an error.
+    assert load_plugins(os.path.join(tmp, "does-not-exist-68")) == ([], [])
+    for name in ("goodbot68", "badtype68", "badschema68"):
+        REGISTRY.pop(name, None)
+    print("PLUGIN_ADMISSION_OK")
+
+
+_admission_68()
+
+
+def _manifest_edges_68():
+    """#176 review: the manifest refuses what would only fail after admission."""
+    from ml.plugins import AgentPlugin, load_plugins, manifest_problems
+
+    def make(name, schema=None, agent_type="custom"):
+        return type(
+            "ManifestEdge68",
+            (AgentPlugin,),
+            {
+                "name": name,
+                "agent_type": agent_type,
+                "config_schema": classmethod(lambda cls: dict(schema or {})),
+                "act": lambda self, obs, agent_id, mask=None: 0,
+            },
+        )
+
+    # str.islower()/isdigit() would have admitted both of these.
+    for odd in ("caf\u00e9bot", "bot\u0663"):
+        problems = manifest_problems(make(odd))
+        assert any("ASCII" in p for p in problems), (odd, problems)
+
+    # A string type only fails when a config first sets the value, so a None
+    # default hides it until an agent starts.
+    stringly = manifest_problems(
+        make("stringly68", {"speed": {"type": "int", "default": None}})
+    )
+    assert any("callable 'type'" in p for p in stringly), stringly
+    assert (
+        manifest_problems(make("typed68", {"speed": {"type": int, "default": None}}))
+        == []
+    ), manifest_problems(make("typed68", {"speed": {"type": int, "default": None}}))
+
+    source = (
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "@register\n"
+        "class Stringly68(AgentPlugin):\n"
+        "    name = 'stringly68'\n"
+        "    agent_type = 'custom'\n"
+        "    @classmethod\n"
+        "    def config_schema(cls):\n"
+        "        return {'speed': {'type': 'int', 'default': None}}\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return 0\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(
+            os.path.join(tmp, "plugin_stringly_68.py"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write(source)
+        admitted, rejected = load_plugins(tmp)
+        reasons = dict(rejected)
+        assert "stringly68" not in admitted, admitted
+        assert "callable 'type'" in reasons["stringly68"], reasons
+    REGISTRY.pop("stringly68", None)
+    print("PLUGIN_MANIFEST_EDGES_OK")
+
+
+_manifest_edges_68()
 print("ALL_PLUGINS_OK")
