@@ -7,6 +7,7 @@ without affecting other agents.
 
 import asyncio
 import inspect
+import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +26,11 @@ _CONNECTION_ERRORS = (
     asyncio.TimeoutError,
     websockets.ConnectionClosed,
 )
+# #176: a plugin that raises or overruns its budget on every step is not a
+# run of bad luck, it is a broken plugin, and one death per respawn is a
+# crash loop that burns the fleet's agent slots. Three faults retire the
+# policy; the conductor then stops scheduling it and names it in the log.
+POLICY_FAULT_LIMIT = 3
 
 
 def _env_floor(env):
@@ -50,6 +56,21 @@ class PolicyTimeout(Exception):
         super().__init__(f"policy timeout after {budget}s (episode {episode})")
         self.budget = budget
         self.episode = episode
+
+
+class PolicyFailure(RuntimeError):
+    """The policy failed in a way that belongs to the plugin, not the world.
+
+    Raised instead of letting the plugin's own exception reach the generic
+    crash path, so the supervisor can tell "this plugin is broken" from
+    "this agent hit a bad episode" and retire a plugin that keeps doing it.
+    RuntimeError keeps the pre-#176 contract for callers that caught the
+    budget expiry by that type.
+    """
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
 
 
 class AgentTask:
@@ -200,15 +221,22 @@ class AgentTask:
                         call_args = (obs, self.agent_id)
                     try:
                         action = await self._call_policy(call_args)
-                    except PolicyTimeout:
+                    except PolicyTimeout as exc:
                         # A budget exists to stop one plugin taking the
                         # fleet down; the task has to die for that, or the
                         # next episode retries the same wedged call.
+                        self.last_error = str(exc)
+                        raise PolicyFailure(self.last_error) from None
+                    except Exception as exc:
+                        # The plugin raised inside act(). Retrying in place
+                        # would raise again, so this ends the task too - but
+                        # tagged as the plugin's fault, not the world's, so
+                        # the supervisor can retire it after a few of these.
                         self.last_error = (
-                            f"policy timeout after {self.policy_timeout}s "
+                            f"plugin raised {type(exc).__name__}: {exc} "
                             f"(episode {self.episodes + 1})"
                         )
-                        raise RuntimeError(self.last_error) from None
+                        raise PolicyFailure(self.last_error) from exc
                     prev_obs = obs
                     try:
                         if self.step_timeout is not None:
@@ -313,6 +341,11 @@ class Supervisor:
         # the closure, not the agent; a rebuilt policy gets a fresh worker
         # (#176 review).
         self._policy_executors = {}  # policy closure -> single-worker executor
+        # #176: faults and retirements per policy closure. Keyed the same
+        # way as the executors, so one broken plugin instance is retired
+        # rather than every agent that happened to be handed it.
+        self._policy_faults = {}  # policy closure -> consecutive faults
+        self._policy_failed = {}  # policy closure -> reason it was retired
         # Launch specs per agent so PBT exploit can restart losers with
         # fresh envs/policies that reload the copied weights (#228).
         # policy_factory(checkpoint_path, hparams) rebuilds the policy
@@ -372,6 +405,57 @@ class Supervisor:
         except TypeError:
             return None
 
+    def _record_policy_fault(self, policy_fn, reason):
+        """Count a plugin-side failure; retire the policy at the limit (#176).
+
+        Without this a plugin that raises on every step dies, is respawned
+        onto the same slot, and dies again: three agent slots and three death
+        rows per broken plugin, forever. Retiring the closure makes the
+        conductor skip that slot, and the log say why, while the rest of the
+        fleet keeps running.
+
+        Faults are consecutive: a policy that manages a whole episode resets
+        its count, so a plugin that fails occasionally is never retired.
+        """
+        try:
+            faults = self._policy_faults.get(policy_fn, 0) + 1
+            self._policy_faults[policy_fn] = faults
+            if faults < POLICY_FAULT_LIMIT or policy_fn in self._policy_failed:
+                return
+            self._policy_failed[policy_fn] = reason
+        except TypeError:
+            # An unhashable policy cannot be tracked; its agents keep the old
+            # one-death-per-crash behaviour rather than sharing a counter.
+            return
+        if self._metrics is not None:
+            try:
+                self._metrics.log(
+                    "plugin_disabled", faults=faults, reason=str(reason)[-300:]
+                )
+            except Exception:
+                pass
+        print(
+            f"[conductor] plugin disabled after {faults} policy faults: {reason}",
+            file=sys.stderr,
+        )
+
+    def _clear_policy_faults(self, policy_fn):
+        try:
+            self._policy_faults.pop(policy_fn, None)
+        except TypeError:
+            pass
+
+    def policy_disabled(self, policy_fn):
+        """Reason this policy was retired, or None while it is still used."""
+        try:
+            return self._policy_failed.get(policy_fn)
+        except TypeError:
+            return None
+
+    def disabled_policies(self):
+        """Snapshot of retired policies and the reason each was retired."""
+        return dict(self._policy_failed)
+
     async def start_agent(
         self,
         agent_id,
@@ -395,6 +479,20 @@ class Supervisor:
             if agent_id in self._tasks:
                 return False
             if len(self._tasks) >= self.max_concurrent:
+                return False
+            disabled = self.policy_disabled(policy_fn)
+            if disabled is not None:
+                # A retired plugin gets no new agent (#176): the crash would
+                # only repeat the fault that retired it.
+                if self._metrics is not None:
+                    try:
+                        self._metrics.log(
+                            "spawn_error",
+                            agent_id=agent_id,
+                            error=f"policy disabled: {disabled}",
+                        )
+                    except Exception:
+                        pass
                 return False
             try:
                 env = env_factory(agent_id)
@@ -453,6 +551,10 @@ class Supervisor:
         """Run an agent task, handling crashes gracefully."""
         try:
             async for event in at.run():
+                # An episode finished under this policy, so whatever it did
+                # wrong before was survivable: the fault budget counts
+                # consecutive failures, not a lifetime total (#176).
+                self._clear_policy_faults(at.policy_fn)
                 self.registry.record_episode(at.agent_id, event["reward"])
                 self._log_episode(at.agent_id, event)
                 if self._episode_hook is not None:
@@ -469,6 +571,14 @@ class Supervisor:
                         self._mixer.record_reward(floor, at.agent_id, event["reward"])
         except asyncio.CancelledError:
             pass
+        except PolicyFailure as exc:
+            # A plugin fault: the agent dies as it always did, but the cause
+            # is attributed to the plugin so a repeat retires it (#176).
+            entry = self.registry.get(at.agent_id)
+            if entry:
+                entry.alive = False
+            self._log_death(at.agent_id, at.episodes, at.total_reward, error=str(exc))
+            self._record_policy_fault(at.policy_fn, str(exc))
         except Exception:
             entry = self.registry.get(at.agent_id)
             if entry:
@@ -529,6 +639,10 @@ class Supervisor:
         entry = self.registry.get(agent_id)
         if entry is None or not entry.alive:
             self._specs.pop(agent_id, None)
+            return False
+        if self.policy_disabled(spec[1]):
+            # PBT must not hand a retired plugin another agent (#176): the
+            # restart would fault again and trip the same limit.
             return False
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
