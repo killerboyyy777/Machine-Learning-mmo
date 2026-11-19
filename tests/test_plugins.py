@@ -850,5 +850,23 @@ def _manifest_edges_68():
     print("PLUGIN_MANIFEST_EDGES_OK")
 
 
+def _slot_escapes_177():
+    """Dashboard config values may contain the slot grammar's delimiters."""
+    encoded = r"linear:msg=hello\, world,eq=a\=b,path=C:\\tmp\\new"
+    slot = parse_slot(encoded)
+    assert slot["config"] == {
+        "msg": "hello, world",
+        "eq": "a=b",
+        "path": "C:\\tmp\\new",
+    }, slot
+    # Unescaped delimiters keep their old meaning: commas inside parentheses
+    # belong to the formula, and a plain comma still starts a new param.
+    formula = parse_slot("linear:env_reward_formula=clamp(0, 1),epsilon=0.2")
+    assert formula["env"]["reward_formula"] == "clamp(0, 1)", formula
+    assert formula["config"]["epsilon"] == 0.2, formula
+    print("SLOT_ESCAPES_OK")
+
+
+_slot_escapes_177()
 _manifest_edges_68()
 print("ALL_PLUGINS_OK")

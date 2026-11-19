@@ -21,6 +21,7 @@ TABS = (
     ("dungeon", "Dungeons"),
     ("arena", "Arena"),
     ("agents", "Agents"),
+    ("plugins", "Plugins"),
     ("quests", "Quests"),
     ("crafting", "Crafting"),
     ("guilds", "Guilds"),

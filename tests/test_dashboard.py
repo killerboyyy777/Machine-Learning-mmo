@@ -647,6 +647,80 @@ for tok in ("status, result = _train_start", "status, result = _train_stop"):
     assert tok in _srv, f"server: training dispatch {tok!r} missing"
 print("TRAINING_PANEL_OK")
 
+# --- drop-in plugins (#177): same control-plane shape as training ----------
+assert '<div class="tab" data-tab="plugins">Plugins</div>' in html
+assert '<div id="view-plugins" class="tabview">' in html
+for wid in (
+    "pluginDir",
+    "pluginAbout",
+    "pluginList",
+    "pluginRejected",
+    "pluginHelp",
+    "pluginForm",
+    "pluginMsg",
+    "agentState",
+    "agentStatus",
+    "agentStart",
+    "agentStop",
+):
+    assert f'id="{wid}"' in html, f"missing plugin widget {wid}"
+for tok in (
+    'fetch("/api/plugins"',
+    'fetch("/api/agents/status"',
+    'fetch("/api/agents/start"',
+    'fetch("/api/agents/stop"',
+):
+    assert tok in html, f"plugins endpoint {tok} unused"
+assert "JSON.stringify({" in html and "plugin: pluginSelected" in html
+# The form comes from config_schema, not a hardcoded field list: every type
+# the admission layer can emit has a rendering branch.
+for fn in ("pluginFieldRow", "pluginRunRow", "renderPluginForm", "renderAgentStatus"):
+    assert f"function {fn}" in html, f"{fn} missing"
+pf = _runs_section(html, "pluginFieldRow")
+for typ in ('"bool"', '"int"', '"float"'):
+    assert f"type === {typ}" in pf, f"{typ} schema type not rendered"
+assert "data-pluginkey" in html and "data-runkey" in html
+# The server's editable verdict gates selection and both buttons, off-box
+# viewers keep the inventory read-only.
+for fn in ("renderPluginForm", "renderAgentStatus"):
+    fb = re.search(rf"function {fn}\(.*?\) \{{(.*?)\n\}}", html, re.DOTALL)
+    assert fb and "pluginData.editable" in fb.group(1), f"{fn} ignores editable"
+    assert fb and "addEventListener" not in fb.group(1), f"{fn} rebinds listeners"
+assert 'document.addEventListener("click"' in html and "data-plugin-select" in html
+# Admission and launch are lazy: the inventory is fetched on tab entry, and
+# the status poll stops when the tab is hidden.
+assert re.search(
+    r'activeTab === "plugins"\) \{\s*(?://[^\n]*\n\s*)*if \(!pluginData\) loadPlugins\(\);',
+    html,
+), "switching to Plugins does not load the inventory"
+sp = re.search(r"function schedulePluginPoll\(\) \{(.*?)\n\}", html, re.DOTALL)
+assert sp and 'if (activeTab !== "plugins") return;' in sp.group(
+    1
+), "plugins polls off-tab"
+# Server side: the read stays LAN-visible, the writes ride the loopback gate.
+for tok in (
+    '"/api/plugins"',
+    '"/api/agents/start"',
+    '"/api/agents/stop"',
+    '"/api/agents/status"',
+    "agent launches are loopback-only",
+    "_plugins_payload",
+    "_agents_start",
+    "_agents_stop",
+    "_agent_payload",
+    "_agent_slot",
+    "agents = path.startswith",
+):
+    assert tok in _srv, f"server: plugins token {tok} missing"
+assert "_send_json(*_agent" not in _srv, "agent reply must not splat (status, payload)"
+for tok in ("status, result = _agents_start", "status, result = _agents_stop"):
+    assert tok in _srv, f"server: plugins dispatch {tok!r} missing"
+# Starting goes through admission: the server never trusts a client-supplied
+# plugin name that load_plugins did not admit.
+assert "plugin {name!r} is not admitted" in _srv
+assert "--slot" in _srv and "_agent_slot(name, config)" in _srv
+print("PLUGINS_PANEL_OK")
+
 # --- player combat status (#13): identical data on the roster and tracker ---
 perf = re.search(r"function renderPerf\(players\) \{(.*?)\n\}", html, re.DOTALL)
 assert perf, "renderPerf missing"

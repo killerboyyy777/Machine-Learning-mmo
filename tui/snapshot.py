@@ -19,10 +19,11 @@ from urllib.request import urlopen
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
 STATE_PATH = "/api/state"
-# Config and runs are not in /api/state: the dashboard fetches them on tab
-# entry, so the TUI does the same instead of polling them every tick.
+# Config, runs and plugins are not in /api/state: the dashboard fetches them
+# on tab entry, so the TUI does the same instead of polling them every tick.
 CONFIG_PATH = "/api/config"
 RUNS_PATH = "/api/runs"
+PLUGINS_PATH = "/api/plugins"
 DEFAULT_TIMEOUT = 5.0
 DEFAULT_INTERVAL = 2.0  # dashboard polls /api/state on the same cadence
 
@@ -58,6 +59,10 @@ class SnapshotClient:
     def fetch_runs(self):
         """Run index + metric fields, the same payload the Runs tab uses."""
         return self._get_json(RUNS_PATH)
+
+    def fetch_plugins(self):
+        """Admission verdicts, the same payload the Plugins tab uses."""
+        return self._get_json(PLUGINS_PATH)
 
     def _get_json(self, path):
         url = f"http://{self.host}:{self.port}{path}"

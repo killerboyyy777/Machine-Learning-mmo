@@ -5,9 +5,10 @@ Covers #319: the TUI tab registry still mirrors the dashboard tab
 bar (ids, labels, order, default) including the section list, the
 snapshot client turns a real HTTP response into a dict and every failure
 mode into SnapshotError, the poller keeps the last good snapshot through
-an outage, the Overview/World/Players/Market/Dungeon/Agents/Quests/
-Crafting/Guilds/Config/Runs/GM panels (TUI-1 through TUI-4, plus the
-#588 Guilds surface) render the dashboard's fields, every tab has a real
+an outage, the Overview/World/Players/Market/Dungeon/Agents/Plugins/
+Quests/Crafting/Guilds/Config/Runs/GM panels (TUI-1 through TUI-4, plus
+the #588 Guilds and #177 Plugins surfaces) render the dashboard's fields,
+every tab has a real
 panel, and the app shell routes keys, repaints only when the screen
 changed, and loads tabs whose data rides a separate endpoint.
 
@@ -404,6 +405,31 @@ def runs_fixture():
     }
 
 
+def plugins_fixture():
+    """A /api/plugins payload trimmed to what the plugins panel reads."""
+    return {
+        "editable": True,
+        "plugin_dir": "repo/plugins",
+        "plugin_dir_present": True,
+        "known_agent_types": ["linear", "custom"],
+        "plugins": [
+            {
+                "name": "linear",
+                "agent_type": "linear",
+                "source": "built-in",
+                "config_schema": {"epsilon": {"type": "float", "default": 0.1}},
+            },
+            {
+                "name": "mybot",
+                "agent_type": "custom",
+                "source": "drop-in",
+                "config_schema": {},
+            },
+        ],
+        "rejected": [{"name": "bad.py", "reason": "unknown agent_type 'nope'"}],
+    }
+
+
 # --- tab registry mirrors dashboard.html --------------------------------
 def test_tabs_mirror_dashboard():
     html = Path(ROOT, "dashboard.html").read_text(encoding="utf-8")
@@ -558,6 +584,7 @@ def test_client_extra_paths():
             "/api/state": snapshot_fixture(),
             "/api/config": config_fixture(),
             "/api/runs": runs_fixture(),
+            "/api/plugins": plugins_fixture(),
         }
     )
     try:
@@ -565,6 +592,7 @@ def test_client_extra_paths():
         assert client.fetch()["server"]["players_online"] == 3
         assert client.fetch_config()["editable"] is True
         assert client.fetch_runs()["root_name"] == "runs"
+        assert client.fetch_plugins()["known_agent_types"] == ["linear", "custom"]
         assert client.url == f"http://127.0.0.1:{port}/api/state", client.url
     finally:
         server.shutdown()
@@ -888,10 +916,39 @@ def test_panels_runs():
     print("RUNS_OK")
 
 
+def test_panels_plugins():
+    """Plugins panel (#177): admission list and refusals, never a launch."""
+    snap = snapshot_fixture()
+    text = _plain(
+        render_panel("plugins", snap, rows=5, extras={"plugins": plugins_fixture()})
+    )
+    assert "not ported" not in text, "plugins panel should be implemented"
+    assert "Plugins" in text and "admitted" in text
+    assert "linear" in text and "mybot" in text
+    assert "built-in" in text and "drop-in" in text
+    assert "epsilon" in text and "-" in text
+    assert "Refused files" in text and "bad.py" in text
+    assert "unknown agent_type" in text
+    assert "read-only" in text
+    unloaded = _plain(render_panel("plugins", snap))
+    assert "plugins not loaded yet" in unloaded, unloaded
+    empty = _plain(render_panel("plugins", snap, extras={"plugins": {"plugins": []}}))
+    assert "no plugins admitted" in empty and "none" in empty, empty
+    failure = _plain(
+        render_panel("plugins", snap, extras={"plugins": {"error": "unavailable"}})
+    )
+    assert "unavailable" in failure, failure
+    print("PLUGINS_OK")
+
+
 def test_all_tabs_have_panels():
     """Every dashboard tab renders real content, not a placeholder."""
     snap = snapshot_fixture()
-    extras = {"config": config_fixture(), "runs": runs_fixture()}
+    extras = {
+        "config": config_fixture(),
+        "runs": runs_fixture(),
+        "plugins": plugins_fixture(),
+    }
     for tab in TAB_IDS:
         text = _plain(render_panel(tab, snap, rows=3, extras=extras))
         assert "not ported" not in text, tab
@@ -1006,7 +1063,11 @@ def test_app_shell():
 def test_app_extras():
     """Tabs with their own endpoint load it on entry and on refresh."""
     server, port = path_server(
-        {"/api/state": snapshot_fixture(), "/api/config": config_fixture()}
+        {
+            "/api/state": snapshot_fixture(),
+            "/api/config": config_fixture(),
+            "/api/plugins": plugins_fixture(),
+        }
     )
     try:
         poller = SnapshotPoller(SnapshotClient("127.0.0.1", port), interval=5.0)
@@ -1022,6 +1083,10 @@ def test_app_extras():
         app.handle("right")
         assert app.tab == "runs"
         assert "error" in app.extras["runs"], "missing endpoint must degrade"
+        plugin_app = TuiApp(poller, "plugins", _recording_console(), _ScriptedKeys())
+        plugin_app.load_tab_extras()
+        text = _plain(plugin_app.frame())
+        assert "mybot" in text and "Refused files" in text, text
     finally:
         server.shutdown()
         server.server_close()
@@ -1114,6 +1179,7 @@ def main():
         test_panels_gm()
         test_panels_config()
         test_panels_runs()
+        test_panels_plugins()
         test_all_tabs_have_panels()
         test_app_shell()
         test_app_extras()
@@ -1130,6 +1196,7 @@ def main():
         print("GM_OK skipped (rich not installed)")
         print("CONFIG_OK skipped (rich not installed)")
         print("RUNS_OK skipped (rich not installed)")
+        print("PLUGINS_OK skipped (rich not installed)")
         print("TAB_PARITY_OK skipped (rich not installed)")
         print("APP_SHELL_OK skipped (rich not installed)")
         print("APP_EXTRAS_OK skipped (rich not installed)")
