@@ -997,20 +997,6 @@ class Dungeon:
 
 
 @dataclass
-class Commission:
-    """Escrowed bounty posted by a player."""
-
-    id: int
-    poster: str
-    target: str
-    required_kills: int
-    reward_gold: int
-    reward_xp: int
-    status: str = "open"
-    created_ts: float = field(default_factory=time.time)
-
-
-@dataclass
 class Party:
     id: int
     leader_id: int
@@ -4119,10 +4105,6 @@ def _best_bid_for_ask(iid, seller_name, min_price):
     )
 
 
-def _market_trade_dict(trade):
-    return dict(trade)
-
-
 async def send(player, payload):
     if isinstance(payload, dict):
         payload = json.dumps(payload)
@@ -5324,13 +5306,7 @@ async def cmd_attack(player, msg):
             share = dmg_dealt / total_dmg
             pts = pool * share
             xp = pts
-            # Registered quest-giving NPCs penalize: killing them is never
-            # worth it.  Score goes negative; XP and gold stay at zero.
-            if npc_is_quest_npc:
-                pts = -0.5
-                xp = 0
-                reason = f"defeated {npc['name']} (quest NPC - penalty)"
-            elif cname == player.name:
+            if cname == player.name:
                 reason = f"defeated {npc['name']}"
                 get_score_entry(cname)["kills"] += 1
                 record_npc_kill(cname, npc["name"])
@@ -5341,8 +5317,7 @@ async def cmd_attack(player, msg):
             else:
                 reason = f"helped defeat {npc['name']}"
             # The killer's row is what the mode rescores, whatever branch
-            # decided it: a quest-NPC kill is a -0.5 award the mode must see
-            # as -0.5 rather than as a zero it can scale up.
+            # decided it.
             if cname == player.name:
                 killer_award = (pts, xp)
             await award_points_to_name(cname, pts, reason)
@@ -11170,9 +11145,6 @@ async def cmd_gm_slay(player, msg):
         )
         return
     npc = next((m for m in matches if str(m["id"]).lower() == target), matches[0])
-    if not npc.get("alive"):
-        await send(player, {"type": "error", "text": f"{npc['name']} is already dead."})
-        return
     cost = max(GM_SLAY_MIN_COST, (npc.get("max_hp", 10) or 10) * GM_SLAY_COST_PER_HP)
     if not await _spend_tax(player, cost, f"slay {npc['name']}"):
         return
@@ -14630,7 +14602,7 @@ async def _leave_party_on_disconnect(player):
 
 
 async def handle_connection(ws):
-    if MAX_TOTAL_CONNECTIONS is not None and len(players) >= MAX_TOTAL_CONNECTIONS:
+    if len(players) >= MAX_TOTAL_CONNECTIONS:
         try:
             await ws.send(
                 json.dumps(

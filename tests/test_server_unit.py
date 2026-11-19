@@ -626,6 +626,18 @@ async def main():
         with open(path, "wb") as fh:
             fh.write(data)
 
+    # #266: verified-dead code stays deleted.
+    server_src = read_bytes(os.path.join(ROOT, "server.py")).decode("utf-8")
+    for token in (
+        "class Commission:",
+        "def _market_trade_dict(",
+        "MAX_TOTAL_CONNECTIONS is not None",
+        "quest NPC - penalty",
+        "is already dead",
+    ):
+        assert token not in server_src, token
+    print("DEAD_CODE_ABSENT_OK")
+
     # --- Leveling curve ---
     assert srv.xp_to_next(1) == 100
     assert srv.xp_to_next(2) == 150
