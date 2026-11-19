@@ -401,18 +401,58 @@ def _coerce_value(text, key=None):
     return text
 
 
+def _unescape(text):
+    """Undo the slot encoding used for keys and values (#177 review).
+
+    Only the delimiters and the escape itself are special; an unknown
+    backslash pair is left alone so a Windows path or a regex is not
+    silently rewritten.
+    """
+    out, i = [], 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text) and text[i + 1] in ("\\", ",", "="):
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _partition_unescaped(text, sep):
+    """Split on the first delimiter that is not backslash-escaped."""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if ch == sep:
+            return text[:i], sep, text[i + 1 :]
+        i += 1
+    return text, "", ""
+
+
 def _split_params(text):
     """Split ``a=1,b=2`` on top-level commas only.
 
     Reward formulas (#68) legitimately contain commas -- ``min(a, b)`` --
     and a blind split would shred them into junk slots, so track
-    parenthesis depth. A leading '(' as the whole value is left intact by
-    the caller's partition, and unbalanced parens are passed through
-    un-split rather than rejected here: the formula parser reports that
-    far better than this splitter can (#68).
+    parenthesis depth. Escaped commas (= a literal comma in a config
+    value from the dashboard) are copied through without splitting.
+    Unbalanced parens are passed through un-split rather than rejected
+    here: the formula parser reports that far better than this splitter
+    can (#68).
     """
-    out, buf, depth = [], [], 0
-    for ch in text:
+    out, buf, depth, i = [], [], 0, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            buf.append(ch)
+            buf.append(text[i + 1])
+            i += 2
+            continue
         if ch == "(":
             depth += 1
         elif ch == ")":
@@ -420,14 +460,16 @@ def _split_params(text):
         if ch == "," and depth == 0:
             out.append("".join(buf))
             buf = []
+            i += 1
             continue
         buf.append(ch)
+        i += 1
     out.append("".join(buf))
     return out
 
 
 def parse_slot(spec):
-    """Parse a ``--slot`` spec into a slot dict.
+    r"""Parse a ``--slot`` spec into a slot dict.
 
     ``"gather"`` -> ``{"plugin": "gather", "config": {}, "env": {},
     "weight": 1}``; ``"torch:checkpoint=X,epsilon=0.1"`` fills config;
@@ -435,7 +477,9 @@ def parse_slot(spec):
     ``env_curriculum_stage``, ``env_step_delay``, ``env_reward_formula``)
     route to the env factory instead of the policy. Commas inside
     parentheses do not split params, so an ``env_reward_formula`` may use
-    ``clamp(0, 1)``. Raises ValueError on bad syntax.
+    ``clamp(0, 1)``. A backslash escapes ``\\``, ``\,`` and ``\=``, so a
+    dashboard config value containing a delimiter survives the round trip.
+    Raises ValueError on bad syntax.
     """
     if ":" in spec:
         name, _, rest = spec.partition(":")
@@ -450,12 +494,12 @@ def parse_slot(spec):
         chunk = chunk.strip()
         if not chunk:
             continue
-        if "=" not in chunk:
+        key, sep, value = _partition_unescaped(chunk, "=")
+        if not sep:
             raise ValueError(
                 f"bad slot param {chunk!r} in {spec!r} " "(want key=value)"
             )
-        key, _, value = chunk.partition("=")
-        key, value = key.strip(), _coerce_value(value, key)
+        key, value = _unescape(key).strip(), _coerce_value(_unescape(value), key)
         if not key:
             raise ValueError(f"empty key in slot {spec!r}")
         if key == "weight":

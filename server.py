@@ -13492,13 +13492,19 @@ def _agent_slot(name, config):
     """`name:key=value,...`, the form ml.plugins.parse_slot reads.
 
     Booleans go over as true/false because that is what parse_slot's coerce
-    recognises; anything else is its plain string form.
+    recognises. Keys and values are escaped so a string config such as
+    "hello, world" stays one parameter instead of becoming a second slot
+    entry; parse_slot unescapes with the mirror of this function.
     """
+
+    def escape(text):
+        return str(text).replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=")
+
     parts = []
     for key, value in config.items():
         if isinstance(value, bool):
             value = "true" if value else "false"
-        parts.append(f"{key}={value}")
+        parts.append(f"{escape(key)}={escape(value)}")
     return f"{name}:{','.join(parts)}" if parts else name
 
 

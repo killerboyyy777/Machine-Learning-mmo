@@ -36,17 +36,25 @@ json.dumps(data)  # the read route must be able to serialise every schema value
 print("INVENTORY_OK")
 
 # --- a refused drop-in carries its reason, not a silent omission ----------
+# The plugin writes a marker with its pid at import time. Seeing that marker
+# while `bad_dropin` stays out of this process's sys.modules proves admission
+# ran in a child and the server only received serialized metadata.
 with tempfile.TemporaryDirectory() as tmp:
+    marker = os.path.join(tmp, "imported_by.txt")
+    source = (
+        "import os\n"
+        f"with open({marker!r}, 'w', encoding='utf-8') as fh:\n"
+        "    fh.write(str(os.getpid()))\n"
+        "from ml.plugins import AgentPlugin, register\n"
+        "@register\n"
+        "class BadDropin(AgentPlugin):\n"
+        "    name = 'bad_dropin'\n"
+        "    agent_type = 'not_a_kind'\n"
+        "    def act(self, obs, aid, mask=None):\n"
+        "        return 0\n"
+    )
     with open(os.path.join(tmp, "bad_dropin.py"), "w", encoding="utf-8") as fh:
-        fh.write(
-            "from ml.plugins import AgentPlugin, register\n"
-            "@register\n"
-            "class BadDropin(AgentPlugin):\n"
-            "    name = 'bad_dropin'\n"
-            "    agent_type = 'not_a_kind'\n"
-            "    def act(self, obs, aid, mask=None):\n"
-            "        return 0\n"
-        )
+        fh.write(source)
     before = set(REGISTRY)
     try:
         refused = plugin_inventory.inventory(tmp)
@@ -54,6 +62,10 @@ with tempfile.TemporaryDirectory() as tmp:
         assert len(refused["rejected"]) == 1
         assert refused["rejected"][0]["name"] == "bad_dropin"
         assert "agent_type" in refused["rejected"][0]["reason"]
+        assert "bad_dropin" not in sys.modules, "drop-in imported in the server"
+        assert os.path.exists(marker), "child never imported the drop-in"
+        with open(marker, encoding="utf-8") as fh:
+            assert int(fh.read().strip()) != os.getpid()
         # The cache is per folder: the default folder's result is untouched.
         assert plugin_inventory.inventory()["rejected"] == []
     finally:
@@ -72,6 +84,10 @@ assert parsed["plugin"] == "linear"
 assert parsed["config"]["checkpoint"] == "X.pt"
 assert parsed["config"]["epsilon"] == 0.2
 assert server._agent_slot("gather", {}) == "gather"
+
+tricky = {"msg": "hello, world", "eq": "a=b", "path": "C:\\tmp\\new"}
+slot = server._agent_slot("linear", tricky)
+assert parse_slot(slot)["config"] == tricky, (slot, parse_slot(slot))
 print("AGENT_SLOT_OK")
 
 # --- validation refuses before a child is spawned -------------------------
