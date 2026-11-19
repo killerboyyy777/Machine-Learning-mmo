@@ -686,6 +686,14 @@ HEALER_NAME = "Sister Maren"
 INVENTORY_CAP = getattr(srv, "INVENTORY_CAP", 24)
 AMMO_EXEMPT_COUNT = getattr(srv, "AMMO_EXEMPT_COUNT", 5)
 PARTY_MAX_MEMBERS = getattr(srv, "PARTY_MAX_MEMBERS", 4)
+AMMO_IDS = frozenset(
+    getattr(srv, "AMMO_BONUS", {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2})
+)
+
+
+def _is_ammo_name(name):
+    """Resolve through the server: AMMO_BONUS is the authoritative family."""
+    return srv.find_item_by_name(list(srv.ITEM_DEFS), name) in AMMO_IDS
 
 
 def pack_units(state):
@@ -701,7 +709,7 @@ def pack_units(state):
     for slot in (state.get("equipped"), state.get("armor"), state.get("offhand")):
         if slot and slot in inv:
             units -= 1
-    arrows = sum(1 for n in inv if "arrow" in n.lower())
+    arrows = sum(1 for n in inv if _is_ammo_name(n))
     units -= min(arrows, AMMO_EXEMPT_COUNT)
     return max(0, units)
 
@@ -2085,14 +2093,12 @@ class TextMMOEnv:
         if _HEALING_HERB_ID and row["iid"] == _HEALING_HERB_ID:
             if sum(1 for r in self._holdings() if r["iid"] == _HEALING_HERB_ID) <= 1:
                 return False
-        if "arrow" in row["name"].lower():
+        if _is_ammo_name(row["name"]):
             equipped_iid = srv.find_item_by_name(
                 list(srv.ITEM_DEFS), s.get("equipped") or ""
             )
             if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
-                arrows = sum(
-                    1 for r in self._holdings() if "arrow" in r["name"].lower()
-                )
+                arrows = sum(1 for r in self._holdings() if _is_ammo_name(r["name"]))
                 if arrows <= 5:
                     return False
         return True
@@ -2371,13 +2377,8 @@ class TextMMOEnv:
                 list(srv.ITEM_DEFS), s.get("equipped") or ""
             )
             if equipped_iid and srv.ITEM_DEFS.get(equipped_iid, {}).get("ammo"):
-                arrows = sum(
-                    1 for n in (s.get("inv_names") or []) if "arrow" in n.lower()
-                )
-                iid, price = _cheapest(
-                    lambda i: "arrow"
-                    in srv.ITEM_DEFS.get(i, {}).get("name", "").lower()
-                )
+                arrows = sum(1 for n in (s.get("inv_names") or []) if _is_ammo_name(n))
+                iid, price = _cheapest(lambda i: i in AMMO_IDS)
                 if iid and arrows < 5 and gold >= price:
                     return {"cmd": "buy", "item": srv.ITEM_DEFS[iid]["name"]}
             return None

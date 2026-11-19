@@ -508,6 +508,24 @@ def test_env_goal_carriage():
     print("GOAL_CARRIAGE_OK")
 
 
+def test_arrow_family_uses_server_ids():
+    assert ml_env.AMMO_IDS == frozenset(srv.AMMO_BONUS)
+    assert ml_env._is_ammo_name("Arrow")
+    assert ml_env._is_ammo_name("Iron Arrow")
+    assert ml_env._is_ammo_name("Steel Arrow")
+    assert not ml_env._is_ammo_name("Rusty Nail")
+    # The old substring rule counted this as ammo even though the server
+    # does not.
+    srv.ITEM_DEFS["arrow_charm"] = {"name": "Arrow Charm"}
+    try:
+        assert not ml_env._is_ammo_name("Arrow Charm")
+        state = {"inv_names": ["Arrow Charm"] * 6, "pack_units": None}
+        assert pack_units(state) == 6
+    finally:
+        srv.ITEM_DEFS.pop("arrow_charm", None)
+    print("AMMO_IDS_OK")
+
+
 def test_readme_ml_dimensions_match_env():
     with open(
         os.path.join(
@@ -524,6 +542,7 @@ def test_readme_ml_dimensions_match_env():
 test_readme_ml_dimensions_match_env()
 test_discounted_commission_parses()
 test_pack_masks_from_server_count()
+test_arrow_family_uses_server_ids()
 test_priced_market_post()
 test_parameterized_bounty()
 test_gate_matrix()
