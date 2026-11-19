@@ -45,7 +45,7 @@ with its reason printed, without stopping the others:
 
 - the name is a non-empty string of lowercase letters, digits, `-` or `_`,
   and not the reserved `base` (duplicates are refused at import time);
-- `agent_type` is one of `linear`, `scripted`, `torch`, `custom` — per-type
+- `agent_type` is one of `linear`, `scripted`, `torch`, `custom` ÔÇö per-type
   status and PBT read that label, so an invented family lands in a bucket
   nothing else shares;
 - `config_schema()` returns a dict of `{name: {"type": ...}}` entries;
