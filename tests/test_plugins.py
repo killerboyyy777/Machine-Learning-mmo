@@ -682,4 +682,65 @@ def _admission_68():
 
 
 _admission_68()
+
+
+def _manifest_edges_68():
+    """#176 review: the manifest refuses what would only fail after admission."""
+    from ml.plugins import AgentPlugin, load_plugins, manifest_problems
+
+    def make(name, schema=None, agent_type="custom"):
+        return type(
+            "ManifestEdge68",
+            (AgentPlugin,),
+            {
+                "name": name,
+                "agent_type": agent_type,
+                "config_schema": classmethod(lambda cls: dict(schema or {})),
+                "act": lambda self, obs, agent_id, mask=None: 0,
+            },
+        )
+
+    # str.islower()/isdigit() would have admitted both of these.
+    for odd in ("caf\u00e9bot", "bot\u0663"):
+        problems = manifest_problems(make(odd))
+        assert any("ASCII" in p for p in problems), (odd, problems)
+
+    # A string type only fails when a config first sets the value, so a None
+    # default hides it until an agent starts.
+    stringly = manifest_problems(
+        make("stringly68", {"speed": {"type": "int", "default": None}})
+    )
+    assert any("callable 'type'" in p for p in stringly), stringly
+    assert (
+        manifest_problems(make("typed68", {"speed": {"type": int, "default": None}}))
+        == []
+    ), manifest_problems(make("typed68", {"speed": {"type": int, "default": None}}))
+
+    source = (
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "@register\n"
+        "class Stringly68(AgentPlugin):\n"
+        "    name = 'stringly68'\n"
+        "    agent_type = 'custom'\n"
+        "    @classmethod\n"
+        "    def config_schema(cls):\n"
+        "        return {'speed': {'type': 'int', 'default': None}}\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return 0\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(
+            os.path.join(tmp, "plugin_stringly_68.py"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write(source)
+        admitted, rejected = load_plugins(tmp)
+        reasons = dict(rejected)
+        assert "stringly68" not in admitted, admitted
+        assert "callable 'type'" in reasons["stringly68"], reasons
+    REGISTRY.pop("stringly68", None)
+    print("PLUGIN_MANIFEST_EDGES_OK")
+
+
+_manifest_edges_68()
 print("ALL_PLUGINS_OK")
