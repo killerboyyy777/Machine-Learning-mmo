@@ -156,8 +156,8 @@ outside a match the target is still "not here".
 
 A match moves no value: a downed fighter loses no gold, no items and no gear,
 does not enter the death log, and does not count toward the civilian or wild
-death counters. Gathering, trading, crafting, quests, healing and item use are
-refused during a match.
+death counters. Gathering, trading, crafting, quests, healing, item use and
+equipment changes are refused during a match.
 
 The room view for an arena room carries an `arena` block
 (`match_id, team_size, state, round, rounds_to_win, scores, teams, hp`), and
@@ -219,6 +219,23 @@ The dashboard's Arena tab renders the live matches, the ladder and recent
 results, and its follow box polls the per-match endpoint every two seconds. The
 terminal UI mirrors it as a twelfth tab over the same snapshot block.
 
+### Scripted arena agents
+
+The conductor's opt-in `arena` scripted role queues eligible agents for 2v2
+matches and fights with the normal attack action. An agent queues only when it
+has at least 80% HP and is idle in a non-hostile, non-dungeon room. It stays
+queued while waiting, leaves if it loses that eligibility, and abandons a queue
+when the wait exceeds 120 agent selections. While fighting it attacks when
+possible and otherwise uses its normal idle fallback (`rest`/`look`). The role sends
+ordinary arena commands through the pending-command channel; it does not add
+environment actions or observation fields.
+
+Run four agents with the role using the conductor's repeatable slot option:
+
+```bash
+python3 ml/conductor/soak.py --agents 4 --slot arena
+```
+
 ## Balance measurement
 
 `ml/balance.py` runs a mixed-agent profile against a live server, samples
@@ -240,6 +257,13 @@ Every later run is compared to the stored v0.10.0 baseline:
 python3 ml/balance.py evaluate --measurements balance/measurements-smoke-700.json \
   --baseline balance/baseline-08f7453.json
 ```
+
+The gate profile also runs the arena probe: it queues four fresh fighters
+for two 2v2 matches and checks that both matches complete, rating deltas are
+conserved, gold and item totals stay unchanged, civilian/wild death counters
+do not move, and repeating the same probe produces the same fingerprint. An
+unavailable arena command or failed probe is a blocking coverage failure, not
+a passing skip.
 
 Thresholds live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges a
 JSON override without editing code. Scenarios that depend on unlanded work
