@@ -681,7 +681,115 @@ def _admission_68():
     print("PLUGIN_ADMISSION_OK")
 
 
+def _import_probe_68():
+    import ml.plugins as plugins_mod
+    from ml.plugins import load_plugins
+
+    good = (
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class ProbeGood68(AgentPlugin):\n"
+        "    name = 'probgood68'\n"
+        "    agent_type = 'custom'\n"
+        "\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return 0\n"
+    )
+    hang = "import time\n\ntime.sleep(30)\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "plugin_probe_good_68.py"), "w") as f:
+            f.write(good)
+        with open(os.path.join(tmp, "plugin_probe_hang_68.py"), "w") as f:
+            f.write(hang)
+        saved = plugins_mod.IMPORT_PROBE_TIMEOUT_S
+        plugins_mod.IMPORT_PROBE_TIMEOUT_S = 1.0
+        try:
+            admitted, rejected = load_plugins(tmp)
+        finally:
+            plugins_mod.IMPORT_PROBE_TIMEOUT_S = saved
+        reasons = dict(rejected)
+        assert "probgood68" in admitted, admitted
+        assert "plugin_probe_hang_68" in reasons, reasons
+        assert "did not import within" in reasons["plugin_probe_hang_68"], reasons
+        # The hung file was imported in the child only, so this process never
+        # paid for it: that is what the probe buys.
+        assert "plugin_probe_hang_68" not in sys.modules
+        REGISTRY.pop("probgood68", None)
+    print("PLUGIN_IMPORT_PROBE_OK")
+
+
+def _probe_paths_68():
+    """#176 review: the probe has to import the way the real loader does."""
+    from ml.plugins import load_plugins
+
+    helper = "VALUE = 7\n"
+    sibling = (
+        "from helper_68 import VALUE\n"
+        "\n"
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class ProbeSibling68(AgentPlugin):\n"
+        "    name = 'probsib68'\n"
+        "    agent_type = 'custom'\n"
+        "\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return VALUE - 7\n"
+    )
+    # dataclasses resolves annotations through sys.modules[cls.__module__], so
+    # postponed annotations make the lookup mandatory: a probe that executes
+    # the file without registering it first rejects a valid plugin.
+    dataclass_source = (
+        "from __future__ import annotations\n"
+        "\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class Knobs68:\n"
+        "    speed: int = 3\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class ProbeData68(AgentPlugin):\n"
+        "    name = 'probdc68'\n"
+        "    agent_type = 'custom'\n"
+        "\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return Knobs68().speed - 3\n"
+    )
+    modules = ("helper_68", "plugin_probe_sibling_68", "plugin_probe_dataclass_68")
+    with tempfile.TemporaryDirectory() as tmp:
+        for fname, text in (
+            ("helper_68.py", helper),
+            ("plugin_probe_sibling_68.py", sibling),
+            ("plugin_probe_dataclass_68.py", dataclass_source),
+        ):
+            with open(os.path.join(tmp, fname), "w", encoding="utf-8") as f:
+                f.write(text)
+        try:
+            admitted, rejected = load_plugins(tmp)
+            assert "probsib68" in admitted, (admitted, rejected)
+            assert "probdc68" in admitted, (admitted, rejected)
+            assert not rejected, rejected
+            # The sibling import left a usable policy, not just an admitted name.
+            assert get("probsib68")().act({}, "a") == 0
+        finally:
+            for name in ("probsib68", "probdc68"):
+                REGISTRY.pop(name, None)
+            for name in modules:
+                sys.modules.pop(name, None)
+    print("PLUGIN_PROBE_PATHS_OK")
+
+
 _admission_68()
+_import_probe_68()
+_probe_paths_68()
 
 
 def _manifest_edges_68():
