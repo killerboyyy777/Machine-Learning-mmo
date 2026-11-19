@@ -49,7 +49,8 @@ def _materialize_slot(slot, url):
     "env": {...}}``, see :func:`ml.plugins.parse_slot`) or a legacy raw
     runner (``{"env_factory": f, "policy_fn": p}``). Returns
     ``{"weight", "agent_type", "env_factory", "policy_fn", "step_timeout",
-    "label"}`` plus ``policy_factory`` (plugin slots only, else None) and
+    "policy_timeout", "label"}`` plus ``policy_factory`` (plugin slots
+    only, else None) and
     ``learn_hook`` (the shared plugin instance's learn, so the slot's
     agents learn into one policy; raw runners and scripted plugins get
     None via the base default) and ``reward_hook`` (the plugin's reward
@@ -83,6 +84,7 @@ def _materialize_slot(slot, url):
             # plugin, matching learn_hook above.
             "reward_hook": plugin.reward,
             "step_timeout": slot.get("step_timeout"),
+            "policy_timeout": slot.get("policy_timeout"),
         }
     return {
         "weight": weight,
@@ -94,6 +96,7 @@ def _materialize_slot(slot, url):
         "learn_hook": None,  # raw runners don't learn per step
         "reward_hook": None,  # raw runners supply their own env reward
         "step_timeout": slot.get("step_timeout"),
+        "policy_timeout": slot.get("policy_timeout"),
     }
 
 
@@ -206,6 +209,7 @@ class Conductor:
                 env_factory,
                 slot["policy_fn"],
                 step_timeout=slot.get("step_timeout"),
+                policy_timeout=slot.get("policy_timeout"),
                 policy_factory=slot.get("policy_factory"),
                 learn_hook=slot.get("learn_hook"),
                 reward_hook=slot.get("reward_hook"),

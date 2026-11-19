@@ -8,6 +8,7 @@ without affecting other agents.
 import asyncio
 import inspect
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 import websockets
 
@@ -37,6 +38,20 @@ def _env_floor(env):
     return s.get("room_id") or "unknown"
 
 
+class PolicyTimeout(Exception):
+    """A policy call outlived its wall-clock budget (#176).
+
+    Distinct from ``TimeoutError`` on purpose: a plugin may raise that
+    itself, and a budget expiry is the supervisor's finding, not the
+    plugin's.
+    """
+
+    def __init__(self, budget, episode):
+        super().__init__(f"policy timeout after {budget}s (episode {episode})")
+        self.budget = budget
+        self.episode = episode
+
+
 class AgentTask:
     """Wraps one agent's episode loop with fault isolation."""
 
@@ -47,6 +62,8 @@ class AgentTask:
         policy_fn,
         max_steps=2000,
         step_timeout=None,
+        policy_timeout=None,
+        policy_executor=None,
         learn_hook=None,
         reward_hook=None,
     ):
@@ -67,9 +84,19 @@ class AgentTask:
         self.reward_hook = reward_hook
         # Watchdog (#50): max wall-clock seconds per env.step; a hung
         # step ends the episode instead of wedging the task forever.
-        # None disables. Only guards the async env call -- a blocking
-        # sync policy_fn would wedge the loop itself (keep policies fast).
+        # None disables. Only guards the async env call.
         self.step_timeout = step_timeout
+        # Policy budget (#176): a sync policy_fn runs on the loop thread,
+        # so the step watchdog cannot cover it and one wedged policy takes
+        # every agent down with it. When set, the policy runs on a worker
+        # thread and this bounds the wait; the abandoned thread is the
+        # price of an in-process plugin (see the isolation plan).
+        self.policy_timeout = policy_timeout
+        # The worker the policy runs on. The supervisor hands every agent of
+        # a slot the executor that belongs to the slot's shared plugin
+        # instance; a task built on its own lazily gets one (#176 review).
+        self._policy_executor = policy_executor
+        self._own_executor = None
         self._policy_arity = None  # probed from the fn signature once
         self.task = None
         self.total_reward = 0.0
@@ -80,6 +107,48 @@ class AgentTask:
         self.reconnects = 0
         self.last_error = None
         self.done = asyncio.Event()
+
+    async def _call_policy(self, args):
+        """Call the policy, off the loop when a budget is configured.
+
+        Plugins are synchronous by contract, so without a budget the call
+        happens inline exactly as it always has. With one, the call moves
+        to a worker thread and a policy that never returns costs this task
+        its episode instead of the whole fleet its event loop.
+
+        The worker comes from a single-thread executor per policy closure,
+        never from the loop's shared default pool: agents in a slot share
+        one plugin instance, so one worker keeps ``act`` single-threaded as
+        the contract promises, while a wedged call only occupies the worker
+        of the plugin that wedged and not the capacity a healthy agent
+        behind a different plugin needs.
+
+        A budget expiry and a policy that raises ``TimeoutError`` itself are
+        different failures, so the wait cannot be ``wait_for``: that
+        re-raises the policy's exception as if the budget had run out.
+        """
+        if self.policy_timeout is None:
+            return self.policy_fn(*args)
+        fut = asyncio.get_running_loop().run_in_executor(
+            self.policy_executor(), self.policy_fn, *args
+        )
+        done, _pending = await asyncio.wait({fut}, timeout=self.policy_timeout)
+        if not done:
+            # Cancels the future, not the thread: Python cannot interrupt a
+            # running call, so the worker stays busy until it returns.
+            fut.cancel()
+            raise PolicyTimeout(self.policy_timeout, self.episodes + 1)
+        return fut.result()
+
+    def policy_executor(self):
+        """The single-worker executor this task's policy runs on."""
+        if self._policy_executor is not None:
+            return self._policy_executor
+        if self._own_executor is None:
+            self._own_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"policy-{self.agent_id}"
+            )
+        return self._own_executor
 
     async def run(self):
         """Run episodes until the task is cancelled or the agent dies."""
@@ -124,11 +193,22 @@ class AgentTask:
                         except Exception:
                             mask = None
                         if self._policy_arity >= 4:
-                            action = self.policy_fn(obs, self.agent_id, mask, self.env)
+                            call_args = (obs, self.agent_id, mask, self.env)
                         else:
-                            action = self.policy_fn(obs, self.agent_id, mask)
+                            call_args = (obs, self.agent_id, mask)
                     else:
-                        action = self.policy_fn(obs, self.agent_id)
+                        call_args = (obs, self.agent_id)
+                    try:
+                        action = await self._call_policy(call_args)
+                    except PolicyTimeout:
+                        # A budget exists to stop one plugin taking the
+                        # fleet down; the task has to die for that, or the
+                        # next episode retries the same wedged call.
+                        self.last_error = (
+                            f"policy timeout after {self.policy_timeout}s "
+                            f"(episode {self.episodes + 1})"
+                        )
+                        raise RuntimeError(self.last_error) from None
                     prev_obs = obs
                     try:
                         if self.step_timeout is not None:
@@ -208,6 +288,7 @@ class Supervisor:
         mixer=None,
         floor_fn=None,
         step_timeout=None,
+        policy_timeout=None,
         metrics=None,
         episode_hook=None,
     ):
@@ -218,6 +299,7 @@ class Supervisor:
         self._mixer = mixer
         self._floor_fn = floor_fn or _env_floor
         self._step_timeout = step_timeout
+        self._policy_timeout = policy_timeout
         # Death accounting (#135): crashes and churn reaps are logged so
         # soak metrics can tell *why* agents die, not just that they did.
         self._metrics = metrics
@@ -226,13 +308,18 @@ class Supervisor:
         # lifetimes count episodes, not wall-clock ticks.
         self._episode_hook = episode_hook
         self._tasks = {}  # agent_id -> AgentTask
+        # Policy closures are shared by every agent in a slot (one plugin
+        # instance per slot), so the worker that serialises calls belongs to
+        # the closure, not the agent; a rebuilt policy gets a fresh worker
+        # (#176 review).
+        self._policy_executors = {}  # policy closure -> single-worker executor
         # Launch specs per agent so PBT exploit can restart losers with
         # fresh envs/policies that reload the copied weights (#228).
         # policy_factory(checkpoint_path, hparams) rebuilds the policy
         # from the loser's checkpoint file; None keeps the stored closure.
         self._specs = (
             {}
-        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook)
+        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook, policy_timeout)
         self._lock = asyncio.Lock()
 
     def _log_death(self, agent_id, episodes, total_reward, error=None):
@@ -264,6 +351,27 @@ class Supervisor:
         except Exception:
             pass
 
+    def _executor_for(self, policy_fn):
+        """The single-worker executor a policy closure runs on (#176 review).
+
+        Agents in one slot share one plugin instance through one closure, so
+        they share this worker and ``act`` is never entered twice at once. A
+        wedged call therefore blocks only the plugin that wedged, never the
+        loop's default pool that healthy agents behind other plugins use.
+        Keyed by the closure itself; an unhashable callable returns None and
+        the task falls back to its own worker.
+        """
+        try:
+            executor = self._policy_executors.get(policy_fn)
+            if executor is None:
+                executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="policy"
+                )
+                self._policy_executors[policy_fn] = executor
+            return executor
+        except TypeError:
+            return None
+
     async def start_agent(
         self,
         agent_id,
@@ -271,6 +379,7 @@ class Supervisor:
         policy_fn,
         max_steps=2000,
         step_timeout=None,
+        policy_timeout=None,
         policy_factory=None,
         learn_hook=None,
         reward_hook=None,
@@ -317,6 +426,12 @@ class Supervisor:
                 step_timeout=(
                     step_timeout if step_timeout is not None else self._step_timeout
                 ),
+                policy_timeout=(
+                    policy_timeout
+                    if policy_timeout is not None
+                    else self._policy_timeout
+                ),
+                policy_executor=self._executor_for(policy_fn),
                 learn_hook=learn_hook,
                 reward_hook=reward_hook,
             )
@@ -329,6 +444,7 @@ class Supervisor:
                 policy_factory,
                 learn_hook,
                 reward_hook,
+                policy_timeout,
             )
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
             return True
@@ -425,6 +541,7 @@ class Supervisor:
             policy_factory,
             learn_hook,
             reward_hook,
+            policy_timeout,
         ) = spec
         if policy_factory is not None:
             try:
@@ -437,6 +554,7 @@ class Supervisor:
             policy_fn,
             max_steps=max_steps,
             step_timeout=step_timeout,
+            policy_timeout=policy_timeout,
             policy_factory=policy_factory,
             learn_hook=learn_hook,
             reward_hook=reward_hook,
