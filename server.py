@@ -13472,6 +13472,188 @@ def _train_stop():
     return 200, {"ok": True, "message": "training stopped", "status": _train_payload()}
 
 
+# Dashboard plugin controls (#177). Same shape as the training launch above:
+# the server describes and starts, and the work runs as a child process, so a
+# drop-in that crashes on import or wedges its policy cannot take the
+# dashboard down with it.
+_AGENT_BODY_MAX = 8 * 1024
+_AGENT_MAX_AGENTS = 200
+_AGENT_MAX_DURATION = 86400.0
+_agent_lock = threading.RLock()
+_agent_proc = None
+_agent_meta = {}
+
+
+def _agent_alive(proc):
+    return proc is not None and proc.poll() is None
+
+
+def _agent_slot(name, config):
+    """`name:key=value,...`, the form ml.plugins.parse_slot reads.
+
+    Booleans go over as true/false because that is what parse_slot's coerce
+    recognises; anything else is its plain string form.
+    """
+    parts = []
+    for key, value in config.items():
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        parts.append(f"{key}={value}")
+    return f"{name}:{','.join(parts)}" if parts else name
+
+
+def _agent_payload():
+    """What the dashboard polls: the child this server started, and its state."""
+    with _agent_lock:
+        proc = _agent_proc
+        if proc is not None and not _agent_alive(proc):
+            if _agent_meta.get("returncode") is None:
+                _agent_meta["returncode"] = proc.returncode
+        meta = dict(_agent_meta)
+    started = meta.get("started_at")
+    meta["elapsed_s"] = round(time.time() - started, 1) if started else 0.0
+    meta["running"] = _agent_alive(_agent_proc)
+    return meta
+
+
+def _inventory(root):
+    """Admitted plugins, refused ones with reasons, and the folder scanned."""
+    ml_root = os.path.join(root, "ml")
+    if ml_root not in sys.path:
+        sys.path.insert(0, ml_root)
+    import plugin_inventory
+
+    return plugin_inventory.inventory()
+
+
+def _plugins_payload(peer):
+    """Reply to /api/plugins. Read-only, so it stays LAN-visible."""
+    payload = {"editable": bool(_loopback_peer(peer))}
+    try:
+        payload.update(_inventory(dirname(abspath(__file__))))
+    except Exception:  # noqa: BLE001 - a broken drop-in must not blank the page
+        payload["error"] = "plugin inventory unavailable"
+    return payload
+
+
+def _agents_start(body):
+    """Launch a conductor child for one plugin slot. (status, payload)."""
+    name = body.get("plugin")
+    if not isinstance(name, str) or not name.strip():
+        return 400, {"ok": False, "error": "plugin is required"}
+    try:
+        agents = int(body.get("agents", 5))
+        duration = float(body.get("duration", 300))
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "agents and duration must be numbers"}
+    if not 1 <= agents <= _AGENT_MAX_AGENTS:
+        return 400, {
+            "ok": False,
+            "error": f"agents must be between 1 and {_AGENT_MAX_AGENTS}",
+        }
+    if not 0 <= duration <= _AGENT_MAX_DURATION:
+        return 400, {
+            "ok": False,
+            "error": f"duration must be between 0 and {_AGENT_MAX_DURATION:g} seconds",
+        }
+    config = body.get("config") or {}
+    if not isinstance(config, dict):
+        return 400, {"ok": False, "error": "config must be a JSON object"}
+    root = dirname(abspath(__file__))
+    try:
+        admitted = {row["name"] for row in _inventory(root)["plugins"]}
+    except Exception:  # noqa: BLE001 - same reason as the read route
+        return 500, {"ok": False, "error": "plugin inventory unavailable"}
+    if name not in admitted:
+        return 400, {"ok": False, "error": f"plugin {name!r} is not admitted"}
+    script = os.path.join(root, "ml", "conductor", "soak.py")
+    if not os.path.exists(script):
+        return 500, {"ok": False, "error": "conductor script not found"}
+    argv = [
+        sys.executable,
+        script,
+        "--url",
+        _train_ws_url(),
+        "--agents",
+        str(agents),
+        "--duration",
+        str(duration),
+        "--base-dir",
+        os.path.join("soak_run", "dashboard"),
+        "--slot",
+        _agent_slot(name, config),
+    ]
+    global _agent_proc, _agent_meta
+    with _agent_lock:
+        if _agent_alive(_agent_proc):
+            return 409, {
+                "ok": False,
+                "error": "an agent run is already going",
+                "status": _agent_payload(),
+            }
+        kwargs = {
+            "cwd": root,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        try:
+            proc = subprocess.Popen(argv, **kwargs)
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"could not start conductor ({exc})"}
+        _agent_proc = proc
+        _agent_meta = {
+            "plugin": name,
+            "agents": agents,
+            "duration_s": duration,
+            "pid": proc.pid,
+            "label": f"{name} x{agents} for {duration:g}s",
+            "started_at": time.time(),
+            "returncode": None,
+        }
+    return 200, {
+        "ok": True,
+        "message": "agents started",
+        "status": _agent_payload(),
+    }
+
+
+def _agents_stop():
+    """Signal the conductor this server started. (status, payload)."""
+    with _agent_lock:
+        proc = _agent_proc
+        if not _agent_alive(proc):
+            return 409, {
+                "ok": False,
+                "error": "no agent run to stop",
+                "status": _agent_payload(),
+            }
+        try:
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                proc.terminate()
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"could not signal conductor ({exc})"}
+    # Outside the lock for the same reason as the trainer: the dashboard polls
+    # /api/agents/status from other handler threads while this waits.
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return 500, {"ok": False, "error": "conductor would not stop"}
+    with _agent_lock:
+        _agent_meta["returncode"] = proc.returncode
+    return 200, {"ok": True, "message": "agents stopped", "status": _agent_payload()}
+
+
 def start_dashboard():
     import threading
 
@@ -13609,6 +13791,12 @@ def start_dashboard():
                 self._send_json(_trainers_payload(self.client_address[0]))
             elif path == "/api/train/status":
                 self._send_json(_train_payload())
+            elif path == "/api/agents/status":
+                self._send_json(_agent_payload())
+            elif path == "/api/plugins":
+                # Plugins tab (#177): what admission admitted, what it refused
+                # and why, plus each plugin's config schema.
+                self._send_json(_plugins_payload(self.client_address[0]))
             elif path == "/api/activity/stream":
                 self._serve_activity_stream()
             else:
@@ -13619,21 +13807,32 @@ def start_dashboard():
             # routes in the repo: every other mutating path goes over the GM
             # WebSocket.
             path = self.path.split("?")[0]
-            if path not in ("/api/config", "/api/train/start", "/api/train/stop"):
+            if path not in (
+                "/api/config",
+                "/api/train/start",
+                "/api/train/stop",
+                "/api/agents/start",
+                "/api/agents/stop",
+            ):
                 self.send_error(404)
                 return
-            launching = path != "/api/config"
+            launching = path.startswith("/api/train")
+            agents = path.startswith("/api/agents")
             # Keep the #63 /api/config error strings byte-for-byte: external
-            # clients match on them. Training gets its own wording.
+            # clients match on them. Each launcher gets its own wording.
             peer = self.client_address[0] if self.client_address else ""
             if not _loopback_peer(peer):
                 self._send_json(
                     {
                         "ok": False,
                         "error": (
-                            "training launches are loopback-only"
-                            if launching
-                            else "config writes are loopback-only"
+                            "agent launches are loopback-only"
+                            if agents
+                            else (
+                                "training launches are loopback-only"
+                                if launching
+                                else "config writes are loopback-only"
+                            )
                         ),
                     },
                     403,
@@ -13645,9 +13844,13 @@ def start_dashboard():
                     {
                         "ok": False,
                         "error": (
-                            "cross-origin write refused"
-                            if launching
-                            else "cross-origin config write refused"
+                            "cross-origin agent launch refused"
+                            if agents
+                            else (
+                                "cross-origin write refused"
+                                if launching
+                                else "cross-origin config write refused"
+                            )
                         ),
                     },
                     403,
@@ -13666,7 +13869,9 @@ def start_dashboard():
                 )
                 return
             raw, error = self._read_body(
-                _TRAIN_BODY_MAX if launching else _CONFIG_BODY_MAX
+                _AGENT_BODY_MAX
+                if agents
+                else _TRAIN_BODY_MAX if launching else _CONFIG_BODY_MAX
             )
             if raw is None:
                 self._send_json({"ok": False, "error": error}, 400)
@@ -13678,6 +13883,19 @@ def start_dashboard():
                 return
             if path == "/api/train/stop":
                 status, result = _train_stop()
+                self._send_json(result, status)
+                return
+            if path == "/api/agents/stop":
+                status, result = _agents_stop()
+                self._send_json(result, status)
+                return
+            if agents:
+                if not isinstance(body, dict):
+                    self._send_json(
+                        {"ok": False, "error": "body must be a JSON object"}, 400
+                    )
+                    return
+                status, result = _agents_start(body)
                 self._send_json(result, status)
                 return
             if launching:

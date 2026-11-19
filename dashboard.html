@@ -232,6 +232,7 @@
   <div class="tab" data-tab="dungeon">Dungeons</div>
   <div class="tab" data-tab="arena">Arena</div>
   <div class="tab" data-tab="agents">Agents</div>
+  <div class="tab" data-tab="plugins">Plugins</div>
   <div class="tab" data-tab="quests">Quests</div>
   <div class="tab" data-tab="crafting">Crafting</div>
   <div class="tab" data-tab="guilds">Guilds</div>
@@ -455,6 +456,31 @@
       <button id="trainStart" type="button">Start training</button>
       <button id="trainStop" type="button">Stop training</button>
       <span id="trainStatus" class="dim"></span>
+    </div>
+  </div>
+</div>
+
+<div id="view-plugins" class="tabview">
+  <div class="panel">
+    <h2>Drop-in plugins <span class="legend" id="pluginDir">-</span></h2>
+    <p class="empty" id="pluginAbout">-</p>
+    <div class="tscroll cap"><table>
+      <thead><tr><th>plugin</th><th>source</th><th>agent type</th>
+              <th>config fields</th><th></th></tr></thead>
+      <tbody id="pluginList"></tbody>
+    </table></div>
+    <h3>Refused files</h3>
+    <div id="pluginRejected"></div>
+  </div>
+  <div class="panel">
+    <h2>Run a plugin <span class="legend" id="agentState">-</span></h2>
+    <p class="empty" id="pluginHelp">Select a plugin to configure a run.</p>
+    <div class="cfgform" id="pluginForm"></div>
+    <p id="pluginMsg" class="cfgmsg"></p>
+    <div class="cfgrow-actions">
+      <button id="agentStart" type="button">Start agents</button>
+      <button id="agentStop" type="button">Stop agents</button>
+      <span id="agentStatus" class="dim"></span>
     </div>
   </div>
 </div>
@@ -3012,6 +3038,221 @@ document.addEventListener("click", e => {
 $("trainStart")?.addEventListener("click", startTraining);
 $("trainStop")?.addEventListener("click", stopTraining);
 
+// ---- Drop-in plugins (#177) ----------------------------------------------
+// One admission path for both halves: /api/plugins lists what load_plugins
+// admitted, and /api/agents/start refuses any name that is not on that list.
+// Only field values cross the wire; the server builds the conductor argv.
+let pluginData = null, agentStatusData = null, pluginBusy = false, agentRunning = false;
+let pluginGen = 0, pluginPoll = 0, pluginSelected = "";
+
+function pluginMsg(text, cls) {
+  const el = $("pluginMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "cfgmsg" + (cls ? " " + cls : "");
+}
+
+function pluginFieldRow(key, spec, editable) {
+  const id = "plugin-field-" + key;
+  const type = spec.type || "str";
+  const help = spec.help || "";
+  const attrs = `id="${id}" data-pluginkey="${esc(key)}"` +
+    (editable ? "" : " disabled");
+  let input;
+  if (type === "bool") {
+    input = `<input type="checkbox" ${attrs}` +
+      (spec.default === true ? " checked" : "") + ` title="${esc(help)}">`;
+  } else if (type === "int" || type === "float") {
+    input = `<input type="number" step="${type === "int" ? 1 : "any"}" ${attrs}` +
+      ` value="${esc(spec.default)}" title="${esc(help)}">`;
+  } else {
+    input = `<input type="text" ${attrs} value="${esc(spec.default ?? "")}"` +
+      ` title="${esc(help)}">`;
+  }
+  return `<div class="cfgrow" data-field="${esc(key)}">` +
+    `<label for="${id}" title="${esc(help)}">${esc(key)}</label>` +
+    input + `<span class="cfgvals">${esc(type)}</span></div>`;
+}
+
+function pluginRunRow(key, value, help, editable) {
+  const id = "plugin-run-" + key;
+  return `<div class="cfgrow" data-field="${esc(key)}">` +
+    `<label for="${id}" title="${esc(help)}">${esc(key)}</label>` +
+    `<input type="number" min="${key === "agents" ? 1 : 0}" step="1" id="${id}"` +
+    ` data-runkey="${esc(key)}" value="${esc(value)}" title="${esc(help)}"` +
+    (editable ? "" : " disabled") + `>` +
+    `<span class="cfgvals">${key === "agents" ? "count" : "seconds"}</span></div>`;
+}
+
+function renderAgentStatus() {
+  const s = agentStatusData || {};
+  agentRunning = !!s.running;
+  const editable = !!(pluginData && pluginData.editable);
+  $("agentStart").disabled = !editable || pluginBusy || agentRunning || !pluginSelected;
+  $("agentStop").disabled = !editable || pluginBusy || !agentRunning;
+  const state = $("agentState");
+  if (agentRunning) {
+    state.textContent = "running";
+    state.style.color = "var(--good)";
+    $("agentStatus").textContent = `pid ${s.pid} - ${s.label || ""} - ` +
+      `${s.elapsed_s == null ? "?" : Math.floor(s.elapsed_s / 60) + "m"}`;
+  } else if (typeof s.returncode === "number") {
+    state.textContent = s.returncode === 0 ? "stopped" : "exited " + s.returncode;
+    state.style.color = s.returncode === 0 ? "" : "var(--bad)";
+    $("agentStatus").textContent = s.label || "";
+  } else {
+    state.textContent = "idle";
+    state.style.color = "";
+    $("agentStatus").textContent = "no run yet";
+  }
+}
+
+function renderPluginForm() {
+  if (!pluginData) return;
+  const editable = !!pluginData.editable;
+  setHTML("pluginDir", pluginData.plugin_dir || "");
+  setHTML("pluginAbout", pluginData.error ? pluginData.error
+    : pluginData.plugin_dir_present
+      ? `Scanning ${pluginData.plugin_dir}. Only admitted files can be selected.`
+      : `No plugins folder at ${pluginData.plugin_dir} - built-ins only.`);
+  setHTML("pluginList", (pluginData.plugins || []).map(p => {
+    const count = Object.keys(pluginSchema(p)).length;
+    return `<tr><td>${esc(p.name)}</td><td>${esc(p.source)}</td>` +
+      `<td>${esc(p.agent_type)}</td><td>${count}</td><td>` +
+      `<button type="button" class="gm-preset" data-plugin-select="${esc(p.name)}"` +
+      (editable ? "" : " disabled") + `>` +
+      (p.name === pluginSelected ? "selected" : "select") + `</button></td></tr>`;
+  }).join(""));
+  setHTML("pluginRejected", (pluginData.rejected || []).map(r =>
+    `<div class="row"><b>${esc(r.name)}</b> - ${esc(r.reason)}</div>`).join("") ||
+    `<p class="empty">None.</p>`);
+  const chosen = (pluginData.plugins || []).find(p => p.name === pluginSelected);
+  setHTML("pluginHelp", chosen
+    ? `${chosen.name}: ${chosen.agent_type} agent from ${chosen.source}.`
+    : `Select a plugin to configure a run.`);
+  setHTML("pluginForm",
+    pluginRunRow("agents", 5, "concurrent agents", editable) +
+    pluginRunRow("duration", 300, "run length in seconds", editable) +
+    (chosen ? Object.keys(pluginSchema(chosen)).map(key =>
+      pluginFieldRow(key, pluginSchema(chosen)[key], editable)).join("") : ""));
+  renderAgentStatus();
+}
+function pluginSchema(p) {
+  return p && p.config_schema ? p.config_schema : {};
+}
+
+async function loadPlugins() {
+  const gen = ++pluginGen;
+  try {
+    const res = await fetch("/api/plugins");
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (gen !== pluginGen) return;
+    pluginData = data;
+    const names = (data.plugins || []).map(p => p.name);
+    if (!names.includes(pluginSelected)) pluginSelected = names[0] || "";
+    renderPluginForm();
+  } catch (e) {
+    if (gen !== pluginGen) return;
+    pluginMsg(`could not load plugins: ${String(e.message || e)}`, "bad");
+  }
+}
+
+function pluginConfig() {
+  const out = {};
+  document.querySelectorAll("#pluginForm [data-pluginkey]").forEach(el => {
+    out[el.dataset.pluginkey] = el.type === "checkbox" ? el.checked
+      : el.type === "number" ? Number(el.value) : el.value;
+  });
+  return out;
+}
+
+async function pollAgentsOnce() {
+  try {
+    const res = await fetch("/api/agents/status");
+    if (res.ok) agentStatusData = await res.json();
+  } catch { /* keep the last readout; the next poll retries */ }
+  renderAgentStatus();
+}
+
+async function startAgents() {
+  if (pluginBusy || agentRunning || !pluginSelected) return;
+  const runValue = key => document.querySelector(
+    '#pluginForm [data-runkey="' + key + '"]'
+  ).value;
+  const agents = Number(runValue("agents"));
+  const duration = Number(runValue("duration"));
+  if (!Number.isInteger(agents) || agents < 1) {
+    pluginMsg("agents must be a positive whole number", "bad");
+    return;
+  }
+  if (!Number.isFinite(duration) || duration < 0) {
+    pluginMsg("duration must be zero or more", "bad");
+    return;
+  }
+  pluginBusy = true;
+  renderAgentStatus();
+  pluginMsg("starting...");
+  try {
+    const res = await fetch("/api/agents/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        plugin: pluginSelected, agents, duration, config: pluginConfig(),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) pluginMsg(data.error || `start failed (${res.status})`, "bad");
+    else pluginMsg("");
+  } catch (e) {
+    pluginMsg(`start failed: ${String(e.message || e)}`, "bad");
+  } finally {
+    pluginBusy = false;
+    await pollAgentsOnce();
+  }
+}
+
+async function stopAgents() {
+  if (pluginBusy || !agentRunning) return;
+  pluginBusy = true;
+  renderAgentStatus();
+  try {
+    const res = await fetch("/api/agents/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) pluginMsg(data.error || `stop failed (${res.status})`, "bad");
+  } catch (e) {
+    pluginMsg(`stop failed: ${String(e.message || e)}`, "bad");
+  } finally {
+    pluginBusy = false;
+    await pollAgentsOnce();
+  }
+}
+
+function schedulePluginPoll() {
+  if (pluginPoll) { clearTimeout(pluginPoll); pluginPoll = 0; }
+  if (activeTab !== "plugins") return;
+  pollAgentsOnce();
+  pluginPoll = setTimeout(schedulePluginPoll, agentRunning ? 2000 : 5000);
+}
+
+document.addEventListener("click", e => {
+  const pick = e.target.closest("[data-plugin-select]");
+  if (pick && !pick.disabled) {
+    pluginSelected = pick.dataset.pluginSelect;
+    pluginMsg("");
+    renderPluginForm();
+  }
+});
+document.addEventListener("input", e => {
+  if (e.target && e.target.dataset && e.target.dataset.pluginkey) pluginMsg("");
+});
+$("agentStart")?.addEventListener("click", startAgents);
+$("agentStop")?.addEventListener("click", stopAgents);
+
 // ---- Tab switching -------------------------------------------------------
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
@@ -3032,6 +3273,12 @@ for (const tab of document.querySelectorAll(".tab")) {
       // the fetch only while it is on screen (same pattern as runs/config).
       if (!trainData) loadTrainers();
       scheduleTrainPoll();
+    }
+    if (activeTab === "plugins") {
+      // Same as training: inventory comes from its own read route, and the
+      // run status is polled only while this tab is on screen.
+      if (!pluginData) loadPlugins();
+      schedulePluginPoll();
     }
     if (lastState) renderAll(lastState);
     // The new tab's panels have real widths now: refit any chart that was
