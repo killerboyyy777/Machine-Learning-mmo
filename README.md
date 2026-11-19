@@ -57,9 +57,22 @@ docker run --detach --publish 8765:8765 --publish 8766:8766 \
 # open http://localhost:8766/ (game on ws://localhost:8765)
 ```
 
-`edge` is the newest build of this branch; `latest`, `0.11` and `0.11.0` are
-cut from release tags. Both are `linux/amd64` and `linux/arm64`. The GM port
-`8767` stays unpublished, as above.
+The publishing workflow builds images for `linux/amd64` and
+`linux/arm64` and pushes these tags to GHCR:
+
+- `edge` follows pushes to `master`; it is a moving tag for the newest
+  development build.
+- `edge-<short-sha>` identifies the specific master commit used for a build,
+  so use it when you want to pin an edge image instead of following the
+  moving tag.
+- `X.Y.Z` and `X.Y` are generated from version tags (for example, a
+  `vX.Y.Z` Git tag).
+- `latest` moves only for stable `v*` release tags; prerelease tags do not
+  move it.
+
+Use `edge` for the current development image, or replace the tag with a
+version or commit tag to pin a build. The GM port `8767` stays unpublished,
+as above.
 
 ## Quickstart
 
