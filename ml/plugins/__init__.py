@@ -36,6 +36,7 @@ by :func:`discover`::
 import importlib
 import os
 import pkgutil
+import string
 import sys
 
 REGISTRY = {}  # plugin name -> AgentPlugin subclass
@@ -184,6 +185,11 @@ def discover(plugin_dir=None):
 # names the accepted set instead of accepting any string (#176).
 KNOWN_AGENT_TYPES = ("linear", "scripted", "torch", "custom")
 
+# Explicit ASCII: str.islower()/str.isdigit() accept 'e-acute' and Arabic-Indic
+# digits, which would put a name in the registry that no shell or log can spell
+# back (#176 review).
+_NAME_CHARS = frozenset(string.ascii_lowercase + string.digits + "-_")
+
 
 def _name_problem(plugin_cls):
     name = getattr(plugin_cls, "name", "")
@@ -191,8 +197,8 @@ def _name_problem(plugin_cls):
         return "has no name"
     if name == "base":
         return "uses the reserved name 'base'"
-    if not all(c.islower() or c.isdigit() or c in "-_" for c in name):
-        return f"name {name!r} must be lowercase letters, digits, '-' or '_'"
+    if not all(c in _NAME_CHARS for c in name):
+        return f"name {name!r} must be ASCII lowercase letters, digits, '-' or '_'"
     return None
 
 
@@ -219,6 +225,14 @@ def manifest_problems(plugin_cls):
             for key, spec in schema.items():
                 if not isinstance(spec, dict) or "type" not in spec:
                     problems.append(f"config_schema() entry {key!r} needs a 'type'")
+                elif not callable(spec["type"]):
+                    # __init__ coerces with isinstance(), which raises TypeError
+                    # for a string type -- only on the first config that sets the
+                    # value, so an omitted default hides it until an agent starts.
+                    problems.append(
+                        f"config_schema() entry {key!r} needs a callable 'type' "
+                        f"(got {spec['type']!r})"
+                    )
     if not problems:
         try:
             plugin_cls()
