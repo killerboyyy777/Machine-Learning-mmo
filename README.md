@@ -57,9 +57,22 @@ docker run --detach --publish 8765:8765 --publish 8766:8766 \
 # open http://localhost:8766/ (game on ws://localhost:8765)
 ```
 
-`edge` is the newest build of this branch; `latest`, `0.11` and `0.11.0` are
-cut from release tags. Both are `linux/amd64` and `linux/arm64`. The GM port
-`8767` stays unpublished, as above.
+The publishing workflow builds images for `linux/amd64` and
+`linux/arm64` and pushes these tags to GHCR:
+
+- `edge` follows pushes to `master`; it is a moving tag for the newest
+  development build.
+- `edge-<short-sha>` identifies the specific master commit used for a build,
+  so use it when you want to pin an edge image instead of following the
+  moving tag.
+- `X.Y.Z` and `X.Y` are generated from version tags (for example, a
+  `vX.Y.Z` Git tag).
+- `latest` moves only for stable `v*` release tags; prerelease tags do not
+  move it.
+
+Use `edge` for the current development image, or replace the tag with a
+version or commit tag to pin a build. The GM port `8767` stays unpublished,
+as above.
 
 ## Quickstart
 
@@ -76,6 +89,29 @@ echo '{}' > scores.json
 TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
+
+## Drop-in agents
+
+The conductor can load custom agents from Python files in the repository's
+top-level `plugins/` directory. Each file registers an `AgentPlugin`
+subclass with a unique ASCII name, an `agent_type` (`linear`, `scripted`,
+`torch` or `custom`), a typed `config_schema()`, and an `act()` policy.
+The admission check rejects invalid manifests and reports the reason without
+discarding other valid plugins. The full contract and a runnable example are
+in [plugins/README.md](plugins/README.md).
+
+Start a conductor with a plugin slot (the directory defaults to
+`<repo>/plugins`; override it with `--plugin-dir`):
+
+```bash
+python3 ml/conductor/soak.py --agents 4 --slot hello:speed=5
+```
+
+A plugin may also implement the optional episode, reward, learning and
+checkpoint hooks described in the plugin guide. Plugins currently execute
+inside the conductor process: admission validates a plugin before use, but it
+is not a security sandbox, and a blocking or failing policy can still affect
+the run.
 
 ## Companions
 
@@ -120,8 +156,8 @@ outside a match the target is still "not here".
 
 A match moves no value: a downed fighter loses no gold, no items and no gear,
 does not enter the death log, and does not count toward the civilian or wild
-death counters. Gathering, trading, crafting, quests, healing and item use are
-refused during a match.
+death counters. Gathering, trading, crafting, quests, healing, item use and
+equipment changes are refused during a match.
 
 The room view for an arena room carries an `arena` block
 (`match_id, team_size, state, round, rounds_to_win, scores, teams, hp`), and
@@ -183,6 +219,23 @@ The dashboard's Arena tab renders the live matches, the ladder and recent
 results, and its follow box polls the per-match endpoint every two seconds. The
 terminal UI mirrors it as a twelfth tab over the same snapshot block.
 
+### Scripted arena agents
+
+The conductor's opt-in `arena` scripted role queues eligible agents for 2v2
+matches and fights with the normal attack action. An agent queues only when it
+has at least 80% HP and is idle in a non-hostile, non-dungeon room. It stays
+queued while waiting, leaves if it loses that eligibility, and abandons a queue
+when the wait exceeds 120 agent selections. While fighting it attacks when
+possible and otherwise uses its normal idle fallback (`rest`/`look`). The role sends
+ordinary arena commands through the pending-command channel; it does not add
+environment actions or observation fields.
+
+Run four agents with the role using the conductor's repeatable slot option:
+
+```bash
+python3 ml/conductor/soak.py --agents 4 --slot arena
+```
+
 ## Balance measurement
 
 `ml/balance.py` runs a mixed-agent profile against a live server, samples
@@ -204,6 +257,13 @@ Every later run is compared to the stored v0.10.0 baseline:
 python3 ml/balance.py evaluate --measurements balance/measurements-smoke-700.json \
   --baseline balance/baseline-08f7453.json
 ```
+
+The gate profile also runs the arena probe: it queues four fresh fighters
+for two 2v2 matches and checks that both matches complete, rating deltas are
+conserved, gold and item totals stay unchanged, civilian/wild death counters
+do not move, and repeating the same probe produces the same fingerprint. An
+unavailable arena command or failed probe is a blocking coverage failure, not
+a passing skip.
 
 Thresholds live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges a
 JSON override without editing code. Scenarios that depend on unlanded work
