@@ -11,6 +11,11 @@
 - ASCII-only, no emoji. Keep diffs tight, no drive-by refactors.
 - Branches: agent/<issue>-<slug> (or fix/, test/ prefix by kind).
   Never commit to master. Open PRs, never merge.
+- Stacked PRs: never merge a base branch with `gh pr merge --delete-branch`.
+  The delete closes the child PR and GitHub then refuses both `gh pr reopen`
+  and a base change on a closed PR. Retarget the child to master first. To
+  recover: recreate the ref at the merge SHA
+  (`git push origin <sha>:refs/heads/<branch>`), reopen, retarget.
 - Prove before pushing: named suites + exit codes in the report.
 - Lint: black + ruff clean on CHANGED files (legacy exempt).
 - Never touch .github/workflows/ unasked. Market buy orders and standing
