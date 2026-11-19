@@ -202,9 +202,104 @@ def test_supervisor_carries_the_budget_and_its_specs():
     print("POLICY_BUDGET_SUPERVISOR_OK")
 
 
+def test_shared_policy_is_called_one_at_a_time():
+    """Agents in a slot share one plugin instance, so its calls serialise."""
+
+    async def main():
+        overlap = {"active": 0, "peak": 0}
+
+        def shared(obs, agent_id):
+            overlap["active"] += 1
+            overlap["peak"] = max(overlap["peak"], overlap["active"])
+            time.sleep(0.02)
+            overlap["active"] -= 1
+            return 0
+
+        registry = FakeRegistry()
+        sup = Supervisor(registry, policy_timeout=5.0)
+        for name in ("share-a", "share-b"):
+            assert await sup.start_agent(name, lambda aid: FakeEnv(), shared)
+        # Both agents resolved to the worker that belongs to the closure.
+        assert sup._policy_executors[shared] is not None
+        await asyncio.sleep(0.6)
+        for name in ("share-a", "share-b"):
+            await sup.stop_agent(name)
+        return overlap, registry
+
+    overlap, registry = asyncio.run(main())
+    assert overlap["peak"] == 1, overlap
+    assert {aid for aid, _ in registry.episodes} == {
+        "share-a",
+        "share-b",
+    }, registry.episodes
+    print("POLICY_BUDGET_SHARED_POLICY_OK")
+
+
+def test_wedged_plugins_do_not_starve_healthy_ones():
+    """More wedged calls than the loop's default pool holds leave a healthy
+    agent untouched: each plugin closure owns its worker."""
+    import threading
+
+    release = threading.Event()
+
+    def make_wedged():
+        def plug(obs, agent_id):
+            release.wait(10.0)
+            return 0
+
+        return plug
+
+    async def main():
+        registry = FakeRegistry()
+        sup = Supervisor(registry, max_concurrent=80, policy_timeout=0.2)
+        for i in range(40):
+            assert await sup.start_agent(
+                f"wedge-{i}", lambda aid: FakeEnv(), make_wedged()
+            )
+        assert await sup.start_agent(
+            "healthy", lambda aid: FakeEnv(), lambda obs, aid: 0
+        )
+        try:
+            await asyncio.sleep(0.8)
+            return [e for e in registry.episodes if e[0] == "healthy"]
+        finally:
+            release.set()
+            for name in list(sup._tasks):
+                await sup.stop_agent(name)
+
+    episodes = asyncio.run(main())
+    # 40 blocked workers are more than the default executor's capacity, so a
+    # shared pool would have queued this agent behind them and reaped it.
+    assert len(episodes) >= 2, episodes
+    print("POLICY_BUDGET_STARVATION_OK")
+
+
+def test_policy_raising_timeout_is_not_a_budget_expiry():
+    """A plugin may raise TimeoutError itself; that is a crash, not a budget."""
+
+    def trap(obs, agent_id):
+        raise TimeoutError("the plugin did not like that")
+
+    async def main():
+        task = AgentTask("trap", FakeEnv(), trap, policy_timeout=2.0)
+        try:
+            await _drain(task)
+        except TimeoutError as exc:
+            return str(exc), task
+        raise AssertionError("the plugin's TimeoutError was swallowed")
+
+    message, task = asyncio.run(main())
+    assert message == "the plugin did not like that", message
+    assert "policy timeout after" not in (task.last_error or ""), task.last_error
+    print("POLICY_BUDGET_PLUGIN_TIMEOUT_OK")
+
+
 test_inline_budget_is_unchanged()
 test_budget_ends_the_wait_and_keeps_the_loop_alive()
 test_raising_policy_still_reaches_the_supervisor()
 test_arity_dispatch_survives_the_thread_hop()
 test_supervisor_carries_the_budget_and_its_specs()
+test_shared_policy_is_called_one_at_a_time()
+test_wedged_plugins_do_not_starve_healthy_ones()
+test_policy_raising_timeout_is_not_a_budget_expiry()
 print("ALL_POLICY_BUDGET_OK")

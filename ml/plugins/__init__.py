@@ -36,6 +36,7 @@ by :func:`discover`::
 import importlib
 import os
 import pkgutil
+import string
 import subprocess
 import sys
 
@@ -190,32 +191,46 @@ IMPORT_PROBE_TIMEOUT_S = 10.0
 # Runs in a child interpreter: import one file and exit. Nothing from the
 # plugin's module survives into the conductor, which is the point -- a module
 # that loops at import time never gets the chance to loop here.
+#
+# It mirrors the real loader on both points the review caught: the plugin
+# directory goes on sys.path (a drop-in may import a sibling helper), and the
+# module is registered under its own name before it executes (dataclasses and
+# anything else that looks itself up in sys.modules needs it there).
 _PROBE_SOURCE = """
 import importlib.util
 import sys
 
-root, path = sys.argv[1], sys.argv[2]
+root, plugin_dir, path, name = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path.insert(0, root)
-spec = importlib.util.spec_from_file_location("plugin_probe", path)
+sys.path.insert(0, plugin_dir)
+spec = importlib.util.spec_from_file_location(name, path)
 module = importlib.util.module_from_spec(spec)
+sys.modules[name] = module
 spec.loader.exec_module(module)
 print("PROBE_OK")
 """
 
 
-def probe_import(path, timeout=None):
+def probe_import(path, timeout=None, plugin_dir=None):
     """Import one plugin file in a child process; None when it imports.
 
     Returns the reason string when it does not: a crash (an exception on
     import) or a hang (the timeout). The file is imported here only, so a
     plugin that is going to take the run down does it to the probe instead."""
     budget = IMPORT_PROBE_TIMEOUT_S if timeout is None else timeout
+    path = os.path.abspath(path)
+    if plugin_dir is None:
+        plugin_dir = os.path.dirname(path)
+    # Same module name the real loader uses, so a file that introspects itself
+    # is probed under the name it will actually have.
+    name = os.path.splitext(os.path.basename(path))[0]
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", _PROBE_SOURCE, _ROOT, os.path.abspath(path)],
+            [sys.executable, "-c", _PROBE_SOURCE, _ROOT, plugin_dir, path, name],
             capture_output=True,
             text=True,
             timeout=budget,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return f"did not import within {budget:g}s"
@@ -230,6 +245,11 @@ def probe_import(path, timeout=None):
 # names the accepted set instead of accepting any string (#176).
 KNOWN_AGENT_TYPES = ("linear", "scripted", "torch", "custom")
 
+# Explicit ASCII: str.islower()/str.isdigit() accept 'e-acute' and Arabic-Indic
+# digits, which would put a name in the registry that no shell or log can spell
+# back (#176 review).
+_NAME_CHARS = frozenset(string.ascii_lowercase + string.digits + "-_")
+
 
 def _name_problem(plugin_cls):
     name = getattr(plugin_cls, "name", "")
@@ -237,8 +257,8 @@ def _name_problem(plugin_cls):
         return "has no name"
     if name == "base":
         return "uses the reserved name 'base'"
-    if not all(c.islower() or c.isdigit() or c in "-_" for c in name):
-        return f"name {name!r} must be lowercase letters, digits, '-' or '_'"
+    if not all(c in _NAME_CHARS for c in name):
+        return f"name {name!r} must be ASCII lowercase letters, digits, '-' or '_'"
     return None
 
 
@@ -265,6 +285,14 @@ def manifest_problems(plugin_cls):
             for key, spec in schema.items():
                 if not isinstance(spec, dict) or "type" not in spec:
                     problems.append(f"config_schema() entry {key!r} needs a 'type'")
+                elif not callable(spec["type"]):
+                    # __init__ coerces with isinstance(), which raises TypeError
+                    # for a string type -- only on the first config that sets the
+                    # value, so an omitted default hides it until an agent starts.
+                    problems.append(
+                        f"config_schema() entry {key!r} needs a callable 'type' "
+                        f"(got {spec['type']!r})"
+                    )
     if not problems:
         try:
             plugin_cls()
@@ -303,7 +331,9 @@ def load_plugins(plugin_dir=None):
     if probe_dir:
         sys.path.insert(0, probe_dir)
         for mod in sorted(pkgutil.iter_modules([probe_dir]), key=lambda m: m.name):
-            why = probe_import(os.path.join(probe_dir, f"{mod.name}.py"))
+            why = probe_import(
+                os.path.join(probe_dir, f"{mod.name}.py"), plugin_dir=probe_dir
+            )
             if why:
                 rejected.append((mod.name, why))
                 continue

@@ -720,6 +720,135 @@ def _import_probe_68():
     print("PLUGIN_IMPORT_PROBE_OK")
 
 
+def _probe_paths_68():
+    """#176 review: the probe has to import the way the real loader does."""
+    from ml.plugins import load_plugins
+
+    helper = "VALUE = 7\n"
+    sibling = (
+        "from helper_68 import VALUE\n"
+        "\n"
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class ProbeSibling68(AgentPlugin):\n"
+        "    name = 'probsib68'\n"
+        "    agent_type = 'custom'\n"
+        "\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return VALUE - 7\n"
+    )
+    # dataclasses resolves annotations through sys.modules[cls.__module__], so
+    # postponed annotations make the lookup mandatory: a probe that executes
+    # the file without registering it first rejects a valid plugin.
+    dataclass_source = (
+        "from __future__ import annotations\n"
+        "\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class Knobs68:\n"
+        "    speed: int = 3\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class ProbeData68(AgentPlugin):\n"
+        "    name = 'probdc68'\n"
+        "    agent_type = 'custom'\n"
+        "\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return Knobs68().speed - 3\n"
+    )
+    modules = ("helper_68", "plugin_probe_sibling_68", "plugin_probe_dataclass_68")
+    with tempfile.TemporaryDirectory() as tmp:
+        for fname, text in (
+            ("helper_68.py", helper),
+            ("plugin_probe_sibling_68.py", sibling),
+            ("plugin_probe_dataclass_68.py", dataclass_source),
+        ):
+            with open(os.path.join(tmp, fname), "w", encoding="utf-8") as f:
+                f.write(text)
+        try:
+            admitted, rejected = load_plugins(tmp)
+            assert "probsib68" in admitted, (admitted, rejected)
+            assert "probdc68" in admitted, (admitted, rejected)
+            assert not rejected, rejected
+            # The sibling import left a usable policy, not just an admitted name.
+            assert get("probsib68")().act({}, "a") == 0
+        finally:
+            for name in ("probsib68", "probdc68"):
+                REGISTRY.pop(name, None)
+            for name in modules:
+                sys.modules.pop(name, None)
+    print("PLUGIN_PROBE_PATHS_OK")
+
+
 _admission_68()
 _import_probe_68()
+_probe_paths_68()
+
+
+def _manifest_edges_68():
+    """#176 review: the manifest refuses what would only fail after admission."""
+    from ml.plugins import AgentPlugin, load_plugins, manifest_problems
+
+    def make(name, schema=None, agent_type="custom"):
+        return type(
+            "ManifestEdge68",
+            (AgentPlugin,),
+            {
+                "name": name,
+                "agent_type": agent_type,
+                "config_schema": classmethod(lambda cls: dict(schema or {})),
+                "act": lambda self, obs, agent_id, mask=None: 0,
+            },
+        )
+
+    # str.islower()/isdigit() would have admitted both of these.
+    for odd in ("caf\u00e9bot", "bot\u0663"):
+        problems = manifest_problems(make(odd))
+        assert any("ASCII" in p for p in problems), (odd, problems)
+
+    # A string type only fails when a config first sets the value, so a None
+    # default hides it until an agent starts.
+    stringly = manifest_problems(
+        make("stringly68", {"speed": {"type": "int", "default": None}})
+    )
+    assert any("callable 'type'" in p for p in stringly), stringly
+    assert (
+        manifest_problems(make("typed68", {"speed": {"type": int, "default": None}}))
+        == []
+    ), manifest_problems(make("typed68", {"speed": {"type": int, "default": None}}))
+
+    source = (
+        "from ml.plugins import AgentPlugin, register\n"
+        "\n"
+        "@register\n"
+        "class Stringly68(AgentPlugin):\n"
+        "    name = 'stringly68'\n"
+        "    agent_type = 'custom'\n"
+        "    @classmethod\n"
+        "    def config_schema(cls):\n"
+        "        return {'speed': {'type': 'int', 'default': None}}\n"
+        "    def act(self, obs, agent_id, mask=None):\n"
+        "        return 0\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(
+            os.path.join(tmp, "plugin_stringly_68.py"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write(source)
+        admitted, rejected = load_plugins(tmp)
+        reasons = dict(rejected)
+        assert "stringly68" not in admitted, admitted
+        assert "callable 'type'" in reasons["stringly68"], reasons
+    REGISTRY.pop("stringly68", None)
+    print("PLUGIN_MANIFEST_EDGES_OK")
+
+
+_manifest_edges_68()
 print("ALL_PLUGINS_OK")
