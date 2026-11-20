@@ -158,8 +158,8 @@ HP_REGEN_DAMAGE_WINDOW = 15
 # misses on quiet seeds (0.426 on 701 against 0.614 and 1.027), so civ now
 # respawns faster than wild to buy margin where the floor is hardest to hit.
 # Applied when the kill schedules the respawn.
-CIV_NPC_RESPAWN_MULT = 0.6
-WILD_NPC_RESPAWN_MULT = 0.75
+CIV_NPC_RESPAWN_MULT = 0.5
+WILD_NPC_RESPAWN_MULT = 0.6
 # Recent-action ring used by variety scoring; unbounded history would let an
 # old playstyle keep counting after the player switched.
 ACTION_WINDOW = 20
