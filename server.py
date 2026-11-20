@@ -4606,7 +4606,11 @@ def _npc_respawn_at(npc, default_seconds=30):
         return None
     # The multiplier follows the spawn room, not where the mob stands now, so
     # a later leash into a civilian room cannot inflate the respawn timer.
-    room = ROOMS.get(npc.get("spawn_room") or npc.get("room"), {})
+    # Dungeon rooms are not in ROOMS; their guards and the Warden keep their
+    # configured timers (#700).
+    room = ROOMS.get(npc.get("spawn_room") or npc.get("room"))
+    if room is None:
+        return time.time() + secs
     if room.get("wild", False):
         secs = secs * WILD_NPC_RESPAWN_MULT
     else:
