@@ -158,8 +158,8 @@ HP_REGEN_DAMAGE_WINDOW = 15
 # misses on quiet seeds (0.426 on 701 against 0.614 and 1.027), so civ now
 # respawns faster than wild to buy margin where the floor is hardest to hit.
 # Applied when the kill schedules the respawn.
-CIV_NPC_RESPAWN_MULT = 0.6
-WILD_NPC_RESPAWN_MULT = 0.75
+CIV_NPC_RESPAWN_MULT = 0.5
+WILD_NPC_RESPAWN_MULT = 0.6
 # Recent-action ring used by variety scoring; unbounded history would let an
 # old playstyle keep counting after the player switched.
 ACTION_WINDOW = 20
@@ -4606,7 +4606,11 @@ def _npc_respawn_at(npc, default_seconds=30):
         return None
     # The multiplier follows the spawn room, not where the mob stands now, so
     # a later leash into a civilian room cannot inflate the respawn timer.
-    room = ROOMS.get(npc.get("spawn_room") or npc.get("room"), {})
+    # Dungeon rooms are not in ROOMS; their guards and the Warden keep their
+    # configured timers (#700).
+    room = ROOMS.get(npc.get("spawn_room") or npc.get("room"))
+    if room is None:
+        return time.time() + secs
     if room.get("wild", False):
         secs = secs * WILD_NPC_RESPAWN_MULT
     else:

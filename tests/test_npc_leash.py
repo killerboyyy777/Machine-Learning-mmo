@@ -391,6 +391,38 @@ finally:
 print("RESPAWN_USES_SPAWN_ROOM_OK")
 
 
+# --- dungeon guards keep their configured timers (#700) ---
+saved = _save()
+try:
+    dungeon_room = "d_1_f1"
+    assert dungeon_room not in srv.ROOMS, dungeon_room
+    warden = (
+        srv._npc_respawn_at(
+            {
+                "room": dungeon_room,
+                "spawn_room": dungeon_room,
+                "respawn_seconds": srv.WARDEN_RESPAWN_SECONDS,
+            }
+        )
+        - time.time()
+    )
+    assert abs(warden - srv.WARDEN_RESPAWN_SECONDS) < 1.5, warden
+    guard = (
+        srv._npc_respawn_at(
+            {
+                "room": dungeon_room,
+                "spawn_room": dungeon_room,
+                "respawn_seconds": 30,
+            }
+        )
+        - time.time()
+    )
+    assert abs(guard - 30.0) < 1.5, guard
+finally:
+    _restore(saved)
+print("RESPAWN_DUNGEON_TIMERS_OK")
+
+
 # --- every stalker can walk home from every shelter-free room it can reach ---
 saved = _save()
 try:
