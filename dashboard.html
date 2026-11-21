@@ -212,6 +212,25 @@
   .runlist { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--fs-xs); }
   .runlist .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
                  vertical-align: middle; margin-right: 4px; }
+  /* Phase 5 perf polish (#131). Containment keeps a hot table or chart from
+     invalidating the whole page on every state poll. Canvas panels clip their
+     own uPlot layers inside .trend, so paint containment is safe here. */
+  .panel { contain: layout style paint; }
+  /* Fixed layout stops a long cell widening the whole table; ellipsis keeps
+     the content readable without reflowing its neighbours. */
+  table[data-sort] { table-layout: fixed; }
+  table[data-sort] th, table[data-sort] td { overflow: hidden; text-overflow: ellipsis; }
+  /* Only text-only lists skip rendering while offscreen. Canvas panels are
+     deliberately excluded: uPlot measures clientWidth and would see zero. */
+  #questFeed { content-visibility: auto; contain-intrinsic-size: auto 160px; }
+  /* Fixed-height placeholder while the first state fetch is in flight. */
+  .skeleton { min-height: 120px; border-radius: var(--r-md);
+              background: linear-gradient(90deg, var(--panel2), var(--border), var(--panel2));
+              background-size: 200% 100%; animation: sk-shimmer 1.4s linear infinite; }
+  @keyframes sk-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  /* Dev metrics are opt-in via ?dev=1; hidden otherwise. */
+  .dev-only { display: none; }
+  body.dev-on .dev-only { display: inline-block; }
 </style>
 </head>
 <body>
@@ -222,7 +241,10 @@
   <span class="meta">uptime <b id="uptime">-</b></span>
   <span class="meta">players online <b id="online">-</b></span>
   <span class="meta">connections <b id="conns">-</b></span>
+  <span class="meta dev-only" title="Dev metrics (?dev=1)">fps <b id="devFps">n/a</b> render <b id="devRender">n/a</b> mem <b id="devMem">n/a</b></span>
 </header>
+
+<div id="skeleton" class="skeleton" hidden></div>
 
 <div class="tabs">
   <div class="tab active" data-tab="overview">Overview</div>
@@ -2817,9 +2839,64 @@ function renderAll(s) {
   }
 }
 
+// Dev-only performance instrumentation (#131). Gated by ?dev=1; every host
+// API is guarded because the inline-script smoke sandbox has no performance,
+// location, requestAnimationFrame or body.classList, and a dev overlay must
+// never emit an error on a normal (or sandboxed) page.
+function devMode() {
+  return typeof location !== "undefined" &&
+    /[?&]dev=1(?:&|$)/.test(location.search || "");
+}
+function devNow() {
+  if (typeof performance !== "undefined" && performance &&
+      typeof performance.now === "function") return performance.now();
+  return Date.now();
+}
+let _devFrames = 0;
+let _devWindowStart = 0;
+let _devRenderMs = 0;
+function devFrame() {
+  _devFrames += 1;
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(devFrame);
+}
+function setSkeleton(on) {
+  const el = $("skeleton");
+  if (el) el.hidden = !on;
+}
+function updateDevBadges() {
+  if (!devMode()) return;
+  const now = devNow();
+  if (!_devWindowStart) _devWindowStart = now;
+  const elapsed = now - _devWindowStart;
+  if (elapsed >= 1000) {
+    const fps = (_devFrames * 1000 / elapsed).toFixed(0);
+    _devFrames = 0;
+    _devWindowStart = now;
+    const fpsEl = $("devFps");
+    if (fpsEl) fpsEl.textContent = fps;
+  }
+  const rEl = $("devRender");
+  if (rEl) rEl.textContent = _devRenderMs ? _devRenderMs.toFixed(1) + "ms" : "n/a";
+  let mem = "n/a";
+  try {
+    if (typeof performance !== "undefined" && performance.memory &&
+        typeof performance.memory.usedJSHeapSize === "number") {
+      mem = (performance.memory.usedJSHeapSize / 1048576).toFixed(0) + "MB";
+    }
+  } catch (e) {}
+  const memEl = $("devMem");
+  if (memEl) memEl.textContent = mem;
+}
+if (devMode()) {
+  try { document.body.classList.add("dev-on"); } catch (e) {}
+  setInterval(updateDevBadges, 1000);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(devFrame);
+}
+
 let tickGen = 0;
 async function tick() {
   const gen = ++tickGen;
+  if (!lastState) setSkeleton(true);
   try {
     const res = await fetch("/api/state");
     if (!res.ok) throw new Error(res.status);
@@ -2836,10 +2913,14 @@ async function tick() {
     else $("uptime").textContent = sv.uptime == null ? "-" : sv.uptime + "s";
     $("online").textContent = sv.players_online ?? "-";
     $("conns").textContent = sv.connections ?? "-";
+    const _t0 = devMode() ? devNow() : 0;
     renderAll(s);
+    if (_t0) _devRenderMs = devNow() - _t0;
+    setSkeleton(false);
     if (!actSource) actStream();
   } catch (e) {
     if (gen !== tickGen) return;
+    setSkeleton(false);
     $("dot").classList.add("stale");
     $("status").textContent = "no server connection";
   }
