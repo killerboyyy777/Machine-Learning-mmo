@@ -105,6 +105,16 @@ def test_pfsp_weighted_win_rate():
     print("PFSP_WINRATE_OK")
 
 
+def test_pfsp_weighted_win_rate_uniform_fallback():
+    matcher = PFSPMatcher(OpponentBook(), prior=0.0, alpha=1.0)
+    matcher.record_outcome("e", "a", "win")
+    matcher.record_outcome("e", "b", "win")
+    assert matcher.weights("e", ["a", "b"]) == [0.0, 0.0]
+    assert matcher.weighted_win_rate("e", ["a", "b"]) == 1.0
+    assert matcher.weighted_win_rate("e", []) == 0.0
+    print("PFSP_WINRATE_UNIFORM_FALLBACK_OK")
+
+
 def test_ingest_arena_history():
     book = OpponentBook()
     rows = [
@@ -161,6 +171,7 @@ def main():
     test_book_survives_corrupt_file()
     test_pfsp_samples_toward_losses_with_a_floor()
     test_pfsp_weighted_win_rate()
+    test_pfsp_weighted_win_rate_uniform_fallback()
     test_ingest_arena_history()
     test_expected_score_matches_server_formula()
     test_paired_seed_summary()

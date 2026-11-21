@@ -184,7 +184,10 @@ class PFSPMatcher:
         weights = self.weights(entrant, candidates)
         total = sum(weights)
         if total <= 0:
-            return 0.0
+            if not candidates:
+                return 0.0
+            weights = [1.0] * len(candidates)
+            total = float(len(candidates))
         rate = 0.0
         for opponent, weight in zip(candidates, weights):
             stats = self.book.stats(entrant, opponent)
