@@ -176,6 +176,12 @@ def parse_args():
         help="run-record index directory (default <repo>/runs)",
     )
     p.add_argument(
+        "--transcript-dir",
+        default=None,
+        help="directory for per-agent action-level transcripts (#624); "
+        "off by default so a normal run (and the gate) writes nothing",
+    )
+    p.add_argument(
         "--no-run-record",
         dest="run_record",
         action="store_false",
@@ -351,6 +357,7 @@ async def main():
         url=args.url,
         resume=args.resume and args.reset != "all",
         reset=args.reset,
+        transcript_dir=args.transcript_dir,
     )
     if args.reset == "all":
         # Registry tree is wiped by reset_state; metrics live outside

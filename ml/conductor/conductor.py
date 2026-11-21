@@ -116,6 +116,7 @@ class Conductor:
         url="ws://localhost:8765",
         resume=True,
         reset="none",
+        transcript_dir=None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +146,7 @@ class Conductor:
             mixer=self.mixer,
             metrics=self.metrics,
             episode_hook=self.churn.report_episode,
+            transcript_dir=transcript_dir,
         )
         # Slots (#152): weighted round-robin over agent kinds. `runners`
         # is a list of slot specs (plugin or raw); legacy `runner` is one

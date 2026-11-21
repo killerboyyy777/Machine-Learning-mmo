@@ -7,11 +7,14 @@ without affecting other agents.
 
 import asyncio
 import inspect
+import os
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import websockets
+
+from ml.transcript import TranscriptWriter
 
 # Reconnect backoff for dropped server connections (#290, slice 6/6):
 # exponential per consecutive failure, capped, plus a deterministic
@@ -87,6 +90,7 @@ class AgentTask:
         policy_executor=None,
         learn_hook=None,
         reward_hook=None,
+        transcript_writer=None,
     ):
         self.agent_id = agent_id
         self.env = env
@@ -103,6 +107,10 @@ class AgentTask:
         # this is a carrier handed over in start_agent and attached to the
         # env right after construction. None disables.
         self.reward_hook = reward_hook
+        # Action-level transcript (#624). One JSON line per step, written
+        # as the step happens so a finding carries its trajectory. None
+        # disables; never raises (guarded per call) like learn_hook.
+        self.transcript_writer = transcript_writer
         # Watchdog (#50): max wall-clock seconds per env.step; a hung
         # step ends the episode instead of wedging the task forever.
         # None disables. Only guards the async env call.
@@ -197,7 +205,7 @@ class AgentTask:
                     continue
                 self.reconnects = 0
                 episode_reward = 0.0
-                for _ in range(self.max_steps):
+                for step in range(self.max_steps):
                     if self.done.is_set():
                         break
                     if self._policy_arity is None:
@@ -268,6 +276,21 @@ class AgentTask:
                             self.learn_hook(prev_obs, action, reward, obs, done)
                         except Exception:
                             pass
+                    if self.transcript_writer is not None:
+                        try:
+                            self.transcript_writer.record(
+                                agent_id=self.agent_id,
+                                episode=self.episodes + 1,
+                                step=step,
+                                prev_obs=prev_obs,
+                                action=action,
+                                reward=reward,
+                                obs=obs,
+                                done=done,
+                                info=info,
+                            )
+                        except Exception:
+                            pass
                     if done:
                         break
                 self.episodes += 1
@@ -319,6 +342,7 @@ class Supervisor:
         policy_timeout=None,
         metrics=None,
         episode_hook=None,
+        transcript_dir=None,
     ):
         self.registry = registry
         self.max_concurrent = max_concurrent
@@ -335,6 +359,9 @@ class Supervisor:
         # episode -- the conductor wires churn.report_episode here so
         # lifetimes count episodes, not wall-clock ticks.
         self._episode_hook = episode_hook
+        # Transcript directory (#624): when set, each agent gets one JSONL
+        # file of per-step observations/actions/rewards. None writes nothing.
+        self._transcript_dir = transcript_dir
         self._tasks = {}  # agent_id -> AgentTask
         # Policy closures are shared by every agent in a slot (one plugin
         # instance per slot), so the worker that serialises calls belongs to
@@ -516,6 +543,11 @@ class Supervisor:
                     env.reward_fn = reward_hook
             except Exception:
                 pass
+            writer = None
+            if self._transcript_dir is not None:
+                writer = TranscriptWriter(
+                    os.path.join(self._transcript_dir, f"{agent_id}.jsonl")
+                )
             at = AgentTask(
                 agent_id,
                 env,
@@ -532,6 +564,7 @@ class Supervisor:
                 policy_executor=self._executor_for(policy_fn),
                 learn_hook=learn_hook,
                 reward_hook=reward_hook,
+                transcript_writer=writer,
             )
             self._tasks[agent_id] = at
             self._specs[agent_id] = (
