@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -39,6 +40,19 @@ def test_writer_reader_round_trip():
         with open(path, encoding="utf-8") as fh:
             assert all(json.loads(line) for line in fh)
     print("TRANSCRIPT_ROUND_TRIP_OK")
+
+
+def test_writer_stamps_incarnation_and_carried_clock():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.jsonl")
+        base = time.time() - 10.0
+        writer = TranscriptWriter(path, incarnation=2, started=base)
+        writer.record(agent_id="a", episode=5, step=0)
+        row = read_transcript(path)[0]
+        assert row["incarnation"] == 2, row
+        assert row["episode"] == 5, row
+        assert row["elapsed_s"] >= 10.0, row
+    print("TRANSCRIPT_INCARNATION_OK")
 
 
 def test_writer_never_raises_and_reader_empty():
@@ -152,6 +166,52 @@ def test_supervisor_builds_writer_from_transcript_dir():
     print("TRANSCRIPT_SUPERVISOR_WIRING_OK")
 
 
+def test_restart_keeps_one_transcript_timeline():
+    async def run():
+        with tempfile.TemporaryDirectory() as tmp:
+
+            class Entry:
+                alive = True
+                goal = None
+                checkpoint_path = ""
+
+            reg = FakeRegistry()
+            reg.get = lambda aid: Entry()
+            sup = Supervisor(reg, transcript_dir=tmp)
+            env = FakeEnv()
+            ok = await sup.start_agent(
+                "r1", lambda aid: env, lambda obs, aid: 0, max_steps=10
+            )
+            assert ok is True
+            first = sup._tasks["r1"]
+            w1 = first.transcript_writer
+            await asyncio.sleep(0.05)
+            episodes_before = first.episodes
+            assert episodes_before >= 1, episodes_before
+            started_before = w1.started
+            path_before = w1.path
+
+            ok = await sup.restart_agent("r1")
+            assert ok is True
+            second = sup._tasks["r1"]
+            w2 = second.transcript_writer
+            # One file for the agent's whole life, with a stamped generation,
+            # a monotonic episode count and an unbroken clock.
+            assert w2.path == path_before
+            assert w2.incarnation == w1.incarnation + 1
+            assert second.episodes >= episodes_before
+            assert w2.started == started_before
+            # Let the restarted agent record at least one row under the new
+            # incarnation before the transcript is read back.
+            await asyncio.sleep(0.05)
+            rows = read_transcript(path_before)
+            assert any(row.get("incarnation") == w2.incarnation for row in rows), rows
+            await sup.stop_agent("r1")
+
+    asyncio.run(run())
+    print("TRANSCRIPT_RESTART_TIMELINE_OK")
+
+
 def test_transcript_is_off_by_default():
     async def run():
         sup = Supervisor(FakeRegistry())
@@ -169,8 +229,10 @@ def test_transcript_is_off_by_default():
 
 if __name__ == "__main__":
     test_writer_reader_round_trip()
+    test_writer_stamps_incarnation_and_carried_clock()
     test_writer_never_raises_and_reader_empty()
     test_agent_task_records_steps_without_changing_episode_event()
     test_supervisor_builds_writer_from_transcript_dir()
+    test_restart_keeps_one_transcript_timeline()
     test_transcript_is_off_by_default()
     print("ALL_TRANSCRIPT_OK")

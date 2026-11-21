@@ -91,6 +91,7 @@ class AgentTask:
         learn_hook=None,
         reward_hook=None,
         transcript_writer=None,
+        episode_offset=0,
     ):
         self.agent_id = agent_id
         self.env = env
@@ -130,7 +131,10 @@ class AgentTask:
         self.task = None
         self.total_reward = 0.0
         self.steps = 0
-        self.episodes = 0
+        # PBT restarts rebuild this task for the same agent. Carry the
+        # episode count so the shared transcript keeps a monotonic key
+        # instead of starting a second episode-1 sequence (#703 review).
+        self.episodes = episode_offset
         # Consecutive failed connects (reset on every success); drives
         # the reconnect backoff. Disconnects never kill the task.
         self.reconnects = 0
@@ -494,6 +498,9 @@ class Supervisor:
         policy_factory=None,
         learn_hook=None,
         reward_hook=None,
+        episode_offset=0,
+        transcript_incarnation=0,
+        transcript_started=None,
     ):
         """Start an isolated task for one agent.
 
@@ -546,7 +553,9 @@ class Supervisor:
             writer = None
             if self._transcript_dir is not None:
                 writer = TranscriptWriter(
-                    os.path.join(self._transcript_dir, f"{agent_id}.jsonl")
+                    os.path.join(self._transcript_dir, f"{agent_id}.jsonl"),
+                    incarnation=transcript_incarnation,
+                    started=transcript_started,
                 )
             at = AgentTask(
                 agent_id,
@@ -565,6 +574,7 @@ class Supervisor:
                 learn_hook=learn_hook,
                 reward_hook=reward_hook,
                 transcript_writer=writer,
+                episode_offset=episode_offset,
             )
             self._tasks[agent_id] = at
             self._specs[agent_id] = (
@@ -679,6 +689,16 @@ class Supervisor:
             return False
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
+        # A PBT restart reuses the agent's transcript file. Carry its episode
+        # count, incarnation and start clock so the next generation extends
+        # one timeline instead of overwriting the key space (#703 review).
+        episode_offset = 0
+        incarnation = 0
+        transcript_started = None
+        if at is not None and at.transcript_writer is not None:
+            episode_offset = at.episodes
+            incarnation = at.transcript_writer.incarnation + 1
+            transcript_started = at.transcript_writer.started
         await self._shutdown(at)
         (
             env_factory,
@@ -705,6 +725,9 @@ class Supervisor:
             policy_factory=policy_factory,
             learn_hook=learn_hook,
             reward_hook=reward_hook,
+            episode_offset=episode_offset,
+            transcript_incarnation=incarnation,
+            transcript_started=transcript_started,
         )
         if started and self._mixer is not None:
             try:

@@ -27,9 +27,14 @@ class TranscriptWriter:
     was otherwise healthy. The parent directory is created on first write.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, incarnation=0, started=None):
         self.path = os.path.abspath(path)
-        self.started = time.time()
+        # A PBT restart reuses the agent's file. The incarnation marks each
+        # generation and the carried start keeps elapsed_s monotonic, so a
+        # consumer can key on (incarnation, episode, step) and read one
+        # timeline instead of two overlapping ones (#703 review).
+        self.incarnation = incarnation
+        self.started = time.time() if started is None else started
 
     def record(self, **fields):
         try:
@@ -37,6 +42,7 @@ class TranscriptWriter:
             if parent:
                 os.makedirs(parent, exist_ok=True)
             row = dict(fields)
+            row["incarnation"] = self.incarnation
             row["elapsed_s"] = round(time.time() - self.started, 6)
             with open(self.path, "a", encoding="utf-8") as fh:
                 fh.write(_json_line(row))
