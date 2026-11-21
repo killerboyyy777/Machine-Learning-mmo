@@ -732,4 +732,44 @@ assert "p.ammo" in tracker.group(1) and "p.buffs" in tracker.group(1)
 assert "<th>ammo</th><th>buffs</th>" in html
 print("PLAYER_STATUS_RENDER_OK")
 
+# --- dashboard perf polish (#131): CSS containment, skeleton, dev metrics ---
+# The Worker/msgpack half of #131 is a documented no-op: the page fetches JSON
+# via res.json(), so there is no binary decode to move off the main thread.
+for tok in (
+    "contain: layout style paint",
+    "table-layout: fixed",
+    "text-overflow: ellipsis",
+    "content-visibility: auto",
+    "contain-intrinsic-size",
+    "@keyframes sk-shimmer",
+    "body.dev-on .dev-only",
+):
+    assert tok in html, f"perf CSS token {tok} missing"
+# Skeleton is fixed-height and shimmers only while the first fetch is in flight.
+assert 'id="skeleton"' in html and 'class="skeleton"' in html
+assert "setSkeleton(true)" in html and "setSkeleton(false)" in html
+# Dev badges live in the header, outside the pinned tab views, with new ids.
+for wid in ("devFps", "devRender", "devMem"):
+    assert f'id="{wid}"' in html, f"missing dev badge {wid}"
+    assert f'$("{wid}")' in html, f"dev badge {wid} never written"
+# Every host API the smoke DOM lacks must be guarded; no querySelector.
+for fn in ("devMode", "devNow", "devFrame", "setSkeleton", "updateDevBadges"):
+    assert f"function {fn}" in html, f"perf helper {fn} missing"
+assert "[?&]dev=1(?:&|$)" in html, "dev overlay not gated by ?dev=1"
+for tok in (
+    'typeof location !== "undefined"',
+    'typeof performance !== "undefined"',
+    'typeof requestAnimationFrame === "function"',
+    "performance.memory",
+):
+    assert tok in html, f"unguarded or missing host API: {tok}"
+# The new helpers use $() only; the rest of the page may use querySelector.
+_helper_block = html[html.index("function devMode") : html.index("let tickGen = 0;")]
+assert "querySelector" not in _helper_block
+assert "setInterval(updateDevBadges, 1000)" in html
+# The overlay is opt-in: a normal (?dev absent) page never declares dev-on.
+assert 'document.body.classList.add("dev-on")' in html
+assert "new Worker" not in html and "msgpack" not in html
+print("PERF_PANEL_OK")
+
 print("ALL_DASHBOARD_OK")
