@@ -125,14 +125,17 @@ def observed_mids(market_state, names=None, names_to_ids=None):
     the keys line up with the reference band.
     """
     names_to_ids = names_to_ids if names_to_ids is not None else {}
-    mids = {}
+    asks = {}
     for row in market_state.get("orders") or []:
         if not isinstance(row, dict):
             continue
         iid = names_to_ids.get(row.get("item"), row.get("item"))
         price = _finite(row.get("price"))
         if iid is not None and price is not None:
-            mids[iid] = price
+            # The server keeps append-ordered lists; the best ask is the
+            # LOWEST price, not the one listed last (#705 review).
+            if iid not in asks or price < asks[iid]:
+                asks[iid] = price
     bids = {}
     for row in market_state.get("bids") or []:
         if not isinstance(row, dict):
@@ -140,7 +143,10 @@ def observed_mids(market_state, names=None, names_to_ids=None):
         iid = names_to_ids.get(row.get("item"), row.get("item"))
         price = _finite(row.get("price"))
         if iid is not None and price is not None:
-            bids[iid] = price
+            # Best bid is the HIGHEST price, regardless of list order.
+            if iid not in bids or price > bids[iid]:
+                bids[iid] = price
+    mids = dict(asks)
     for iid, ask in mids.items():
         bid = bids.get(iid)
         if bid is not None:

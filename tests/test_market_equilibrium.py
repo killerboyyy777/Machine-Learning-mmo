@@ -74,6 +74,31 @@ def test_observed_mids_map_names_and_use_bid():
     print("OBSERVED_MIDS_OK")
 
 
+def test_observed_mids_pick_best_ask_and_bid():
+    # Orders arrive append-ordered, not price-sorted (#705 review): the last
+    # row must not win. Best ask is the minimum, best bid the maximum.
+    names_to_ids = {"Arrow": "arrow"}
+    state = {
+        "orders": [
+            {"item": "Arrow", "price": 9},
+            {"item": "Arrow", "price": 5},
+            {"item": "Arrow", "price": 7},
+        ],
+        "bids": [
+            {"item": "Arrow", "price": 3},
+            {"item": "Arrow", "price": 7},
+            {"item": "Arrow", "price": 4},
+        ],
+    }
+    mids = observed_mids(state, names_to_ids=names_to_ids)
+    assert mids["arrow"] == 6.0  # (best ask 5 + best bid 7) / 2
+    ask_only = {
+        "orders": [{"item": "Arrow", "price": 9}, {"item": "Arrow", "price": 5}]
+    }
+    assert observed_mids(ask_only, names_to_ids=names_to_ids)["arrow"] == 5.0
+    print("OBSERVED_BEST_PRICES_OK")
+
+
 def test_deviation_volatility_and_gini():
     assert mid_deviation_pct(3.0, 1.5) == 100.0
     assert mid_deviation_pct(2.0, None) is None
@@ -158,6 +183,7 @@ def main():
     test_vendor_bounds_and_recipe_costs()
     test_reference_band_raised_to_recipe_cost()
     test_observed_mids_map_names_and_use_bid()
+    test_observed_mids_pick_best_ask_and_bid()
     test_deviation_volatility_and_gini()
     test_write_equilibrium_from_measurement()
     test_write_equilibrium_explicit_out_path()
