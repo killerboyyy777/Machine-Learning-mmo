@@ -99,6 +99,20 @@ def test_observed_mids_pick_best_ask_and_bid():
     print("OBSERVED_BEST_PRICES_OK")
 
 
+def test_observed_mids_bid_only_uses_best_bid():
+    names_to_ids = {"Arrow": "arrow"}
+    state = {
+        "orders": [],
+        "bids": [
+            {"item": "Arrow", "price": 3},
+            {"item": "Arrow", "price": 7},
+            {"item": "Arrow", "price": 4},
+        ],
+    }
+    assert observed_mids(state, names_to_ids=names_to_ids) == {"arrow": 7.0}
+    print("OBSERVED_BID_ONLY_OK")
+
+
 def test_deviation_volatility_and_gini():
     assert mid_deviation_pct(3.0, 1.5) == 100.0
     assert mid_deviation_pct(2.0, None) is None
@@ -203,6 +217,7 @@ def main():
     test_reference_band_raised_to_recipe_cost()
     test_observed_mids_map_names_and_use_bid()
     test_observed_mids_pick_best_ask_and_bid()
+    test_observed_mids_bid_only_uses_best_bid()
     test_deviation_volatility_and_gini()
     test_write_equilibrium_from_measurement()
     test_write_equilibrium_explicit_out_path()

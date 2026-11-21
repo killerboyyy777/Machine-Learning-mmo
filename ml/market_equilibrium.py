@@ -120,9 +120,9 @@ def reference_prices(world):
 def observed_mids(market_state, names=None, names_to_ids=None):
     """Best available price per item id from one market snapshot.
 
-    With both an ask and a bid the mid is their mean; with only an ask the
-    ask itself is the best price signal. Display names are mapped to ids so
-    the keys line up with the reference band.
+    With both an ask and a bid the mid is their mean; with only one side,
+    that side's best price is the available signal. Display names are mapped
+    to ids so the keys line up with the reference band.
     """
     names_to_ids = names_to_ids if names_to_ids is not None else {}
     asks = {}
@@ -147,9 +147,11 @@ def observed_mids(market_state, names=None, names_to_ids=None):
             if iid not in bids or price > bids[iid]:
                 bids[iid] = price
     mids = dict(asks)
-    for iid, ask in mids.items():
-        bid = bids.get(iid)
-        if bid is not None:
+    for iid, bid in bids.items():
+        ask = mids.get(iid)
+        if ask is None:
+            mids[iid] = bid
+        else:
             mids[iid] = round((ask + bid) / 2.0, 6)
     return mids
 
