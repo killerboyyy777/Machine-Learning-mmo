@@ -266,11 +266,13 @@ unavailable arena command or failed probe is a blocking coverage failure, not
 a passing skip.
 
 Thresholds live in `DEFAULT_THRESHOLDS`; `--thresholds FILE` deep-merges a
-JSON override without editing code. Scenarios that depend on unlanded work
-(NPC AI v2 #536) or missing telemetry (acquisition/drop rates #532, item and
-gold conservation) are reported as skipped with the reason, never silently
-passed. The coverage check still fails a scenario that was expected to
-produce a measurement and produced none.
+JSON override without editing code. The release gate now requires measured
+coverage for economy, combat, craft, acquisition (#532), guilds (#588), arena
+(#656), market, liveness, and NPC AI v2 (#536). A missing probe or telemetry
+for any required scenario is a blocking failure, not a passing skip. The
+`progression` and `party` scenarios are observational because the server does
+not expose every metric needed to threshold them. Item/gold conservation and
+companion damage share are blocking checks.
 
 ## Architecture
 
