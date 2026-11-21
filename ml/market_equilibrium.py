@@ -208,6 +208,7 @@ def write_equilibrium(measurement_path, world_path=None, out_path=None):
     sibling JSON and returns its path. Pure analysis: no server, no orders.
     """
     measurement_path = os.path.abspath(measurement_path)
+    base = os.path.basename(measurement_path)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     world_path = world_path or os.path.join(root, "world.json")
     with open(world_path, encoding="utf-8") as handle:
@@ -250,7 +251,6 @@ def write_equilibrium(measurement_path, world_path=None, out_path=None):
         }
 
     if out_path is None:
-        base = os.path.basename(measurement_path)
         stem = base[:-5] if base.endswith(".json") else base
         out_path = os.path.join(
             os.path.dirname(measurement_path),

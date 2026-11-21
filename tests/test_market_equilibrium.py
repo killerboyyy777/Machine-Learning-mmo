@@ -136,12 +136,31 @@ def test_write_equilibrium_from_measurement():
     print("WRITE_EQUILIBRIUM_OK")
 
 
+def test_write_equilibrium_explicit_out_path():
+    with tempfile.TemporaryDirectory() as tmp:
+        world_path = os.path.join(tmp, "world.json")
+        with open(world_path, "w", encoding="utf-8") as handle:
+            json.dump(WORLD, handle)
+        measure_path = os.path.join(tmp, "measurements-gate-701.json")
+        with open(measure_path, "w", encoding="utf-8") as handle:
+            json.dump({"samples": []}, handle)
+        out_path = os.path.join(tmp, "explicit-report.json")
+        out = write_equilibrium(measure_path, world_path=world_path, out_path=out_path)
+        assert out == os.path.abspath(out_path)
+        with open(out, encoding="utf-8") as handle:
+            report = json.load(handle)
+        assert report["source"] == "measurements-gate-701.json"
+        assert report["schema_version"] == 1
+    print("WRITE_EQUILIBRIUM_EXPLICIT_OK")
+
+
 def main():
     test_vendor_bounds_and_recipe_costs()
     test_reference_band_raised_to_recipe_cost()
     test_observed_mids_map_names_and_use_bid()
     test_deviation_volatility_and_gini()
     test_write_equilibrium_from_measurement()
+    test_write_equilibrium_explicit_out_path()
     print("ALL_MARKET_EQUILIBRIUM_OK")
 
 
