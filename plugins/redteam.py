@@ -10,16 +10,22 @@ it like any other plugin, no conductor change. It observes and reports; it
 abstains from the reward (returns None) and places no orders, so it cannot
 change the world it is auditing.
 
+Set ``out_dir`` in the slot config (e.g. ``--slot redteam:out_dir=/tmp/findings``)
+to persist each finding as its own JSON file. Findings stay in the in-memory
+buffer as well, so callers that can reach the plugin still get them; disk is
+the path that survives process exit. Without ``out_dir`` nothing is written.
+
 Note: the slot shares one plugin instance across all its agents. A finding's
 agent_id is therefore best-effort (the last agent that acted); the
 authoritative per-agent repro is the transcript produced by the runtime,
 which ml.repro.compact_repro folds by agent_id and incarnation.
 """
 
+import os
 import random
 
 from ml.plugins import AgentPlugin, register
-from ml.repro import SCHEMA_VERSION, _finite, compact_repro
+from ml.repro import SCHEMA_VERSION, _finite, compact_repro, write_repro
 
 
 @register
@@ -62,6 +68,11 @@ class RedTeam(AgentPlugin):
                 "default": 0,
                 "help": "exploration RNG seed (reproducible)",
             },
+            "out_dir": {
+                "type": str,
+                "default": "",
+                "help": "directory to persist finding repros (empty = memory only)",
+            },
         }
 
     def __init__(self, **config):
@@ -77,8 +88,10 @@ class RedTeam(AgentPlugin):
         if self._profit_spike is None:
             self._profit_spike = 40.0
         self._rng = random.Random(int(self.seed or 0))
+        self._out_dir = str(self.out_dir or "").strip() or None
         self._buffer = []
         self._findings = []
+        self._finding_counter = 0
         self._agent_id = None
         self._episode = 1
         self._step = 0
@@ -121,7 +134,51 @@ class RedTeam(AgentPlugin):
         }
         if len(self._findings) < self._max_findings:
             self._findings.append(finding)
+        if self._out_dir is not None:
+            self._persist(finding)
         return None
+
+    def _persist(self, finding):
+        """Write one finding under a unique name; never overwrite a file.
+
+        The name is ``<defect_class>-<fingerprint>-<counter>.json``. The
+        per-instance counter separates identical trajectories, and the
+        existence check skips names a previous run already used, so a fresh
+        instance pointed at the same out_dir cannot overwrite old evidence.
+        A disk failure is swallowed: persistence must never change the run
+        this plugin is only auditing.
+        """
+        defect = (
+            "".join(
+                c
+                for c in str(finding.get("defect_class") or "finding")
+                if c.isalnum() or c in "-_"
+            )
+            or "finding"
+        )
+        repro = finding.get("repro")
+        fingerprint = repro.get("fingerprint") if isinstance(repro, dict) else None
+        fingerprint = (
+            "".join(c for c in str(fingerprint or "nofp") if c.isalnum() or c in "-_")
+            or "nofp"
+        )
+        base = f"{defect}-{fingerprint}"
+        path = None
+        for _ in range(100000):
+            name = f"{base}-{self._finding_counter}.json"
+            self._finding_counter += 1
+            candidate = os.path.join(self._out_dir, name)
+            if not os.path.exists(candidate):
+                path = candidate
+                break
+        if path is None:
+            return
+        destination = os.path.abspath(path)
+        finding["path"] = destination
+        try:
+            write_repro(finding, destination)
+        except OSError:
+            pass
 
     def learn(self, prev_obs, action, reward, next_obs, done):
         """Keep a bounded transition buffer for the next finding's repro."""

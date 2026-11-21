@@ -193,6 +193,39 @@ def test_redteam_finding_buffer_is_bounded():
     print("REDTEAM_BOUNDED_OK")
 
 
+def test_redteam_writes_retrievable_findings_to_out_dir():
+    # The headline behavior must survive process exit: with out_dir configured,
+    # each finding becomes its own on-disk file, and a second finding (even an
+    # identical one, or one from a restarted instance) never overwrites it.
+    with tempfile.TemporaryDirectory() as tmp:
+        plugin = redteam.RedTeam(out_dir=tmp, gold_spike=10.0)
+        plugin.learn({"hp": 10}, 1, 0.0, {"hp": 9}, False)
+        assert plugin.reward({"gold_delta": 20.0}) is None
+        names = sorted(os.listdir(tmp))
+        assert len(names) == 1, names
+        assert names[0].endswith(".json")
+        saved = read_repro(os.path.join(tmp, names[0]))
+        assert saved["defect_class"] == "gold_spike"
+        assert saved["value"] == 20.0
+        assert saved["repro"]["n_steps"] == 1
+        assert os.path.basename(saved["path"]) == names[0]
+
+        # An identical finding gets a distinct file, not an overwrite.
+        plugin.reward({"gold_delta": 20.0})
+        names = sorted(os.listdir(tmp))
+        assert len(names) == 2 and names[0] != names[1], names
+        before = {name: open(os.path.join(tmp, name), "rb").read() for name in names}
+
+        # A fresh instance (PBT restart) must not clobber earlier evidence.
+        restarted = redteam.RedTeam(out_dir=tmp, gold_spike=10.0)
+        restarted.learn({"hp": 10}, 1, 0.0, {"hp": 9}, False)
+        restarted.reward({"gold_delta": 20.0})
+        after = {name: open(os.path.join(tmp, name), "rb").read() for name in names}
+        assert after == before, "earlier finding files must be untouched"
+        assert len(os.listdir(tmp)) == 3, sorted(os.listdir(tmp))
+    print("REDTEAM_OUT_DIR_OK")
+
+
 def main():
     test_compact_repro_filters_sorts_and_diffs()
     test_compact_repro_incarnation_and_max_steps()
@@ -200,6 +233,7 @@ def main():
     test_repro_round_trip_does_not_overwrite_source()
     test_redteam_plugin_contract()
     test_redteam_finding_buffer_is_bounded()
+    test_redteam_writes_retrievable_findings_to_out_dir()
     print("ALL_REPRO_OK")
 
 
