@@ -179,6 +179,25 @@ def test_write_equilibrium_explicit_out_path():
     print("WRITE_EQUILIBRIUM_EXPLICIT_OK")
 
 
+def test_write_equilibrium_keeps_source_without_measurements_prefix():
+    with tempfile.TemporaryDirectory() as tmp:
+        world_path = os.path.join(tmp, "world.json")
+        with open(world_path, "w", encoding="utf-8") as handle:
+            json.dump(WORLD, handle)
+        source = {"samples": [], "marker": "source-still-here"}
+        measure_path = os.path.join(tmp, "gate-700.json")
+        with open(measure_path, "w", encoding="utf-8") as handle:
+            json.dump(source, handle)
+        out = write_equilibrium(measure_path, world_path=world_path)
+        assert os.path.basename(out) == "gate-700-equilibrium.json"
+        assert out != measure_path
+        with open(measure_path, encoding="utf-8") as handle:
+            assert json.load(handle) == source
+        with open(out, encoding="utf-8") as handle:
+            assert json.load(handle)["schema_version"] == 1
+    print("WRITE_EQUILIBRIUM_KEEPS_SOURCE_OK")
+
+
 def main():
     test_vendor_bounds_and_recipe_costs()
     test_reference_band_raised_to_recipe_cost()
@@ -187,6 +206,7 @@ def main():
     test_deviation_volatility_and_gini()
     test_write_equilibrium_from_measurement()
     test_write_equilibrium_explicit_out_path()
+    test_write_equilibrium_keeps_source_without_measurements_prefix()
     print("ALL_MARKET_EQUILIBRIUM_OK")
 
 

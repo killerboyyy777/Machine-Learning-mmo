@@ -258,10 +258,14 @@ def write_equilibrium(measurement_path, world_path=None, out_path=None):
 
     if out_path is None:
         stem = base[:-5] if base.endswith(".json") else base
-        out_path = os.path.join(
-            os.path.dirname(measurement_path),
-            stem.replace("measurements-", "equilibrium-") + ".json",
-        )
+        # The sibling name must never resolve to the input itself: without a
+        # `measurements-` prefix the replace is a no-op and the report would
+        # overwrite the measurement it was derived from (#705 review).
+        if "measurements-" in stem:
+            name = stem.replace("measurements-", "equilibrium-") + ".json"
+        else:
+            name = stem + "-equilibrium.json"
+        out_path = os.path.join(os.path.dirname(measurement_path), name)
     out_path = os.path.abspath(out_path)
     report = {
         "schema_version": 1,
