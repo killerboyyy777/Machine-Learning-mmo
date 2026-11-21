@@ -49,22 +49,37 @@ def _load_agent(policy, checkpoint):
     return lambda feats, mask: agent.act(feats, 0.0, mask)
 
 
-async def eval_seed(act_fn, url, seed, steps, reward_mode, tag=""):
+async def eval_seed(act_fn, url, seed, steps, reward_mode, tag="", reward_formula=None):
+    """Run one seed and report both the score and the reward the env paid.
+
+    #469: the old code bound the step reward to `_reward` and returned
+    `obs["score_raw"]`, so --reward-mode (and a custom formula) changed the
+    signal the agent learned from but never the number the harness reported.
+    Both are returned now and kept separate: the score stays comparable to
+    old records, while `reward` is the value the selected reward mode actually
+    produced. Callers that want a plain number still use result["score"].
+    """
     random.seed(seed)
     torch.manual_seed(seed)
     env = TextMMOEnv(
-        f"Eval{tag}{seed}", url=url, max_steps=steps, reward_mode=reward_mode
+        f"Eval{tag}{seed}",
+        url=url,
+        max_steps=steps,
+        reward_mode=reward_mode,
+        reward_formula=reward_formula,
     )
     obs = await env.reset()
     feats = flatten_obs(obs)
     done = False
+    episode_reward = 0.0
     while not done:
         action = act_fn(feats, env.valid_action_mask())
-        obs, _reward, done, _info = await env.step(action)
+        obs, reward, done, _info = await env.step(action)
+        episode_reward += float(reward)
         feats = flatten_obs(obs)
-    score = obs["score_raw"]
+    score = float(obs["score_raw"])
     await env.close()
-    return score
+    return {"score": score, "reward": episode_reward}
 
 
 def _run_tag(checkpoint):
@@ -75,14 +90,28 @@ def _run_tag(checkpoint):
     return "".join(c for c in stem if c.isalnum())[:12] or "run"
 
 
-async def evaluate(checkpoint, policy, url, seeds, steps, reward_mode, tag=""):
+async def evaluate(
+    checkpoint, policy, url, seeds, steps, reward_mode, tag="", reward_formula=None
+):
+    """Evaluate a checkpoint on fixed seeds.
+
+    Returns a dict with two parallel lists: `scores` (legacy score_raw, kept
+    for old comparisons) and `rewards` (the value of the configured reward
+    mode/formula, #469). report() and compare() keep consuming `scores`.
+    """
     act_fn = _load_agent(policy, checkpoint)
     scores = []
+    rewards = []
     for s in seeds:
-        score = await eval_seed(act_fn, url, s, steps, reward_mode, tag)
-        scores.append(score)
-        print(f"  seed {s}: score={score:.2f}")
-    return scores
+        result = await eval_seed(
+            act_fn, url, s, steps, reward_mode, tag, reward_formula
+        )
+        scores.append(result["score"])
+        rewards.append(result["reward"])
+        print(
+            f"  seed {s}: score={result['score']:.2f} " f"reward={result['reward']:.2f}"
+        )
+    return {"scores": scores, "rewards": rewards}
 
 
 def report(name, scores):
@@ -261,6 +290,11 @@ def main():
     p.add_argument("--steps", type=int, default=500, help="env steps per seed")
     p.add_argument("--reward-mode", default="score", choices=("score", "xp", "econ"))
     p.add_argument(
+        "--reward-formula",
+        default=None,
+        help="custom reward formula (overrides --reward-mode, #469)",
+    )
+    p.add_argument(
         "--test",
         default="ttest",
         choices=("none", "ttest"),
@@ -278,7 +312,7 @@ def main():
     print(
         f"[eval] {args.policy} {args.checkpoint} seeds={args.seeds} steps={args.steps}"
     )
-    champ = asyncio.run(
+    champ_res = asyncio.run(
         evaluate(
             args.checkpoint,
             args.policy,
@@ -287,9 +321,13 @@ def main():
             args.steps,
             args.reward_mode,
             _run_tag(args.checkpoint),
+            reward_formula=args.reward_formula,
         )
     )
+    champ = champ_res["scores"]
+    champ_rewards = champ_res["rewards"]
     m, _s = report("challenger", champ)
+    report("challenger reward", champ_rewards)
     record = {
         "checkpoint": args.checkpoint,
         "baseline": args.baseline,
@@ -297,12 +335,14 @@ def main():
         "seeds": seeds,
         "steps": args.steps,
         "reward_mode": args.reward_mode,
+        "reward_formula": args.reward_formula,
         "challenger": champ,
+        "challenger_rewards": champ_rewards,
         "comparison": None,
     }
     if args.baseline:
         print(f"[eval] baseline {args.baseline}")
-        base = asyncio.run(
+        base_res = asyncio.run(
             evaluate(
                 args.baseline,
                 args.policy,
@@ -311,11 +351,16 @@ def main():
                 args.steps,
                 args.reward_mode,
                 _run_tag(args.baseline),
+                reward_formula=args.reward_formula,
             )
         )
+        base = base_res["scores"]
+        base_rewards = base_res["rewards"]
         mb, _sb = report("baseline  ", base)
+        report("baseline reward", base_rewards)
         print(f"delta (challenger - baseline): {m - mb:+.2f}")
         record["baseline_scores"] = base
+        record["baseline_rewards"] = base_rewards
         if args.test == "ttest":
             # Live eval runs on the shared persistent server, where seeds
             # don't isolate the world: comparative-only, no SIGNIFICANT
