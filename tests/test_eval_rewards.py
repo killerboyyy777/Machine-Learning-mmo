@@ -1,0 +1,159 @@
+"""#469: reward-mode evaluation must report the reward the env paid.
+
+The old eval_seed returned obs["score_raw"] and discarded the step reward,
+so --reward-mode changed the learning signal but never the reported number.
+These tests pin both halves of the fix: eval_seed returns a separate reward
+total, and the CLI writes it into the run record. No live server needed --
+the env and the checkpoint loader are replaced with fakes.
+"""
+
+import asyncio
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
+sys.path.insert(0, ROOT)
+
+import eval as ev  # noqa: E402
+
+
+class FakeEnv:
+    """Three steps: score_raw climbs, reward is a distinct constant."""
+
+    def __init__(
+        self,
+        name,
+        url=None,
+        max_steps=None,
+        reward_mode=None,
+        reward_formula=None,
+        **kwargs,
+    ):
+        self.name = name
+        self.url = url
+        self.max_steps = max_steps
+        self.reward_mode = reward_mode
+        self.reward_formula = reward_formula
+        self.steps = 0
+
+    async def reset(self):
+        return {"score_raw": 10.0}
+
+    def valid_action_mask(self):
+        return [True]
+
+    async def step(self, action):
+        self.steps += 1
+        return (
+            {"score_raw": 10.0 + self.steps},
+            2.5,
+            self.steps >= 3,
+            {"reward_vector": {"score": 2.5}},
+        )
+
+    async def close(self):
+        pass
+
+
+def test_eval_seed_reports_reward_distinct_from_score():
+    saved_env = ev.TextMMOEnv
+    saved_flat = ev.flatten_obs
+    made = []
+    try:
+        ev.TextMMOEnv = lambda *a, **k: made.append(FakeEnv(*a, **k)) or made[-1]
+        ev.flatten_obs = lambda obs: obs
+        result = asyncio.run(
+            ev.eval_seed(
+                lambda feats, mask: 0,
+                "ws://unused",
+                7,
+                3,
+                "xp",
+                tag="T",
+                reward_formula="xp_delta * 2",
+            )
+        )
+    finally:
+        ev.TextMMOEnv = saved_env
+        ev.flatten_obs = saved_flat
+
+    assert result["score"] == 13.0, result
+    assert result["reward"] == 7.5, result
+    assert result["reward"] != result["score"]
+    assert made[0].reward_mode == "xp"
+    assert made[0].reward_formula == "xp_delta * 2"
+    assert made[0].name == "EvalT7"
+    print("EVAL_SEED_REWARD_OK")
+
+
+def test_evaluate_collects_parallel_score_and_reward_lists():
+    saved_env = ev.TextMMOEnv
+    saved_flat = ev.flatten_obs
+    saved_load = ev._load_agent
+    try:
+        ev.TextMMOEnv = lambda *a, **k: FakeEnv(*a, **k)
+        ev.flatten_obs = lambda obs: obs
+        ev._load_agent = lambda policy, cp: lambda feats, mask: 0
+        result = asyncio.run(
+            ev.evaluate("weights.pt", "torch", "ws://unused", [0, 1], 3, "econ")
+        )
+    finally:
+        ev.TextMMOEnv = saved_env
+        ev.flatten_obs = saved_flat
+        ev._load_agent = saved_load
+
+    assert result["scores"] == [13.0, 13.0], result
+    assert result["rewards"] == [7.5, 7.5], result
+    print("EVALUATE_REWARD_LISTS_OK")
+
+
+def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
+    saved_eval = ev.evaluate
+    saved_report = ev.report
+    saved_argv = sys.argv
+    seen = {}
+
+    async def fake_evaluate(*args, **kwargs):
+        seen["reward_formula"] = kwargs.get("reward_formula")
+        return {"scores": [1.0, 2.0], "rewards": [3.0, 4.0]}
+
+    out = os.path.join(ROOT, "tests", "_eval_rewards_record.json")
+    try:
+        ev.evaluate = fake_evaluate
+        ev.report = lambda name, scores: (0.0, 0.0)
+        sys.argv = [
+            "eval",
+            "--checkpoint",
+            "weights.pt",
+            "--reward-formula",
+            "xp_delta * 2",
+            "--test",
+            "none",
+            "--out",
+            out,
+        ]
+        ev.main()
+        with open(out, encoding="utf-8") as fh:
+            record = json.load(fh)
+    finally:
+        ev.evaluate = saved_eval
+        ev.report = saved_report
+        sys.argv = saved_argv
+        if os.path.exists(out):
+            os.remove(out)
+
+    assert seen["reward_formula"] == "xp_delta * 2", seen
+    assert record["challenger"] == [1.0, 2.0], record
+    assert record["challenger_rewards"] == [3.0, 4.0], record
+    assert record["reward_formula"] == "xp_delta * 2", record
+    assert record["comparison"] is None, record
+    print("EVAL_RECORD_REWARDS_OK")
+
+
+if __name__ == "__main__":
+    test_eval_seed_reports_reward_distinct_from_score()
+    test_evaluate_collects_parallel_score_and_reward_lists()
+    test_main_writes_rewards_and_formula_to_run_record()
+    print("ALL_EVAL_REWARDS_OK")
