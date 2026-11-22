@@ -198,6 +198,16 @@ XP_LOSS_PCT = 5.0
 # (via server_config.json or --config) for training runs where the
 # ~14:1 death:kill ratio would otherwise drown every learning signal.
 FLEE_THRESHOLD = 0.25
+# Flee odds (#436). Escape is a percentile roll, not a guarantee: deeper
+# floors and lower levels make it harder, and a sealed (uncleared) floor costs
+# a penalty. A dedicated RNG keeps the roll seedable without shifting the
+# world's combat stream. Scalars only so server_config.json can override them.
+FLEE_BASE_PCT = 90
+FLEE_PER_FLOOR_PCT = 4
+FLEE_PER_LEVEL_PCT = 5
+FLEE_SEALED_PENALTY_PCT = 25
+FLEE_BOSS_PCT = 15
+_FLEE_RNG = random
 TRAINING_DAMAGE_FRACTION = 1.0
 
 
@@ -3101,20 +3111,87 @@ def mode_tick(player):
     _mode_call(player, "on_tick", run)
 
 
-async def _flee_dungeon(player, d):
-    """Flee up toward the entrance; a floor seals that way until cleared.
+def _flee_success_pct(floor_no, level, cleared, is_boss=False):
+    """Escape chance in percent: deeper and underleveled are harder (#436).
 
-    Instanced rooms are not ROOMS keys, so the world exit map cannot describe
-    them. The room view derives a dungeon's exits from the floor instead, and
-    fleeing has to agree with what the player is looking at.
+    A sealed (uncleared) floor is fleeable but harder -- flee replaces the old
+    absolute seal, so it never returns a hard "no way out" for a live dungeon.
+    The Warden floor is deliberately desperate but still possible.
+    """
+    if is_boss:
+        return max(1, min(100, int(FLEE_BOSS_PCT)))
+    pct = FLEE_BASE_PCT - (max(1, int(floor_no)) - 1) * FLEE_PER_FLOOR_PCT
+    pct += (max(1, int(level)) - 1) * FLEE_PER_LEVEL_PCT
+    if not cleared:
+        pct -= FLEE_SEALED_PENALTY_PCT
+    return max(0, min(100, int(pct)))
+
+
+def _flee_roll(pct, rng=None):
+    chooser = rng if rng is not None else _FLEE_RNG
+    return chooser.randint(1, 100) <= pct
+
+
+def _flee_odds_for_player(player):
+    """Current dungeon flee chance for the risk readout, or None off-instance."""
+    d = dungeon_for_room(player.room)
+    if d is None:
+        return None
+    floor_no = floor_from_room(player.room)
+    floor = d.floors.get(floor_no) if floor_no else None
+    level = SCORES.get((player.name or "").lower(), {}).get("level", 1)
+    return _flee_success_pct(
+        floor_no or 1,
+        level,
+        bool(floor and floor.cleared),
+        bool(floor_no and floor_no >= DUNGEON_MAX_FLOOR),
+    )
+
+
+async def _flee_dungeon(player, d):
+    """Roll to flee up toward the entrance, at odds set by depth and level.
+
+    A failed roll costs the turn and one free enemy attack; it never moves the
+    player. A success on an uncleared floor bypasses the normal "up" seal by
+    moving straight through the dungeon's own helper, so flee replaces the
+    seal instead of duplicating it. Instanced rooms are not ROOMS keys, so the
+    floor-1 path still goes through cmd_move (the #661 instanced-room fix).
     """
     floor_no = floor_from_room(player.room)
     floor = d.floors.get(floor_no) if floor_no else None
-    if floor_no != 1 and not (floor and floor.cleared):
-        await send(player, {"type": "error", "text": "There is no way out!"})
-        return
-    await send(player, {"type": "message", "text": "You panic and flee up!"})
-    await cmd_move(player, {"dir": "up"})
+    level = SCORES.get((player.name or "").lower(), {}).get("level", 1)
+    cleared = bool(floor and floor.cleared)
+    is_boss = bool(floor_no and floor_no >= DUNGEON_MAX_FLOOR)
+    odds = _flee_success_pct(floor_no or 1, level, cleared, is_boss)
+    if not _flee_roll(odds):
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": f"You stumble trying to flee (odds {odds}%) and take a free swing.",
+            },
+        )
+        hostiles = [n for n in npcs_in_room(player.room) if n.get("hostile")]
+        if hostiles:
+            npc = hostiles[0]
+            intent = _npc_swing(npc, player, "AGGRO")
+            await npc_apply(
+                npc,
+                intent,
+                {"targets": [player], "companions": []},
+                time.time(),
+            )
+        return False
+    await send(player, {"type": "message", "text": f"You flee up! (odds {odds}%)"})
+    if floor_no and floor_no > 1:
+        if not _dungeon_move(player, d, floor_no - 1):
+            await send(player, {"type": "error", "text": "That floor is too crowded."})
+            return False
+        await send(player, room_view(player.room))
+        await send(player, stats_view(player))
+    else:
+        await cmd_move(player, {"dir": "up"})
+    return True
 
 
 async def cmd_flee(player, msg):
@@ -4532,6 +4609,7 @@ def death_preview(player):
             "xp_loss_pct": XP_LOSS_PCT,
             "xp_loss": 0.0,
             "level_after": 1,
+            "flee_odds": _flee_odds_for_player(player),
         }
     entry = get_score_entry(player.name)
     gold = player.gold or 0
@@ -4553,6 +4631,7 @@ def death_preview(player):
         "xp_loss_pct": XP_LOSS_PCT,
         "xp_loss": round(xp_lost, 2),
         "level_after": _level_after_xp_loss(entry, XP_LOSS_PCT),
+        "flee_odds": _flee_odds_for_player(player),
     }
 
 
