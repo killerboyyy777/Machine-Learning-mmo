@@ -280,6 +280,67 @@ DUNGEON_CLEAR_PTS_PER_FLOOR = 15
 DUNGEON_CLEAR_BASE_XP = 25
 DUNGEON_CLEAR_XP_PER_FLOOR = 20
 
+# Optional, default-off floor-content factory (#67). A plan built by
+# ml.dungeon_generator is turned into a callable and installed here by an
+# operator who wants generated floors. None keeps this generator unchanged.
+# The Warden floor never consults it. See Dungeon._build_floor.
+DUNGEON_FLOOR_FACTORY = None
+
+
+def _register_dungeon_shard(iid):
+    """Register an on-demand relic id; return whether it is a shard id."""
+    if not isinstance(iid, str) or not iid.startswith("dungeon_shard_"):
+        return False
+    suffix = iid[len("dungeon_shard_") :]
+    if not suffix.isdigit():
+        return False
+    depth = int(suffix)
+    ITEM_DEFS.setdefault(
+        iid,
+        {
+            "name": f"Dungeon Relic +{2 + depth * 4}",
+            "type": "junk",
+            "value": 3 + depth * 6,
+        },
+    )
+    return True
+
+
+def _sanitize_floor_params(builtin, override):
+    """Merge a generator override into built-in params without unsafe values."""
+    params = dict(builtin)
+    if not isinstance(override, dict):
+        return params
+    for key, kind, low, high in (
+        ("hp", int, 1, 100000),
+        ("atk", int, 1, 100000),
+        ("count", int, 1, 8),
+        ("gold", int, 0, 100000),
+        ("respawn_seconds", int, 1, 100000),
+    ):
+        if key not in override:
+            continue
+        try:
+            value = kind(override[key])
+        except (TypeError, ValueError):
+            continue
+        if low <= value <= high:
+            params[key] = value
+    loot = override.get("loot")
+    if isinstance(loot, (list, tuple)) and loot:
+        clean = []
+        for iid in loot:
+            item = str(iid)
+            if item in ITEM_DEFS or _register_dungeon_shard(item):
+                clean.append(item)
+        if clean:
+            params["loot"] = clean
+    name = override.get("name")
+    if isinstance(name, str) and name:
+        params["name"] = name
+    return params
+
+
 TAX_RATE = 0.10
 # The 1g floor is load-bearing, not rounding slack: a measured 2h window had a
 # median trade price of 4g, so 10% would round to 0 on ~87% of fills and the
@@ -959,10 +1020,6 @@ class Dungeon:
                 }
             )
             return f
-        hp = round(DUNGEON_BASE_HP * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
-        atk = round(DUNGEON_BASE_ATK * (1 + DUNGEON_ATK_GROWTH) ** (n - 1))
-        count = min(1 + (n - 1) // 2, 4)
-        gold = round(3 * (1 + DUNGEON_HP_GROWTH) ** (n - 1))
         shard = f"dungeon_shard_{n}"
         # Relic items are registered on demand so loot scales with depth
         # without pre-generating thousands of floors at startup.
@@ -970,20 +1027,42 @@ class Dungeon:
             shard,
             {"name": f"Dungeon Relic +{2 + n * 4}", "type": "junk", "value": 3 + n * 6},
         )
-        for k in range(count):
+        builtin = {
+            "hp": round(DUNGEON_BASE_HP * (1 + DUNGEON_HP_GROWTH) ** (n - 1)),
+            "atk": round(DUNGEON_BASE_ATK * (1 + DUNGEON_ATK_GROWTH) ** (n - 1)),
+            "count": min(1 + (n - 1) // 2, 4),
+            "gold": round(3 * (1 + DUNGEON_HP_GROWTH) ** (n - 1)),
+            "loot": [shard],
+            "respawn_seconds": 20 + n * 10,
+            "name": f"Dungeon Guard {n}-{{k}}",
+        }
+        params = builtin
+        if DUNGEON_FLOOR_FACTORY is not None:
+            try:
+                params = _sanitize_floor_params(
+                    builtin, DUNGEON_FLOOR_FACTORY(self.id, n, builtin)
+                )
+            except Exception:  # noqa: BLE001 - a bad generator must not wedge a floor
+                # A broken drop-in cannot stop a dungeon from building.
+                params = builtin
+        for k in range(params["count"]):
+            try:
+                guard_name = params["name"].format(n=n, k=k)
+            except (KeyError, ValueError, IndexError, AttributeError):
+                guard_name = f"Dungeon Guard {n}-{k}"
             f.guards.append(
                 {
                     "id": f"dg_{self.id}_{n}_{k}",
-                    "name": f"Dungeon Guard {n}-{k}",
+                    "name": guard_name,
                     "room": room_id,
-                    "hp": hp,
-                    "max_hp": hp,
-                    "attack": atk,
+                    "hp": params["hp"],
+                    "max_hp": params["hp"],
+                    "attack": params["atk"],
                     "hostile": True,
                     "behavior": "idle",
-                    "loot": [shard],
-                    "gold": gold,
-                    "respawn_seconds": 20 + n * 10,
+                    "loot": list(params["loot"]),
+                    "gold": params["gold"],
+                    "respawn_seconds": params["respawn_seconds"],
                     "alive": True,
                     "respawn_at": None,
                     "contributors": {},
