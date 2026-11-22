@@ -197,4 +197,88 @@ _run(poor, action="post", destination=DEST, fee=5, items=[OTHER])
 assert len(srv.FREIGHT) == 1
 print("NO_GOLD_REFUSED_OK")
 
+# --- the rush bonus returns on every terminal path where it was not earned --
+# #713: fee+bonus are escrowed up front, but open expiry, carried expiry and
+# hauler death all used to refund only the fee (and deposit), silently keeping
+# the bonus. Each case posts WITH a bonus and checks the poster's own gold.
+
+_reset()
+sender = _player("Sender", ORIGIN, 100, [ITEM], pid=901)
+_run(
+    sender,
+    action="post",
+    destination=DEST,
+    fee=20,
+    bonus=5,
+    bonus_seconds=1,
+    items=[ITEM],
+)
+rec = _only_contract()
+assert rec["bonus"] == 5, rec
+assert sender.gold == 100 - 20 - 5, sender.gold
+now = rec["expires_at"] + 1
+srv._freight_station_at = now  # keep station consignments out of this probe
+srv.prune_freight(now)
+assert rec["state"] == "expired", rec["state"]
+assert rec["refund"] == 20 + 5, rec["refund"]
+gold_before = sender.gold
+_run(sender, action="claim", id=rec["id"])
+assert sender.gold == gold_before + 25, sender.gold
+print("OPEN_EXPIRY_RETURNS_BONUS_OK")
+
+_reset()
+sender = _player("Sender", ORIGIN, 100, [ITEM], pid=901)
+hauler = _player("Hauler", ORIGIN, 50, [], pid=902)
+srv.players["Hauler"] = hauler
+_run(
+    sender,
+    action="post",
+    destination=DEST,
+    fee=20,
+    bonus=5,
+    bonus_seconds=1,
+    items=[ITEM],
+)
+rec = _only_contract()
+_run(hauler, action="accept", id=rec["id"])
+deposit = rec["deposit"]
+now = rec["expires_at"] + 1
+srv._freight_station_at = now
+srv.prune_freight(now)
+assert rec["state"] == "lost", rec["state"]
+assert rec["refund"] == 20 + deposit + 5, rec["refund"]
+gold_before = sender.gold
+_run(sender, action="claim", id=rec["id"])
+assert sender.gold == gold_before + 25 + deposit, sender.gold
+for iid in list(srv._ground_items(hauler.room)):
+    srv._remove_ground(hauler.room, iid)
+srv.players.pop("Hauler", None)
+print("CARRIED_EXPIRY_RETURNS_BONUS_OK")
+
+_reset()
+sender = _player("Sender", ORIGIN, 100, [ITEM], pid=901)
+hauler = _player("Hauler", ORIGIN, 50, [], pid=902)
+srv.players["Hauler"] = hauler
+_run(
+    sender,
+    action="post",
+    destination=DEST,
+    fee=20,
+    bonus=5,
+    bonus_seconds=1,
+    items=[ITEM],
+)
+rec = _only_contract()
+_run(hauler, action="accept", id=rec["id"])
+deposit = rec["deposit"]
+srv._freight_release_on_death(hauler, "deep_forest")
+assert rec["state"] == "lost", rec["state"]
+assert rec["refund"] == 20 + deposit + 5, rec["refund"]
+gold_before = sender.gold
+_run(sender, action="claim", id=rec["id"])
+assert sender.gold == gold_before + 25 + deposit, sender.gold
+srv._remove_ground("deep_forest", ITEM)
+srv.players.pop("Hauler", None)
+print("DEATH_RETURNS_BONUS_OK")
+
 print("FREIGHT_CONSERVATION_OK")

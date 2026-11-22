@@ -8923,7 +8923,9 @@ def prune_freight(now=None):
                 _freight_drop_package(rec["origin"], rec.pop("items", []))
                 rec["refund"] = 0
             else:
-                rec["refund"] = rec["fee"]
+                # The rush bonus was escrowed with the fee and was never
+                # earned, so it goes back to the poster on expiry (#713).
+                rec["refund"] = rec["fee"] + int(rec.get("bonus") or 0)
             FREIGHT_STATS["expired"] += 1
         else:
             hauler = find_player_anywhere(rec.get("hauler"))
@@ -8931,7 +8933,13 @@ def prune_freight(now=None):
             _freight_drop_package(room_id, rec.pop("items", []))
             rec["state"] = "lost"
             rec["lost_at"] = now
-            rec["refund"] = 0 if station else rec["fee"] + rec["deposit"]
+            # A station forfeits nothing; a player gets the fee, deposit and
+            # the unearned rush bonus back when the hauler loses the goods.
+            rec["refund"] = (
+                0
+                if station
+                else rec["fee"] + rec["deposit"] + int(rec.get("bonus") or 0)
+            )
             FREIGHT_STATS["lost"] += 1
             FREIGHT_STATS["deposits_forfeited"] += rec["deposit"]
         changed = True
@@ -9369,7 +9377,9 @@ def _freight_release_on_death(player, death_room):
         _freight_drop_package(death_room, rec.pop("items"))
         rec["state"] = "lost"
         rec["lost_at"] = time.time()
-        rec["refund"] = rec["fee"] + rec["deposit"]
+        # Same terminal settlement as an expired carried contract: the
+        # unearned rush bonus returns with the fee and deposit (#713).
+        rec["refund"] = rec["fee"] + rec["deposit"] + int(rec.get("bonus") or 0)
         FREIGHT_STATS["lost"] += 1
         FREIGHT_STATS["deposits_forfeited"] += rec["deposit"]
         mark_freight_dirty()
