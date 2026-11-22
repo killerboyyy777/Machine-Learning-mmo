@@ -5,7 +5,7 @@
   :8766 dashboard HTTP, :8767 GM loopback). Only hard dep: websockets.
 - Dashboard is static HTML (dashboard.html, no build, no CDN).
 - ML: ml/ env + conductor, torch_agents/ DQN farm (CPU).
-- Tests: tests/ pytest-style scripts, python tests/<file>.py each green.
+- Tests: `tests/` contains script-style suites plus fixtures/helpers; not every `.py` file is a standalone test. Use the explicit entrypoints in `.github/workflows/tests.yml`; some require a live server, torch, Node, or Firefox.
 
 ## Rules
 - ASCII-only, no emoji. Keep diffs tight, no drive-by refactors.
