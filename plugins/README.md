@@ -45,7 +45,7 @@ with its reason printed, without stopping the others:
 
 - the name is a non-empty string of lowercase letters, digits, `-` or `_`,
   and not the reserved `base` (duplicates are refused at import time);
-- `agent_type` is one of `linear`, `scripted`, `torch`, `custom` ÔÇö per-type
+- `agent_type` is one of `linear`, `scripted`, `torch`, `custom` - per-type
   status and PBT read that label, so an invented family lands in a bucket
   nothing else shares;
 - `config_schema()` returns a dict of `{name: {"type": ...}}` entries;
@@ -56,15 +56,24 @@ rejected, so a broken drop-in costs its own slot instead of the whole run.
 
 ## What this does not do yet
 
-Plugins run in the conductor's process. There is no sandbox: a policy that
-raises inside `act` takes its own agent down (the supervisor logs the death and
-restarts it) and a policy that hangs costs that agent its episode. Both are
-contained to one agent, not the fleet.
+Plugins run in the conductor's process. There is no sandbox. A policy
+exception or timeout ends that agent's episode and records a death. The
+conductor can replace the agent, but three consecutive policy faults from the
+same plugin policy retire that slot; a successfully completed episode resets
+its fault count. Other slots continue running.
 
-`--policy-timeout` (default 5 seconds per step; `0` runs the policy inline on
-the event loop, the pre-#176 behaviour) bounds the hang by running the policy
-on a worker thread. A timed-out call abandons its thread, because Python cannot
-interrupt it: the agent dies, the thread leaks until the call returns.
+`--policy-timeout` defaults to 5 seconds per step. With a positive timeout,
+the policy runs on a dedicated worker thread, so a hung call costs its agent
+the episode instead of blocking the event loop. A timed-out call abandons its
+thread because Python cannot interrupt it; the thread remains occupied until
+the call returns. Each plugin policy closure has its own single-worker
+executor, shared by the agents using that slot, so a wedged plugin does not
+occupy another slot's worker.
+
+Setting `--policy-timeout 0` restores the pre-#176 inline behavior: policy
+code runs on the event-loop thread. A blocking or infinite policy can then
+stall the whole conductor, not just its own agent. Do not use zero with
+untrusted or potentially blocking plugins.
 
 Every plugin instance gets its own single worker thread, and agents that share
 an instance (the agents of one `--slot`) share that worker. So `act` is never
