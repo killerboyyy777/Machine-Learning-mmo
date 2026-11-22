@@ -4776,6 +4776,12 @@ def _npc_respawn_at(npc, default_seconds=30):
     return time.time() + secs
 
 
+def _floor_has_live_player(dungeon, floor_no):
+    """Whether a logged-in player is standing on this dungeon floor (#31)."""
+    rid = dungeon.room_id(floor_no)
+    return any(p.logged_in and p.room == rid for p in players.values())
+
+
 def respawn_npc(npc):
     """Bring an NPC back to life. Dungeon guard respawn re-seals the floor."""
     npc["alive"] = True
@@ -4790,7 +4796,11 @@ def respawn_npc(npc):
     if d:
         floor_no = floor_from_room(rid)
         f = d.floors.get(floor_no)
-        if f and f.cleared:
+        if f and f.cleared and not _floor_has_live_player(d, floor_no):
+            # #31: a guard returning while someone is mid-fight on the cleared
+            # floor used to re-seal the exits and trap them. Re-seal only once
+            # the floor empties. clear_rewarded is untouched, so the first
+            # clear still pays exactly once (#373).
             f.cleared = False
 
 
@@ -10347,7 +10357,23 @@ def _set_quest_active(entry, qid, active):
 
 
 async def cmd_party_invite(player, msg):
-    target = find_player_in_room(player.room, msg.get("target", ""))
+    requested = (msg.get("target", "") or "").strip()
+    target = find_player_in_room(player.room, requested)
+    off_room = False
+    if not target or target is player:
+        # #32: a target who stepped out of the room a moment ago used to make
+        # the invite miss. Fall back to an exact online name match (never a
+        # fragment, so a partial name cannot invite the wrong character).
+        # cmd_party_accept has no room gate, so an off-room accept is safe.
+        for candidate in players.values():
+            if (
+                candidate is not player
+                and candidate.logged_in
+                and candidate.name.lower() == requested.lower()
+            ):
+                target = candidate
+                off_room = candidate.room != player.room
+                break
     if not target or target is player:
         await send(player, {"type": "error", "text": "No one here by that name."})
         return
@@ -10382,8 +10408,10 @@ async def cmd_party_invite(player, msg):
             "text": f"{player.name} invites you to a party. Send party_accept to join.",
         },
     )
+    note = " (they are in another room; they can still accept)" if off_room else ""
     await send(
-        player, {"type": "message", "text": f"Invitation sent to {target.name}."}
+        player,
+        {"type": "message", "text": f"Invitation sent to {target.name}{note}."},
     )
 
 

@@ -4194,9 +4194,15 @@ async def main():
     rfloor = rd.floors[rfno]
     assert rfloor.clear_rewarded is True
     refarmer.hp = refarmer.max_hp
+    # #31: step off the floor so the respawn re-seals it (a live player on the
+    # floor now keeps the exits open); the re-clear below proves rewards stay
+    # paid once either way.
+    _refarmer_floor_room = refarmer.room
+    refarmer.room = srv.DUNGEON_ENTRANCE_ROOM
     for _g in rfloor.guards:
         srv.respawn_npc(_g)  # real respawn path: exits re-arm, rewards must not
     assert rfloor.cleared is False
+    refarmer.room = _refarmer_floor_room
     await _clear_room()
     assert rentry.get("dungeon_floors_cleared", 0) == 1, rentry.get(
         "dungeon_floors_cleared"
@@ -4617,6 +4623,54 @@ async def main():
     unplayer(_slayer)
     unplayer(_gmop)
     print("SLAY_NO_UNSEAL_OK")
+
+    # #32: an exact-name invite reaches a target who just stepped out of the
+    # room; a fragment still cannot invite the wrong character
+    _pinv = mkplayer("PartyHost", 62810)
+    _ptgt = mkplayer("FarGuest", 62811, room="market")
+    inbox.clear()
+    await srv.cmd_party_invite(_pinv, {"target": "FarGuest"})
+    assert _ptgt.id in srv._pending_party_invites, inbox
+    assert any("another room" in (m.get("text", "")) for m in inbox), inbox
+    # a partial name has no exact match, so it must not fall back off-room
+    srv._pending_party_invites.pop(_ptgt.id, None)
+    inbox.clear()
+    await srv.cmd_party_invite(_pinv, {"target": "Far"})
+    assert _ptgt.id not in srv._pending_party_invites, inbox
+    assert inbox and inbox[-1]["type"] == "error", inbox
+    for _p in list(srv.parties.values()):
+        if _pinv.id in _p.member_ids:
+            srv._delete_party(_p)
+    srv._pending_party_invites.pop(_ptgt.id, None)
+    unplayer(_pinv)
+    unplayer(_ptgt)
+    print("PARTY_OFFROOM_INVITE_OK")
+
+    # #31: a guard respawning on a cleared floor does not trap a player who
+    # is still standing there; once the floor empties it re-seals as before
+    _rehost = mkplayer("ResealHost", 62812)
+    await srv.cmd_move(_rehost, {"dir": "south"})
+    await srv._enter_dungeon(_rehost)
+    _rd = srv.dungeon_for_room(_rehost.room)
+    assert _rd is not None
+    _rfno = srv.floor_from_room(_rehost.room)
+    _rfl = _rd.floors[_rfno]
+    _rguard = _rfl.guards[0]
+    _rfl.cleared = True
+    _rguard["alive"] = False
+    srv.respawn_npc(_rguard)
+    assert _rfl.cleared is True, "respawn must not re-seal an occupied floor"
+    # move the player out of the floor room, then respawn re-seals
+    _rehost.room = srv.DUNGEON_ENTRANCE_ROOM
+    assert not srv._floor_has_live_player(_rd, _rfno)
+    _rguard["alive"] = False
+    srv.respawn_npc(_rguard)
+    assert _rfl.cleared is False, "empty floor must re-seal on respawn"
+    for _p in list(srv.parties.values()):
+        if _rehost.id in _p.member_ids:
+            srv._delete_party(_p)
+    unplayer(_rehost)
+    print("RESPAWN_FLOOR_OCCUPIED_OK")
 
     # XP loss never leaves a negative bar: the epsilon tolerance that
     # skips de-leveling is clamped to zero
