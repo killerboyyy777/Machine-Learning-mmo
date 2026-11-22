@@ -1022,6 +1022,41 @@ async def main():
     assert srv.floor_from_room("graveyard") is None
     print("DUNGEON_GEN_OK")
 
+    # --- #67: generated floors are opt-in; the Warden is never generated ---
+    assert srv.DUNGEON_FLOOR_FACTORY is None
+    from ml.dungeon_generator import floor_factory, generate_plan  # noqa: E402
+
+    plan = generate_plan({"seed": 23, "floors": 3, "jitter_pct": 0})
+    saved_factory = srv.DUNGEON_FLOOR_FACTORY
+    try:
+        srv.DUNGEON_FLOOR_FACTORY = floor_factory(plan)
+        gen = srv.Dungeon(party_id=9901)
+        expected = plan["floors"][0]["params"]
+        guard = gen.floor(1).guards[0]
+        assert guard["hp"] == expected["hp"]
+        assert guard["attack"] == expected["atk"]
+        assert guard["gold"] == expected["gold"]
+        assert guard["respawn_seconds"] == expected["respawn_seconds"]
+        # A floor outside the plan falls back to the built-in formula.
+        outside = gen.floor(9).guards[0]
+        assert outside["hp"] == round(
+            srv.DUNGEON_BASE_HP * (1 + srv.DUNGEON_HP_GROWTH) ** 8
+        )
+        # The last floor stays the fixed boss; no factory in sight.
+        boss = gen.floor(srv.DUNGEON_MAX_FLOOR).guards[0]
+        assert boss["name"] == "The Warden of the Deep"
+        assert boss["max_hp"] == srv.WARDEN_HP
+
+        def bad_factory(*args, **kwargs):
+            raise RuntimeError("broken generator")
+
+        srv.DUNGEON_FLOOR_FACTORY = bad_factory
+        broken = srv.Dungeon(party_id=9902)
+        assert broken.floor(1).guards[0]["max_hp"] == srv.DUNGEON_BASE_HP
+    finally:
+        srv.DUNGEON_FLOOR_FACTORY = saved_factory
+    print("DUNGEON_FLOOR_FACTORY_OK")
+
     rid1 = d.room_id(1)
     assert not d.floors[1].cleared
     for g in d.floors[1].guards:
