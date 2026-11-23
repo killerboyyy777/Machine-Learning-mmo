@@ -11,20 +11,23 @@ Live (needs the server)::
 Seeds control agent-side RNG only (action sampling is off at epsilon=0,
 but torch/linear tie-breaks and env timing still vary); the world itself
 is the shared persistent server, so treat scores as comparative, not
-absolute. Each seed runs a fresh character for --steps env steps. The
-live CLI therefore reports comparative-only results (no SIGNIFICANT
-verdict); the paired t-test in compare() is reserved for isolated
-per-seed server resets (see compare() docstring, #378).
+absolute. Each invocation gets a unique evaluation id; its checkpoint/seed
+characters are fresh and stable within that invocation. The live CLI
+therefore reports comparative-only results (no SIGNIFICANT verdict); the
+paired t-test in compare() is reserved for isolated per-seed server resets
+(see compare() docstring, #378).
 """
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
 import random
 import statistics
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,8 +52,20 @@ def _load_agent(policy, checkpoint):
     return lambda feats, mask: agent.act(feats, 0.0, mask)
 
 
-async def eval_seed(act_fn, url, seed, steps, reward_mode, tag="", reward_formula=None):
-    """Run one seed and report both the score and the reward the env paid.
+def _eval_character_name(tag, run_id, seed):
+    """A bounded, run-scoped account name for one checkpoint/seed pair.
+
+    Server characters persist in scores.json. A new evaluation id prevents a
+    later invocation from inheriting the previous run's score and progression.
+    """
+    material = f"{tag}:{run_id}:{seed}"
+    return "Eval" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
+
+
+async def eval_seed(
+    act_fn, url, seed, steps, reward_mode, tag="", reward_formula=None, run_id=None
+):
+    """Run one fresh, run-scoped character and report score plus paid reward.
 
     #469: the old code bound the step reward to `_reward` and returned
     `obs["score_raw"]`, so --reward-mode (and a custom formula) changed the
@@ -61,8 +76,9 @@ async def eval_seed(act_fn, url, seed, steps, reward_mode, tag="", reward_formul
     """
     random.seed(seed)
     torch.manual_seed(seed)
+    run_id = run_id or uuid.uuid4().hex[:12]
     env = TextMMOEnv(
-        f"Eval{tag}{seed}",
+        _eval_character_name(tag, run_id, seed),
         url=url,
         max_steps=steps,
         reward_mode=reward_mode,
@@ -87,31 +103,45 @@ def _run_tag(checkpoint):
     character names (persisted score entries would contaminate the
     paired comparison, #233)."""
     stem = os.path.splitext(os.path.basename(str(checkpoint)))[0]
-    return "".join(c for c in stem if c.isalnum())[:12] or "run"
+    safe_stem = "".join(c for c in stem if c.isalnum())[:6] or "run"
+    path_id = hashlib.sha256(
+        os.path.abspath(str(checkpoint)).encode("utf-8")
+    ).hexdigest()[:6]
+    return safe_stem + path_id
 
 
 async def evaluate(
-    checkpoint, policy, url, seeds, steps, reward_mode, tag="", reward_formula=None
+    checkpoint,
+    policy,
+    url,
+    seeds,
+    steps,
+    reward_mode,
+    tag="",
+    reward_formula=None,
+    run_id=None,
 ):
     """Evaluate a checkpoint on fixed seeds.
 
-    Returns a dict with two parallel lists: `scores` (legacy score_raw, kept
-    for old comparisons) and `rewards` (the value of the configured reward
-    mode/formula, #469). report() and compare() keep consuming `scores`.
+    Returns parallel `scores` and `rewards` lists plus the evaluation id.
+    The id is shared by all seeds in this invocation; character names also
+    include the checkpoint tag so challenger and baseline accounts stay apart.
+    report() and compare() keep consuming `scores`.
     """
+    run_id = run_id or uuid.uuid4().hex[:12]
     act_fn = _load_agent(policy, checkpoint)
     scores = []
     rewards = []
     for s in seeds:
         result = await eval_seed(
-            act_fn, url, s, steps, reward_mode, tag, reward_formula
+            act_fn, url, s, steps, reward_mode, tag, reward_formula, run_id
         )
         scores.append(result["score"])
         rewards.append(result["reward"])
         print(
             f"  seed {s}: score={result['score']:.2f} " f"reward={result['reward']:.2f}"
         )
-    return {"scores": scores, "rewards": rewards}
+    return {"scores": scores, "rewards": rewards, "evaluation_id": run_id}
 
 
 def report(name, scores):
@@ -312,6 +342,7 @@ def main():
     print(
         f"[eval] {args.policy} {args.checkpoint} seeds={args.seeds} steps={args.steps}"
     )
+    evaluation_id = uuid.uuid4().hex[:12]
     champ_res = asyncio.run(
         evaluate(
             args.checkpoint,
@@ -322,6 +353,7 @@ def main():
             args.reward_mode,
             _run_tag(args.checkpoint),
             reward_formula=args.reward_formula,
+            run_id=evaluation_id,
         )
     )
     champ = champ_res["scores"]
@@ -329,6 +361,7 @@ def main():
     m, _s = report("challenger", champ)
     report("challenger reward", champ_rewards)
     record = {
+        "evaluation_id": evaluation_id,
         "checkpoint": args.checkpoint,
         "baseline": args.baseline,
         "policy": args.policy,
@@ -352,6 +385,7 @@ def main():
                 args.reward_mode,
                 _run_tag(args.baseline),
                 reward_formula=args.reward_formula,
+                run_id=evaluation_id,
             )
         )
         base = base_res["scores"]
