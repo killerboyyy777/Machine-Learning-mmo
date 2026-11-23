@@ -104,6 +104,7 @@ class SharedReward:
             "shared_value": self.shared_value(),
         }
 
+
 def _bin_index(elapsed_s, window_s):
     return max(0, int(_num(elapsed_s) // max(1, int(window_s))))
 
