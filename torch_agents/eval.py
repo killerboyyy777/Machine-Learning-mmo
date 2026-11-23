@@ -11,10 +11,11 @@ Live (needs the server)::
 Seeds control agent-side RNG only (action sampling is off at epsilon=0,
 but torch/linear tie-breaks and env timing still vary); the world itself
 is the shared persistent server, so treat scores as comparative, not
-absolute. Each seed runs a fresh character for --steps env steps. The
-live CLI therefore reports comparative-only results (no SIGNIFICANT
-verdict); the paired t-test in compare() is reserved for isolated
-per-seed server resets (see compare() docstring, #378).
+absolute. Each invocation gets a unique evaluation id; its checkpoint/seed
+characters are fresh and stable within that invocation. The live CLI
+therefore reports comparative-only results (no SIGNIFICANT verdict); the
+paired t-test in compare() is reserved for isolated per-seed server resets
+(see compare() docstring, #378).
 """
 
 import argparse
@@ -57,7 +58,7 @@ def _eval_character_name(tag, run_id, seed):
     Server characters persist in scores.json. A new evaluation id prevents a
     later invocation from inheriting the previous run's score and progression.
     """
-    material = f"{tag}\\0{run_id}\\0{seed}"
+    material = f"{tag}:{run_id}:{seed}"
     return "Eval" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
 
 
