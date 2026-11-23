@@ -185,7 +185,7 @@ def test_report_edges_and_io():
 
 
 def main():
-    test_shared_reward_is_equal_and_accumulates()
+    test_shared_reward_is_equal_and_frame_scoped()
     test_shared_reward_per_capita_and_bad_values()
     test_report_bins_and_entropy()
     test_verdict_pairs_entropy_with_throughput()
