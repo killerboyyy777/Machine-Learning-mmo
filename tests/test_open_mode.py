@@ -37,27 +37,48 @@ def transcript_rows(actions_by_agent, elapsed_s):
     return rows
 
 
-def test_shared_reward_is_equal_and_accumulates():
+def test_shared_reward_is_equal_and_frame_scoped():
     shared = SharedReward(weights={"score_gain": 1.0, "kills": 2.0})
-    hook_a = shared.hook("a")
-    hook_b = shared.hook("b")
-    assert hook_a({"score_gain": 3.0, "kills": 1.0}) == 5.0
-    assert hook_b({"score_gain": 1.0, "kills": 1.0}) == 4.0
+    observe_a = shared.observer("a")
+    observe_b = shared.observer("b")
+
+    shared.begin_frame()
+    observe_a({"score_gain": 3.0, "kills": 1.0})
+    observe_b({"score_gain": 1.0, "kills": 1.0})
+    first = shared.shared_value()
+    assert first == 4.0
     assert shared.snapshot()["n_agents"] == 2
     assert shared.snapshot()["totals"] == {"score_gain": 4.0, "kills": 2.0}
+
+    # Collection order cannot change the reward assigned to either agent.
+    shared.begin_frame()
+    observe_b({"score_gain": 1.0, "kills": 1.0})
+    observe_a({"score_gain": 3.0, "kills": 1.0})
+    assert shared.shared_value() == first
+
+    # A new frame replaces, rather than adds to, the prior frame's signals.
+    shared.begin_frame()
+    observe_a({"score_gain": 1.0, "kills": 0.0})
+    observe_b({"score_gain": 3.0, "kills": 0.0})
+    assert shared.shared_value() == 2.0
+    assert shared.snapshot()["totals"] == {"score_gain": 4.0, "kills": 0.0}
     print("OPEN_SHARED_EQUAL_OK")
 
 
 def test_shared_reward_per_capita_and_bad_values():
     shared = SharedReward(weights={"gold_delta": 1.0}, per_capita=True)
-    hook = shared.hook("a")
-    hook({"gold_delta": 10.0})
-    hook({"gold_delta": float("nan")})
-    hook({"gold_delta": None})
-    hook("not a dict")
-    assert shared.shared_value() == 10.0
-    assert shared.snapshot()["n_agents"] == 1
+    shared.begin_frame()
+    observe_a = shared.observer("a")
+    observe_b = shared.observer("b")
+    observe_c = shared.observer("c")
+    observe_a({"gold_delta": 10.0})
+    observe_b({"gold_delta": float("nan")})
+    observe_c({"gold_delta": None})
+    shared.observer("ignored")("not a dict")
+    assert abs(shared.shared_value() - (10.0 / 3.0)) < 1e-6
+    assert shared.snapshot()["n_agents"] == 3
     per_total = SharedReward(weights={"gold_delta": 1.0}, per_capita=False)
+    per_total.begin_frame()
     per_total.observe("a", {"gold_delta": 5.0})
     per_total.observe("b", {"gold_delta": 5.0})
     assert per_total.shared_value() == 10.0
@@ -105,6 +126,31 @@ def test_verdict_pairs_entropy_with_throughput():
     print("OPEN_VERDICT_PAIR_OK")
 
 
+def test_verdict_requires_sustained_measured_throughput():
+    rows = (
+        transcript_rows({"a": [0, 1, 2, 3]}, elapsed_s=10)
+        + transcript_rows({"a": [0, 0, 0, 0]}, elapsed_s=1810)
+        + transcript_rows({"a": [0, 0, 0, 0]}, elapsed_s=3700)
+    )
+
+    # An entropy drop without throughput samples is not evidence of held throughput.
+    no_data = emergence_verdict(specialisation_report(rows, window_s=1800))
+    assert no_data["status"] == "no_emergence", no_data
+    assert no_data["throughput_held"] is False
+
+    # Recovering at the final bin does not erase an intermediate collapse.
+    samples = [
+        {"elapsed_s": 10, "kills": 5},
+        {"elapsed_s": 1810, "kills": 0},
+        {"elapsed_s": 3700, "kills": 5},
+    ]
+    report = specialisation_report(rows, throughput=samples, window_s=1800)
+    verdict = emergence_verdict(report)
+    assert verdict["status"] == "no_emergence", verdict
+    assert verdict["throughput_held"] is False
+    print("OPEN_VERDICT_SUSTAINED_OK")
+
+
 def test_verdict_entropy_alone_is_not_enough():
     rows = transcript_rows({"a": [0, 1, 2, 3]}, elapsed_s=10) + transcript_rows(
         {"a": [0, 1, 2, 3]}, elapsed_s=3700
@@ -143,6 +189,7 @@ def main():
     test_shared_reward_per_capita_and_bad_values()
     test_report_bins_and_entropy()
     test_verdict_pairs_entropy_with_throughput()
+    test_verdict_requires_sustained_measured_throughput()
     test_verdict_entropy_alone_is_not_enough()
     test_report_edges_and_io()
     print("ALL_OPEN_MODE_OK")
