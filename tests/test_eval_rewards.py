@@ -84,7 +84,8 @@ def test_eval_seed_reports_reward_distinct_from_score():
     assert result["reward"] != result["score"]
     assert made[0].reward_mode == "xp"
     assert made[0].reward_formula == "xp_delta * 2"
-    assert made[0].name == "EvalT7"
+    assert made[0].name.startswith("Eval"), made[0].name
+    assert len(made[0].name) == 24, made[0].name
     print("EVAL_SEED_REWARD_OK")
 
 
@@ -92,12 +93,21 @@ def test_evaluate_collects_parallel_score_and_reward_lists():
     saved_env = ev.TextMMOEnv
     saved_flat = ev.flatten_obs
     saved_load = ev._load_agent
+    made = []
     try:
-        ev.TextMMOEnv = lambda *a, **k: FakeEnv(*a, **k)
+        ev.TextMMOEnv = lambda *a, **k: made.append(FakeEnv(*a, **k)) or made[-1]
         ev.flatten_obs = lambda obs: obs
         ev._load_agent = lambda policy, cp: lambda feats, mask: 0
         result = asyncio.run(
-            ev.evaluate("weights.pt", "torch", "ws://unused", [0, 1], 3, "econ")
+            ev.evaluate(
+                "weights.pt",
+                "torch",
+                "ws://unused",
+                [0, 1],
+                3,
+                "econ",
+                run_id="same-run",
+            )
         )
     finally:
         ev.TextMMOEnv = saved_env
@@ -106,6 +116,9 @@ def test_evaluate_collects_parallel_score_and_reward_lists():
 
     assert result["scores"] == [13.0, 13.0], result
     assert result["rewards"] == [7.5, 7.5], result
+    assert result["evaluation_id"] == "same-run", result
+    assert len({env.name for env in made}) == 2, [env.name for env in made]
+    assert all(len(env.name) == 24 for env in made), [env.name for env in made]
     print("EVALUATE_REWARD_LISTS_OK")
 
 
@@ -117,6 +130,7 @@ def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
 
     async def fake_evaluate(*args, **kwargs):
         seen["reward_formula"] = kwargs.get("reward_formula")
+        seen["run_id"] = kwargs.get("run_id")
         return {"scores": [1.0, 2.0], "rewards": [3.0, 4.0]}
 
     out = os.path.join(ROOT, "tests", "_eval_rewards_record.json")
@@ -145,6 +159,8 @@ def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
             os.remove(out)
 
     assert seen["reward_formula"] == "xp_delta * 2", seen
+    assert seen["run_id"] == record["evaluation_id"], (seen, record)
+    assert len(record["evaluation_id"]) == 12, record
     assert record["challenger"] == [1.0, 2.0], record
     assert record["challenger_rewards"] == [3.0, 4.0], record
     assert record["reward_formula"] == "xp_delta * 2", record
@@ -152,8 +168,21 @@ def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
     print("EVAL_RECORD_REWARDS_OK")
 
 
+def test_eval_names_are_unique_across_runs_and_checkpoint_paths():
+    first = ev._eval_character_name("weightsabc123", "run-one", 7)
+    second = ev._eval_character_name("weightsabc123", "run-two", 7)
+    other_checkpoint = ev._eval_character_name("otherabc123", "run-one", 7)
+    assert first != second
+    assert first != other_checkpoint
+    assert len(first) == len(second) == len(other_checkpoint) == 24
+    assert first.isalnum() and second.isalnum() and other_checkpoint.isalnum()
+    assert ev._run_tag("a/model.pt") != ev._run_tag("b/model.pt")
+    print("EVAL_NAMES_RUN_SCOPED_OK")
+
+
 if __name__ == "__main__":
     test_eval_seed_reports_reward_distinct_from_score()
+    test_eval_names_are_unique_across_runs_and_checkpoint_paths()
     test_evaluate_collects_parallel_score_and_reward_lists()
     test_main_writes_rewards_and_formula_to_run_record()
     print("ALL_EVAL_REWARDS_OK")
