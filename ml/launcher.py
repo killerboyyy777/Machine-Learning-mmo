@@ -20,7 +20,17 @@ module importable and unit-testable without a running server.
 
 import ntpath
 import os
-from os.path import abspath, basename, commonpath, isabs, join, normcase, normpath
+from os.path import (
+    abspath,
+    basename,
+    commonpath,
+    isabs,
+    join,
+    normcase,
+    normpath,
+    realpath,
+    relpath,
+)
 
 # The trainer this panel drives. Its flags are the ones #64 names: a
 # checkpoint to resume from, a seed, and an agent count. --steps 0 means
@@ -127,9 +137,9 @@ def defaults(repo_root=None):
 
 
 def _inside(repo_root, path):
-    """True when path resolves to somewhere under repo_root."""
-    root = normcase(abspath(repo_root))
-    target = normcase(abspath(join(root, path) if not isabs(path) else path))
+    """True when the canonical target resolves under the canonical repo root."""
+    root = normcase(realpath(repo_root))
+    target = normcase(realpath(join(root, path) if not isabs(path) else path))
     try:
         return commonpath([root, target]) == root
     except ValueError:
@@ -168,16 +178,22 @@ def resolve_checkpoint(repo_root, path):
     # either OS (CI is Linux, operators are usually on Windows).
     if isabs(text) or ntpath.isabs(text) or (len(text) > 1 and text[1] == ":"):
         return None, "checkpoint path must be relative to the repo root"
-    if not _inside(repo_root, text):
+    root = realpath(abspath(repo_root))
+    target = realpath(join(root, text))
+    if not _inside(root, text):
         return None, "checkpoint path must stay inside the repo"
-    # normpath collapses "torch_agents/../server_config.json", so the parts
-    # tested below are the parts that actually get opened.
-    parts = [p for p in normpath(text).replace("\\", "/").split("/") if p and p != "."]
+    # Check the canonical target, not the spelling supplied by the caller:
+    # a .pt symlink to server_config.json (or outside the repo) is not a
+    # checkpoint even though its lexical path looks allowlisted.
+    relative = relpath(target, root)
+    parts = [
+        p for p in normpath(relative).replace("\\", "/").split("/") if p and p != "."
+    ]
     if len(parts) != 2 or parts[0] not in CHECKPOINT_DIRS:
         return None, f"checkpoint path must be a file directly in {_DIRS_TEXT}"
     if not _checkpoint_name_ok(parts[1]):
         return None, "checkpoint path must end in .pt, .pth or a weights/best .json"
-    return abspath(join(abspath(repo_root), text)), ""
+    return target, ""
 
 
 def validate(request, repo_root):
