@@ -70,8 +70,7 @@ class SharedReward:
 
     def _totals(self):
         return {
-            key: sum(row[key] for row in self._frame.values())
-            for key in self.weights
+            key: sum(row[key] for row in self._frame.values()) for key in self.weights
         }
 
     def shared_value(self):
@@ -181,15 +180,13 @@ def emergence_verdict(report, throughput_floor=0.8, min_bins=2):
     start_entropy = first["mean_action_entropy"]
     end_entropy = last["mean_action_entropy"]
     throughput_by_bin = [
-        sum(_num(value) for value in row.get("throughput", {}).values())
-        for row in bins
+        sum(_num(value) for value in row.get("throughput", {}).values()) for row in bins
     ]
     start_throughput = throughput_by_bin[0]
     end_throughput = throughput_by_bin[-1]
     entropy_fell = end_entropy < start_entropy - 0.01
     throughput_held = start_throughput > 0 and all(
-        value >= start_throughput * throughput_floor
-        for value in throughput_by_bin[1:]
+        value >= start_throughput * throughput_floor for value in throughput_by_bin[1:]
     )
     return {
         "status": (
