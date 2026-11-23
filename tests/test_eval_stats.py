@@ -85,11 +85,13 @@ assert _std == _statistics.stdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3]), _std
 assert _std > _statistics.pstdev([3, 1, 4, 1, 5, 9, 2, 6, 5, 3])
 print("REPORT_STDEV_OK")
 
-# --- #233: rival runs get distinct character-name tags ---
-assert _run_tag("ml_best.json") == "mlbest"
+# --- #233/#737: checkpoint paths and evaluation runs get distinct names ---
+tag = _run_tag("ml_best.json")
+assert tag.startswith("mlbest") and len(tag) == 12 and tag.isalnum(), tag
 assert _run_tag("champ.pt") != _run_tag("base.pt")
 assert len(_run_tag("a" * 50 + ".pt")) <= 12
-assert _run_tag("...") == "run"
+assert _run_tag("...").startswith("run")
+assert _run_tag("a/model.pt") != _run_tag("b/model.pt")
 print("EVAL_TAG_OK")
 
 print("ALL_EVAL_STATS_OK")
