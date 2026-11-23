@@ -22,6 +22,14 @@
   bids are real (`cmd_market_buy_order`); do not add new buy-side trading
   to agent code unasked.
 
+## Wiki
+- The GitHub wiki is a separate repo, pushed directly (no PR). Keep it in sync
+  with every release/update: clone
+  `C:\Users\Jona\AppData\Local\Temp\opencode\mmo-wiki\`, commit, push.
+- Keep only the newest release plan page (e.g. `v0.19-plan.md`). Older plans
+  bloat the wiki; they stay recoverable from the wiki repo's git history.
+  When a new plan is published, delete the previous one in the same push.
+
 ## Comments
 Do not sign your work. No `// agent-name:`, `# overlord:`, `# killerboy:` or similar signature comments anywhere in the codebase.
 
