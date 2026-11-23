@@ -34,7 +34,8 @@ behavior, byte-identical.
 
 The observation covers everything a fixed-size vector can reasonably carry
 about the core systems (instanced party dungeons, the player market, parties,
-and leveling), plus the Town Guard repeatable quest:
+and leveling), plus four repeatable quest chains: Town Guard's guard_charm
+and delver quests, and Sister Maren's remedy and tonic quests:
   - room one-hot over the static surface world + is_dungeon / floor number
   - exit mask across ALL directions including "up"/"down"/"enter"
   - static NPC + ground-item presence, plus a count of unknown NPCs (dungeon
@@ -44,9 +45,9 @@ and leveling), plus the Town Guard repeatable quest:
     market order count + presence, equipped-flag
   - market-tax terms: the server's tax rate, the minimum-tax floor, and the
     exact after-tax net value of our own standing sell orders.
-  - quest terms: whether each quest is active, whether its objective is
-    ready, which charm mats we hold / whether we hold the charm, and whether
-    the quest giver is standing in our room (accept/turn-in both require him).
+  - quest terms: active/ready state and giver presence for all four chains,
+    plus the three materials and crafted-charm flag for guard_charm (accept
+    and turn-in require the relevant quest giver in the room).
   - ammo terms: arrow count as a scalar (bows consume 1 arrow per shot, so
     unlike other items the count -- not just presence -- drives decisions).
 
