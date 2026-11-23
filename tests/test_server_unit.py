@@ -496,9 +496,13 @@ def training_launch_check(folder):
         with open(outside_target, "w", encoding="utf-8") as fh:
             fh.write("checkpoint")
         try:
-            os.symlink(outside_target, os.path.join(checkpoint_dir, "escape.pt"))
             os.symlink(
-                config_target, os.path.join(checkpoint_dir, "config_weights.pt")
+                outside_target,
+                os.path.join(checkpoint_dir, "escape.pt"),
+            )
+            os.symlink(
+                config_target,
+                os.path.join(checkpoint_dir, "config_weights.pt"),
             )
         except (OSError, NotImplementedError):
             print("CHECKPOINT_SYMLINK_TEST_SKIPPED")
