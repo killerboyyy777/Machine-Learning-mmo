@@ -54,7 +54,7 @@ def cross_archetype_reward(signals, weights=None):
     generalist is penalised for dying just as a fighter would; it simply does
     not optimise any single axis to the exclusion of the others.
     """
-    active = weights or DEFAULT_WEIGHTS
+    active = DEFAULT_WEIGHTS if weights is None else weights
     total = 0.0
     for name, weight in active.items():
         total += _num(weight) * archetype_reward(signals, name)
