@@ -66,9 +66,7 @@ class SharedReward:
         """Record one agent's contribution for the current frame."""
         if not isinstance(signals, dict):
             return
-        self._frame[agent_id] = {
-            key: _num(signals.get(key)) for key in self.weights
-        }
+        self._frame[agent_id] = {key: _num(signals.get(key)) for key in self.weights}
 
     def _totals(self):
         return {
