@@ -93,8 +93,9 @@ def test_evaluate_collects_parallel_score_and_reward_lists():
     saved_env = ev.TextMMOEnv
     saved_flat = ev.flatten_obs
     saved_load = ev._load_agent
+    made = []
     try:
-        ev.TextMMOEnv = lambda *a, **k: FakeEnv(*a, **k)
+        ev.TextMMOEnv = lambda *a, **k: made.append(FakeEnv(*a, **k)) or made[-1]
         ev.flatten_obs = lambda obs: obs
         ev._load_agent = lambda policy, cp: lambda feats, mask: 0
         result = asyncio.run(
@@ -167,9 +168,6 @@ def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
     print("EVAL_RECORD_REWARDS_OK")
 
 
-if __name__ == "__main__":
-
-
 def test_eval_names_are_unique_across_runs_and_checkpoint_paths():
     first = ev._eval_character_name("weightsabc123", "run-one", 7)
     second = ev._eval_character_name("weightsabc123", "run-two", 7)
@@ -181,6 +179,8 @@ def test_eval_names_are_unique_across_runs_and_checkpoint_paths():
     assert ev._run_tag("a/model.pt") != ev._run_tag("b/model.pt")
     print("EVAL_NAMES_RUN_SCOPED_OK")
 
+
+if __name__ == "__main__":
     test_eval_seed_reports_reward_distinct_from_score()
     test_eval_names_are_unique_across_runs_and_checkpoint_paths()
     test_evaluate_collects_parallel_score_and_reward_lists()
