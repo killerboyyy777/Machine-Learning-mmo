@@ -15,7 +15,14 @@ sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 sys.path.insert(0, ROOT)
 
 from dqn_agent import TorchDQNAgent  # noqa: E402, F401  (import shape check only)
-from eval import _beta_reg, _run_tag, _t_crit, compare, report  # noqa: E402
+from eval import (  # noqa: E402
+    _beta_reg,
+    _eval_character_name,
+    _run_tag,
+    _t_crit,
+    compare,
+    report,
+)
 from ml_env import PROTOCOL_VERSION as ENV_PROTO  # noqa: E402
 from ml_env import TextMMOEnv  # noqa: E402
 
@@ -92,6 +99,9 @@ assert _run_tag("champ.pt") != _run_tag("base.pt")
 assert len(_run_tag("a" * 50 + ".pt")) <= 12
 assert _run_tag("...").startswith("run")
 assert _run_tag("a/model.pt") != _run_tag("b/model.pt")
+first = _eval_character_name(tag, "run-one", 7)
+second = _eval_character_name(tag, "run-two", 7)
+assert first != second and len(first) == len(second) == 24
 print("EVAL_TAG_OK")
 
 print("ALL_EVAL_STATS_OK")
