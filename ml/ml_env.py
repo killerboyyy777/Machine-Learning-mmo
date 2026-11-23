@@ -70,28 +70,25 @@ Disposition (quicksell vs hold vs speculate) is decided, not hardcoded:
     `step()` info carries `flip_margin`, so trainers can see (and shape)
     whether each disposition matched the opportunity.
 
-Actions added on top of the old (move/attack/take/rest/look) set:
-  - move_up / move_down / move_enter   (dungeon travel; "enter" opens the
-    party's private instance from the graveyard)
-  - buy / sell / equip / use / craft   (basic gear + consumption loop;
-    "craft" builds reinforced_leather, "craft_charm" builds the
-    Ancient Guardian Charm for the Town Guard quest, "craft_iron" builds
-    Iron Plate Armor from 2x Iron Ore + Wolf Pelt, and "craft_arrows"
-    converts 1x Iron Ore into 1 Arrow; "buy" stocks healing
-    herbs while "buy_arrows" stocks arrows -- bows like the Oak Longbow
-    consume 1 arrow per shot and refuse to fire empty)
-  - market_post / market_buy / market_cancel / market_list / market_expand
-    (stall slots are capped per seller; market_expand buys +1 for gold)
+Actions exposed to policies (the integer indices are defined by `ACTIONS` below):
+  - move_<direction>, attack, take, rest, look, flee, drop
+    (surface and dungeon travel, combat escape, and shedding a full pack)
+  - buy / sell / equip / use / craft / gather / heal
+    (merchant trade, gear and consumables, resource gathering, and the
+    Sister Maren full-heal action)
+  - craft_* actions for charms, armor, blades, arrows, oils, and tonics;
+    buy_arrows stocks ammunition for bows
+  - market_post / market_buy / market_cancel / market_list / market_expand /
+    market_buy_order (sell listings, immediate buys, slot expansion, and
+    escrowed standing bids)
+  - commission_post / commission_list / commission_fill / commission_cancel
+    (slay contracts and their escrowed rewards)
   - party_invite / party_accept / party_leave / party_info
-  - heal                               (full heal, only on Sister Maren's tile)
-  - quest_accept / quest_turn_in / quest_list   (four repeatable quests:
-    guard_charm + delver share the Town Guard giver in town_square; remedy +
-    tonic share Sister Maren in healing_spring. Each follows the accept ->
-    objective -> turn-in pattern. quest_accept/quest_turn_in default to
-    "guard_charm": craft the
-    charm from 1x Treant Bark + 1x Troll Hide + 1x Ectoplasm, turn in by the
-    guard for fixed XP + gold + score, repeatable. quest2_accept/quest2_turn_in
-    drive the "delver" quest instead: clear dungeon floors, report back.)
+  - quest_accept / quest_turn_in / quest_list plus quest2_*, quest3_* and
+    quest4_* accept/turn-in pairs (the four repeatable quest chains)
+  - companion_adopt / companion_summon / companion_dismiss / companion_status
+  - guild_create / guild_invite / guild_join / guild_deposit /
+    guild_withdraw / guild_disband / guild_leave / guild_info
 
 Two ways to use this:
   - Fresh name every reset() -> standard episodic RL (clean score=0 start
