@@ -104,7 +104,9 @@ def _run_tag(checkpoint):
     paired comparison, #233)."""
     stem = os.path.splitext(os.path.basename(str(checkpoint)))[0]
     safe_stem = "".join(c for c in stem if c.isalnum())[:6] or "run"
-    path_id = hashlib.sha256(os.path.abspath(str(checkpoint)).encode("utf-8")).hexdigest()[:6]
+    path_id = hashlib.sha256(
+        os.path.abspath(str(checkpoint)).encode("utf-8")
+    ).hexdigest()[:6]
     return safe_stem + path_id
 
 
@@ -121,9 +123,10 @@ async def evaluate(
 ):
     """Evaluate a checkpoint on fixed seeds.
 
-    Returns a dict with two parallel lists: `scores` (legacy score_raw, kept
-    for old comparisons) and `rewards` (the value of the configured reward
-    mode/formula, #469). report() and compare() keep consuming `scores`.
+    Returns parallel `scores` and `rewards` lists plus the evaluation id.
+    The id is shared by all seeds in this invocation; character names also
+    include the checkpoint tag so challenger and baseline accounts stay apart.
+    report() and compare() keep consuming `scores`.
     """
     run_id = run_id or uuid.uuid4().hex[:12]
     act_fn = _load_agent(policy, checkpoint)
