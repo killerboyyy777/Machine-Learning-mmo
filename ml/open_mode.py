@@ -45,52 +45,59 @@ def _num(value):
 
 
 class SharedReward:
-    """Population-level reward handed identically to every agent.
+    """Collect one population frame and compute its common reward.
 
-    Each agent observes its own per-step signal deltas into shared counters;
-    every hook returns the same weighted population value. A population that
-    free-rides therefore scores the same as one that specialises, which is
-    exactly why the reporter must be read alongside throughput.
+    Call begin_frame(), submit each agent's signals through observe() or an
+    observer callback, then read shared_value() once collection is complete.
+    The caller assigns that one value to every agent for the frame. A
+    single-agent callback cannot know contributions that have not arrived yet.
     """
 
     def __init__(self, weights=None, per_capita=True):
         self.weights = dict(weights if weights is not None else DEFAULT_WEIGHTS)
         self.per_capita = bool(per_capita)
-        self._totals = {key: 0.0 for key in self.weights}
-        self._agents = set()
+        self._frame = {}
+
+    def begin_frame(self):
+        """Discard the prior frame before collecting the next population step."""
+        self._frame = {}
 
     def observe(self, agent_id, signals):
-        """Fold one agent's signal dict into the population counters."""
+        """Record one agent's contribution for the current frame."""
         if not isinstance(signals, dict):
             return
-        self._agents.add(agent_id)
-        for key in self.weights:
-            if key in signals:
-                self._totals[key] += _num(signals[key])
+        self._frame[agent_id] = {key: _num(signals.get(key)) for key in self.weights}
+
+    def _totals(self):
+        return {
+            key: sum(row[key] for row in self._frame.values()) for key in self.weights
+        }
 
     def shared_value(self):
-        """The single reward value every agent currently receives."""
-        total = sum(weight * self._totals[key] for key, weight in self.weights.items())
-        if self.per_capita and self._agents:
-            total /= len(self._agents)
+        """Return the common reward after all agents have been observed."""
+        if not self._frame:
+            return 0.0
+        totals = self._totals()
+        total = sum(weight * totals[key] for key, weight in self.weights.items())
+        if self.per_capita:
+            total /= len(self._frame)
         return round(total, 6)
 
-    def hook(self, agent_id):
-        """Return an ``env.reward_fn``-style closure for one agent."""
+    def observer(self, agent_id):
+        """Return a signal-collection callback, not an immediate reward hook."""
 
-        def _reward(signals):
+        def _observe(signals):
             self.observe(agent_id, signals)
-            return self.shared_value()
 
-        return _reward
+        return _observe
 
     def snapshot(self):
-        """JSON-safe view for the runlog / metrics stream."""
+        """JSON-safe view of the currently collected population frame."""
         return {
             "weights": dict(self.weights),
             "per_capita": self.per_capita,
-            "n_agents": len(self._agents),
-            "totals": dict(self._totals),
+            "n_agents": len(self._frame),
+            "totals": self._totals(),
             "shared_value": self.shared_value(),
         }
 
@@ -172,11 +179,14 @@ def emergence_verdict(report, throughput_floor=0.8, min_bins=2):
     first, last = bins[0], bins[-1]
     start_entropy = first["mean_action_entropy"]
     end_entropy = last["mean_action_entropy"]
-    start_throughput = sum(first["throughput"].values())
-    end_throughput = sum(last["throughput"].values())
+    throughput_by_bin = [
+        sum(_num(value) for value in row.get("throughput", {}).values()) for row in bins
+    ]
+    start_throughput = throughput_by_bin[0]
+    end_throughput = throughput_by_bin[-1]
     entropy_fell = end_entropy < start_entropy - 0.01
-    throughput_held = (
-        start_throughput <= 0 or end_throughput >= start_throughput * throughput_floor
+    throughput_held = start_throughput > 0 and all(
+        value >= start_throughput * throughput_floor for value in throughput_by_bin[1:]
     )
     return {
         "status": (

@@ -17,6 +17,10 @@ def test_archetype_and_cross_rewards():
     assert generalist.archetype_reward(signals, "explorer") == 4
     assert generalist.archetype_reward(signals, "social") == 5
     assert generalist.cross_archetype_reward(signals) == 14
+    assert generalist.cross_archetype_reward(signals, {}) == 0
+    assert generalist.same_frame_curve([signals], weights={}, bin_steps=1)[
+        "generalist"
+    ] == [0.0]
     weights = {"fighter": 2.0, "trader": 0.0}
     assert generalist.cross_archetype_reward(signals, weights) == 4
     assert generalist.archetype_reward({"score_delta": 1, "deaths": -1}, "fighter") == 0
