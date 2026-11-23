@@ -1,47 +1,43 @@
-# AGENTS.md - Machine-Learning-mmo contributor notes (humans + agents)
+# AGENTS.md: Machine-Learning-mmo contributor notes
+
+This file is for humans and agents working in this repo.
 
 ## Stack
-- Python server (server.py), text MMO over WebSocket (:8765 game,
-  :8766 dashboard HTTP, :8767 GM loopback). Only hard dep: websockets.
-- Dashboard is static HTML (dashboard.html, no build, no CDN).
-- ML: ml/ env + conductor, torch_agents/ DQN farm (CPU).
-- Tests: `tests/` contains script-style suites plus fixtures/helpers; not every `.py` file is a standalone test. Use the explicit entrypoints in `.github/workflows/tests.yml`; some require a live server, torch, Node, or Firefox.
+
+- The Python server (`server.py`) runs the text MMO over WebSocket: port 8765 for the game, 8766 for dashboard HTTP, and 8767 for the GM loopback. The only hard dependency is `websockets`.
+- The dashboard is static HTML (`dashboard.html`) with no build step and no CDN.
+- The ML code lives in `ml/` (environment and conductor) and `torch_agents/` (CPU DQN farm).
+- Tests in `tests/` are script-style suites plus fixtures and helpers. Not every `.py` file there is a standalone test. Use the explicit entrypoints in `.github/workflows/tests.yml`. Some need a live server, torch, Node, or Firefox.
 
 ## Rules
-- ASCII-only, no emoji. Keep diffs tight, no drive-by refactors.
-- Branches: agent/<issue>-<slug> (or fix/, test/ prefix by kind).
-  Never commit to master. Open PRs, never merge.
-- Stacked PRs: never merge a base branch with `gh pr merge --delete-branch`.
-  The delete closes the child PR and GitHub then refuses both `gh pr reopen`
-  and a base change on a closed PR. Retarget the child to master first. To
-  recover: recreate the ref at the merge SHA
-  (`git push origin <sha>:refs/heads/<branch>`), reopen, retarget.
-- Prove before pushing: named suites + exit codes in the report.
-- Lint: black + ruff clean on CHANGED files (legacy exempt).
-- Never touch .github/workflows/ unasked. Market buy orders and standing
-  bids are real (`cmd_market_buy_order`); do not add new buy-side trading
-  to agent code unasked.
+
+- Use ASCII only, with no emoji. Keep diffs tight and avoid drive-by refactors.
+- Branch with the prefix `agent/<issue>-<slug>`, or `fix/` or `test/` by kind. Never commit to `master`. Open PRs and never merge them.
+- Do not merge a base branch of a stacked PR with `gh pr merge --delete-branch`. The delete closes the child PR, and GitHub then refuses both `gh pr reopen` and a base change on a closed PR. Retarget the child to `master` first. To recover, recreate the ref at the merge SHA with `git push origin <sha>:refs/heads/<branch>`, reopen, and retarget.
+- Prove changes before pushing: name the suites and exit codes in the report.
+- Keep black and ruff clean on changed files. Legacy files are exempt.
+- Never touch `.github/workflows/` unless asked. Market buy orders and standing bids are real (`cmd_market_buy_order`). Do not add new buy-side trading to agent code unless asked.
 
 ## Wiki
-- The GitHub wiki is a separate repo, pushed directly (no PR). Keep it in sync
-  with every release/update: clone
-  `C:\Users\Jona\AppData\Local\Temp\opencode\mmo-wiki\`, commit, push.
-- Keep only the newest release plan page (e.g. `v0.19-plan.md`). Older plans
-  bloat the wiki; they stay recoverable from the wiki repo's git history.
-  When a new plan is published, delete the previous one in the same push.
+
+The GitHub wiki is a separate repository and is pushed directly, without a PR. Keep it in sync with every release and update: clone `C:\Users\Jona\AppData\Local\Temp\opencode\mmo-wiki\`, commit there, and push.
+
+Keep only the newest release plan page, such as `v0.19-plan.md`. Older plans bloat the wiki but stay recoverable from the wiki repository's git history. When you publish a new plan, delete the previous one in the same push.
 
 ## Comments
-Do not sign your work. No `// agent-name:`, `# overlord:`, `# killerboy:` or similar signature comments anywhere in the codebase.
 
-Comments are rare and earn their place: write one only if it helps the next agent (or human) understand something the code alone does not say. A comment describes WHY the code exists -- never WHAT it does. If the what needs explaining, rename instead of commenting.
+Do not sign your work. No `// agent-name:`, `# overlord:`, `# killerboy:`, or similar signature comments anywhere in the codebase.
 
-Questions to ask before writing a comment:
+Write a comment only when it helps the next agent or human understand something the code alone does not say. A comment explains why the code exists, never what it does. If the what needs explaining, rename instead of commenting.
+
+Ask these questions before writing a comment:
+
 - Would an agent reading this cold misunderstand the intent without it?
-- Does it record a decision, a trap, or a reason (WebSocket protocol quirk, tick-loop timing, agent training constraint, save format version)?
+- Does it record a decision, a trap, or a reason, such as a WebSocket protocol quirk, tick-loop timing, an agent training constraint, or a save format version?
 - Will it still be true in six months?
 
 If any answer is no, delete the comment.
 
 ## Proof bar
-- State what you ran, exit codes, and what you did NOT run.
-- Report: branch, base SHA, head SHA, per-item one-liners, files changed.
+
+State what you ran, the exit codes, and what you did not run. In the report, give the branch, the base SHA, the head SHA, a one-line summary of each item, and the files changed.
