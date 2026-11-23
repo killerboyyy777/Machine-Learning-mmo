@@ -483,6 +483,35 @@ def training_launch_check(folder):
 
     # Strict refusals: an ignored typo would train with a default the operator
     # never chose, and the path fields are the ones that write files.
+    # A checkpoint-looking symlink must not escape the repository or
+    # redirect a writable checkpoint to an in-repo configuration file.
+    with tempfile.TemporaryDirectory() as tmp:
+        test_root = os.path.join(tmp, "repo")
+        checkpoint_dir = os.path.join(test_root, "torch_agents")
+        os.makedirs(checkpoint_dir)
+        config_target = os.path.join(test_root, "server_config.json")
+        outside_target = os.path.join(tmp, "outside.pt")
+        with open(config_target, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with open(outside_target, "w", encoding="utf-8") as fh:
+            fh.write("checkpoint")
+        try:
+            os.symlink(outside_target, os.path.join(checkpoint_dir, "escape.pt"))
+            os.symlink(
+                config_target, os.path.join(checkpoint_dir, "config_weights.pt")
+            )
+        except (OSError, NotImplementedError):
+            print("CHECKPOINT_SYMLINK_TEST_SKIPPED")
+        else:
+            got, err = launcher.validate(
+                {"weights": "torch_agents/escape.pt"}, test_root
+            )
+            assert got is None and "inside the repo" in err, (got, err)
+            got, err = launcher.validate(
+                {"weights": "torch_agents/config_weights.pt"}, test_root
+            )
+            assert got is None and "directly in" in err, (got, err)
+
     for bad, fragment in (
         ({"agent": 2}, "unknown field"),
         ({"agents": 0}, "1-32"),
