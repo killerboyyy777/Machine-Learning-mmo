@@ -29,8 +29,10 @@ cat > "$PAYLOAD" <<'JSON'
     {"type": "required_status_checks", "parameters": {
       "strict_required_status_checks_policy": true,
       "required_status_checks": [
-        {"context": "Unit, grind, conductor (no server/torch needed)"},
-        {"context": "Live protocol + ML env (fresh server, seed 700)"},
+        {"context": "Unit, grind, conductor (py3.12)"},
+        {"context": "Unit, grind, conductor (py3.14)"},
+        {"context": "Live protocol + ML env (py3.12)"},
+        {"context": "Live protocol + ML env (py3.14)"},
         {"context": "Checkpoint save/load round-trip (needs torch)"},
         {"context": "Dependency audit (pip-audit)"}
       ]}},
