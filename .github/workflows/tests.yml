@@ -9,9 +9,12 @@ on:
     branches: [master, "review/**", "agent/**", "fix/**"]
   pull_request:
     branches: [master]
+  # release.yml calls this workflow on v* tags so a tag runs the same suite as
+  # master. The push and pull_request triggers above are unchanged.
+  workflow_call: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: Tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
