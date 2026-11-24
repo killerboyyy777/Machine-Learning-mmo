@@ -156,6 +156,7 @@ jobs:
   node-harness:
     name: Dashboard smoke (node stub + headless Firefox)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -177,7 +178,7 @@ jobs:
       - name: Install Firefox system dependencies
         run: |
           for attempt in 1 2 3; do
-            if python -m playwright install-deps firefox; then
+            if timeout -k 10s 180s python -m playwright install-deps firefox; then
               exit 0
             fi
             echo "apt attempt ${attempt} failed; retrying in 15s"
