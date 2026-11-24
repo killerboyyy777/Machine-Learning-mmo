@@ -7,10 +7,12 @@ name: Docker publish
 on:
   push:
     branches: [master]
-    tags: ["v*"]
+  # release.yml calls this workflow on v* tags after the suite and release
+  # succeed. A master push still publishes the edge image here.
+  workflow_call: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: Docker publish-${{ github.ref }}
   cancel-in-progress: true
 
 env:

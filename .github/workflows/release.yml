@@ -1,8 +1,9 @@
 name: Release
 
 # Cutting a release is one step: `git tag vX.Y && git push origin vX.Y`.
-# The step below creates the release with generated notes. Rewrite that body from
-# the pull requests since the previous tag, and set the title, which nothing here
+# The tag calls the full test suite, then creates the release with generated
+# notes, then publishes the versioned image. Rewrite that body from the pull
+# requests since the previous tag, and set the title, which nothing here
 # does: the release step passes no `name:`, so the title defaults to the bare tag.
 #   gh release edit vX.Y --title "vX.Y - <theme>" --notes-file <body.md>
 on:
@@ -13,8 +14,15 @@ permissions:
   contents: write
 
 jobs:
+  tests:
+    name: Full test suite (v* tag)
+    uses: ./.github/workflows/tests.yml
+    permissions:
+      contents: read
+
   release:
     name: Publish GitHub release for tag
+    needs: tests
     runs-on: ubuntu-latest
     env:
       PROFILE_DISPATCH_TOKEN: ${{ secrets.PROFILE_DISPATCH_TOKEN }}
@@ -24,33 +32,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: python tests/test_server_unit.py
-      - run: python tests/test_quest_grind.py
-      - run: python tests/test_snapshot_additions.py
-      - run: python tests/test_conductor.py
-      - run: python tests/test_reward_modes.py
-      - run: python tests/test_scripted_bots.py
-      - run: python tests/test_pbt.py
-      - run: python tests/test_curriculum.py
-      - run: python tests/test_plugins.py
-      - run: python tests/test_env_reset.py
-      - run: python tests/test_env_parsing.py
-      - run: python tests/test_dashboard.py
-      - run: python tests/test_tui.py
-      - run: python tests/test_harness.py
-      - run: python tests/test_snapshot_contract.py
-      - run: python tests/test_scores_backup.py
-      - run: python tests/test_training_loops.py
-      - run: python tests/test_conductor_run.py
-      - run: python tests/test_gm_unit.py
-      - run: python tests/test_farm_resume.py
-      - run: python tests/test_training_health.py
-      - run: python tests/test_balance_harness.py
-      - run: python tests/test_security.py
-      - run: python tests/test_exploit_regressions.py
-      - run: python tests/test_flee.py
-      - run: python tests/test_mcp_client.py
-      - run: python tests/test_modes.py
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
@@ -68,3 +49,11 @@ jobs:
           gh api --method POST \
             /repos/killerboyyy777-agent/killerboyyy777-agent/actions/workflows/metrics.yml/dispatches \
             -f ref=main
+
+  publish-versioned:
+    name: Publish versioned image to GHCR
+    needs: release
+    uses: ./.github/workflows/docker-publish.yml
+    permissions:
+      contents: read
+      packages: write
