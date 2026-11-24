@@ -1,8 +1,12 @@
 """Regression for independent TorchPlugin slot learning cadences."""
 
+import os
 import sys
 from types import ModuleType
 from unittest.mock import patch
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from ml.plugins import torch_plugin
 
