@@ -86,6 +86,7 @@ jobs:
       - run: python tests/test_npc_leash.py
       - run: python tests/test_scripted_danger.py
       - run: python tests/test_arena_spectator.py
+      - run: python tests/test_source_policy.py
 
   live:
     name: Live protocol + ML env (py${{ matrix.python-version }})
