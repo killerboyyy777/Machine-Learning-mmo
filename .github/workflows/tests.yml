@@ -47,6 +47,7 @@ jobs:
       - run: python tests/test_harness.py
       - run: python tests/test_snapshot_contract.py
       - run: python tests/test_scores_backup.py
+      - run: python tests/test_compose_packaging.py
       - run: python tests/test_training_loops.py
       - run: python tests/test_conductor_run.py
       - run: python tests/test_gm_unit.py
