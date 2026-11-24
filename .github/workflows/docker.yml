@@ -48,7 +48,7 @@ jobs:
           docker logs textmmo-ci
           exit 1
 
-      - name: Smoke /health and /api/state
+      - name: Smoke /health, /api/state, dashboard assets and config
         run: |
           python - <<'PY'
           import json
@@ -68,6 +68,14 @@ jobs:
               time.sleep(0.5)
           assert state.get("server"), state
           assert "rooms" in state and "market" in state, sorted(state)
+
+          html = urllib.request.urlopen(base + "/", timeout=5).read()
+          assert b"/uplot.min.js" in html, "dashboard HTML does not reference uPlot"
+          script = urllib.request.urlopen(base + "/uplot.min.js", timeout=5).read()
+          assert len(script) > 1000, "uPlot asset missing from image"
+
+          config = json.load(urllib.request.urlopen(base + "/api/config", timeout=5))
+          assert config.get("files"), config.get("error", "config editor unavailable")
 
           print("DOCKER_SMOKE_OK", json.dumps(health), "rooms", len(state["rooms"]))
           PY

@@ -1,4 +1,6 @@
 # Training-only dependencies (NOT installed by default - see requirements.txt).
+# Single source of truth for the torch pin: the CI persistence job and the
+# Docker torch profile install from this file.
 #
 # Install with:
 #     pip install -r requirements-train.txt

@@ -16,4 +16,4 @@ Use **Security > Report a vulnerability** for those. Game balance problems, such
 
 ## What is not a defect
 
-The dashboard listens on `0.0.0.0` by default and reads are unauthenticated. `/api/state` publishes player names, guild vault totals, and recent deaths. `/api/activity/stream` publishes the command log. That is an exposure decision the operator makes, not a vulnerability. The same goes for publishing the GM port: the peer gate still refuses anything that is not loopback.
+The dashboard listens on `0.0.0.0` by default and reads are unauthenticated. `/api/state` publishes player names, guild vault totals, and recent deaths. `/api/activity/stream` publishes the command log. That is an exposure decision the operator makes, not a vulnerability. The same goes for publishing the GM port. The peer gate still refuses anything that is not loopback.

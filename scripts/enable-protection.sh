@@ -24,21 +24,28 @@ cat > "$PAYLOAD" <<'JSON'
   "name": "Master Branch Protection",
   "target": "branch",
   "enforcement": "active",
-  "conditions": {"ref_name": {"include": ["refs/heads/master"]}},
+  "conditions": {"ref_name": {"include": ["refs/heads/master"], "exclude": []}},
   "rules": [
     {"type": "required_status_checks", "parameters": {
       "strict_required_status_checks_policy": true,
       "required_status_checks": [
-        {"context": "Unit, grind, conductor (no server/torch needed)"},
-        {"context": "Live protocol + ML env (fresh server, seed 700)"},
+        {"context": "Unit, grind, conductor (py3.12)"},
+        {"context": "Unit, grind, conductor (py3.14)"},
+        {"context": "Live protocol + ML env (py3.12)"},
+        {"context": "Live protocol + ML env (py3.14)"},
         {"context": "Checkpoint save/load round-trip (needs torch)"},
-        {"context": "Dependency audit (pip-audit)"}
+        {"context": "Dependency audit (pip-audit)"},
+        {"context": "Full-repository Ruff + Black"},
+        {"context": "Dashboard smoke (node stub + headless Firefox)"},
+        {"context": "Docker image build + container health"}
       ]}},
     {"type": "non_fast_forward"},
     {"type": "deletion"}
   ]
 }
 JSON
-gh api --method POST repos/killerboyyy777/Machine-Learning-mmo/rulesets \
+# Update the existing ruleset in place. A POST would create a second one with
+# the same name and leave both active.
+gh api --method PUT repos/killerboyyy777/Machine-Learning-mmo/rulesets/23552101 \
   --input "$PAYLOAD" --jq '{id, name, enforcement}'
 echo "Branch protection ruleset applied."
