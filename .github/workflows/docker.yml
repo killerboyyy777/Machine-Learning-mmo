@@ -5,7 +5,7 @@ name: Docker packaging
 # required test jobs stay untouched; no game traffic is generated here.
 on:
   push:
-    branches: [master, "review/**", "agent/**", "fix/**"]
+    branches: [master, "review/**", "agent/**", "fix/**", "test/**"]
   pull_request:
     branches: [master]
 

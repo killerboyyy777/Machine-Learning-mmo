@@ -6,7 +6,7 @@ on:
     # reads workflow files from the pushed branch, and agent branches
     # predate every CI addition). fix/** added 09-27: seat fix branches
     # had zero CI signal.
-    branches: [master, "review/**", "agent/**", "fix/**"]
+    branches: [master, "review/**", "agent/**", "fix/**", "test/**"]
   pull_request:
     branches: [master]
   # release.yml calls this workflow on v* tags so a tag runs the same suite as
@@ -21,6 +21,7 @@ jobs:
   offline:
     name: Unit, grind, conductor (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +90,7 @@ jobs:
   live:
     name: Live protocol + ML env (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +119,7 @@ jobs:
   persistence:
     name: Checkpoint save/load round-trip (needs torch)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -132,6 +135,7 @@ jobs:
   audit:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -143,6 +147,7 @@ jobs:
   lint:
     name: Full-repository Ruff + Black
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

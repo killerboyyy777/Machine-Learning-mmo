@@ -5,7 +5,7 @@ on:
     # Mirror tests.yml: agent/review pushes otherwise get no CI signal
     # (push CI reads workflow files from the pushed branch). fix/**
     # added 09-27 for seat fix branches.
-    branches: [master, "review/**", "agent/**", "fix/**"]
+    branches: [master, "review/**", "agent/**", "fix/**", "test/**"]
   pull_request:
     branches: [master]
   schedule:
@@ -22,6 +22,7 @@ jobs:
   codeql:
     name: CodeQL (python)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       security-events: write
       actions: read
@@ -37,6 +38,7 @@ jobs:
     name: Dependency review
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/dependency-review-action@v5
@@ -44,6 +46,7 @@ jobs:
   secrets:
     name: Secret scan (trufflehog)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
