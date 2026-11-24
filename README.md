@@ -29,7 +29,7 @@ docker compose --profile soak up soak        # one-shot conductor soak
 docker compose --profile torch up --build    # torch farm (builds CPU torch)
 ```
 
-`compose.yaml` builds one small image from `python:3.14-slim` and `requirements.txt`. Torch is only in the `torch` profile. The GM stream stays inside the compose network (`TEXTMMO_GM_HOST=0.0.0.0` so `soak` can snapshot tables) and is not published to the host. GM has no authentication, so publish port 8767 only on trusted machines. The server uses protocol v2 (`PROTOCOL_VERSION = 2`; see the [Protocol](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki/Protocol) page).
+`compose.yaml` builds one small image from `python:3.14-slim` and `requirements.txt`. Torch is only in the `torch` profile. The `soak` service shares the server's network namespace (`network_mode: service:server`) and snapshots tables over loopback at `ws://127.0.0.1:8767`, which passes the server's loopback-only GM gate. Port 8767 is not published to the host, and GM has no authentication, so leave it that way; publishing it does not bypass the gate (see [SECURITY.md](SECURITY.md)). The server uses protocol v2 (`PROTOCOL_VERSION = 2`; see the [Protocol](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki/Protocol) page).
 
 ### Prebuilt images
 

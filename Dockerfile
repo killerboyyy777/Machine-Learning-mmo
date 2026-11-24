@@ -29,6 +29,10 @@ COPY tui/ ./tui/
 COPY ml/ ./ml/
 COPY torch_agents/ ./torch_agents/
 
+# Docker turns a non-existent volume target into a directory; seed the file
+# so the opt-in server-scores mount lands on scores.json and saves still rotate.
+RUN printf '{}\n' > scores.json
+
 RUN python -c "import rich, start, tui.app; print('DOCKER_TUI_IMPORT_OK')"
 
 EXPOSE 8765 8766 8767
