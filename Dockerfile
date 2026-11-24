@@ -11,13 +11,14 @@ WORKDIR /app
 
 # Lean runtime deps first (better layer cache).
 COPY requirements.txt ./
+COPY requirements-train.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Optional PyTorch (CPU) for the torch-farm profile only.
 # Kept as a build arg so the default `docker compose up` stays small.
 ARG INSTALL_TORCH=0
 RUN if [ "$INSTALL_TORCH" = "1" ]; then \
-      pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu; \
+      pip install --no-cache-dir -r requirements-train.txt; \
     fi
 
 # Runtime code: server (game + dashboard + GM stream), TUI + launcher,

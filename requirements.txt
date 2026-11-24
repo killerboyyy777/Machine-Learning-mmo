@@ -10,18 +10,18 @@
 
 websockets==17.4
 
-# Rich — only for `tui/`, the ssh terminal UI that reads the same
+# Rich - only for `tui/`, the ssh terminal UI that reads the same
 # `/api/state` snapshot the browser dashboard polls. Not imported by
 # server.py, ml/, torch_agents/ or the tests that don't touch the TUI:
 #     pip install -r requirements.txt
 # is the only install step for `python -m tui`.
 rich==15.0.0
 
-# PyTorch (CPU) — only needed for the deep-learning agent
+# PyTorch (CPU) - only needed for the deep-learning agent
 # (`torch_agents/dqn_agent.py`). Training deps live in
 # requirements-train.txt (not installed by default):
 #     pip install -r requirements-train.txt
-# (torch 2.14.0+cpu verified on Python 3.14)
+# (torch CPU version pinned in requirements-train.txt)
 #
 # Pinned deps above are audited by pip-audit in CI (see #58):
 #     pip-audit -r requirements.txt
