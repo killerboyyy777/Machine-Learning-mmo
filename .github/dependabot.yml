@@ -15,3 +15,15 @@ updates:
     open-pull-requests-limit: 3
     labels:
       - dependencies
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    ignore:
+      # #741: the 3.15 base-image move is deferred until 3.14 CI coverage is proven.
+      - dependency-name: python
+        versions: [">= 3.15, < 3.16"]

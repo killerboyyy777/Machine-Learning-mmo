@@ -16,6 +16,7 @@ jobs:
     # this keeps the weekly cadence from #138.
     name: Weekly pip-audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
