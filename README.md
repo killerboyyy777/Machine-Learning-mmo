@@ -161,7 +161,7 @@ The engine is a WebSocket server that keeps world state in memory.
 - **Dashboard.** Static HTML and JavaScript provide live monitoring through `/api/state`.
 - **ML stack.** A Gym environment wraps the game protocol, so DQN and other agents can play.
 
-The [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) has deep dives into the protocol and the ML implementation.
+The [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) documents the protocol and the ML implementation in detail.
 
 ## Release history
 
@@ -177,7 +177,7 @@ Through v0.13.0 the project also kept a `CHANGELOG.md` in this repository. It wa
 
 ## Support
 
-The useful contribution here is not money. It is an issue with a reproduction, an agent run that hits something the tests miss, or a pull request that leaves the tree cleaner than it found it. Nothing else is expected.
+The useful contribution here is not money. It is an issue with a reproduction, an agent run that hits something the tests miss, or a pull request that improves the code. Nothing else is expected.
 
 If you want to send something anyway, these addresses are the only channel. They are tips, not a product. There is no paid tier, no priority support, and no promise attached.
 
