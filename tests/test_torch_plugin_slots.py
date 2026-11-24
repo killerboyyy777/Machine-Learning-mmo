@@ -8,7 +8,7 @@ from unittest.mock import patch
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from ml.plugins import torch_plugin
+from ml.plugins import torch_plugin  # noqa: E402
 
 
 class _FakeDQNAgent:
