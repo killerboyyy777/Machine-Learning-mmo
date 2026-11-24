@@ -151,15 +151,13 @@ PROTOCOL_VERSION = 2
 HP_REGEN_AMOUNT = 2
 HP_REGEN_SECONDS = 10
 HP_REGEN_DAMAGE_WINDOW = 15
-# Zonal respawn differential. It used to slow a civilian room's hostiles to
-# half a wild room's rate (#538), which left the gate's civ death floor at
-# 0.351/agent-hour against a 0.5 floor while wild sat at 0.363 -- both zones
-# needed the same lift. At this rate wild holds 0.75-1.23 while civ still
-# misses on quiet seeds (0.426 on 701 against 0.614 and 1.027), so civ now
-# respawns faster than wild to buy margin where the floor is hardest to hit.
-# Applied when the kill schedules the respawn.
+# Zonal respawn differential. The old civ-slower-than-wild split (#538) left
+# both death floors short, so civ was sped up first. The v0.19 gate then
+# blocked on wild (0.401/hour against a 0.5 floor) with no gameplay change
+# since v0.18, so wild is now sped up past civ (#754). Multipliers apply when
+# the kill schedules the respawn; the floor itself is never moved.
 CIV_NPC_RESPAWN_MULT = 0.5
-WILD_NPC_RESPAWN_MULT = 0.6
+WILD_NPC_RESPAWN_MULT = 0.4
 # Recent-action ring used by variety scoring; unbounded history would let an
 # old playstyle keep counting after the player switched.
 ACTION_WINDOW = 20
@@ -3285,7 +3283,8 @@ market_orders = []
 market_bids = []
 MARKET_HISTORY_SIZE = 50
 market_history = []
-tax_treasury = float(os.environ.get("TEXTMMO_GM_SEED", 0) or 0)
+WORLD_SEED = os.environ.get("TEXTMMO_GM_SEED", 0) or 0
+tax_treasury = float(WORLD_SEED)
 tax_collected_lifetime = 0.0
 tax_sunk_lifetime = 0.0  # gross inflow removed by the reserve sink (#403)
 
@@ -14968,6 +14967,8 @@ async def _run_resilient(task_name, coro_factory):
 
 
 async def main():
+    # Reproducible world RNG for the balance gate (#754).
+    random.seed(int(float(WORLD_SEED)))
     log_file = os.environ.get("TEXTMMO_LOG_FILE")
     if log_file:
         _logf = open(log_file, "a", buffering=1)
