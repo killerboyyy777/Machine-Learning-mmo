@@ -1,6 +1,6 @@
 # Contributing
 
-Everyone is welcome: non-coder players and config tuners on one side, ML researchers and engine hackers on the other. Pick a lane below. Both lanes follow the same workflow and the [Code of Conduct](CODE_OF_CONDUCT.md).
+Everyone is welcome. Non-coder players and config tuners sit on one side, ML researchers and engine hackers on the other. Pick a lane below. Both lanes follow the same workflow and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Workflow for all contributors
 
@@ -11,12 +11,12 @@ Everyone is welcome: non-coder players and config tuners on one side, ML researc
    python tests/test_server_unit.py
    python tests/test_quest_grind.py
    ```
-   If you touched the protocol or the economy, also run the live suite against a fresh server: clear `scores.json` with `echo '{}' > scores.json`, start the server with `TEXTMMO_GM_SEED=700`, then run `python tests/test_live.py && python tests/test_env.py`.
+   If you touched the protocol or the economy, also run the live suite against a fresh server. Clear `scores.json` with `echo '{}' > scores.json`, start the server with `TEXTMMO_GM_SEED=700`, then run `python tests/test_live.py && python tests/test_env.py`.
 4. **Keep the protocol stable.** The WebSocket JSON protocol is the contract between the server, dashboard, bots, and agents. If you change a command, event, or observation shape, say so in the PR and update `README.md`, `dashboard.html`, and the ML env in the same PR.
 5. **Ship docs with the change.** Every PR updates the docs it affects. Do not open a "docs later" PR. Use `README.md` and the wiki for behavior, the PR body for anything user-visible (release notes are written from it), docstrings for new modules and functions, and `.github/` docs for workflow changes. A PR with stale docs is not done.
 6. **Install the pre-commit hooks once.** Run `pip install pre-commit && pre-commit install`. Black, ruff, mypy, and a fast test subset then run on every commit. See `.pre-commit-config.yaml`.
 
-## Lane 1: Non-coders (config, dashboard, balance)
+## Lane 1: non-coders (config, dashboard, balance)
 
 No code required.
 
@@ -25,12 +25,12 @@ No code required.
 - **Report balance issues** as bugs with numbers: faucet and sink math, what an agent or player can extract per hour, and a replay or log.
 - **Suggest dashboard panels** in an issue with a sketch and the `/api/state` fields it needs.
 
-## Lane 2: Researchers and engine hackers (agents, algorithms, experiments)
+## Lane 2: researchers and engine hackers (agents, algorithms, experiments)
 
 - **New agent or reward mode?** Reuse the harness. `TextMMOEnv` in `ml/` fixes the observation and action space, `ml/ml_botfarm.py --scripted` holds the baselines, and `python -m torch_agents.eval --checkpoint X --seeds 10` runs evaluation. Report the mean and standard deviation over seeds, never a single run.
 - **Checkpoints carry provenance.** The git SHA, config hash, and observation and action dimensions are embedded on save (see `checkpoint_version()`). Mention them when you compare runs.
 - **Conductor runs** need a live server: `python ml/conductor/soak.py --agents N --duration S`. Keep the `--min-agents` gates honest; a failed gate is a failure. The tool resumes prior state by default. Select wipes with `--reset none|lineage|cell|all` and `--resume/--no-resume`.
-- **Mind the perf budget.** The server is single-process asyncio. If your PR adds per-command or per-tick work, note its cost. The nightly soak and the 30-agent farm are the canaries.
+- **Mind the perf budget.** The server is single-process asyncio. If your PR adds per-command or per-tick work, note its cost. Watch the nightly soak and the 30-agent farm for regressions.
 
 ## Branch protection
 
