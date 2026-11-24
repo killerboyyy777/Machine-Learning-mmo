@@ -2,7 +2,7 @@
 # One command: `docker compose up` runs server + dashboard + agents.
 # Default image is lean (server + dashboard + ml env + botfarm, no torch).
 # Torch profile builds with --build-arg INSTALL_TORCH=1 (CPU wheel).
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
