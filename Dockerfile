@@ -22,7 +22,7 @@ RUN if [ "$INSTALL_TORCH" = "1" ]; then \
 
 # Runtime code: server (game + dashboard + GM stream), TUI + launcher,
 # configs, world, ML env + botfarm + conductor, torch agents.
-COPY server.py dashboard.html world.json server_config.json ./
+COPY server.py dashboard.html world.json server_config.json uplot.min.js config_schema.py config_write.py ./
 COPY start.py ./
 COPY tui/ ./tui/
 COPY ml/ ./ml/
