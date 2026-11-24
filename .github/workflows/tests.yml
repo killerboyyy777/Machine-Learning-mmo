@@ -41,6 +41,7 @@ jobs:
       - run: python tests/test_pbt.py
       - run: python tests/test_curriculum.py
       - run: python tests/test_plugins.py
+      - run: python tests/test_torch_plugin_slots.py
       - run: python tests/test_env_reset.py
       - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
@@ -185,7 +186,7 @@ jobs:
       - name: Pin apt mirror to Azure
         run: |
           printf 'http://azure.archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i -E 's#https?://[^/]*ec2\.archive\.ubuntu\.com#http://azure.archive.ubuntu.com#g' {} + || true
+          sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i -E 's#https?://[^/]*ec2\\.archive\\.ubuntu\\.com#http://azure.archive.ubuntu.com#g' {} + || true
       - name: Install Firefox system dependencies
         run: python -m playwright install-deps firefox
       - name: Install Firefox browser
