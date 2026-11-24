@@ -1,13 +1,20 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "small-text-mmo-engine"
-version = "0.1.0"
+version = "0.19.0"
 description = "A minimal, hackable text-based MMORPG engine with an ML agent stack."
+readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = ["websockets==17.4", "rich==15.0.0"]
+
+[project.scripts]
+small-text-mmo = "start:main"
 
 [tool.setuptools]
-packages = []
-py-modules = []
+py-modules = ["server", "start", "config_schema", "config_write"]
+packages = ["ml", "ml.conductor", "ml.modes", "ml.plugins", "torch_agents", "tui", "harness"]
