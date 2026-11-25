@@ -50,13 +50,29 @@ function makeEl(id) {
 
 const els = {};
 const docHandlers = {};
+// The tab wiring binds only when querySelectorAll(".tab") returns a tab bar;
+// an empty list skips every handler and leaves the keyboard proof to static
+// text. These stubs carry the attributes and focus the handler reads back.
+const TAB_NAMES = ["overview", "world", "players", "market", "dungeon", "arena",
+  "agents", "plugins", "quests", "crafting", "guilds", "config", "runs", "gm"];
+const stubTabs = TAB_NAMES.map(name => {
+  const el = makeEl("tab-" + name);
+  el.dataset.tab = name;
+  el._attrs = {};
+  el.setAttribute = (k, v) => { el._attrs[k] = String(v); };
+  el.focused = false;
+  el.focus = () => { el.focused = true; };
+  el.click = () => el.fire("click", {});
+  return el;
+});
+const stubViews = TAB_NAMES.map(name => (els["view-" + name] = makeEl("view-" + name)));
 const sandbox = {
   console, Math, JSON, Object, Array, String, Number, Boolean, Date,
   document: {
     documentElement: { dataset: {} },
     hidden: false,
     getElementById: id => (els[id] ||= (realIds.has(id) ? makeEl(id) : undefined)),
-    querySelectorAll: () => [],
+    querySelectorAll: sel => (sel === ".tab" ? stubTabs : sel === ".tabview" ? stubViews : []),
     createElement: () => makeEl("dyn"),
     // Recorded like the element stubs: the config editor delegates on
     // document, and a no-op here would prove nothing about those handlers.
@@ -668,13 +684,56 @@ async function arenaFollowLifecycleCase() {
   }
 }
 
-configCase().then(geoCase).then(arenaFollowLifecycleCase).then(() => {
+function tabCase() {
+  // Dispatch the keydown on a real tab stub: the handler walks the tabEls it
+  // captured at load time, calls next.click() and next.focus(), and the click
+  // handler owns the aria-selected / tabindex swap.
+  vm.runInContext("lastState = null", sandbox);
+  for (const t of stubTabs) {
+    const selected = t.dataset.tab === "overview";
+    t._attrs["aria-selected"] = selected ? "true" : "false";
+    t._attrs["tabindex"] = selected ? "0" : "-1";
+    t.focused = false;
+  }
+  const keyCase = (from, key, want) => {
+    const ev = { key: key, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; } };
+    stubTabs[from].fire("keydown", ev);
+    const next = stubTabs[want];
+    const prev = stubTabs[from];
+    if (!ev.defaultPrevented) {
+      failed++; console.error("FAIL tab " + key + " did not preventDefault");
+    }
+    if (next._attrs["aria-selected"] !== "true" || next._attrs["tabindex"] !== "0") {
+      failed++; console.error("FAIL tab " + key + " did not select " + next.dataset.tab);
+    }
+    if (prev._attrs["aria-selected"] !== "false" || prev._attrs["tabindex"] !== "-1") {
+      failed++; console.error("FAIL tab " + key + " left " + prev.dataset.tab + " selected");
+    }
+    if (!next.focused) {
+      failed++; console.error("FAIL tab " + key + " did not focus " + next.dataset.tab);
+    }
+    if (vm.runInContext("activeTab", sandbox) !== next.dataset.tab) {
+      failed++; console.error("FAIL tab " + key + " activeTab drift");
+    }
+    if (stubTabs.filter(t => t._attrs["aria-selected"] === "true").length !== 1) {
+      failed++; console.error("FAIL tab " + key + " left multiple tabs selected");
+    }
+  };
+  keyCase(0, "ArrowRight", 1);
+  keyCase(1, "ArrowLeft", 0);
+  keyCase(5, "Home", 0);
+  keyCase(2, "End", 13);
+  console.log("TAB_KEYS_OK");
+}
+
+configCase().then(geoCase).then(arenaFollowLifecycleCase).then(tabCase).then(() => {
   if (failed) {
     console.error("PROVE_FAIL (" + failed + ")");
     process.exitCode = 1;
     return;
   }
-  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow)");
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow+tabs)");
 }).catch(e => {
   console.error("SMOKE_THREW " + ((e && e.stack) || e));
   process.exit(1);
