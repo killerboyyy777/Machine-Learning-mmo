@@ -12491,7 +12491,7 @@ async def arena_attack(player, target_name):
 
 async def _arena_forfeit(match, player, reason):
     team = match.team_of(player.id)
-    winner = 2 if team == 1 else (1 if team == 2 else 0)
+    winner = _arena_winner(match) or (2 if team == 1 else (1 if team == 2 else 0))
     rec = match.players.pop(player.id, None)
     await _arena_send(match, f"{player.name} {reason}.")
     if rec is not None:
@@ -12515,7 +12515,7 @@ async def arena_on_disconnect(player):
         player.arena_team = 0
         return
     team = match.team_of(player.id)
-    winner = 2 if team == 1 else (1 if team == 2 else 0)
+    winner = _arena_winner(match) or (2 if team == 1 else (1 if team == 2 else 0))
     match.players.pop(player.id, None)
     match.forfeits.append({"name": player.name, "team": team})
     player.arena_match = 0
@@ -15207,6 +15207,7 @@ async def main():
         save_companions()
         save_guilds()
         save_intel()
+        save_arena()
         print("Scores saved. Bye.", flush=True)
 
 
