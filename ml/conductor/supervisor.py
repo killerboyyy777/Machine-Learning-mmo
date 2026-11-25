@@ -403,8 +403,9 @@ class Supervisor:
         self._policy_failed = {}  # policy closure -> reason it was retired
         # Launch specs per agent so PBT exploit can restart losers with
         # fresh envs/policies that reload the copied weights (#228).
-        # policy_factory(checkpoint_path, hparams) rebuilds the policy
-        # from the loser's checkpoint file; None keeps the stored closure.
+        # policy_factory(checkpoint_path, hparams) rebuilds (policy, learn,
+        # reward) from the loser's checkpoint file; None keeps the stored
+        # closure and hooks.
         self._specs = (
             {}
         )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook, policy_timeout)
@@ -711,11 +712,12 @@ class Supervisor:
 
         The stored policy closure is NOT reused: it closes over the
         plugin instance that loaded the pre-exploit weights, so relaunching
-        it would train stale weights while the copied checkpoint file sits
+        it would act on stale weights while the copied checkpoint file sits
         untouched. Instead the stored policy_factory rebuilds the policy
-        from the agent's checkpoint file (now holding the winner's weights)
-        with the new hparams overlaid; a failing rebuild falls back to the
-        stored closure so the agent survives. A successful restart
+        and its learn/reward hooks from a fresh plugin instance loading the
+        agent's checkpoint file (now holding the winner's weights) with the
+        new hparams overlaid; a failing rebuild falls back to the stored
+        closure and hooks so the agent survives. A successful restart
         re-assigns the agent to the mixer (shutdown dropped it). Returns
         True when a task runs after. Refusals (unknown/dead entries) leave
         any running task untouched.
@@ -757,9 +759,15 @@ class Supervisor:
         ) = spec
         if policy_factory is not None:
             try:
-                policy_fn = policy_factory(entry.checkpoint_path, hparams or {})
+                policy_fn, learn_hook, reward_hook = policy_factory(
+                    entry.checkpoint_path, hparams or {}
+                )
             except Exception:
+                # Out-of-tree factories that return a bare policy are still
+                # supported: keep the original spec's hooks with it.
                 policy_fn = spec[1]
+                learn_hook = spec[5]
+                reward_hook = spec[6]
         started = await self.start_agent(
             agent_id,
             env_factory,
