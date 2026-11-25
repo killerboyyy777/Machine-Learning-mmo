@@ -11,10 +11,12 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "ml"))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
 import runlog  # noqa: E402
+import server as srv  # noqa: E402
 from dqn_agent import TorchDQNAgent  # noqa: E402
 from ml_client import LinearQAgent  # noqa: E402
 from ml_env import N_ACTIONS, OBS_SIZE  # noqa: E402
@@ -307,6 +309,72 @@ def runlog_pkg_import_check():
     print("RUNLOG_PKG_IMPORT_OK")
 
 
+def freight_refund_persistence_check(folder):
+    """Terminal freight refunds survive a save/load cycle (#857)."""
+    path = os.path.join(folder, "freight.json")
+    saved = (
+        srv.FREIGHT,
+        srv._freight_counter,
+        srv._freight_dirty,
+        srv.FREIGHT_FILE_BLOCKED,
+    )
+    row = {
+        "poster": "Poster",
+        "poster_kind": "player",
+        "hauler": "Hauler",
+        "origin": "market",
+        "destination": "smithy",
+        "items": [],
+        "fee": 20,
+        "deposit": 10,
+        "bonus": 0,
+        "bonus_until": 0.0,
+        "posted_at": 1.0,
+        "expires_at": 100.0,
+        "state": "lost",
+        "refund": 30,
+        "delivered_at": 0.0,
+        "lost_at": 50.0,
+    }
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_FILE_BLOCKED = False
+        srv.FREIGHT[1] = dict(row, id=1)
+        srv.FREIGHT[2] = dict(row, id=2, state="open")
+        srv.FREIGHT[3] = dict(row, id=3, state="open", refund=0, items=["rat_tail"])
+        srv.FREIGHT[4] = dict(row, id=4, refund=0)
+        assert srv.save_freight(path) is True
+        srv.FREIGHT = {}
+        loaded = srv.load_freight(path)
+        assert set(loaded) == {1, 3}, loaded
+        assert loaded[1]["state"] == "lost" and loaded[1]["refund"] == 30, loaded[1]
+        assert loaded[1]["items"] == [], loaded[1]
+        assert loaded[3]["items"] == ["rat_tail"], loaded[3]
+        srv.FREIGHT = loaded
+        poster = srv.Player(
+            ws=None,
+            id=1,
+            name="Poster",
+            logged_in=False,
+            hp=10,
+            max_hp=10,
+            room="market",
+            gold=0,
+            inventory=[],
+        )
+        owed = srv._freight_flush_refunds(poster)
+        assert owed == 30 and poster.gold == 30, (owed, poster.gold)
+        assert loaded[1]["refund"] == 0, loaded[1]
+    finally:
+        (
+            srv.FREIGHT,
+            srv._freight_counter,
+            srv._freight_dirty,
+            srv.FREIGHT_FILE_BLOCKED,
+        ) = saved
+    print("FREIGHT_REFUND_PERSISTENCE_OK")
+
+
 with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
     linear_bad_checkpoint_check(folder)
@@ -314,4 +382,5 @@ with tempfile.TemporaryDirectory() as folder:
     runlog_check(folder)
     runlog_sendback_check(folder)
     runlog_pkg_import_check()
+    freight_refund_persistence_check(folder)
 print("PERSISTENCE_ALL_OK")
