@@ -224,6 +224,7 @@ async def main():
                 await asyncio.sleep(0)
                 await ws.inbox.put(json.dumps({"cmd": "gm_pong"}))
                 await ws.inbox.put(json.dumps(["not", "a", "dict"]))
+                await ws.inbox.put(json.dumps({"cmd": []}))
                 ws.ended = True
                 await task
                 assert not ws.closed, f"{label} GM connection must be accepted"
@@ -234,6 +235,9 @@ async def main():
                 assert any(
                     "JSON objects" in m.get("text", "") for m in inbox
                 ), f"{label}: expected non-dict guard error: {inbox}"
+                assert any(
+                    m.get("text") == "invalid command" for m in inbox
+                ), f"{label}: expected non-string cmd guard error: {inbox}"
                 print(f"GM_ACCEPT_{label.upper()}_OK")
         finally:
             srv.GM_HANDLERS = real_handlers
