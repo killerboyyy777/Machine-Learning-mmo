@@ -271,7 +271,7 @@ class Registry:
         if not d.is_dir():
             return None
         try:
-            with open(d / "goal.json") as f:
+            with open(d / "goal.json", encoding="utf-8") as f:
                 goal = json.load(f)
         except (OSError, ValueError):
             goal = {}
@@ -325,7 +325,7 @@ class Registry:
             reg_path = self.base_dir / "registry.json"
             if reg_path.is_file():
                 try:
-                    with open(reg_path) as f:
+                    with open(reg_path, encoding="utf-8") as f:
                         data = json.load(f)
                     for a in data.get("agents", []):
                         a["parent_id"] = None
@@ -352,7 +352,7 @@ class Registry:
         path = path or str(self.base_dir / "registry.json")
         if not os.path.exists(path):
             return
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         with self._lock:
             for a in data.get("agents", []):
