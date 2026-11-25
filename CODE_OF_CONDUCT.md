@@ -40,6 +40,14 @@ This Code of Conduct applies in all community spaces, including the repository, 
 3. **Temporary ban.** For serious violations or sustained inappropriate behavior, a temporary ban from community interaction.
 4. **Permanent ban.** For patterns of harassment, cheating-exploit abuse, or aggression toward maintainers or members, a permanent ban.
 
+## Reporting
+
+Report suspected violations privately through the private reporting channel configured for this repository (`[private reporting channel]`). Repository owners should replace the placeholder with the channel they maintain.
+
+Do not file conduct reports in public issues, discussions, or the dashboard. Public reports can expose the people involved.
+
+Maintainers review every private report and keep the reporter's identity confidential.
+
 ## Attribution
 
 This Code of Conduct is adapted from the [Contributor Covenant][homepage], version 2.1, available at [https://www.contributor-covenant.org/version/2/1/code_of_conduct.html][v2.1].
