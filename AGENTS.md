@@ -13,6 +13,7 @@ This file is for humans and agents working in this repo.
 
 - Use ASCII only in code and code comments, with no emoji. Docs may use normal punctuation. Keep diffs tight and avoid drive-by refactors.
 - Branch with the prefix `agent/<issue>-<slug>`, or `fix/` or `test/` by kind. Never commit to `master`. Open PRs and never merge them without the main-account review and green checks.
+- Assign every unassigned PR to `killerboyyy777-agent` and take it over, regardless of who authored it. A PR explicitly assigned to the main account stays with the main account; leave that one alone.
 - Do not merge a base branch of a stacked PR with `gh pr merge --delete-branch`. The delete closes the child PR, and GitHub then refuses both `gh pr reopen` and a base change on a closed PR. Retarget the child to `master` first. To recover, recreate the ref at the merge SHA with `git push origin <sha>:refs/heads/<branch>`, reopen, and retarget.
 - Prove changes before pushing. Name the suites and exit codes in the report.
 - Keep black and ruff clean on changed files; CI also runs both across the repository, so a touched legacy file must be clean too.
