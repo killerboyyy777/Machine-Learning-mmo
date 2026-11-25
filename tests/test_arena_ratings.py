@@ -191,6 +191,24 @@ async def main():
         assert loaded["floorbot"]["rating"] == srv.ARENA_RATING_FLOOR
         print("STORE_ROUNDTRIP_OK")
 
+        # A failed final replace must not leave the live path absent (#811).
+        real_replace = os.replace
+
+        def fail_live_replace(src, dst):
+            if dst == path:
+                raise OSError("simulated replace failure")
+            return real_replace(src, dst)
+
+        srv.os.replace = fail_live_replace
+        try:
+            assert srv.save_arena(path) is False
+            assert os.path.exists(path), "live file vanished on failed replace"
+            assert os.path.exists(path + ".1")
+            assert not os.path.exists(path + ".tmp"), "temp file left behind"
+        finally:
+            srv.os.replace = real_replace
+        print("ARENA_FAILED_REPLACE_KEEPS_LIVE_OK")
+
         # --- A corrupt file loads as an empty ladder, not a crash ---------
         write_text(path, "{not json")
         recovered, _, _ = srv.load_arena(path)
