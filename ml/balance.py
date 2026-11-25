@@ -2380,7 +2380,11 @@ def cmd_matrix(args):
 
 
 def cmd_evaluate(args):
-    measurements = _load_json(args.measurements)
+    try:
+        measurements = _load_json(args.measurements)
+    except (OSError, ValueError) as exc:
+        print(f"[balance] cannot load measurements: {exc}", file=sys.stderr)
+        return 2
     for field in REQUIRED_MEASUREMENT_FIELDS:
         if field not in measurements:
             print(f"[balance] measurement file missing {field!r}", file=sys.stderr)
@@ -2389,8 +2393,12 @@ def cmd_evaluate(args):
     if profile not in PROFILES:
         print(f"[balance] unknown profile {profile!r}", file=sys.stderr)
         return 2
-    thresholds = load_thresholds(args.thresholds, profile)
-    baseline = _load_baseline(args.baseline) if args.baseline else None
+    try:
+        thresholds = load_thresholds(args.thresholds, profile)
+        baseline = _load_baseline(args.baseline) if args.baseline else None
+    except (OSError, ValueError) as exc:
+        print(f"[balance] cannot load thresholds or baseline: {exc}", file=sys.stderr)
+        return 2
     report = evaluate_profile(
         [
             {
