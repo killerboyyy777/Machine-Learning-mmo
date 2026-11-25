@@ -1231,6 +1231,7 @@ class TextMMOEnv:
                 except (
                     ValueError,
                     RecursionError,
+                    OverflowError,
                     KeyError,
                     TypeError,
                     AttributeError,
