@@ -146,6 +146,7 @@ import server as srv
 # bare ml_env (tests add ml/ to sys.path), and only the repo root is
 # guaranteed to be on the path either way.
 from ml.reward_dsl import RewardFormulaError, compile_formula
+from ml.telemetry import record_ws_rtt
 
 DEFAULT_URL = "ws://localhost:8765"
 
@@ -1073,6 +1074,7 @@ class TextMMOEnv:
         spawn_room=None,
         reward_formula=None,
         reward_fn=None,
+        telemetry=None,
     ):
         if reward_mode not in REWARD_MODES:
             raise ValueError(
@@ -1122,6 +1124,7 @@ class TextMMOEnv:
         # only in this phase (reward stays mode-based); the supervisor sets
         # this from the registry at spawn.
         self.goal = dict(goal) if goal else None
+        self.telemetry = telemetry
         self.ws = None
         self._reader_task = None
         self._state = {
@@ -1531,6 +1534,7 @@ class TextMMOEnv:
             )
 
         self._reader_task = asyncio.create_task(self._reader())
+        await record_ws_rtt(self.telemetry, self.ws, agent_id=self.name)
         await self._send(
             "login",
             name=self.name,

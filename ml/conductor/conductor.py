@@ -117,9 +117,11 @@ class Conductor:
         resume=True,
         reset="none",
         transcript_dir=None,
+        telemetry=None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.telemetry = telemetry
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
         if reset != "none":
@@ -226,6 +228,7 @@ class Conductor:
                 policy_factory=slot.get("policy_factory"),
                 learn_hook=slot.get("learn_hook"),
                 reward_hook=slot.get("reward_hook"),
+                telemetry=self.telemetry,
             )
             if not started:
                 self.registry.mark_dead(agent_id)
