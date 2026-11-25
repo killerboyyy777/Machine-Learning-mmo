@@ -176,13 +176,7 @@ def test_nonfinite_samples_skipped():
     report = summarize([good] + bad)
     step = report["metrics"]["agent_step_ms"]
     assert step["count"] == 1
-    assert (
-        step["mean_ms"]
-        == step["p50_ms"]
-        == step["p95_ms"]
-        == step["max_ms"]
-        == 12.0
-    )
+    assert step["mean_ms"] == step["p50_ms"] == step["p95_ms"] == step["max_ms"] == 12.0
     json.dumps(report, allow_nan=False)
 
     with tempfile.TemporaryDirectory() as d:
