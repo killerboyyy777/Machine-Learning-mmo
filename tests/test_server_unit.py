@@ -20,6 +20,80 @@ import server as srv
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def dashboard_post_json_check():
+    """#863: the real dashboard POST path 400s a deeply nested JSON body."""
+    import ast
+    import io
+
+    src = os.path.join(ROOT, "server.py")
+    with open(src, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    start = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "start_dashboard"
+    )
+    handler = next(
+        n for n in start.body if isinstance(n, ast.ClassDef) and n.name == "Handler"
+    )
+    methods = [
+        n
+        for n in handler.body
+        if isinstance(n, ast.FunctionDef) and n.name in ("do_POST", "_read_body")
+    ]
+    module = ast.fix_missing_locations(ast.Module(body=methods, type_ignores=[]))
+    ns = dict(srv.__dict__)
+    exec(compile(module, src, "exec"), ns)
+    do_post = ns["do_POST"]
+
+    class Stub:
+        path = "/api/config"
+        client_address = ("127.0.0.1", 12345)
+        close_connection = False
+        _read_body = ns["_read_body"]
+
+        def __init__(self, raw):
+            self.headers = {
+                "Content-Type": "application/json",
+                "Content-Length": str(len(raw)),
+            }
+            self.rfile = io.BytesIO(raw)
+            self.out = []
+
+        def _send_json(self, obj, status=200):
+            self.out.append((obj, status))
+
+        def send_error(self, code, *args, **kwargs):
+            raise AssertionError(f"unexpected send_error({code})")
+
+    nested = Stub(b"[" * 20000 + b"]" * 20000)
+    do_post(nested)
+    assert len(nested.out) == 1, nested.out
+    obj, status = nested.out[0]
+    assert status == 400, nested.out
+    assert obj["ok"] is False, nested.out
+    assert (
+        "invalid JSON" in obj["error"] or "body must be a JSON object" in obj["error"]
+    ), nested.out
+
+    malformed = Stub(b"{not json")
+    do_post(malformed)
+    assert len(malformed.out) == 1, malformed.out
+    obj, status = malformed.out[0]
+    assert status == 400, malformed.out
+    assert obj["ok"] is False and "invalid JSON" in obj["error"], malformed.out
+
+    non_object = Stub(b"null")
+    do_post(non_object)
+    assert len(non_object.out) == 1, non_object.out
+    obj, status = non_object.out[0]
+    assert status == 400, non_object.out
+    assert (
+        obj["ok"] is False and "body must be a JSON object" in obj["error"]
+    ), non_object.out
+    print("DASHBOARD_POST_JSON_OK")
+
+
 def companion_surface_bodies():
     """Dashboard/TUI companion renderers for the #535 parity check."""
     with open(os.path.join(ROOT, "dashboard.html"), encoding="utf-8") as fh:
@@ -670,6 +744,8 @@ async def main():
     ):
         assert token not in server_src, token
     print("DEAD_CODE_ABSENT_OK")
+
+    dashboard_post_json_check()
 
     # --- Leveling curve ---
     assert srv.xp_to_next(1) == 100

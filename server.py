@@ -14193,7 +14193,7 @@ def start_dashboard():
                 return
             try:
                 body = json.loads(raw.decode("utf-8", "replace"))
-            except ValueError as exc:
+            except (ValueError, RecursionError) as exc:
                 self._send_json({"ok": False, "error": f"invalid JSON ({exc})"}, 400)
                 return
             if path == "/api/train/stop":
