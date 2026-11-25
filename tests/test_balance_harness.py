@@ -10,7 +10,9 @@ Run from the repo root:  python tests/test_balance_harness.py
 """
 
 import asyncio
+import contextlib
 import copy
+import io
 import json
 import os
 import sys
@@ -1079,6 +1081,32 @@ def test_cli_exit_codes():
     print("CLI_EXIT_CODES_OK")
 
 
+def test_evaluate_input_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = os.path.join(tmp, "missing.json")
+        corrupt = os.path.join(tmp, "corrupt.json")
+        with open(corrupt, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        passing = _write_measurements(tmp, make_measurements())
+
+        cases = [
+            ["evaluate", "--measurements", missing],
+            ["evaluate", "--measurements", corrupt],
+            ["evaluate", "--measurements", passing, "--baseline", missing],
+            ["evaluate", "--measurements", passing, "--thresholds", missing],
+            ["evaluate", "--measurements", passing, "--thresholds", corrupt],
+        ]
+        for argv in cases:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = bal.main(argv)
+            assert code == 2, (argv, code)
+            diag = err.getvalue()
+            assert "[balance]" in diag, (argv, diag)
+            assert "Traceback" not in diag, (argv, diag)
+    print("EVALUATE_INPUT_ERRORS_OK")
+
+
 def test_baseline_comparison():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "baseline.json")
@@ -1201,6 +1229,7 @@ def main():
     test_worst_seed_guard_fails_profile()
     test_run_repeats_write_distinct_measurement_files()
     test_cli_exit_codes()
+    test_evaluate_input_errors()
     test_baseline_comparison()
     test_matrix_catalog()
     test_committed_baseline_is_readable()
