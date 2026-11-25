@@ -53,16 +53,16 @@ VENDORED_SUFFIX = "uplot.min.js"
 
 # Signature comments are attribution, never explanation.
 SIGNATURE_RE = re.compile(
-    r"^\s*(?:#|//)\s*(?:overlord|killerboy(?:yy777)?|agent[-_ ]?name|claude|codex|opencode)\s*:",
+    r"^\s*(?:#|//)\s+(?:overlord|killerboy(?:yy777)?|agent[-_ ]?name|claude|codex|opencode)\s*:",
     re.IGNORECASE,
 )
 
 # A standalone comment that parses as one of these statements is commented-out
-# code. Prose does not parse, and bare expressions are left alone to avoid
-# flagging ordinary notes.
+# code. Annotated assignments are excluded: "Note: x = 3" and "noqa: E402"
+# parse as annotations but are labels, not code. Bare expressions are likewise
+# left alone so ordinary notes do not fail CI.
 CODE_STMTS = (
     ast.Assign,
-    ast.AnnAssign,
     ast.AugAssign,
     ast.Import,
     ast.ImportFrom,
