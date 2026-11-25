@@ -7,6 +7,7 @@ no WebSocket ping when the collector is not enabled.
 
 import argparse
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,15 @@ def _percentile(sorted_values, q):
     return sorted_values[index]
 
 
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
+
+
 def summarize(samples, enabled=True):
     metrics = {}
     for name in METRIC_NAMES:
@@ -40,8 +50,7 @@ def summarize(samples, enabled=True):
             for sample in samples
             if isinstance(sample, dict)
             and sample.get("event") == name
-            and isinstance(sample.get("value_ms"), (int, float))
-            and not isinstance(sample.get("value_ms"), bool)
+            and _finite_number(sample.get("value_ms"))
         )
         if not values:
             continue
@@ -85,10 +94,13 @@ class Telemetry:
         if not self.enabled:
             return
         try:
+            value_ms = float(value_ms)
+            if not math.isfinite(value_ms):
+                return
             row = {
                 "schema_version": SCHEMA_VERSION,
                 "event": metric,
-                "value_ms": round(float(value_ms), 3),
+                "value_ms": round(value_ms, 3),
                 "_ts": time.time(),
             }
             if agent_id is not None:

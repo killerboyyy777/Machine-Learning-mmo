@@ -230,10 +230,64 @@ def test_activity_stream_guard():
     print("ACTIVITY_STREAM_GUARD_OK")
 
 
+def test_health_cached_scalars():
+    do_GET = real_do_GET()
+    with open(SRC, encoding="utf-8") as fh:
+        src = fh.read()
+    tree = ast.parse(src)
+    start = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "start_dashboard"
+    )
+    handler = next(
+        n for n in start.body if isinstance(n, ast.ClassDef) and n.name == "Handler"
+    )
+    method = next(
+        n for n in handler.body if isinstance(n, ast.FunctionDef) and n.name == "do_GET"
+    )
+    route = ast.get_source_segment(src, method).split('elif path == "/health":', 1)[1]
+    route = route.split("elif path ==", 1)[0]
+    assert "_health_scalars()" in route, route
+    assert "json.loads" not in route, route
+    assert "_set_health_scalars" in src
+
+    saved = (
+        srv._health_scalars_cache,
+        srv.world_snapshot_json,
+        srv._memory_mb,
+    )
+    try:
+        srv._health_scalars_cache = None
+        srv.world_snapshot_json = json.dumps(snapshot_fixture())
+        srv._memory_mb = lambda: 42.5
+        stub = Stub("/health")
+        do_GET(stub)
+        assert len(stub.calls) == 1 and stub.calls[0][0] == "send", stub.calls
+        body = json.loads(stub.calls[0][1].decode("utf-8"))
+        assert set(body) == {"status", "uptime", "players_online", "memory_mb"}, body
+        assert body["status"] == "ok" and body["players_online"] == 3, body
+        assert body["memory_mb"] == 42.5 and body["uptime"] >= 0, body
+        assert srv._health_scalars_cache == {"players_online": 3}
+
+        srv.world_snapshot_json = json.dumps({"server": {"players_online": 99}})
+        stub = Stub("/health")
+        do_GET(stub)
+        assert json.loads(stub.calls[0][1])["players_online"] == 3, stub.calls
+    finally:
+        (
+            srv._health_scalars_cache,
+            srv.world_snapshot_json,
+            srv._memory_mb,
+        ) = saved
+    print("HEALTH_CACHED_SCALARS_OK")
+
+
 if __name__ == "__main__":
     test_flag_off_404()
     test_flag_on_text()
     test_missing_cache_safe()
     test_cli_and_source_gate()
     test_activity_stream_guard()
+    test_health_cached_scalars()
     print("ALL_METRICS_OK")

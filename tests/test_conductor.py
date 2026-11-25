@@ -68,6 +68,24 @@ assert reg2.get("a1").total_reward == 30.0
 assert reg2.get("a1").mean_reward == 15.0
 print("REGISTRY_OK")
 
+# #759: history/lineage views are bounded rings, not unbounded append lists.
+import ml.conductor.registry as _registry  # noqa: E402
+
+_saved_cap = _registry.REGISTRY_HISTORY_CAP
+try:
+    _registry.REGISTRY_HISTORY_CAP = 4
+    rb = Registry(os.path.join(tmpdir, "bounded"), max_agents=20)
+    for _i in range(12):
+        rb.register(f"b{_i}", "linear")
+        rb.save_lineage(f"b{_i}")
+    assert len(rb._history) == 4 and len(rb._lineages) == 4
+    assert list(rb._history) == ["b8", "b9", "b10", "b11"]
+    assert list(rb._lineages) == ["b8", "b9", "b10", "b11"]
+finally:
+    _registry.REGISTRY_HISTORY_CAP = _saved_cap
+assert _saved_cap > 0
+print("REGISTRY_BOUNDS_OK")
+
 import json as _json3  # noqa: E402
 from unittest import mock as _mock  # noqa: E402
 
