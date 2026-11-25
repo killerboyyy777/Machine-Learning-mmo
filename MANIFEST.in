@@ -1,0 +1,6 @@
+include dashboard.html
+include uplot.min.js
+include world.json
+include server_config.json
+recursive-include plugins *
+recursive-include ml *.json
