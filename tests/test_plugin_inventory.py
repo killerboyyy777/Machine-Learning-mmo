@@ -136,6 +136,9 @@ class FakeProc:
     def send_signal(self, sig):
         self.signalled = True
 
+    def terminate(self):
+        self.signalled = True
+
     def kill(self):
         self.code = -9
 
