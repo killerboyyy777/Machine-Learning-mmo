@@ -5823,6 +5823,11 @@ async def cmd_use(player, msg):
             player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."}
         )
         return
+    if not effect and player.hp >= player.max_hp:
+        await send(
+            player, {"type": "message", "text": "You are already at full health."}
+        )
+        return
     player.inventory.remove(iid)
     if effect:
         category = effect["category"]
@@ -7304,6 +7309,11 @@ def _guild_dissolve(record, now):
             GUILD_TRANSFER_INCOMING[target_id] = kept
         else:
             GUILD_TRANSFER_INCOMING.pop(target_id, None)
+    # Invites name the recycled id too; without this a bare join could drop
+    # the target into a successor guild that never invited them.
+    for key, inv in list(_pending_guild_invites.items()):
+        if (inv or {}).get("guild_id") == gid:
+            _pending_guild_invites.pop(key, None)
     _guild_index_drop(record)
     _guild_add_tombstone(record, now)
     _intel_drop_guild(record.get("id"))
@@ -7592,6 +7602,7 @@ async def _cmd_guild_invite(player, msg):
         return
     _pending_guild_invites[target_key] = {
         "guild_id": record.get("id"),
+        "name_key": record.get("name_key"),
         "ts": now,
         "inviter": player.name,
     }
@@ -7646,7 +7657,10 @@ async def _cmd_guild_join(player, msg):
         )
         return
     record = GUILDS.get(inv.get("guild_id"))
-    if record is None:
+    stored_key = inv.get("name_key")
+    if record is None or (
+        stored_key is not None and stored_key != record.get("name_key")
+    ):
         _pending_guild_invites.pop(key, None)
         await send(
             player,
@@ -12477,7 +12491,7 @@ async def arena_attack(player, target_name):
 
 async def _arena_forfeit(match, player, reason):
     team = match.team_of(player.id)
-    winner = 2 if team == 1 else (1 if team == 2 else 0)
+    winner = _arena_winner(match) or (2 if team == 1 else (1 if team == 2 else 0))
     rec = match.players.pop(player.id, None)
     await _arena_send(match, f"{player.name} {reason}.")
     if rec is not None:
@@ -12501,7 +12515,7 @@ async def arena_on_disconnect(player):
         player.arena_team = 0
         return
     team = match.team_of(player.id)
-    winner = 2 if team == 1 else (1 if team == 2 else 0)
+    winner = _arena_winner(match) or (2 if team == 1 else (1 if team == 2 else 0))
     match.players.pop(player.id, None)
     match.forfeits.append({"name": player.name, "team": team})
     player.arena_match = 0
@@ -15194,6 +15208,7 @@ async def main():
         save_companions()
         save_guilds()
         save_intel()
+        save_arena()
         save_freight()
         print("Scores saved. Bye.", flush=True)
 

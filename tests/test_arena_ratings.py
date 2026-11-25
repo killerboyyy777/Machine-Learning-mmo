@@ -359,6 +359,72 @@ async def main():
         assert dropper.arena_match == 0 and team_match.id not in srv.ARENA_MATCHES
         print("FORFEIT_DISCONNECT_OK")
 
+        # --- A forfeit during a decided pause keeps the scoreboard winner -
+        # The leaver is on the winning side: deriving the winner from the
+        # leaver's team would invert a match that is already decided.
+        for name in ("DecidedQuit", "DecidedStay"):
+            srv.ARENA_RATINGS.pop(name.lower(), None)
+        decided = mk_match(1, ["DecidedQuit", "DecidedStay"])
+        decided.scores = {1: 2, 2: 0}
+        decided.state = "pause"
+        quitter = srv.players[63000]
+        before_quit = rating_of("DecidedQuit")
+        before_stay = rating_of("DecidedStay")
+        await srv._arena_forfeit(decided, quitter, "leaves the arena")
+        row = srv.ARENA_HISTORY[-1]
+        assert row["winner"] == 1 and row["match_id"] == decided.id, row
+        assert row["scores"] == {"team1": 2, "team2": 0}, row
+        assert rating_of("DecidedQuit") > before_quit, row
+        assert rating_of("DecidedStay") < before_stay, row
+        assert any(
+            "Team 1 wins 2-0." in frame.get("text", "")
+            for frame in inbox["DecidedStay"]
+        ), inbox["DecidedStay"]
+        print("FORFEIT_DECIDED_OK")
+
+        # --- A forfeit while scores are tied still awards the opponent ----
+        for name in ("TiedQuit", "TiedStay"):
+            srv.ARENA_RATINGS.pop(name.lower(), None)
+        tied = mk_match(1, ["TiedQuit", "TiedStay"])
+        tied.scores = {1: 1, 2: 1}
+        tied.state = "pause"
+        quitter = srv.players[63000]
+        await srv._arena_forfeit(tied, quitter, "leaves the arena")
+        row = srv.ARENA_HISTORY[-1]
+        assert row["winner"] == 2 and row["match_id"] == tied.id, row
+        assert rating_of("TiedStay") > srv.ARENA_RATING_DEFAULT, row
+        print("FORFEIT_TIED_OK")
+
+        # --- A disconnect during a decided pause keeps the scoreboard -----
+        for name in ("DcWinStay", "DcWinQuit"):
+            srv.ARENA_RATINGS.pop(name.lower(), None)
+        dc_decided = mk_match(1, ["DcWinStay", "DcWinQuit"])
+        dc_decided.scores = {1: 0, 2: 2}
+        dc_decided.state = "pause"
+        dropper = srv.players[63001]
+        await srv.arena_on_disconnect(dropper)
+        row = srv.ARENA_HISTORY[-1]
+        assert row["winner"] == 2 and row["match_id"] == dc_decided.id, row
+        assert rating_of("DcWinQuit") > srv.ARENA_RATING_DEFAULT, row
+        assert rating_of("DcWinStay") < srv.ARENA_RATING_DEFAULT, row
+        assert any(
+            "Team 2 wins 0-2." in frame.get("text", "") for frame in inbox["DcWinStay"]
+        ), inbox["DcWinStay"]
+        print("DISCONNECT_DECIDED_OK")
+
+        # --- A disconnect while tied still awards the opposing team -------
+        for name in ("DcTiedQuit", "DcTiedStay"):
+            srv.ARENA_RATINGS.pop(name.lower(), None)
+        dc_tied = mk_match(1, ["DcTiedQuit", "DcTiedStay"])
+        dc_tied.scores = {1: 1, 2: 1}
+        dc_tied.state = "pause"
+        dropper = srv.players[63000]
+        await srv.arena_on_disconnect(dropper)
+        row = srv.ARENA_HISTORY[-1]
+        assert row["winner"] == 2 and row["match_id"] == dc_tied.id, row
+        assert rating_of("DcTiedStay") > srv.ARENA_RATING_DEFAULT, row
+        print("DISCONNECT_TIED_OK")
+
         # --- A first win cannot outrank an established record -------------
         srv.ARENA_RATINGS.clear()
         srv.ARENA_RATINGS["luckyshot"] = {
