@@ -992,6 +992,8 @@ def test_app_shell():
         assert app.handle("left") is True and app.tab == "overview"
         assert app.handle("tab") is True and app.tab == "world"
         assert app.handle("shift+tab") is True and app.tab == "overview"
+        assert app.handle("\t") is True and app.tab == "world"
+        assert app.handle("shift+tab") is True and app.tab == "overview"
         assert app.handle("r") is True
         assert poller.snapshot() is not None, "r must force a fetch"
         assert app.handle("p") is True and poller.paused()
