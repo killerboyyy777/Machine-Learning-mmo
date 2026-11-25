@@ -4225,9 +4225,10 @@ async def main():
     unplayer(refarmer)
     print("REFARM_ONCE_OK")
 
-    # (3) id-only bounty targets rejected: fills credit the name-keyed
-    # kill log, so "healer" (id of "Sister Maren") could never fill and
-    # would lock escrow forever (#373)
+    # (3) id-only and quest-giver name fragments rejected: fills credit the
+    # name-keyed kill log, so "healer" (an id) or "sister" (a fragment of the
+    # attack-immune "Sister Maren") could never fill and would lock escrow
+    # forever (#373, #854)
     idposter = mkplayer("IdPoster", 61002, room="guild_hall")
     idposter.gold = 500
     _n_before = len(srv._commissions)
@@ -4243,10 +4244,29 @@ async def main():
         idposter,
         {"target": "sister", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
     )
+    assert (
+        inbox[-1]["type"] == "error" and "No known creature" in inbox[-1]["text"]
+    ), inbox[-1]
+    assert len(srv._commissions) == _n_before and idposter.gold == 500
+    # a normal killable target still posts, fills and cancels
+    await srv.cmd_commission_post(
+        idposter,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
+    )
     _cid = max(srv._commissions)
     assert srv._commissions[_cid]["status"] == "open" and idposter.gold == 490
-    await srv.cmd_commission_cancel(idposter, {"commission_id": _cid})
-    assert srv._commissions[_cid]["status"] == "cancelled"
+    filler = mkplayer("BountyFiller", 61003, room="guild_hall")
+    srv.record_npc_kill(filler.name, "Giant Rat")
+    await srv.cmd_commission_fill(filler, {"commission_id": _cid})
+    assert srv._commissions[_cid]["status"] == "completed"
+    unplayer(filler)
+    await srv.cmd_commission_post(
+        idposter,
+        {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0},
+    )
+    _cid2 = max(srv._commissions)
+    await srv.cmd_commission_cancel(idposter, {"commission_id": _cid2})
+    assert srv._commissions[_cid2]["status"] == "cancelled"
     unplayer(idposter)
     print("BOUNTY_TARGET_OK")
 

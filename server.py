@@ -6546,8 +6546,13 @@ async def cmd_commission_post(player, msg):
     # Targets must name something real AND fillable: fills credit kills
     # from the name-keyed kill log, so an id-only fragment (NPC ids differ
     # from display names, e.g. "healer" vs "Sister Maren") would pass
-    # validation yet never fill, locking escrow forever. Name-match only.
-    if not any(target in n.get("name", "").lower() for n in all_npcs()):
+    # validation yet never fill, locking escrow forever. Quest givers are
+    # attack-immune, so their name fragments are unfillable too. Name-match only.
+    if not any(
+        target in n.get("name", "").lower()
+        for n in all_npcs()
+        if not is_quest_giver(n["id"])
+    ):
         await send(
             player,
             {
