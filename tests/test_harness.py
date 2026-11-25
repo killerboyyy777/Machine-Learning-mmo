@@ -134,21 +134,25 @@ async def main():
                 "drop",
             ):
                 await ws.send(json.dumps(stats_view()))
-            elif cmd == "companion_script_set":
-                await ws.send(json.dumps({"type": "companion", "script_set": True}))
-            elif cmd == "companion_script_show":
-                await ws.send(json.dumps({"type": "companion", "script": ""}))
-            elif cmd == "companion_script_clear":
-                await ws.send(json.dumps({"type": "companion", "script_set": False}))
-            elif cmd == "companion_status":
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "companion",
-                            "has_companion": False,
-                        }
+            elif cmd == "companion":
+                action = msg.get("action")
+                sub = msg.get("sub")
+                if action == "script" and sub == "set":
+                    await ws.send(json.dumps({"type": "message", "script_set": True}))
+                elif action == "script" and sub == "show":
+                    await ws.send(json.dumps({"type": "message", "script": ""}))
+                elif action == "script" and sub == "clear":
+                    await ws.send(json.dumps({"type": "message", "script_set": False}))
+                elif action == "status":
+                    await ws.send(
+                        json.dumps({"type": "companion", "has_companion": False})
                     )
-                )
+                else:
+                    await ws.send(
+                        json.dumps(
+                            {"type": "error", "text": "unknown companion action"}
+                        )
+                    )
             else:
                 await ws.send(json.dumps({"type": "error", "text": "unknown command"}))
 
