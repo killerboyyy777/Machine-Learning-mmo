@@ -262,7 +262,7 @@ class McpServer:
                 continue
             try:
                 request = json.loads(line)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):
                 self._write(_error(None, -32700, "parse error"))
                 continue
             response = await self._handle(request)
