@@ -252,6 +252,61 @@ def test_shared_policy_is_called_one_at_a_time():
     print("POLICY_BUDGET_SHARED_POLICY_OK")
 
 
+def test_restart_retires_unused_policy_executors():
+    """PBT restarts rebuild the closure, so its old worker must be retired.
+
+    Restart overlaps the old task's teardown with the replacement's launch:
+    a worker may only be shut down once no task still uses its closure. Three
+    restarts used to leave up to four workers alive.
+    """
+
+    def fresh_policy():
+        def policy(obs, agent_id):
+            return 0
+
+        return policy
+
+    def factory(ckpt, hp):
+        return fresh_policy(), None, None
+
+    class AliveRegistry(FakeRegistry):
+        class Entry:
+            alive = True
+            goal = None
+            checkpoint_path = None
+
+        def get(self, agent_id):
+            return self.Entry()
+
+    async def main():
+        sup = Supervisor(AliveRegistry(), policy_timeout=1.0)
+        assert await sup.start_agent(
+            "rr",
+            lambda aid: FakeEnv(),
+            lambda o, a: 0,
+            policy_factory=factory,
+        )
+        retired = []
+        for _ in range(3):
+            retired.extend(list(sup._policy_executors.values()))
+            assert await sup.restart_agent("rr") is True
+            assert len(sup._policy_executors) == 1, sup._policy_executors
+            assert len(sup._policy_users) == 1, sup._policy_users
+        await sup.stop_all()
+        assert not sup._policy_executors, sup._policy_executors
+        assert not sup._policy_users, sup._policy_users
+        return retired
+
+    retired = asyncio.run(main())
+    for executor in retired:
+        try:
+            executor.submit(lambda: None)
+        except RuntimeError:
+            continue
+        raise AssertionError("retired policy worker still accepts work")
+    print("POLICY_BUDGET_RESTART_EXECUTORS_OK")
+
+
 def test_wedged_plugins_do_not_starve_healthy_ones():
     """More wedged calls than the loop's default pool holds leave a healthy
     agent untouched: each plugin closure owns its worker."""
@@ -398,6 +453,7 @@ test_raising_policy_still_reaches_the_supervisor()
 test_arity_dispatch_survives_the_thread_hop()
 test_supervisor_carries_the_budget_and_its_specs()
 test_shared_policy_is_called_one_at_a_time()
+test_restart_retires_unused_policy_executors()
 test_wedged_plugins_do_not_starve_healthy_ones()
 test_policy_raising_timeout_is_not_a_budget_expiry()
 test_a_raising_policy_is_retired_after_the_fault_limit()

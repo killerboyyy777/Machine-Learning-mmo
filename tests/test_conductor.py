@@ -694,8 +694,8 @@ print("RESTART_HOOKS_OK")
 
 
 async def _restart_bare_factory_fallback():
-    # Out-of-tree factories that still return a bare policy keep the
-    # original spec's hooks instead of breaking on the bundle unpack.
+    # Out-of-tree factories that return a bare policy keep the original
+    # spec's hooks, but the rebuilt policy must replace the stored closure.
     r = Registry(os.path.join(tmpdir, "rstbare"), max_agents=5)
     r.register("b1", "linear")
     sup = Supervisor(r, max_concurrent=1)
@@ -719,7 +719,7 @@ async def _restart_bare_factory_fallback():
         is True
     )
     assert await sup.restart_agent("b1") is True
-    assert sup._tasks["b1"].policy_fn({"obs": 0}, "b1") == 0
+    assert sup._tasks["b1"].policy_fn({"obs": 0}, "b1") == 9
     assert sup._tasks["b1"].learn_hook is old_learn
     assert env.reward_fn is old_reward
     await sup.stop_all()
