@@ -5604,6 +5604,7 @@ async def cmd_attack(player, msg):
                 _ce = get_score_entry(p.name)
                 _ce["dungeon_floors_cleared"] += 1
                 _ce["dungeon_death_streak"] = 0
+                _ce["dungeon_reenter_delay"] = DUNGEON_REENTER_DELAY_SECONDS
                 await award_points(p, clear_pts, f"cleared Dungeon Floor {floor_no}")
                 await award_xp(p.name, clear_xp, f"cleared Dungeon Floor {floor_no}")
             if first_clear:
