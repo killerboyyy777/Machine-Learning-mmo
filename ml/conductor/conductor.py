@@ -259,7 +259,6 @@ class Conductor:
         self._start_time = time.time()
         target = self.registry.max_agents
 
-        # Wave startup
         print(f"[conductor] Starting {target} agents in waves of {wave_size}...")
         wave_count = 0
         for delay in wave_startup(target, wave_size, wave_delay):
@@ -303,7 +302,6 @@ class Conductor:
                     self.mixer.assign_one(aid)
             await self.supervisor.reap()
 
-            # Periodic rebalance
             if now - last_rebalance >= rebalance_interval:
                 moves = self.mixer.rebalance()
                 if moves:
@@ -332,12 +330,10 @@ class Conductor:
                     )
                 last_pbt = now
 
-            # Periodic status
             alive = len(self.registry.alive_agents())
             if alive < target * 0.8:
                 print(f"[conductor] Low agent count: {alive}/{target}")
 
-        # Shutdown
         self._running = False
         await self.supervisor.stop_all()
         self.registry.save()

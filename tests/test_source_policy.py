@@ -7,10 +7,13 @@ matches instead of pinning line numbers, so an unrelated edit above a call
 cannot move the allowlist.
 """
 
+import ast
+import io
 import os
 import re
 import subprocess
 import sys
+import tokenize
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -47,6 +50,42 @@ BUY_ALLOWLIST = {
 }
 
 VENDORED_SUFFIX = "uplot.min.js"
+
+# Signature comments are attribution, never explanation.
+SIGNATURE_RE = re.compile(
+    r"^\s*(?:#|//)\s+(?:overlord|killerboy(?:yy777)?|agent[-_ ]?name|claude|codex|opencode)\s*:",
+    re.IGNORECASE,
+)
+
+# A standalone comment that parses as one of these statements is commented-out
+# code. Annotated assignments are excluded: "Note: x = 3" and "noqa: E402"
+# parse as annotations but are labels, not code. Bare expressions are likewise
+# left alone so ordinary notes do not fail CI.
+CODE_STMTS = (
+    ast.Assign,
+    ast.AugAssign,
+    ast.Import,
+    ast.ImportFrom,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Return,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.If,
+    ast.With,
+    ast.AsyncWith,
+    ast.Try,
+    ast.Raise,
+    ast.Delete,
+    ast.Global,
+    ast.Nonlocal,
+    ast.Assert,
+    ast.Pass,
+    ast.Break,
+    ast.Continue,
+)
 
 
 def tracked_files():
@@ -85,10 +124,42 @@ def check_buy_side(failures):
             failures.append(f"buy-side tokens {count} > {allowed} in {path}")
 
 
+def comment_tokens(path):
+    if path.endswith(".py"):
+        source = read_text(path)
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT:
+                prefix = source.splitlines()[token.start[0] - 1][: token.start[1]]
+                yield token.string, prefix.strip() == ""
+    else:
+        for lineno, line in enumerate(read_text(path).splitlines(), 1):
+            match = re.search(r"#|//|<!--|/\*", line)
+            if match:
+                yield line[match.start() :].split("-->", 1)[0].split("*/", 1)[0], line[
+                    : match.start()
+                ].strip() == ""
+
+
+def check_comments(failures):
+    for path in code_files():
+        for text, standalone in comment_tokens(path):
+            if SIGNATURE_RE.match(text):
+                failures.append(f"signature comment: {path}: {text.strip()}")
+            if standalone and path.endswith(".py"):
+                body = text.lstrip("#").strip()
+                try:
+                    tree = ast.parse(body)
+                except SyntaxError:
+                    continue
+                if any(isinstance(node, CODE_STMTS) for node in tree.body):
+                    failures.append(f"commented-out code: {path}: {body}")
+
+
 def main():
     failures = []
     check_ascii(failures)
     check_buy_side(failures)
+    check_comments(failures)
     if failures:
         for failure in failures:
             print("FAIL " + failure)

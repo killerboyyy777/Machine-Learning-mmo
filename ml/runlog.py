@@ -211,7 +211,6 @@ class Run:
         os.makedirs(self.path, exist_ok=True)
         self._write()
 
-    # -- internals ---------------------------------------------------------
     @property
     def run_id(self):
         return self.manifest["run_id"]
@@ -226,7 +225,6 @@ class Run:
         m["elapsed"] = round((ended or time.time()) - m["started"], 3)
         _atomic_write_json(os.path.join(self.path, MANIFEST_NAME), m)
 
-    # -- writer API --------------------------------------------------------
     def note(self, **fields):
         """Set manifest fields (checkpoint paths, hparams, free-form notes)
         without touching the metric log."""
@@ -353,7 +351,6 @@ def _jsonable(value):
     return str(value)
 
 
-# -- reader API ------------------------------------------------------------
 def read_run(root, run_id):
     if not valid_run_id(run_id):
         return None

@@ -171,8 +171,8 @@ DIFFICULTY_K = 50.0
 DISCOVERY_POINTS = 2
 DISCOVERY_XP = 2
 DEATH_PENALTY = 5.0
-DEATH_GOLD_DROP_PCT = 40  # of carried gold drops as a floor pile on death
-DEATH_GOLD_LOST_PCT = 10  # of carried gold vanishes permanently on death
+DEATH_GOLD_DROP_PCT = 40
+DEATH_GOLD_LOST_PCT = 10
 DEATH_SCORE_PER_GOLD_LOST = (
     0.1  # extra score penalty per gold removed on death (floor: DEATH_PENALTY)
 )
@@ -448,7 +448,7 @@ GUILD_POSTER = "Adventurers Guild"
 # expected death drain: each kill risks ~0.29 deaths (overnight measured)
 # at ~6g average penalty, so per-kill payouts default >= 2g.
 BOUNTY_OVERPOP_ENABLED = True
-BOUNTY_OVERPOP_THRESHOLD = 6  # alive mob-family members triggering a bounty
+BOUNTY_OVERPOP_THRESHOLD = 6
 BOUNTY_OVERPOP_KILLS = 3
 BOUNTY_OVERPOP_PAYOUT_GOLD = 8
 BOUNTY_OVERPOP_PAYOUT_XP = 10
@@ -1051,7 +1051,6 @@ class Dungeon:
                     builtin, DUNGEON_FLOOR_FACTORY(self.id, n, builtin)
                 )
             except Exception:  # noqa: BLE001 - a bad generator must not wedge a floor
-                # A broken drop-in cannot stop a dungeon from building.
                 params = builtin
         for k in range(params["count"]):
             try:
@@ -2513,7 +2512,6 @@ def consume_npc_kills(name, target, since_ts, count):
     frag = (target or "").lower()
     if not frag or count <= 0:
         return 0
-    # Oldest first across all matching NPC-name buckets.
     hits = sorted(
         (ts, key)
         for key, tss in log.items()
@@ -2524,7 +2522,6 @@ def consume_npc_kills(name, target, since_ts, count):
     used = hits[: max(0, count)]
     for _, key in used:
         tss = log.get(key, [])
-        # Remove one occurrence: the consumed timestamp itself.
         for i, ts in enumerate(tss):
             if ts >= since_ts:
                 del tss[i]
@@ -2780,7 +2777,6 @@ def _tick_player_buffs(player):
 
 
 # Arrow families: a bow declaring "arrow" accepts any member, best first.
-# Bonus damage per shot for the fancier variants (flat ladder).
 AMMO_BONUS = {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2}
 
 # Carry cap: pack load counts every inventory unit except worn gear and up
@@ -2893,9 +2889,9 @@ class Player:
     base_attack: int = 3
     gold: int = 0
     inventory: list = field(default_factory=list)
-    equipped: object = None  # weapon slot
-    armor: object = None  # armor slot (damage reduction)
-    offhand: object = None  # offhand slot (shields; small damage reduction)
+    equipped: object = None
+    armor: object = None
+    offhand: object = None
     room: str = START_ROOM
     party_id: int = None
     active_buffs: dict = field(default_factory=dict)
@@ -3276,8 +3272,6 @@ async def cmd_flee(player, msg):
     await send(player, {"type": "message", "text": f"You panic and flee {best_exit}!"})
     await cmd_move(player, {"dir": best_exit})
 
-
-# ---------------------------------------------------------------------------
 
 market_orders = []
 market_bids = []
@@ -3904,7 +3898,6 @@ class DroneLangParser:
             self._expect(")")
             self._expect("{")
             then_action = self._parse_action()
-            # Optional semicolon before closing brace
             if self.current[0] == ";":
                 self._advance()
             self._expect("}")
@@ -3978,7 +3971,6 @@ class DroneLangParser:
                 self._advance()
             self._expect(")")
         elif name in DRONELANG_ACTION_TARGET_FORBIDDEN:
-            # No arguments
             pass
         else:
             raise DroneLangError(f"Unknown action: {name}")
@@ -3992,9 +3984,6 @@ def dronelang_parse(script: str):
     tokens = _dronelang_tokenize(script)
     parser = DroneLangParser(tokens)
     return parser.parse()
-
-
-# Runtime evaluation
 
 
 def _dronelang_eval_predicate(owner, rec, pred, now):
@@ -4049,7 +4038,6 @@ async def _dronelang_exec_action(owner, rec, action, now):
             return True
         return False
     if name == "attack":
-        # Attack NPCs only - find hostile in room matching name
         target_name = args[0].lower()
         for npc in npcs_in_room(owner.room):
             if npc.get("hostile") and target_name in npc["name"].lower():
@@ -4085,10 +4073,7 @@ async def _dronelang_exec_action(owner, rec, action, now):
                 return True
         return False
     if name == "guard":
-        # Guard: stay in current room, attack any hostile that enters
-        # This is handled by the default assist behavior when owner is attacked
-        # Mark as guarding - we can track this in rec
-        rec["_dronelang_guard"] = args[0]  # room to guard
+        rec["_dronelang_guard"] = args[0]
         return True
     if name == "rest":
         if not ROOMS.get(owner.room, {}).get("rest_area"):
@@ -4120,7 +4105,7 @@ async def dronelang_tick(owner, rec, now=None):
     Returns (action_taken, error_message)."""
     script = rec.get("script", "")
     if not script:
-        return (False, None)  # No script, use default behavior
+        return (False, None)
 
     try:
         rules = dronelang_parse(script)
@@ -4206,7 +4191,6 @@ async def tick_companions(now=None):
             continue
         action_taken, error = await dronelang_tick(owner, rec, now)
         if error:
-            # Runtime error: log once and fall back to default-assist
             if not rec.get("_dronelang_error_logged"):
                 vlog(
                     f"Companion {rec['name']} DroneLang error: {error} (falling back to default-assist)"
@@ -5326,7 +5310,6 @@ async def cmd_move(player, msg):
             player, {"type": "error", "text": f"You can't go '{direction}' from here."}
         )
         return
-    # Room capacity
     if len(players_in_room(dest)) >= MAX_PLAYERS_PER_ROOM:
         await send(
             player, {"type": "error", "text": f"{ROOMS[dest]['name']} is too crowded."}
@@ -9863,12 +9846,10 @@ QUEST_DELVER_XP = 40
 QUEST_DELVER_GOLD = 20
 QUEST_DELVER_POINTS = 15
 QUEST_DELVER_FLOORS = 1
-# Sister Maren's remedy quest: gather herbs for the healing spring.
 QUEST_REMEDY_INPUTS = {"healing_herb": 3}
 QUEST_REMEDY_XP = 20
 QUEST_REMEDY_GOLD = 10
 QUEST_REMEDY_POINTS = 8
-# Sister Maren's tonic quest: brew a Fortitude Tonic (iron + berries).
 QUEST_TONIC_INPUTS = {"fortitude_tonic": 1}
 QUEST_TONIC_XP = 40
 QUEST_TONIC_GOLD = 20
@@ -9892,7 +9873,6 @@ COMM_FEED_SIZE = 100
 comm_feed = []
 comm_feed_seq = 0
 
-# Quest giver category system - makes it easy to add/change quest NPCs.
 # Add new entries here to create new quest givers; kill penalties,
 # quest lookups, and dashboard catalogs all read from this one table.
 QUEST_GIVERS = {
@@ -9906,7 +9886,6 @@ QUEST_GIVERS = {
         "room": "healing_spring",
         "description": "A gentle healer who tends the wounded and always needs remedies.",
     },
-    # New givers are one entry following the schema above.
 }
 
 
@@ -11126,7 +11105,6 @@ async def cmd_gm_reward(player, msg):
         target = msg.get("player", "")
         room = msg.get("room", "")
         p = find_player_anywhere(target) if target else None
-        # Validate the destination before spending.
         if target and not p:
             await send(
                 player, {"type": "error", "text": f"Player '{target}' not found."}
@@ -11333,7 +11311,6 @@ async def cmd_gm_slay(player, msg):
         )
         return
     if len(matches) > 1 and target not in [str(m["id"]).lower() for m in matches]:
-        # Ambiguous unless exact id given; require more specific text.
         names = ", ".join(m["name"] for m in matches[:5])
         await send(
             player,
@@ -12757,7 +12734,7 @@ activity_subscribers = []
 _score_history = {}
 # [{ts, players_online, top_scores, market_orders, treasury, trades}]
 _dashboard_history = []
-_HISTORY_SAMPLE_INTERVAL = 30  # seconds between samples
+_HISTORY_SAMPLE_INTERVAL = 30
 _HISTORY_MAX_SAMPLES = 120  # ~1 hour of samples at 30s intervals
 
 

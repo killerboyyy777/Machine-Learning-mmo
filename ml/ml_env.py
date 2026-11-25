@@ -3113,7 +3113,6 @@ class TextMMOEnv:
             "quest4_ready": quest4_ready,
             "quest4_giver_here": quest4_giver_here,
             "arrows_norm": arrows_norm,
-            # Buff features
             "buff_attack": 1.0 if s.get("buff_attack_amount", 0) > 0 else 0.0,
             "buff_dr": 1.0 if s.get("buff_damage_reduction_amount", 0) > 0 else 0.0,
             "ammo_best_norm": ammo_best_norm,

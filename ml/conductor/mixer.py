@@ -69,7 +69,6 @@ class Mixer:
         if total_agents == 0:
             return moves
 
-        # Proportional allocation
         total_mean = sum(floor_means.values()) or 1
         target = {}
         for f in self.floor_ids:

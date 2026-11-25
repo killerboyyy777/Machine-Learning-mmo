@@ -40,7 +40,6 @@ print("EXPORTS_OK")
 tmpdir = tempfile.mkdtemp()
 reg_path = os.path.join(tmpdir, "reg")
 
-# --- Registry ---
 reg = Registry(reg_path, max_agents=5)
 reg.register("a1", "linear")
 reg.register("a2", "torch")
@@ -69,7 +68,6 @@ assert reg2.get("a1").total_reward == 30.0
 assert reg2.get("a1").mean_reward == 15.0
 print("REGISTRY_OK")
 
-# --- #293 lineage checkpoints + atomic round-trip + resume ---
 import json as _json3  # noqa: E402
 from unittest import mock as _mock  # noqa: E402
 
@@ -78,18 +76,17 @@ import ml.conductor.churn as _churn  # noqa: E402
 regr = Registry(os.path.join(tmpdir, "lineage"), max_agents=5)
 cml = ChurnManager(regr, arrivals_per_minute=0)
 cml._next_arrival = float("inf")
-# Seed one parent, then force the offspring branch for the next spawn.
 pgoal = {"w_score": 1.0}
 regr.register("p0", "linear", goal=pgoal)
 cml._recent_goals.append(("p0", pgoal))
 with _mock.patch.object(_churn.random, "random", return_value=0.0):
     kid = cml._spawn_one()
 kentry = regr.get(kid)
-assert kentry.parent_id == "p0"  # parentage recorded, not just the weights
+assert kentry.parent_id == "p0"
 lin = regr.load_lineage(kid)
 assert lin["parent_id"] == "p0"
 assert lin["goal"] == kentry.goal
-assert lin["ckpt"] is None  # fresh spawn: no checkpoint file yet
+assert lin["ckpt"] is None
 # Simulate training writing weights, then a save: the lineage ckpt
 # snapshot follows ("weights change" is visible across saves).
 with open(kentry.checkpoint_path, "wb") as f:
@@ -117,7 +114,6 @@ regr.save()
 assert regr.load_lineage("p0") is None
 print("LINEAGE_OK")
 
-# --- Churn helpers ---
 intervals = [poisson_interval(60.0) for _ in range(100)]
 assert all(i >= 0 for i in intervals)
 assert 0.3 < sum(intervals) / len(intervals) < 2.0
@@ -137,22 +133,20 @@ print("CHURN_HELPERS_OK")
 reg3 = Registry(os.path.join(tmpdir, "reg3"), max_agents=5)
 cm = ChurnManager(
     reg3, arrivals_per_minute=1000, mean_lifetime_episodes=2, top_up_per_tick=0
-)  # Poisson character, no top-up
+)
 cm._next_arrival = 0
 arrived = cm.tick(1.0)
 assert len(arrived) == 1
 aid = arrived[0]
 assert reg3.get(aid) is not None
-# Ticking alone never kills, however many ticks pass...
 cm._next_arrival = float("inf")
 for _ in range(50):
     cm.tick(1.0)
 assert reg3.get(aid).alive
-# ...only completed episodes age lifetimes (forced to 1, one report kills)
 cm._lifetimes[aid] = 1
 assert cm.report_episode(aid) is True
 assert not reg3.get(aid).alive
-assert cm.report_episode(aid) is False  # unknown/gone ids are safe
+assert cm.report_episode(aid) is False
 assert cm.report_episode("nobody") is False
 print("CHURN_TICK_OK")
 
@@ -161,12 +155,11 @@ regt = Registry(os.path.join(tmpdir, "regt"), max_agents=5)
 cmt = ChurnManager(
     regt, arrivals_per_minute=0, mean_lifetime_episodes=100, top_up_per_tick=3
 )
-cmt._next_arrival = float("inf")  # Poisson off: top-up alone
+cmt._next_arrival = float("inf")
 assert len(cmt.tick(1.0)) == 3
-assert len(cmt.tick(1.0)) == 2  # only room for 2 more: capped, not overfilled
-assert cmt.tick(1.0) == []  # at cap: nothing, no RuntimeError
+assert len(cmt.tick(1.0)) == 2
+assert cmt.tick(1.0) == []
 assert len(regt.alive_agents()) == 5 and regt.snapshot()["total"] == 5
-# top-up respects a dead slot the same way: kill one, next tick refills one
 regt.get(regt.alive_agents()[0].agent_id).alive = False
 assert len(cmt.tick(1.0)) == 1
 assert len(regt.alive_agents()) == 5
@@ -179,18 +172,17 @@ import ml.conductor.churn as _churn  # noqa: E402
 
 regr = Registry(os.path.join(tmpdir, "collide"), max_agents=10)
 cmc = ChurnManager(regr, arrivals_per_minute=0, top_up_per_tick=5)
-cmc._next_arrival = float("inf")  # Poisson off: direct spawns only
+cmc._next_arrival = float("inf")
 _frozen = {"return_value": 1234.567}
 with (
     _mock.patch.object(_churn.time, "time", **_frozen),
     _mock.patch.object(_churn.random, "randint", side_effect=[7, 7, 8]),
 ):
-    _a1 = cmc._spawn_one()  # draws 7 -> free
-    _a2 = cmc._spawn_one()  # draws 7 -> taken, retries to 8
+    _a1 = cmc._spawn_one()
+    _a2 = cmc._spawn_one()
 assert _a1 != _a2 and len(regr.alive_agents()) == 2
 # pre-fix code returned the same id twice here (register hands back the
 # existing entry) and left only 1 alive agent.
-# Exhaustion still surfaces as RuntimeError (both tick paths tolerate it).
 with (
     _mock.patch.object(_churn.time, "time", **_frozen),
     _mock.patch.object(_churn.random, "randint", return_value=7),
@@ -201,7 +193,6 @@ with (
     except RuntimeError:
         _exhausted = True
 assert _exhausted
-# Top-up fills to cap even when every first draw collides.
 regr2 = Registry(os.path.join(tmpdir, "collide2"), max_agents=3)
 cmt2 = ChurnManager(regr2, arrivals_per_minute=0, top_up_per_tick=3)
 cmt2._next_arrival = float("inf")
@@ -213,7 +204,6 @@ with (
 assert len(regr2.alive_agents()) == 3
 print("SPAWN_COLLISION_OK")
 
-# --- Mixer ---
 reg4 = Registry(os.path.join(tmpdir, "reg4"), max_agents=10)
 mx = Mixer.__new__(Mixer)
 mx.registry = reg4
@@ -228,7 +218,6 @@ snap = mx.snapshot()
 assert snap["f1"]["mean_reward"] > snap["f2"]["mean_reward"]
 print("MIXER_OK")
 
-# --- Metrics ---
 mlog = MetricsLogger(os.path.join(tmpdir, "test.jsonl"))
 mlog.log_agent_spawn("a1", "linear", "experimental")
 mlog.log_episode("a1", 1, 5.0, 100)
@@ -240,7 +229,6 @@ ev1 = json.loads(lines[0])
 assert ev1["event"] == "agent_spawn" and ev1["agent_id"] == "a1"
 ev2 = json.loads(lines[1])
 assert ev2["event"] == "episode" and ev2["reward"] == 5.0
-# time-based auto-flush: flush_every=0 writes through immediately
 mlog2 = MetricsLogger(
     os.path.join(tmpdir, "t2.jsonl"), buffer_size=10000, flush_every=0
 )
@@ -267,8 +255,8 @@ for suffix in ("", ".1", ".2"):
     if os.path.exists(p):
         with open(p) as f:
             seen.extend(_json2.loads(line)["i"] for line in f)
-assert 0 < len(seen) < 300, len(seen)  # rotated (not everything kept)
-assert max(seen) == 299  # newest data always preserved
+assert 0 < len(seen) < 300, len(seen)
+assert max(seen) == 299
 assert not os.path.exists(os.path.join(tmpdir, "rot.jsonl.3"))
 print("METRICS_OK")
 
@@ -276,7 +264,7 @@ print("METRICS_OK")
 # --- #45 supervisor steps counter increments per env step ---
 class _FakeEnv:
     async def reset(self):
-        await asyncio.sleep(0)  # yield like a real (network) env does
+        await asyncio.sleep(0)
         return {"obs": 0}
 
     async def step(self, action):
@@ -310,13 +298,13 @@ cm_full = ChurnManager(
     r_full, arrivals_per_minute=1000000, mean_lifetime_episodes=10000
 )
 cm_full._next_arrival = 0
-assert len(cm_full.tick(1.0)) == 1  # fills the single slot
+assert len(cm_full.tick(1.0)) == 1
 cm_full._next_arrival = 0
-assert cm_full.tick(1.0) == []  # full: skipped, no RuntimeError
+assert cm_full.tick(1.0) == []
 assert len(r_full.alive_agents()) == 1
 # corpses don't wedge long runs: a dead slot is reusable for arrivals
 dead_id = r_full.alive_agents()[0].agent_id
-assert cm_full.report_episode(dead_id) is False  # long lifetime: no death yet
+assert cm_full.report_episode(dead_id) is False
 r_full.get(dead_id).alive = False
 cm_full._next_arrival = 0
 assert len(cm_full.tick(1.0)) == 1
@@ -338,8 +326,8 @@ _t = _th.Thread(target=lambda: _out.append(mxu.rebalance()), daemon=True)
 _t.start()
 _t.join(timeout=5)
 assert not _t.is_alive(), "rebalance hung on uniform input"
-assert _out[0] == []  # nowhere to go: every floor is a donor, none a receiver
-assert sum(len(v) for v in mxu._floor_agents.values()) == 9  # conserved
+assert _out[0] == []
+assert sum(len(v) for v in mxu._floor_agents.values()) == 9
 print("MIXER_NO_HANG_OK")
 
 # --- rebalance moves respect donor/receiver bounds ---
@@ -347,11 +335,11 @@ mxb = Mixer(Registry(os.path.join(tmpdir, "mxb"), max_agents=50), ["f1", "f2"])
 mxb._floor_rewards = {"f1": [10, 10, 10], "f2": [0, 0, 0]}
 mxb._floor_agents = {"f1": ["a"], "f2": ["b", "c", "d", "e", "f"]}
 moves = mxb.rebalance()
-assert sum(len(v) for v in mxb._floor_agents.values()) == 6  # conserved
-assert len(moves) == 4  # f2 surplus 4 -> f1 deficit
+assert sum(len(v) for v in mxb._floor_agents.values()) == 6
+assert len(moves) == 4
 assert all(m[1] == "f2" and m[2] == "f1" for m in moves)
-assert len(mxb._floor_agents["f1"]) == 5  # took up toward (not past) target
-assert len(mxb._floor_agents["f2"]) == 1  # gave down to (not below) target
+assert len(mxb._floor_agents["f1"]) == 5
+assert len(mxb._floor_agents["f2"]) == 1
 print("MIXER_BOUNDS_OK")
 
 
@@ -373,7 +361,6 @@ async def _stop_check():
     assert "c1" in sup._tasks
     await sup.stop_agent("c1")
     assert "c1" not in sup._tasks and env.closed
-    # reap closes envs of churn-killed agents too
     env2 = _CloseEnv()
     r.register("c2", "linear")
     await sup.start_agent("c2", lambda aid: env2, lambda obs, aid: 0)
@@ -437,7 +424,7 @@ async def _reap_death_check():
         evs = [_json.loads(line) for line in f]
     deaths = [e for e in evs if e["event"] == "agent_death"]
     assert len(deaths) == 1 and deaths[0]["agent_id"] == "old", evs
-    assert "error" not in deaths[0], deaths[0]  # churn, not crash
+    assert "error" not in deaths[0], deaths[0]
     return True
 
 
@@ -478,7 +465,7 @@ async def _restart_reloads():
     assert old.task.done()
     r.mark_dead("ok")
     assert await sup.restart_agent("ok") is False
-    assert sup._tasks["ok"].agent_id == "ok"  # running task untouched
+    assert sup._tasks["ok"].agent_id == "ok"
     assert await sup.restart_agent("ghost") is False
     await sup.stop_all()
 
@@ -564,7 +551,7 @@ async def _restart_rebuilds_weights():
     obs = _obs()
     flat = flatten_obs(obs)
     assert len(flat) == OBS_SIZE, (len(flat), OBS_SIZE)
-    hp_idx = flat.index(1.0)  # only hp_frac is nonzero
+    hp_idx = flat.index(1.0)
 
     def _save(which):
         a = LinearQAgent(OBS_SIZE, N_ACTIONS)
@@ -574,13 +561,11 @@ async def _restart_rebuilds_weights():
 
     build = _plugin_policy_factory("linear", {"epsilon": 0.0})
     _save(1)
-    assert build(ckpt, {})(obs, "w") == 0  # zeroed weights: ties -> 0
-    _save(2)  # PBT winner->loser checkpoint copy
-    assert build(ckpt, {"epsilon": 0.0})(obs, "w") == 3  # new weights live
-    # hparams reach the live policy: epsilon=1 explores, bogus keys ignored
+    assert build(ckpt, {})(obs, "w") == 0
+    _save(2)
+    assert build(ckpt, {"epsilon": 0.0})(obs, "w") == 3
     wild = {build(ckpt, {"epsilon": 1.0, "bogus": 1})(obs, "w") for _ in range(50)}
     assert len(wild) > 1, wild
-    # missing checkpoint file: fresh policy, no raise
     assert build(os.path.join(tmpdir, "nope.pt"), {})(obs, "w") == 0
 
 
@@ -636,14 +621,12 @@ async def _maybe_start_check():
         ],
     )
     cond.registry.register("z1", "linear")
-    # raising factory: False, no exception, nothing logged/assigned
     assert await cond._maybe_start("z1") is False
     assert cond.mixer._floor_agents == {
         "town_square": [],
         "graveyard": [],
         "d_10_f1": [],
     }
-    # healthy slot: True
     cond2 = Conductor(
         os.path.join(tmp2, "c2"),
         max_agents=5,
@@ -690,7 +673,6 @@ async def _hook_check():
     env = _FakeEnv()
     await sup.start_agent(aid, lambda i: env, lambda obs, x: 0)
     await asyncio.sleep(0.4)
-    # episodes completed -> lifetime charged down (2 -> 1 -> 0 -> dead)
     assert r.get(aid).alive is False
     await sup.stop_all()
 
@@ -734,7 +716,6 @@ async def _sup_mixer():
     assert len(mx._floor_rewards["town_square"]) > 0
     assert mx.snapshot()["town_square"]["mean_reward"] == 1.0
     await sup.stop_all()
-    # ended tasks leave no corpses in floor lists
     assert mx._floor_agents == {"town_square": []}
     assert mx.snapshot()["town_square"]["agents"] == 0
 
@@ -755,10 +736,10 @@ async def _sup_episodes():
     mlog.flush()
     rows = [json.loads(line) for line in open(mpath) if line.strip()]
     eps = [row for row in rows if row.get("event") == "episode"]
-    assert len(eps) >= 2, rows  # 1-step fake env completes many episodes
+    assert len(eps) >= 2, rows
     assert all(row["agent_id"] == "e1" for row in eps)
     assert [row["episode"] for row in eps] == sorted(row["episode"] for row in eps)
-    assert all(row["reward"] == 1.0 for row in eps)  # fake env pays 1.0/step
+    assert all(row["reward"] == 1.0 for row in eps)
 
 
 asyncio.run(_sup_episodes())
@@ -774,7 +755,6 @@ async def _no_ghosts():
     st = cond.status()
     assert st["registry"]["alive"] == 0, st["registry"]
     assert st["supervisor"]["running"] == 0, st["supervisor"]
-    # mark_dead is safe on unknown ids and keeps history rows.
     assert cond.registry.mark_dead("nope") is None
     await cond.supervisor.stop_all()
 
@@ -804,10 +784,10 @@ cmr = ChurnManager(rr, arrivals_per_minute=0)
 cmr._next_arrival = float("inf")
 cids = [cmr._spawn_one() for _ in range(3)]
 assert [rr.get(a).character for a in cids] == ["role_0", "role_1", "role_2"]
-assert rr.alloc_character() is None  # pool full while all live
-rr.get(cids[0]).alive = False  # death frees the name, keeps history
+assert rr.alloc_character() is None
+rr.get(cids[0]).alive = False
 assert rr.alloc_character() == "role_0"
-c4 = cmr._spawn_one()  # respawn continues the same character
+c4 = cmr._spawn_one()
 assert rr.get(c4).character == "role_0" and c4 != cids[0]
 assert sorted(e.character for e in rr.alive_agents()) == ["role_0", "role_1", "role_2"]
 print("ROLE_REUSE_OK")
@@ -839,8 +819,8 @@ async def _role_login():
     char = cond.registry.get(aid).character
     assert char == "role_0"
     assert await cond._maybe_start(aid) is True
-    assert seen == [char], seen  # login name, not the incarnation id
-    assert await cond._maybe_start(aid) is False  # duplicate refused
+    assert seen == [char], seen
+    assert await cond._maybe_start(aid) is False
     await cond.supervisor.stop_all()
 
 
@@ -853,8 +833,7 @@ reg_ch = Registry(os.path.join(tmpdir, "reg_ch"), max_agents=50)
 cm_ch = ChurnManager(reg_ch, arrivals_per_minute=100000, mean_lifetime_episodes=10000)
 goals = []
 for _ in range(20):
-    cm_ch._next_arrival = 0  # Poisson due every tick...
-    # ...plus one top-up each (cap 50, never reached here): 2 per tick.
+    cm_ch._next_arrival = 0
     for aid in cm_ch.tick(1.0):
         goals.append(reg_ch.get(aid).goal)
 assert len(goals) == 40, len(goals)
@@ -862,7 +841,7 @@ for g in goals:
     assert set(g) == {"w_" + a for a in GOAL_AXES}
     assert abs(sum(g.values()) - 1.0) < 1e-9
     assert all(x >= 0 for x in g.values())
-assert len({tuple(sorted(g.items())) for g in goals}) > 1  # diversified
+assert len({tuple(sorted(g.items())) for g in goals}) > 1
 print("CHURN_GOALS_OK")
 
 
@@ -884,7 +863,7 @@ async def _sup_goals():
 
     await sup.start_agent("sg1", _factory, lambda obs, aid: 0)
     await asyncio.sleep(0.3)
-    assert made["sg1"].goal == g_sup  # env carries the registry goal
+    assert made["sg1"].goal == g_sup
     await sup.stop_all()
     mlog.flush()
     rows = [json.loads(line) for line in open(mpath) if line.strip()]
@@ -926,7 +905,7 @@ with _mock289.patch.object(_churn289, "OFFSPRING_FRACTION", 1.0):
 # mutants keep the parent's dominant axis (fresh draws would scatter 1/7
 # each way: all-50 agreement has probability (1/7)^50 ~ 0).
 assert all(max(_g, key=_g.get) == "w_score" for _g in _kids289)
-assert len({tuple(sorted(_g.items())) for _g in _kids289}) > 1  # noise, not clones
+assert len({tuple(sorted(_g.items())) for _g in _kids289}) > 1
 with _mock289.patch.object(_churn289, "OFFSPRING_FRACTION", 0.0):
     _fresh_pairs = [cm_os._sample_goal() for _ in range(50)]
     _fresh289 = [g for g, _p in _fresh_pairs]
@@ -956,7 +935,6 @@ _ho1, _ho2 = _he._build_obs(), _he._build_obs()
 _td = _lp.learn(_ho1, 0, 1.0, _ho2, False)
 assert _td == 1.0, _td
 assert any(w != 0.0 for w in _lp._agent.weights[0])
-# save/load delegate to the agent checkpoint
 _lp.save(os.path.join(tmpdir, "hook_learn.json"))
 assert _lp.load(os.path.join(tmpdir, "hook_learn.json")) is True
 print("LEARN_LINEAR_OK")
@@ -1022,7 +1000,7 @@ assert RESET_MODES == ("none", "lineage", "cell", "all")
 rr = Registry(os.path.join(tmpdir, "resetmodes"), max_agents=5)
 assert rr.reset_state("none") == []
 rr.register("r1", "linear")
-rr.save()  # registry.json (+ lineage refresh for r1)
+rr.save()
 _ckpt = os.path.join(tmpdir, "resetmodes", "r1", "checkpoint.pt")
 with open(_ckpt, "w") as _f:
     _f.write("weights")
@@ -1031,20 +1009,19 @@ try:
     _bad_reset = False
 except ValueError:
     _bad_reset = True
-assert _bad_reset  # unknown modes fail fast, never half-wipe
+assert _bad_reset
 _got = rr.reset_state("lineage")
 assert not os.path.isdir(os.path.join(tmpdir, "resetmodes", "lineages"))
-assert os.path.isfile(_ckpt)  # weights survive a lineage reset
+assert os.path.isfile(_ckpt)
 assert os.path.isfile(os.path.join(tmpdir, "resetmodes", "registry.json"))
 _got = rr.reset_state("cell")
-assert not os.path.isfile(_ckpt)  # weights forgotten...
+assert not os.path.isfile(_ckpt)
 assert os.path.isfile(os.path.join(tmpdir, "resetmodes", "registry.json"))
 _rr2 = Registry(os.path.join(tmpdir, "resetmodes"), max_agents=5)
 _rr2.load()
-assert _rr2.get("r1") is not None  # ...but the roster survives
+assert _rr2.get("r1") is not None
 _got = rr.reset_state("all")
 assert not os.path.exists(os.path.join(tmpdir, "resetmodes"))
-# Conductor wiring: reset runs before load, bogus fails fast.
 try:
     Conductor(os.path.join(tmpdir, "creset"), resume=False, reset="bogus")
     _bad_conductor = False
@@ -1052,8 +1029,7 @@ except ValueError:
     _bad_conductor = True
 assert _bad_conductor
 _cc = Conductor(os.path.join(tmpdir, "creset"), reset="all")
-assert _cc.registry.snapshot()["total"] == 0  # wiped, load no-ops
-# Soak CLI: --reset/--no-resume parse, defaults resume as-is.
+assert _cc.registry.snapshot()["total"] == 0
 import ml.conductor.soak as _soak  # noqa: E402
 
 with _mock.patch.object(
@@ -1102,7 +1078,7 @@ async def _reconnect_check():
             )
             is True
         )
-        for _ in range(100):  # 2 failed connects, then live episodes
+        for _ in range(100):
             _task = sup._tasks.get("rc")
             if (
                 _envs
@@ -1112,10 +1088,10 @@ async def _reconnect_check():
             ):
                 break
             await asyncio.sleep(0.05)
-        assert _envs[0].resets >= 3  # retried, then connected
-        assert _task.reconnects == 0  # counter reset on success
-        assert _task.episodes >= 1  # and training continued
-        assert _deaths == []  # disconnects never death-logged
+        assert _envs[0].resets >= 3
+        assert _task.reconnects == 0
+        assert _task.episodes >= 1
+        assert _deaths == []
         assert r.get("rc").alive is True
         await sup.stop_all()
     return True

@@ -261,7 +261,6 @@ def _activity(snapshot, rows=ACTIVITY_ROWS):
     return table
 
 
-# --- world ---------------------------------------------------------------
 def render_world(snapshot, rows=ACTIVITY_ROWS):
     """World tab: rooms, history trends, live activity.
 
@@ -359,7 +358,6 @@ def _room_exits(room):
     return " ".join(parts) or "-"
 
 
-# --- players -------------------------------------------------------------
 def render_players(snapshot, rows=ACTIVITY_ROWS):
     """Players tab: performance, scores, and the top player's tracker."""
     return Group(
@@ -458,7 +456,6 @@ def _tracker(snapshot, rows=ACTIVITY_ROWS):
     return Group(meta, table)
 
 
-# --- market --------------------------------------------------------------
 def render_market(snapshot, rows=ACTIVITY_ROWS):
     """Market tab: treasury, the two-sided book, trades, per-item stats."""
     market = snapshot.get("market") or {}
@@ -616,7 +613,6 @@ def _clock(ts):
         return "-"
 
 
-# --- dungeon -------------------------------------------------------------
 def render_dungeon(snapshot, rows=ACTIVITY_ROWS):
     """Dungeon tab: active buffs, bosses, lifetime clears, open instances."""
     return Group(
@@ -634,7 +630,6 @@ def render_dungeon(snapshot, rows=ACTIVITY_ROWS):
     )
 
 
-# --- arena ---------------------------------------------------------------
 def render_arena(snapshot, rows=ACTIVITY_ROWS):
     """Arena tab: live matches, the ladder and recent results (#654)."""
     arena = snapshot.get("arena") or {}
@@ -839,7 +834,6 @@ def _floor_states(floors):
     return "; ".join(parts) or "floor 1 not generated yet"
 
 
-# --- agents --------------------------------------------------------------
 def render_agents(snapshot, rows=ACTIVITY_ROWS):
     """Agents tab: the roster plus a merged, newest-first action feed."""
     return Group(
@@ -943,7 +937,6 @@ def _action_seq(action):
     return _as_float(action.get("seq"))
 
 
-# --- plugins -------------------------------------------------------------
 def render_plugins(snapshot, rows=ACTIVITY_ROWS, plugins=None):
     """Plugins tab (#177): admission list and refused files, read-only.
 
@@ -990,7 +983,6 @@ def render_plugins(snapshot, rows=ACTIVITY_ROWS, plugins=None):
     return Group(*parts)
 
 
-# --- quests --------------------------------------------------------------
 def render_quests(snapshot, rows=ACTIVITY_ROWS):
     """Quests tab: catalog, turn-in feed, commissions, commission history."""
     return Group(
@@ -1175,7 +1167,6 @@ def _age(ts):
     return f"{seconds // 86400}d"
 
 
-# --- crafting ------------------------------------------------------------
 FLOW_COMMANDS = (
     ("gather", ("gather",)),
     ("craft", ("craft",)),
@@ -1341,7 +1332,6 @@ def _command_flow(snapshot):
     return grid
 
 
-# --- guilds --------------------------------------------------------------
 def render_guilds(snapshot, rows=ACTIVITY_ROWS):
     """Guilds tab: aggregate totals, vault holdings, recent audit feed.
 
@@ -1388,7 +1378,6 @@ def _guild_feed(guilds, rows=ACTIVITY_ROWS):
     return Group(*[Text(line) for line in reversed(feed[-rows:])])
 
 
-# --- gm ------------------------------------------------------------------
 def render_gm(snapshot, rows=ACTIVITY_ROWS):
     """GM tab: treasury readout and the item/room/player catalogs."""
     return Group(
@@ -1414,7 +1403,6 @@ def _catalog_table(catalog):
     return table
 
 
-# --- config --------------------------------------------------------------
 def render_config(snapshot, rows=ACTIVITY_ROWS, config=None):
     """Config tab: read-only schema, section sizes, and overrides.
 
@@ -1525,7 +1513,6 @@ def _config_overrides(files):
     return table
 
 
-# --- runs ----------------------------------------------------------------
 def render_runs(snapshot, rows=ACTIVITY_ROWS, runs=None):
     """Render the runs tab: the run index with status, age, and latest metrics."""
     if not isinstance(runs, dict) or not runs:

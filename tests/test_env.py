@@ -46,9 +46,8 @@ async def main():
     finally:
         await gm.close()
 
-    # go shop, buy healing herbs + sword via env actions
-    await e1.step(A2IDX["move_west"])  # market
-    await e1.step(A2IDX["buy"])  # healing herb x?
+    await e1.step(A2IDX["move_west"])
+    await e1.step(A2IDX["buy"])
     await e1.step(A2IDX["buy"])
     await e1.step(A2IDX["buy"])
     await e1.step(A2IDX["market_list"])
@@ -57,8 +56,7 @@ async def main():
     await e2.step(A2IDX["move_west"])
     await e2.step(A2IDX["buy"])
     await e2.step(A2IDX["buy"])
-    # party up in town_square
-    await e1.step(A2IDX["move_east"])  # town_square
+    await e1.step(A2IDX["move_east"])
     await e2.step(A2IDX["move_east"])
     await e1.step(A2IDX["look"])
     await e2.step(A2IDX["look"])
@@ -84,8 +82,7 @@ async def main():
             await asyncio.sleep(0.4)
     finally:
         await gm2.close()
-    # enter the shared dungeon
-    await e1.step(A2IDX["move_south"])  # graveyard
+    await e1.step(A2IDX["move_south"])
     await e2.step(A2IDX["move_south"])
     await e1.step(A2IDX["move_enter"])
     await e2.step(A2IDX["move_enter"])
@@ -104,13 +101,10 @@ async def main():
     assert "guards" not in o or True
     print("ATTACK_ENV_OK reward=", r)
 
-    # market works from anywhere: post + buy
-    await e1.step(A2IDX["take"])  # pick up whatever dropped (shard)
+    await e1.step(A2IDX["take"])
     await e1.step(A2IDX["market_post"])
     await asyncio.sleep(0.3)
-    await e2.step(
-        A2IDX["market_buy"]
-    )  # buys A's shard with bottled herb gold? ensure enough
+    await e2.step(A2IDX["market_buy"])
     await asyncio.sleep(0.3)
     assert e2._state.get("market_state") or True
     await e2.step(A2IDX["market_list"])

@@ -418,13 +418,13 @@ async def main():
     print("GEAR_UP_OK")
 
     # ---- A: grab the free shield from the shop for later market sale
-    await send(A, {"cmd": "move", "dir": "east"})  # back to town_square
+    await send(A, {"cmd": "move", "dir": "east"})
     await wait_room(A)
-    await send(A, {"cmd": "move", "dir": "east"})  # old_shop
+    await send(A, {"cmd": "move", "dir": "east"})
     await wait_room(A)
     await send(A, {"cmd": "take", "item": "shield"})
     await drain(A, 1.0)
-    await send(A, {"cmd": "move", "dir": "west"})  # back to town_square
+    await send(A, {"cmd": "move", "dir": "west"})
     await wait_room(A)
 
     # ---- A: reach graveyard (fight the wandering wolf if it shows again)
@@ -522,7 +522,7 @@ async def main():
 
     # ---- GM spends tax treasury
     got = await gm_send("gm_boss", room="deep_forest", strength=1)
-    assert any("spawned" in m.get("text", "") for m in got), got  # 425-100 = 325
+    assert any("spawned" in m.get("text", "") for m in got), got
     got = await gm_send("gm_buff", type="xp", minutes=1)
     assert any(
         f"Treasury now {round(275.0 - sum(heal_spent) - open_guild_escrow(), 2)}."
@@ -571,7 +571,7 @@ async def main():
     got = await recv(C, timeout=5.0)
     assert any(m.get("type") == "welcome" for m in got), got
     await C.close()
-    await asyncio.sleep(1.5)  # let the server run disconnect cleanup
+    await asyncio.sleep(1.5)
     C2 = await websockets.connect(URI)
     await send(C2, {"cmd": "login", "name": "RelogProbe", "token": "relog-probe-token"})
     got2 = await recv(C2, timeout=5.0)

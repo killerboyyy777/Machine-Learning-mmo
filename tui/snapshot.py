@@ -103,7 +103,6 @@ class SnapshotPoller:
         self._paused = False
         self._version = 0
 
-    # --- lifecycle -----------------------------------------------------
     def start(self):
         """Begin polling. Safe to call twice; the second call is a no-op."""
         if self._thread is not None:
@@ -120,7 +119,6 @@ class SnapshotPoller:
         if thread is not None:
             thread.join(timeout=self.interval + 1.0)
 
-    # --- polling -------------------------------------------------------
     def refresh(self):
         """Fetch once. Returns True on success and records any error."""
         try:
@@ -144,7 +142,6 @@ class SnapshotPoller:
             if self._stop.wait(self.interval):
                 break
 
-    # --- state ---------------------------------------------------------
     def snapshot(self):
         """Latest good snapshot, or None if nothing has ever arrived."""
         with self._lock:

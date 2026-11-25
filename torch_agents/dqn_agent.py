@@ -91,7 +91,6 @@ def _round_or_none(v):
 
 
 # ---------------------------------------------------------------------------
-# Random Network Distillation (curiosity) -- see TorchDQNAgent below
 # ---------------------------------------------------------------------------
 
 
@@ -111,7 +110,6 @@ class RNDNet(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Q-Network architecture with auxiliary heads + market value head
 # ---------------------------------------------------------------------------
 
 
@@ -160,7 +158,6 @@ class DQN(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Agent
 # ---------------------------------------------------------------------------
 
 
@@ -317,13 +314,9 @@ class TorchDQNAgent:
         # market_net(price) after the server's tax cut.
         self._prev_own_orders: list = []
 
-    # ---- epsilon ------------------------------------------------------------
-
     def _epsilon(self) -> float:
         progress = min(1.0, self.t_step / max(1, self.epsilon_decay_steps))
         return self.epsilon_start + (self.epsilon_end - self.epsilon_start) * progress
-
-    # ---- action selection ---------------------------------------------------
 
     def act(
         self,
@@ -343,8 +336,6 @@ class TorchDQNAgent:
             q_vals = self.q.get_q(x).squeeze(0)
             best = max(valid, key=lambda a: float(q_vals[a].item()))
         return int(best)
-
-    # ---- RND curiosity ------------------------------------------------------
 
     def _rnd_weight(self) -> float:
         """Effective curiosity weight: linear start->floor over
@@ -383,13 +374,9 @@ class TorchDQNAgent:
         self.rnd_opt.step()
         return float(loss.detach())
 
-    # ---- storage ------------------------------------------------------------
-
     def store(self, transition: dict) -> None:
         self.replay[self.replay_idx] = transition
         self.replay_idx = (self.replay_idx + 1) % self.replay_size
-
-    # ---- learning -----------------------------------------------------------
 
     def learn(self) -> dict[str, float | None]:
         """One learning step: sample a minibatch from replay and perform
@@ -409,7 +396,6 @@ class TorchDQNAgent:
         # Buffer warm-up keys on a fillable minibatch (#222), not the full
         # 10k buffer: gating on replay_size meant default --steps runs
         # performed zero gradient steps while looking like training.
-        # Sample minibatch
         available = [i for i, t in enumerate(self.replay) if t is not None]
         if len(available) < self.batch_size:
             return {
@@ -437,7 +423,6 @@ class TorchDQNAgent:
                 "adv_clip_frac": None,
             }
 
-        # ---- build tensors from batch ----
         states = torch.tensor(
             [b["state"] for b in batch], dtype=torch.float32, device=self.device
         )
@@ -454,7 +439,6 @@ class TorchDQNAgent:
             [b["done"] for b in batch], dtype=torch.float32, device=self.device
         )
 
-        # ---- auxiliary targets ----
         gold_targets = torch.tensor(
             [b.get("gold_delta", 0.0) for b in batch],
             dtype=torch.float32,
@@ -486,11 +470,9 @@ class TorchDQNAgent:
             device=self.device,
         )
 
-        # ---- current Q-values for the actions taken ----
         # (forward() returns a dict of heads; Q-values live under "q")
         q_vals = self.q.get_q(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # ---- TD target on the shaped reward ----
         # r = score + quest-intrinsic + RND curiosity (the exploration
         # bonuses ride the TD target; the predictor itself trains below).
         # Turn-in points already live inside `rewards` (score-delta), so
@@ -505,7 +487,6 @@ class TorchDQNAgent:
             target_q = self.target.get_q(next_states).max(1)[0]
             td_targets = shaped + self.gamma * target_q * (1.0 - dones)
 
-        # ---- TD loss (Huber) ----
         # #416b: fit q toward its own value plus a per-batch normalized,
         # clipped advantage. Normalizing the residual (not the target)
         # keeps the Bellman backup and the absolute value scale intact,
@@ -550,7 +531,6 @@ class TorchDQNAgent:
             adv = adv_raw
         td_loss = nn.functional.smooth_l1_loss(q_vals, q_vals.detach() + adv)
 
-        # ---- auxiliary losses ----
         heads = self.q(states)
         pred_gold = heads["gold"]
         pred_loot = heads["loot"]
@@ -562,7 +542,6 @@ class TorchDQNAgent:
         market_loss = nn.functional.l1_loss(pred_market, market_targets)
         quest_loss = nn.functional.l1_loss(pred_quest, quest_targets)
 
-        # ---- total loss ----
         total_loss = (
             td_loss
             + self.aux_lambda * (gold_loss + loot_loss)
@@ -579,7 +558,6 @@ class TorchDQNAgent:
         # the Q-value trunk). Skipped when curiosity is disabled.
         rnd_loss = self.update_rnd(states) if self._rnd_weight() > 0 else 0.0
 
-        # Periodically sync target network
         self.learn_step += 1
         if self.learn_step % 100 == 0:
             self.target.load_state_dict(self.q.state_dict())
@@ -594,8 +572,6 @@ class TorchDQNAgent:
             "adv_scale": adv_scale,
             "adv_clip_frac": clip_frac,
         }
-
-    # ---- weight persistence -------------------------------------------------
 
     def save_weights(self, path: str | None = None) -> None:
         if path is None:
@@ -709,8 +685,6 @@ class TorchDQNAgent:
         print(f"Weights loaded from {path}")
         return True
 
-    # ---- environment loop ---------------------------------------------------
-
     def log_reset_retry(self, attempt, delay, error):
         self.last_reset_error = f"reset attempt {attempt}: {error}"
         print(
@@ -778,7 +752,6 @@ class TorchDQNAgent:
                 continue
             next_features = flatten_obs(next_obs)
 
-            # ---- compute auxiliary targets from observation changes ----
             cur_gold = float(next_obs.get("gold_raw", self._prev_gold))
             gold_delta = cur_gold - self._prev_gold
             self._prev_gold = cur_gold
@@ -869,7 +842,6 @@ class TorchDQNAgent:
             # more; the predictor fit in learn() makes them familiar).
             rnd_bonus = self.rnd_bonus(next_features) if self._rnd_weight() > 0 else 0.0
 
-            # Store transition with all auxiliary targets
             self.store(
                 {
                     "state": features,
@@ -924,7 +896,6 @@ class TorchDQNAgent:
                         rnd_loss=_round_or_none(losses.get("rnd")),
                     )
 
-            # Save checkpoint + best-model snapshot
             if self.t_step % save_every == 0:
                 self.save_weights()
                 if obs["score_raw"] > self.best_score:
@@ -966,7 +937,6 @@ class TorchDQNAgent:
 
 
 # ---------------------------------------------------------------------------
-# Quick smoke-test entry point
 # ---------------------------------------------------------------------------
 
 

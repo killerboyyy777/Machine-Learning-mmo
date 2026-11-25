@@ -81,7 +81,6 @@ async def main():
             elif cmd == "move":
                 direction = msg.get("dir")
                 current["room"] = "old_shop" if direction == "west" else "town_square"
-                # In old_shop: rat NPC, no items by default
                 if current["room"] == "old_shop":
                     await ws.send(
                         json.dumps(
@@ -100,7 +99,6 @@ async def main():
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "attack":
                 target = msg.get("target")
-                # Deal damage - reduce rat HP conceptually, just report success
                 await ws.send(
                     json.dumps({"type": "combat", "text": f"You hit the {target}."})
                 )
@@ -112,7 +110,6 @@ async def main():
                     current["gold"] = current.get("gold", 0) + 1
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "rest":
-                # Rest costs 5 gold, recovers HP
                 gold = current.get("gold", 0)
                 if gold >= 5:
                     current["gold"] = gold - 5
@@ -127,7 +124,6 @@ async def main():
             elif cmd == "buy":
                 item = msg.get("item")
                 gold = current.get("gold", 0)
-                # Simple economy: potion costs 5 gold, herb costs 3 gold
                 prices = {"potion": 5, "herb": 3}
                 price = prices.get(item, 0)
                 if price > 0 and gold >= price:
@@ -151,12 +147,11 @@ async def main():
             elif cmd == "sell":
                 item = msg.get("item")
                 gold = current.get("gold", 0)
-                # Sell: get half gold back
                 if item in current.get("inventory", []):
                     current["inventory"] = [
                         i for i in current.get("inventory", []) if i != item
                     ]
-                    current["gold"] = gold + 2  # get 2 gold back
+                    current["gold"] = gold + 2
                     await ws.send(
                         json.dumps(
                             {"type": "effect", "text": f"Sold {item} for 2 gold."}
@@ -211,7 +206,6 @@ async def main():
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "craft":
                 recipe = msg.get("recipe")
-                # Simple crafting: some recipes work, others don't
                 valid_recipes = {"sharpening_oil", "fortitude_tonic"}
                 if recipe in valid_recipes:
                     await ws.send(
@@ -225,7 +219,6 @@ async def main():
                     )
                 await ws.send(json.dumps(stats_view()))
             elif cmd == "gather":
-                # Gather gives a herb
                 current.setdefault("inventory", []).append("herb")
                 current["gold"] = current.get("gold", 0) + 1
                 await ws.send(
@@ -236,7 +229,7 @@ async def main():
                 gold = current.get("gold", 0)
                 if gold >= 10:
                     current["gold"] = gold - 10
-                    current["hp"] = 20  # full heal
+                    current["hp"] = 20
                     await ws.send(json.dumps({"type": "effect", "text": "Full heal."}))
                 else:
                     await ws.send(
@@ -307,7 +300,6 @@ async def main():
         line = await asyncio.wait_for(proc.stdout.readline(), 10)
         return json.loads(line)
 
-    # Init
     await rpc(
         {
             "jsonrpc": "2.0",
@@ -322,7 +314,6 @@ async def main():
     )
     await rpc({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
-    # 1. Look around the starting room
     looked = await rpc(
         {
             "jsonrpc": "2.0",
@@ -334,7 +325,6 @@ async def main():
     assert looked["result"]["isError"] is False, f"LOOK failed: {looked}"
     print("LOOK: OK - room state received")
 
-    # 2. Move west to Old Shop
     moved = await rpc(
         {
             "jsonrpc": "2.0",
@@ -346,7 +336,6 @@ async def main():
     assert moved["result"]["isError"] is False, f"MOVE failed: {moved}"
     print("MOVE: OK - moved to Old Shop")
 
-    # 3. Attack the rat NPC
     attacked = await rpc(
         {
             "jsonrpc": "2.0",
@@ -358,7 +347,6 @@ async def main():
     assert attacked["result"]["isError"] is False, f"ATTACK failed: {attacked}"
     print("ATTACK: OK - attacked rat")
 
-    # 4. Take a herb from the ground (if available)
     taken = await rpc(
         {
             "jsonrpc": "2.0",
@@ -370,7 +358,6 @@ async def main():
     assert taken["result"]["isError"] is False, f"TAKE failed: {taken}"
     print("TAKE: OK - took herb")
 
-    # 5. Rest to recover HP
     rested = await rpc(
         {
             "jsonrpc": "2.0",
@@ -382,7 +369,6 @@ async def main():
     assert rested["result"]["isError"] is False, f"REST failed: {rested}"
     print("REST: OK - rested")
 
-    # 6. Buy a potion
     bought = await rpc(
         {
             "jsonrpc": "2.0",
@@ -394,7 +380,6 @@ async def main():
     assert bought["result"]["isError"] is False, f"BUY failed: {bought}"
     print("BUY: OK - bought potion")
 
-    # 7. Use the potion
     used = await rpc(
         {
             "jsonrpc": "2.0",
@@ -406,7 +391,6 @@ async def main():
     assert used["result"]["isError"] is False, f"USE failed: {used}"
     print("USE: OK - used potion")
 
-    # 8. Sell the potion back
     sold = await rpc(
         {
             "jsonrpc": "2.0",
@@ -418,7 +402,6 @@ async def main():
     assert sold["result"]["isError"] is False, f"SELL failed: {sold}"
     print("SELL: OK - sold potion back")
 
-    # 9. Gather resources
     gathered = await rpc(
         {
             "jsonrpc": "2.0",
@@ -430,7 +413,6 @@ async def main():
     assert gathered["result"]["isError"] is False, f"GATHER failed: {gathered}"
     print("GATHER: OK - gathered resources")
 
-    # 10. Craft sharpening oil
     crafted = await rpc(
         {
             "jsonrpc": "2.0",
@@ -442,7 +424,6 @@ async def main():
     assert crafted["result"]["isError"] is False, f"CRAFT failed: {crafted}"
     print("CRAFT: OK - crafted sharpening_oil")
 
-    # 11. Check companion script set
     script_set = await rpc(
         {
             "jsonrpc": "2.0",
@@ -459,7 +440,6 @@ async def main():
     ), f"COMPANION_SCRIPT_SET failed: {script_set}"
     print("COMPANION_SCRIPT_SET: OK - set script")
 
-    # 12. Show companion script
     script_show = await rpc(
         {
             "jsonrpc": "2.0",
@@ -473,7 +453,6 @@ async def main():
     ), f"COMPANION_SCRIPT_SHOW failed: {script_show}"
     print("COMPANION_SCRIPT_SHOW: OK - showed script")
 
-    # 13. Clear companion script
     script_clear = await rpc(
         {
             "jsonrpc": "2.0",
@@ -487,7 +466,6 @@ async def main():
     ), f"COMPANION_SCRIPT_CLEAR failed: {script_clear}"
     print("COMPANION_SCRIPT_CLEAR: OK - cleared script")
 
-    # 14. Check companion status
     status = await rpc(
         {
             "jsonrpc": "2.0",
@@ -499,7 +477,6 @@ async def main():
     assert status["result"]["isError"] is False, f"COMPANION_STATUS failed: {status}"
     print("COMPANION_STATUS: OK - checked status")
 
-    # 15. Equip an item (herb, which was gathered)
     equipped = await rpc(
         {
             "jsonrpc": "2.0",
@@ -511,7 +488,6 @@ async def main():
     assert equipped["result"]["isError"] is False, f"EQUIP failed: {equipped}"
     print("EQUIP: OK - equipped herb")
 
-    # 16. Drop an item
     dropped = await rpc(
         {
             "jsonrpc": "2.0",
@@ -523,7 +499,6 @@ async def main():
     assert dropped["result"]["isError"] is False, f"DROP failed: {dropped}"
     print("DROP: OK - dropped herb")
 
-    # 17. Heal at Sister Maren (costs 10 gold)
     healed = await rpc(
         {
             "jsonrpc": "2.0",

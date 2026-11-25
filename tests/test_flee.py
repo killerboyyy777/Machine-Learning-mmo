@@ -19,11 +19,7 @@ class FixedRng:
 
 async def test_flee_trigger_hp():
     srv.npcs.clear()
-    # Setup: Player with low HP in a hostile room
     player = Player(name="TestFleeHP", hp=2, max_hp=20, room="town_square")
-    # Manually add a hostile to town_square for testing
-    # We need to bypass the global NPCs dict if we want to be safe,
-    # but since this is a unit test, we can just inject.
     srv.npcs["test_mob"] = {
         "id": "test_mob",
         "name": "Angry Mob",
@@ -33,23 +29,18 @@ async def test_flee_trigger_hp():
     }
     add_member(player)
 
-    # Should trigger flee (2/20 = 10% < 25%)
     # Mock send to avoid websocket errors
     async def mock_send(p, msg):
         pass
 
     srv.send = mock_send
 
-    # Use a mock msg
     try:
         await srv.cmd_flee(player, {})
     except Exception as e:
         print(f"Flee failed: {e}")
         return False
 
-    # Check if player moved (assuming town_square has exits)
-    # town_square exits: {"north": "...", ...}
-    # Let's check if player.room changed
     if player.room != "town_square":
         print("Successfully fled due to low HP")
         return True
@@ -60,9 +51,7 @@ async def test_flee_trigger_hp():
 
 async def test_flee_trigger_outnumbered():
     srv.npcs.clear()
-    # Setup: Healthy player outnumbered
     player = Player(name="TestFleeOut", hp=20, max_hp=20, room="town_square")
-    # 3 hostiles vs 1 player
     srv.npcs["mob1"] = {
         "id": "mob1",
         "name": "Mob 1",
@@ -107,9 +96,7 @@ async def test_flee_trigger_outnumbered():
 
 async def test_no_flee_healthy():
     srv.npcs.clear()
-    # Setup: Healthy player, not outnumbered
     player = Player(name="TestNoFlee", hp=20, max_hp=20, room="town_square")
-    # One hostile vs 1 player (not outnumbered)
     srv.npcs["mob1"] = {
         "id": "mob1",
         "name": "Mob 1",
@@ -133,7 +120,6 @@ async def test_no_flee_healthy():
         print(f"Error: {e}")
         return False
 
-    # If the player didn't move and we got the danger error, it's correct.
     if player.room == "town_square" and any(
         "not in enough danger" in e for e in captured_errors
     ):
@@ -175,7 +161,7 @@ async def test_flee_dungeon():
         delver = Player(name="TestFleeFloor1", hp=2, max_hp=20, room=dungeon.room_id(1))
         delvers.append(delver)
         add_member(delver)
-        srv._FLEE_RNG = FixedRng(1)  # force success
+        srv._FLEE_RNG = FixedRng(1)
         await srv.cmd_flee(delver, {})
         assert delver.room == srv.DUNGEON_ENTRANCE_ROOM, (delver.room, sent)
         assert not [m for m in sent if m.get("type") == "error"], sent
@@ -186,7 +172,7 @@ async def test_flee_dungeon():
         stuck = Player(name="TestFleeSealed", hp=2, max_hp=20, room=dungeon.room_id(2))
         delvers.append(stuck)
         add_member(stuck)
-        srv._FLEE_RNG = FixedRng(100)  # force failure
+        srv._FLEE_RNG = FixedRng(100)
         await srv.cmd_flee(stuck, {})
         assert stuck.room == dungeon.room_id(2), stuck.room
         assert applied, "failed flee should land one free enemy swing"
@@ -198,7 +184,7 @@ async def test_flee_dungeon():
 
         sent.clear()
         applied.clear()
-        srv._FLEE_RNG = FixedRng(1)  # force success
+        srv._FLEE_RNG = FixedRng(1)
         await srv.cmd_flee(stuck, {})
         assert stuck.room == dungeon.room_id(1), (stuck.room, sent)
         assert not applied, applied

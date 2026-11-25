@@ -86,7 +86,7 @@ class MetricsLogger:
     def log_agent_death(self, agent_id, episodes, total_reward, error=None):
         kw = {}
         if error:
-            kw["error"] = str(error)[-500:]  # traceback tail, if any
+            kw["error"] = str(error)[-500:]
         self.log(
             "agent_death",
             agent_id=agent_id,
