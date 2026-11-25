@@ -10176,7 +10176,7 @@ async def cmd_quest(player, msg):
             await send(
                 player,
                 {
-                    "type": "message",
+                    "type": "error",
                     "text": f"You already have an active {quest['giver_name']} quest ({qid}).",
                 },
             )
@@ -10242,7 +10242,7 @@ async def cmd_quest(player, msg):
     elif action == "turn_in":
         if not _quest_active(entry, qid):
             await send(
-                player, {"type": "message", "text": "You don't have that quest active."}
+                player, {"type": "error", "text": "You don't have that quest active."}
             )
             return
         if qid == "guard_charm":
@@ -10256,7 +10256,7 @@ async def cmd_quest(player, msg):
                 await send(
                     player,
                     {
-                        "type": "message",
+                        "type": "error",
                         "text": "You haven't crafted the Ancient Guardian Charm yet (or it's no longer in your pack). "
                         "Gather 1 Treant Bark, 1 Troll Hide, and 1 Ectoplasm, then craft it.",
                     },
@@ -10270,7 +10270,7 @@ async def cmd_quest(player, msg):
                 await send(
                     player,
                     {
-                        "type": "message",
+                        "type": "error",
                         "text": f"The deeps are not yet quiet ({have}/{QUEST_DELVER_FLOORS} floors cleared). "
                         "Descend through the graveyard archway and clear a floor.",
                     },
@@ -10287,7 +10287,7 @@ async def cmd_quest(player, msg):
                 await send(
                     player,
                     {
-                        "type": "message",
+                        "type": "error",
                         "text": f"Sister Maren still needs: {', '.join(missing)}.",
                     },
                 )
@@ -14961,7 +14961,7 @@ async def handle_connection(ws):
                     player,
                     {
                         "type": "error",
-                        "text": f"GM actions are only available through the dashboard's GM stream (ws://127.0.0.1:{GM_PORT}).",
+                        "text": "GM actions are not available on this port.",
                     },
                 )
                 continue
