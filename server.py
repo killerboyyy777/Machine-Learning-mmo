@@ -9089,13 +9089,29 @@ def _freight_flush_refunds(player):
     """Pay out money that terminal events owed this player while offline."""
     owed = 0
     for rec in FREIGHT.values():
-        if rec["state"] in ("lost", "expired") and rec.get("poster") == player.name:
+        if (
+            rec["state"] in ("delivered", "lost", "expired")
+            and rec.get("poster_kind") != "station"
+            and rec.get("poster") == player.name
+        ):
             owed += int(rec.get("refund") or 0)
             rec["refund"] = 0
     if owed:
         player.gold += owed
         mark_freight_dirty()
     return owed
+
+
+def _freight_bank_refund(poster, amount):
+    """Pay a terminal refund now, banking it while the poster is offline."""
+    for p in players_by_name.get(poster.lower(), ()):
+        if p.logged_in:
+            p.gold += amount
+            break
+    else:
+        entry = get_score_entry(poster)
+        entry["gold_bank"] = entry.get("gold_bank", 0) + amount
+    mark_scores_dirty()
 
 
 def _freight_drop_package(room_id, items):
@@ -9174,9 +9190,12 @@ def prune_freight(now=None):
     for cid in list(FREIGHT):
         rec = FREIGHT[cid]
         state = rec["state"]
-        if state in ("delivered",) and now - rec["delivered_at"] >= (
+        if state == "delivered" and now - rec["delivered_at"] >= (
             FREIGHT_DELIVERED_RETENTION_SECONDS
         ):
+            refund = int(rec.get("refund") or 0)
+            if refund and rec.get("poster_kind") != "station":
+                _freight_bank_refund(rec["poster"], refund)
             items = rec.pop("items", [])
             rec["items"] = []
             _freight_drop_package(rec["destination"], items)
@@ -9659,9 +9678,13 @@ def _freight_release_on_death(player, death_room):
         _freight_drop_package(death_room, items)
         rec["state"] = "lost"
         rec["lost_at"] = time.time()
-        # Same terminal settlement as an expired carried contract: the
-        # unearned rush bonus returns with the fee and deposit (#713).
-        rec["refund"] = rec["fee"] + rec["deposit"] + int(rec.get("bonus") or 0)
+        # Same terminal settlement as an expired carried contract: a station
+        # forfeits nothing, a player gets the unearned bonus back (#713 #907).
+        rec["refund"] = (
+            0
+            if rec.get("poster_kind") == "station"
+            else rec["fee"] + rec["deposit"] + int(rec.get("bonus") or 0)
+        )
         FREIGHT_STATS["lost"] += 1
         FREIGHT_STATS["deposits_forfeited"] += rec["deposit"]
         mark_freight_dirty()

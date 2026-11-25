@@ -468,6 +468,87 @@ def freight_death_refund_save_load_check(folder):
     print("FREIGHT_DEATH_REFUND_SAVE_LOAD_OK")
 
 
+def freight_delivered_refund_persistence_check(folder):
+    """A delivered refund survives load and settles on flush or retention (#905)."""
+    path = os.path.join(folder, "freight-delivered-refund.json")
+    saved = (
+        srv.FREIGHT,
+        srv._freight_counter,
+        srv._freight_dirty,
+        srv.FREIGHT_FILE_BLOCKED,
+        srv._freight_station_at,
+        srv._scores_dirty,
+        dict(srv.FREIGHT_STATS),
+    )
+    row = {
+        "poster": "LatePoster",
+        "poster_kind": "player",
+        "hauler": "LateHauler",
+        "origin": "market",
+        "destination": "smithy",
+        "items": ["rat_tail"],
+        "fee": 20,
+        "deposit": 0,
+        "bonus": 5,
+        "bonus_until": 0.0,
+        "posted_at": 1.0,
+        "expires_at": 100.0,
+        "state": "delivered",
+        "refund": 5,
+        "delivered_at": 50.0,
+        "lost_at": 0.0,
+    }
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_FILE_BLOCKED = False
+        srv.FREIGHT[1] = dict(row, id=1)
+        assert srv.save_freight(path) is True
+        srv.FREIGHT = {}
+        loaded = srv.load_freight(path)
+        assert set(loaded) == {1}, loaded
+        assert loaded[1]["state"] == "delivered", loaded[1]
+        assert loaded[1]["refund"] == 5, loaded[1]
+        srv.FREIGHT = loaded
+        poster = srv.Player(
+            ws=None,
+            id=1,
+            name="LatePoster",
+            logged_in=False,
+            hp=10,
+            max_hp=10,
+            room="market",
+            gold=0,
+            inventory=[],
+        )
+        owed = srv._freight_flush_refunds(poster)
+        assert owed == 5 and poster.gold == 5, (owed, poster.gold)
+        assert loaded[1]["refund"] == 0, loaded[1]
+
+        # A refund nobody flushed is banked before retention deletes the row.
+        srv.SCORES.pop("lateposter", None)
+        loaded[1]["refund"] = 5
+        loaded[1]["delivered_at"] = 1.0
+        now = loaded[1]["delivered_at"] + srv.FREIGHT_DELIVERED_RETENTION_SECONDS + 1
+        srv._freight_station_at = now
+        srv.prune_freight(now)
+        assert 1 not in srv.FREIGHT, srv.FREIGHT
+        assert srv.get_score_entry("LatePoster")["gold_bank"] == 5
+    finally:
+        srv.SCORES.pop("lateposter", None)
+        (
+            srv.FREIGHT,
+            srv._freight_counter,
+            srv._freight_dirty,
+            srv.FREIGHT_FILE_BLOCKED,
+            srv._freight_station_at,
+            srv._scores_dirty,
+            stats,
+        ) = saved
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(stats)
+    print("FREIGHT_DELIVERED_REFUND_PERSISTENCE_OK")
+
+
 def freight_stats_round_trip_check(folder):
     """Freight stats survive a save/load cycle (#908)."""
     path = os.path.join(folder, "freight-stats.json")
@@ -524,5 +605,6 @@ with tempfile.TemporaryDirectory() as folder:
     runlog_pkg_import_check()
     freight_refund_persistence_check(folder)
     freight_death_refund_save_load_check(folder)
+    freight_delivered_refund_persistence_check(folder)
     freight_stats_round_trip_check(folder)
 print("PERSISTENCE_ALL_OK")
