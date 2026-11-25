@@ -2012,6 +2012,7 @@ async def main():
     print("DRONE_LANG_TESTS_STARTED")
     await _test_parse_and_validate(srv)
     await _test_predicates(srv)
+    await _test_predicate_state_sources(srv)
     await _test_actions(srv)
     await _test_runtime_fallback(srv)
     await _test_commands(srv)
@@ -6190,6 +6191,127 @@ async def _test_predicates(srv):
     )
     assert isinstance(result_even, bool) and isinstance(result_odd, bool)
     print("DRONE_PRED_TICK_MOD_OK")
+
+
+async def _test_predicate_state_sources(srv):
+    """#909: predicates read live tick, target and floor state, not stale snapshots."""
+    import server as srv_mod
+
+    rec = {
+        "name": "SourceCompanion",
+        "species": "wolf",
+        "hp": 15,
+        "max_hp": 20,
+        "room": "town_square",
+        "inventory": [],
+    }
+    owner = type(
+        "Owner",
+        (),
+        {
+            "name": "SourceOwner",
+            "hp": 15,
+            "max_hp": 20,
+            "inventory": [],
+            "room": "town_square",
+        },
+    )()
+    key = owner.name.lower()
+
+    saved_tick = srv_mod.DRONELANG_TICK
+    saved_targets = dict(srv_mod.COMPANION_TARGETS)
+    saved_players = dict(srv_mod.COMPANION_PLAYERS)
+    saved_npcs = dict(srv_mod.npcs)
+    dungeon = None
+    try:
+        # Fixed wall clock across four companion ticks: tick_mod(2) alternates
+        # because the counter advances per tick, not per real second.
+        srv_mod.COMPANION_PLAYERS.clear()
+        srv_mod.DRONELANG_TICK = 0
+        now = 1_000_000.0
+        seen = []
+        for _ in range(4):
+            await srv_mod.tick_companions(now)
+            seen.append(
+                srv_mod._dronelang_eval_predicate(
+                    owner, rec, {"name": "tick_mod", "args": [2]}, now
+                )
+            )
+        assert seen == [False, True, False, True], seen
+        print("DRONE_PRED_TICK_MOD_COUNTER_OK")
+
+        # A combat stamp only counts while it is fresh and its npc is present.
+        srv_mod.COMPANION_TARGETS.clear()
+        srv_mod.COMPANION_TARGETS[key] = ("stale_npc", time.time() - 1000)
+        assert (
+            srv_mod._dronelang_eval_predicate(
+                owner, rec, {"name": "owner_in_combat", "args": []}, now
+            )
+            is False
+        )
+        assert key not in srv_mod.COMPANION_TARGETS
+
+        srv_mod.npcs["absent_npc"] = {
+            "id": "absent_npc",
+            "name": "Absent Npc",
+            "room": "graveyard",
+            "hp": 10,
+            "alive": True,
+        }
+        srv_mod.COMPANION_TARGETS[key] = ("absent_npc", time.time())
+        assert (
+            srv_mod._dronelang_eval_predicate(
+                owner, rec, {"name": "owner_in_combat", "args": []}, now
+            )
+            is False
+        )
+        assert key not in srv_mod.COMPANION_TARGETS
+
+        srv_mod.npcs["present_npc"] = {
+            "id": "present_npc",
+            "name": "Present Npc",
+            "room": "town_square",
+            "hp": 10,
+            "alive": True,
+        }
+        srv_mod.COMPANION_TARGETS[key] = ("present_npc", time.time())
+        assert (
+            srv_mod._dronelang_eval_predicate(
+                owner, rec, {"name": "owner_in_combat", "args": []}, now
+            )
+            is True
+        )
+        print("DRONE_PRED_OWNER_COMBAT_LIVE_TARGET_OK")
+
+        # Dungeon stairs live on the instanced floor, not in static ROOMS.
+        dungeon = srv_mod.Dungeon(party_id=990909)
+        srv_mod.dungeons[dungeon.id] = dungeon
+        owner.room = dungeon.room_id(2)
+        assert (
+            srv_mod._dronelang_eval_predicate(
+                owner, rec, {"name": "exit_exists", "args": ["down"]}, now
+            )
+            is False
+        )
+        dungeon.floor(2).cleared = True
+        for direction in ("up", "down"):
+            assert (
+                srv_mod._dronelang_eval_predicate(
+                    owner, rec, {"name": "exit_exists", "args": [direction]}, now
+                )
+                is True
+            )
+        print("DRONE_PRED_EXIT_EXISTS_DUNGEON_OK")
+    finally:
+        srv_mod.DRONELANG_TICK = saved_tick
+        srv_mod.COMPANION_TARGETS.clear()
+        srv_mod.COMPANION_TARGETS.update(saved_targets)
+        srv_mod.COMPANION_PLAYERS.clear()
+        srv_mod.COMPANION_PLAYERS.update(saved_players)
+        srv_mod.npcs.clear()
+        srv_mod.npcs.update(saved_npcs)
+        if dungeon is not None:
+            srv_mod.dungeons.pop(dungeon.id, None)
 
 
 async def _test_actions(srv):
