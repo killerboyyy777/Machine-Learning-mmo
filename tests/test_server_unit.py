@@ -3771,6 +3771,46 @@ async def main():
         unplayer(p)
     print("PARTY_SWITCH_RELOCATE_OK")
 
+    # re-accepting an invite to the party you are already in must not eject
+    # you from the dungeon or stamp a re-entry delay (#878)
+    re_lead = mkplayer("ReLead", 50040)
+    re_member = mkplayer("ReMember", 50041)
+    other_lead = mkplayer("OtherLead", 50042)
+    re_party = srv._auto_create_party(re_lead)
+    re_party.member_ids.add(re_member.id)
+    re_member.party_id = re_party.id
+    re_dungeon = srv.Dungeon(party_id=re_party.id)
+    srv.dungeons[re_dungeon.id] = re_dungeon
+    re_party.dungeon_id = re_dungeon.id
+    re_dungeon.floor(2)  # live guards: a real switch should stamp
+    srv.remove_member(re_member)
+    re_member.room = re_dungeon.room_id(2)
+    srv.add_member(re_member)
+    srv.get_score_entry("ReMember").pop("dungeon_left_ts", None)
+    await srv.cmd_party_invite(re_lead, {"target": "ReMember"})
+    assert re_member.id in srv._pending_party_invites
+    await srv.cmd_party_accept(re_member, {})
+    assert re_member.party_id == re_party.id
+    assert re_member.room == re_dungeon.room_id(2), re_member.room
+    assert "dungeon_left_ts" not in srv.get_score_entry("ReMember")
+    # switching to a different party still relocates and stamps
+    other_party = srv._auto_create_party(other_lead)
+    srv._pending_party_invites[re_member.id] = {
+        "party": other_party,
+        "ts": _time.time(),
+        "inviter": other_lead.id,
+    }
+    await srv.cmd_party_accept(re_member, {})
+    assert re_member.party_id == other_party.id
+    assert re_member.room == srv.DUNGEON_ENTRANCE_ROOM, re_member.room
+    assert srv.get_score_entry("ReMember").get("dungeon_left_ts", 0) > 0
+    for p in (re_party, other_party):
+        if p.id in srv.parties:
+            srv._delete_party(p)
+    for p in (re_lead, re_member, other_lead):
+        unplayer(p)
+    print("PARTY_REACCEPT_OK")
+
     # --- Party leader switch: old party reassigns leader when leader accepts new party invite ---
     leader_old = mkplayer("LeaderOld", 50028)
     member_old = mkplayer("MemberOld", 50029)

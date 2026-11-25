@@ -10505,7 +10505,7 @@ async def cmd_party_accept(player, msg):
     if len(party.member_ids) >= PARTY_MAX_MEMBERS:
         await send(player, {"type": "error", "text": "That party is full."})
         return
-    if player.party_id and player.party_id in parties:
+    if player.party_id and player.party_id in parties and player.party_id != party.id:
         old = parties[player.party_id]
         _stamp_dungeon_leave(player, old)
         # Relocate BEFORE discard/delete, while the old instance still
