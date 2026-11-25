@@ -8,6 +8,7 @@ remedy/tonic quest mirror, stages, transitions, events, obs (#183); and
 dynamic-shard valuation through live ITEM_DEFS (#194).
 """
 
+import asyncio
 import os
 import sys
 
@@ -539,6 +540,27 @@ def test_readme_ml_dimensions_match_env():
     print("README_ML_DIMENSIONS_OK")
 
 
+def test_reader_survives_recursion_error():
+    class FakeWS:
+        def __init__(self, frames):
+            self.frames = frames
+
+        def __aiter__(self):
+            async def frames():
+                for raw in self.frames:
+                    yield raw
+
+            return frames()
+
+    deep = b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+    env = TextMMOEnv("ReaderDepth")
+    env.ws = FakeWS([deep, b'{"type":"welcome","protocol_version":2}'])
+    asyncio.run(env._reader())
+    assert env._state["server_version"] == 2
+    print("READER_RECURSION_OK")
+
+
+test_reader_survives_recursion_error()
 test_readme_ml_dimensions_match_env()
 test_discounted_commission_parses()
 test_pack_masks_from_server_count()
