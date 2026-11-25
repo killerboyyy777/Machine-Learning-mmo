@@ -196,6 +196,7 @@ def test_nonfinite_samples_skipped():
         with open(out, encoding="utf-8") as fh:
             saved_text = fh.read()
         assert "NaN" not in saved_text and "Infinity" not in saved_text
+
         def reject_constant(value):
             raise ValueError(value)
 
