@@ -208,9 +208,8 @@ def open_guild_escrow():
     The standing-bounty tick earmarks treasury escrow at post time (refunded
     on expiry), so exact-treasury asserts must subtract it, read at assert
     time (posting/expiry churn with world state). For open bounties escrow
-    == reward_gold (only fills/expiry ever move it). Synchronous HTTP read;
-    the race with the 60s tick is negligible next to this test's existing
-    timing assumptions."""
+    == reward_gold (only fills/expiry ever move it). Synchronous HTTP read of
+    the dashboard snapshot, refreshed once a second."""
     import urllib.request
 
     with urllib.request.urlopen(
@@ -222,6 +221,26 @@ def open_guild_escrow():
         for c in state["commissions"]
         if c.get("status") == "open" and c.get("poster") == "Adventurers Guild"
     )
+
+
+async def escrow_bracket(action):
+    """Sample escrow on both sides of an action; the reply may reflect either.
+
+    A standing-bounty tick can post or refund a bounty while the action runs,
+    so no single HTTP snapshot is guaranteed to match the server's reply.
+    """
+    before = await asyncio.to_thread(open_guild_escrow)
+    result = await action()
+    return result, {before, await asyncio.to_thread(open_guild_escrow)}
+
+
+def has_treasury(msgs, base, escrows, heal_tax=0):
+    expected = {round(base - heal_tax - e, 2) for e in escrows}
+    for msg in msgs:
+        found = re.search(r"Treasury now (\d+(?:\.\d+)?)", msg.get("text", ""))
+        if found and round(float(found.group(1)), 2) in expected:
+            return True
+    return False
 
 
 def config_editor_http_check():
@@ -399,11 +418,10 @@ async def main():
         ent.setdefault(m["type"], m)
     assert ent.get("room", {}).get("id") == "town_square"
     assert ent.get("welcome", {}).get("protocol_version") == 2, ent.get("welcome")
-    msgs = await gm_send("gm_reward", player="LiveA", gold=30)
-    assert any(
-        f"Treasury now {round(670.0 - open_guild_escrow(), 2)}" in m.get("text", "")
-        for m in msgs
-    ), (
+    msgs, escrows = await escrow_bracket(
+        lambda: gm_send("gm_reward", player="LiveA", gold=30)
+    )
+    assert has_treasury(msgs, 670.0, escrows), (
         f"{msgs} -- did you reset scores.json to {{}} and start the server "
         f"with TEXTMMO_GM_SEED=700 in this same shell session?"
     )
@@ -480,16 +498,14 @@ async def main():
     # ---- B: login + seed gold, gear up, meet A at graveyard
     await send(B, {"cmd": "login", "name": "LiveB"})
     await drain(B, 1.5)
-    msgs = await gm_send("gm_reward", player="LiveB", gold=250)
+    msgs, escrows = await escrow_bracket(
+        lambda: gm_send("gm_reward", player="LiveB", gold=250)
+    )
     # 670 (after A's gold) - 250, minus any gm_heal tax spent above (#285:
     # A may reach the graveyard hurt, so the pre-dungeon heal debits before
-    # this reward lands -- seen as 418.0/416.0 in CI. Accounting stays
-    # exact like the downstream asserts; nothing is weakened).
-    assert any(
-        f"Treasury now {round(420.0 - sum(heal_spent) - open_guild_escrow(), 2)}"
-        in m.get("text", "")
-        for m in msgs
-    ), msgs
+    # this reward lands. Accounting stays exact; only the escrow snapshot
+    # straddling the command is allowed to differ by one bounty tick).
+    assert has_treasury(msgs, 420.0, escrows, sum(heal_spent)), msgs
     await send(B, {"cmd": "move", "dir": "west"})
     await wait_room(B)
     await send(B, {"cmd": "buy", "item": "rusty"})
@@ -509,13 +525,17 @@ async def main():
     assert any(
         m.get("type") == "message" and "You buy" in m.get("text", "") for m in got
     ), got
-    await send(A, {"cmd": "market_list"})
-    ml = await recv(A, want_type="market", timeout=5.0)
+
+    async def list_market():
+        await send(A, {"cmd": "market_list"})
+        return await recv(A, want_type="market", timeout=5.0)
+
+    ml, escrows = await escrow_bracket(list_market)
     assert ml is not None
     # 420 (after B's gold) + 5 (tax on 50 sale) = 425, minus any gm_heal
     # tax spent getting here (solo-enter heal above, if A arrived hurt).
     assert (
-        ml["tax_treasury"] == 425.0 - sum(heal_spent) - open_guild_escrow()
+        ml["tax_treasury"] in {425.0 - sum(heal_spent) - e for e in escrows}
         and ml["tax_collected_lifetime"] == 5.0
     ), (ml["tax_treasury"], ml)
     assert len(ml["orders"]) == 0
@@ -524,12 +544,10 @@ async def main():
     # ---- GM spends tax treasury
     got = await gm_send("gm_boss", room="deep_forest", strength=1)
     assert any("spawned" in m.get("text", "") for m in got), got
-    got = await gm_send("gm_buff", type="xp", minutes=1)
-    assert any(
-        f"Treasury now {round(275.0 - sum(heal_spent) - open_guild_escrow(), 2)}."
-        in m.get("text", "")
-        for m in got
-    ), got
+    got, escrows = await escrow_bracket(
+        lambda: gm_send("gm_buff", type="xp", minutes=1)
+    )
+    assert has_treasury(got, 275.0, escrows, sum(heal_spent)), got
     print("GM_SPEND_OK")
 
     # ---- Party: invite + accept in graveyard

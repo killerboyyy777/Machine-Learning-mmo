@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml")
@@ -23,6 +24,16 @@ from ml_env import ACTIONS, N_ACTIONS, OBS_SIZE, TextMMOEnv, flatten_obs
 
 A2IDX = {a: i for i, a in enumerate(ACTIONS)}
 GM_URI = "ws://127.0.0.1:8767"
+
+
+async def wait_state(env, predicate, timeout=5.0):
+    """Poll the reader-populated state until predicate holds or time runs out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate(env._state):
+            return env._state
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"state condition unmet after {timeout}s: {env._state}")
 
 
 async def main():
@@ -67,8 +78,10 @@ async def main():
     await e2.step(A2IDX["party_accept"])
     await asyncio.sleep(0.4)
     await e1.step(A2IDX["party_info"])
-    await asyncio.sleep(0.4)
-    pi = e1._state.get("party_info")
+    state = await wait_state(
+        e1, lambda s: len((s.get("party_info") or {}).get("members", [])) == 2
+    )
+    pi = state["party_info"]
     assert pi and len(pi["members"]) == 2, pi
     print("PARTY_ENV_OK", pi["leader"], [m["name"] for m in pi["members"]])
 
@@ -86,14 +99,19 @@ async def main():
     await e2.step(A2IDX["move_south"])
     await e1.step(A2IDX["move_enter"])
     await e2.step(A2IDX["move_enter"])
-    await asyncio.sleep(0.3)
-    assert e1._state["is_dungeon"] and e1._state["dungeon_floor"] == 1, e1._state
-    assert e2._state["is_dungeon"] and e2._state["party_size"] == 2, e2._state
+    s1 = await wait_state(
+        e1, lambda s: s.get("is_dungeon") and s.get("dungeon_floor") == 1
+    )
+    s2 = await wait_state(
+        e2, lambda s: s.get("is_dungeon") and s.get("party_size") == 2
+    )
+    assert s1["is_dungeon"] and s1["dungeon_floor"] == 1, s1
+    assert s2["is_dungeon"] and s2["party_size"] == 2, s2
     print(
         "DUNGEON_ENV_OK floor=",
-        e1._state["dungeon_floor"],
+        s1["dungeon_floor"],
         "party=",
-        e2._state["party_size"],
+        s2["party_size"],
     )
 
     # sealed below floor 1 until guards die -> fight first guard
