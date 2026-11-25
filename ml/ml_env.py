@@ -1228,9 +1228,9 @@ class TextMMOEnv:
             async for raw in self.ws:
                 try:
                     self._apply_event(json.loads(raw))
-                except (ValueError, KeyError, TypeError, AttributeError) as e:
-                    # One malformed event must not kill the reader: json
-                    # parse and field access fail with these four only.
+                except (ValueError, RecursionError, KeyError, TypeError, AttributeError) as e:
+                    # One malformed event must not kill the reader: decoder
+                    # recursion exhaustion and field access are frame-local.
                     print(f"[{self.name}] reader event error: {e}", flush=True)
                     continue
         except websockets.ConnectionClosed:
