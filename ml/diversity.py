@@ -152,6 +152,7 @@ def summarize(rows, collapse_top_share=DEFAULT_COLLAPSE_TOP_SHARE, **filters):
 
 def diversity_timeline(rows, window=100, **filters):
     """Summarise consecutive windows of steps to show collapse over time."""
+    collapse_top_share = filters.pop("collapse_top_share", DEFAULT_COLLAPSE_TOP_SHARE)
     selected = []
     for row in rows:
         if not isinstance(row, dict):
@@ -176,7 +177,13 @@ def diversity_timeline(rows, window=100, **filters):
     width = max(1, int(window))
     result = []
     for start in range(0, len(selected), width):
-        result.append(summarize(selected[start : start + width]))
+        result.append(
+            summarize(
+                selected[start : start + width],
+                collapse_top_share=collapse_top_share,
+                **filters,
+            )
+        )
     return result
 
 
