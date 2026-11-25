@@ -127,6 +127,8 @@ class KeyReader:
                 self.queue.put(self._key_name(char))
 
     def _key_name(self, char):
+        if char == "\t":
+            return "tab"
         if char != ESC:
             return char
         return CSI_KEYS.get(self._read_sequence(), "esc")
@@ -227,7 +229,7 @@ class TuiApp:
         """Apply a key. Returns False when the app should quit."""
         if key in ("q", "quit", "ctrl+c"):
             return False
-        if key in ("right", "tab"):
+        if key in ("right", "tab", "\t"):
             self.tab = next_tab(self.tab)
             self.load_tab_extras()
             self._state = None
