@@ -1870,6 +1870,7 @@ def load_freight(path=None):
             f"Warning: {os.path.basename(path)} version is not {FREIGHT_VERSION}; not loaded"
         )
         return {}
+    FREIGHT_STATS.update(data.get("stats") or {})
     raw = data.get("contracts")
     if not isinstance(raw, list):
         return {}
@@ -9470,7 +9471,7 @@ async def _freight_post(player, msg):
 
 async def _freight_accept(player, msg):
     rec = _freight_find(msg.get("id", msg.get("contract_id")))
-    if rec is None or rec["state"] != "open":
+    if rec is None or rec["state"] != "open" or time.time() >= rec["expires_at"]:
         await send(player, {"type": "error", "text": "No open contract by that id."})
         return
     if rec["poster"] == player.name:
@@ -9516,7 +9517,12 @@ async def _freight_accept(player, msg):
 
 async def _freight_deliver(player, msg):
     rec = _freight_find(msg.get("id", msg.get("contract_id")))
-    if rec is None or rec["state"] != "carried" or rec.get("hauler") != player.name:
+    if (
+        rec is None
+        or rec["state"] != "carried"
+        or rec.get("hauler") != player.name
+        or time.time() >= rec["expires_at"]
+    ):
         await send(player, {"type": "error", "text": "You are not hauling that."})
         return
     if player.room != rec["destination"]:
