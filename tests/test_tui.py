@@ -434,7 +434,7 @@ def plugins_fixture():
 def test_tabs_mirror_dashboard():
     html = Path(ROOT, "dashboard.html").read_text(encoding="utf-8")
     entries = re.findall(
-        r'<div class="tab(?: active)?" data-tab="([\w-]+)">([^<]+)</div>', html
+        r'<div class="tab(?: active)?" data-tab="([\w-]+)"[^>]*>([^<]+)</div>', html
     )
     assert entries, "no dashboard tabs parsed"
     assert (
