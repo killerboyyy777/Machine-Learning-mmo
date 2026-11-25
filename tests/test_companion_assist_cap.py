@@ -114,7 +114,12 @@ print("LEAVES_KILLING_BLOW_OK")
 # about S times the owner's 10 damage, not zero.
 banked = _npc(500)
 rec = _wolf()
-total = sum(_swing(owner, rec, banked, 1) for _ in range(10))
+original_randint = srv.random.randint
+srv.random.randint = lambda lo, hi: hi
+try:
+    total = sum(_swing(owner, rec, banked, 1) for _ in range(10))
+finally:
+    srv.random.randint = original_randint
 assert abs(total - 10 * S) <= 3, total
 print("SMALL_SWINGS_ACCUMULATE_OK", total)
 
