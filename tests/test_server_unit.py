@@ -2425,15 +2425,42 @@ async def main():
     shore = mkplayer("Shore", 60019)
     shore_party = srv._auto_create_party(shore)
     srv._pending_party_invites[diver.id] = {"party": shore_party, "ts": _time.time()}
+    inbox.clear()
     await srv.cmd_party_accept(diver, {})
     assert diver.room == srv.DUNGEON_ENTRANCE_ROOM  # not stranded in d_X_fY
     assert srv.dungeon_for_room(diver.room) is None
+    # #884: the relocated acceptor must receive the entrance room view
+    assert any(
+        m.get("type") == "room" and m.get("id") == srv.DUNGEON_ENTRANCE_ROOM
+        for m in inbox
+    ), inbox
+    assert any(m.get("type") == "stats" for m in inbox), inbox
     for p in list(srv.parties.values()):
         if diver.id in p.member_ids or shore.id in p.member_ids:
             srv._delete_party(p)
     unplayer(diver)
     unplayer(shore)
     print("ACCEPT_RELOCATE_OK")
+
+    # #884: an ordinary accept (no relocation) keeps its stats-only reply
+    plain_lead = mkplayer("PlainLead", 60028)
+    plain_guest = mkplayer("PlainGuest", 60029)
+    plain_party = srv._auto_create_party(plain_lead)
+    srv._pending_party_invites[plain_guest.id] = {
+        "party": plain_party,
+        "ts": _time.time(),
+    }
+    inbox.clear()
+    await srv.cmd_party_accept(plain_guest, {})
+    assert plain_guest.party_id == plain_party.id
+    assert any(m.get("type") == "stats" for m in inbox), inbox
+    assert not any(m.get("type") == "room" for m in inbox), inbox
+    for p in list(srv.parties.values()):
+        if plain_lead.id in p.member_ids or plain_guest.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(plain_lead)
+    unplayer(plain_guest)
+    print("ACCEPT_NO_RELOCATE_OK")
 
     # --- Move-gap gold forfeits to the present split (#195.7c) ---
     striker = mkplayer("Striker", 60020, room="town_square")

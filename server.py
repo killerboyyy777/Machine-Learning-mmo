@@ -10513,6 +10513,7 @@ async def cmd_party_accept(player, msg):
         # strands in a deleted d_X_fY room and the wipe takes the loot out
         # from under them (#195.7b).
         _relocate_from_dungeon(player)
+        await send(player, room_view(player.room))
         old.member_ids.discard(player.id)
         if not old.member_ids:
             _delete_party(old)
