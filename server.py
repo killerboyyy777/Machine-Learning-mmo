@@ -9144,7 +9144,9 @@ def prune_freight(now=None):
         if state in ("delivered",) and now - rec["delivered_at"] >= (
             FREIGHT_DELIVERED_RETENTION_SECONDS
         ):
-            _freight_drop_package(rec["destination"], rec.pop("items", []))
+            items = rec.pop("items", [])
+            rec["items"] = []
+            _freight_drop_package(rec["destination"], items)
             del FREIGHT[cid]
             changed = True
             continue
@@ -9156,7 +9158,9 @@ def prune_freight(now=None):
             # A station's goods go back where they came from and nobody is out
             # of pocket; a player's fee is refunded because it left escrow.
             if station:
-                _freight_drop_package(rec["origin"], rec.pop("items", []))
+                items = rec.pop("items", [])
+                rec["items"] = []
+                _freight_drop_package(rec["origin"], items)
                 rec["refund"] = 0
             else:
                 # The rush bonus was escrowed with the fee and was never
@@ -9166,7 +9170,9 @@ def prune_freight(now=None):
         else:
             hauler = find_player_anywhere(rec.get("hauler"))
             room_id = hauler.room if hauler else rec["destination"]
-            _freight_drop_package(room_id, rec.pop("items", []))
+            items = rec.pop("items", [])
+            rec["items"] = []
+            _freight_drop_package(room_id, items)
             rec["state"] = "lost"
             rec["lost_at"] = now
             # A station forfeits nothing; a player gets the fee, deposit and
@@ -9610,7 +9616,9 @@ def _freight_release_on_death(player, death_room):
     for rec in list(FREIGHT.values()):
         if rec["state"] != "carried" or rec.get("hauler") != player.name:
             continue
-        _freight_drop_package(death_room, rec.pop("items"))
+        items = rec.pop("items", [])
+        rec["items"] = []
+        _freight_drop_package(death_room, items)
         rec["state"] = "lost"
         rec["lost_at"] = time.time()
         # Same terminal settlement as an expired carried contract: the
