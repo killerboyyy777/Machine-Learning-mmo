@@ -22,7 +22,9 @@ for tab in tabs:
 ids = set(re.findall(r'id="([\w-]+)"', html))
 used = set(re.findall(r'\$\("([\w-]+)"\)', html))
 assert not (used - ids), f"JS references missing ids: {sorted(used - ids)}"
-m = re.search(r'<div class="tab active" data-tab="([\w-]+)"', html)
+m = re.search(
+    r'<div class="tab active" data-tab="([\w-]+)" role="tab" tabindex="0">', html
+)
 assert m and m.group(1) == "overview", "default tab is not overview"
 # Vendored chart lib referenced (served by the dashboard HTTP handler).
 assert '<script src="/uplot.min.js">' in html, "uplot script tag missing"
@@ -71,7 +73,9 @@ for wid in (
 ):
     assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Players tab split out of World (more tabs, less content each).
-assert '<div class="tab" data-tab="players">Players</div>' in html
+assert (
+    '<div class="tab" data-tab="players" role="tab" tabindex="-1">Players</div>' in html
+)
 assert '<div id="view-players" class="tabview">' in html
 # North-up map: compass deltas put north exits above their source.
 assert "north: [0, -1]" in html and "south: [0, 1]" in html
@@ -384,7 +388,7 @@ for tok in (
 print("HISTORY_TABLES_OK")
 
 # --- Runs tab (#65): compare a finished run against the one still going ---
-assert '<div class="tab" data-tab="runs">Runs</div>' in html
+assert '<div class="tab" data-tab="runs" role="tab" tabindex="-1">Runs</div>' in html
 assert '<div id="view-runs" class="tabview">' in html
 for tid in ("runsTable", "runCmpTable"):
     assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
@@ -648,7 +652,9 @@ for tok in ("status, result = _train_start", "status, result = _train_stop"):
 print("TRAINING_PANEL_OK")
 
 # --- drop-in plugins (#177): same control-plane shape as training ----------
-assert '<div class="tab" data-tab="plugins">Plugins</div>' in html
+assert (
+    '<div class="tab" data-tab="plugins" role="tab" tabindex="-1">Plugins</div>' in html
+)
 assert '<div id="view-plugins" class="tabview">' in html
 for wid in (
     "pluginDir",
@@ -771,5 +777,45 @@ assert "setInterval(updateDevBadges, 1000)" in html
 assert 'document.body.classList.add("dev-on")' in html
 assert "new Worker" not in html and "msgpack" not in html
 print("PERF_PANEL_OK")
+
+# --- #755 accessibility: keyboard tabs, visible focus, text state, narrow forms ---
+# The tabs are divs, so an explicit role and a roving tabindex put them in the
+# tab order; a click-only handler left keyboard users with no way to reach them.
+_tabs = re.findall(r'<div class="tab(?: active)?" data-tab="[\w-]+"[^>]*>', html)
+assert len(_tabs) == 14, f"expected 14 tabs, found {len(_tabs)}"
+assert all('role="tab"' in t for t in _tabs), "a tab is missing role=tab"
+assert (
+    sum('tabindex="0"' in t for t in _tabs) == 1
+), "exactly one tab is in the tab order"
+assert (
+    sum('tabindex="-1"' in t for t in _tabs) == 13
+), "inactive tabs must be out of the tab order"
+_kd = re.search(
+    r'tab\.addEventListener\("keydown", e => \{(.*?)\n  \}\);', html, re.DOTALL
+)
+assert _kd, "tabs have no keydown handler"
+for _key in ("ArrowRight", "ArrowLeft", "Home", "End"):
+    assert f'e.key === "{_key}"' in _kd.group(1), f"tab keydown ignores {_key}"
+assert "e.preventDefault()" in _kd.group(1), "tab keydown does not cancel scrolling"
+assert "next.click()" in _kd.group(1) and "next.focus()" in _kd.group(1)
+assert 't.setAttribute("tabindex", "-1")' in html, "activation does not clear tabindex"
+assert (
+    'tab.setAttribute("tabindex", "0")' in html
+), "activated tab stays out of the tab order"
+# The old :focus rule removed the outline, leaving colour as the only cue.
+assert re.search(
+    r":focus-visible[^{]*\{[^}]*outline: 2px solid var\(--accent\)"
+    r"[^}]*outline-offset: 2px",
+    html,
+), "no visible :focus-visible outline"
+# Both NPC render sites must spell out the dead state, not just tint it.
+_dead = 'n.alive ? (n.max_hp ? ` (${n.hp}/${n.max_hp})` : "") : " (dead)"'
+assert html.count(_dead) == 2, "dead-NPC text marker missing from a render site"
+# The two fixed-column forms need a single-column layout on narrow screens.
+assert (
+    "@media (max-width: 700px) { .gmform, .cfgform { grid-template-columns: 1fr; } }"
+    in html
+), "narrow-screen form layout missing"
+print("A11Y_OK")
 
 print("ALL_DASHBOARD_OK")
