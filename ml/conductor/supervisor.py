@@ -128,6 +128,7 @@ class AgentTask:
         # a slot the executor that belongs to the slot's shared plugin
         # instance; a task built on its own lazily gets one (#176 review).
         self._policy_executor = policy_executor
+        self._policy_released = False
         self._own_executor = None
         self._policy_arity = None  # probed from the fn signature once
         self.task = None
@@ -396,6 +397,7 @@ class Supervisor:
         # the closure, not the agent; a rebuilt policy gets a fresh worker
         # (#176 review).
         self._policy_executors = {}  # policy closure -> single-worker executor
+        self._policy_users = {}  # policy closure -> live/tearing-down task count
         # #176: faults and retirements per policy closure. Keyed the same
         # way as the executors, so one broken plugin instance is retired
         # rather than every agent that happened to be handed it.
@@ -464,9 +466,35 @@ class Supervisor:
                     max_workers=1, thread_name_prefix="policy"
                 )
                 self._policy_executors[policy_fn] = executor
+            self._policy_users[policy_fn] = self._policy_users.get(policy_fn, 0) + 1
             return executor
         except TypeError:
             return None
+
+    def _release_policy(self, at):
+        """Drop a task's hold on its worker; retire it at zero users (#845).
+
+        A restart tears the old task down while the replacement launches, so
+        the count includes tearing-down tasks: a shared closure keeps its
+        worker until the last task using it has finished teardown. A task
+        cancelled before its first step never runs its own teardown, hence
+        the idempotent flag: shutdown releases it instead.
+        """
+        if at._policy_released:
+            return
+        at._policy_released = True
+        try:
+            policy_fn = at.policy_fn
+            users = self._policy_users.get(policy_fn, 0) - 1
+            if users > 0:
+                self._policy_users[policy_fn] = users
+                return
+            self._policy_users.pop(policy_fn, None)
+            executor = self._policy_executors.pop(policy_fn, None)
+            if executor is not None:
+                executor.shutdown(wait=False)
+        except TypeError:
+            pass
 
     def _record_policy_fault(self, policy_fn, reason):
         """Count a plugin-side failure; retire the policy at the limit (#176).
@@ -676,6 +704,7 @@ class Supervisor:
             self._tasks.pop(at.agent_id, None)
             if owns_spec:
                 self._drop_specs((at.agent_id,))
+            self._release_policy(at)
             # The agent isn't running anymore (cancelled, crashed, or
             # reaped): drop it from the mixer too, or dead ids pile up in
             # floor lists and inflate rebalance/snapshot counts.
@@ -700,6 +729,11 @@ class Supervisor:
                 await asyncio.wait_for(asyncio.shield(task), 5.0)
             except (asyncio.CancelledError, Exception):
                 pass
+        # Only retire the worker once the old task has finished teardown:
+        # restart overlaps that teardown with the relaunch, and a task killed
+        # before its first step never runs its own release (#845).
+        if task is None or task.done():
+            self._release_policy(at)
 
     async def stop_agent(self, agent_id):
         async with self._lock:
@@ -759,15 +793,20 @@ class Supervisor:
         ) = spec
         if policy_factory is not None:
             try:
-                policy_fn, learn_hook, reward_hook = policy_factory(
-                    entry.checkpoint_path, hparams or {}
-                )
+                built = policy_factory(entry.checkpoint_path, hparams or {})
             except Exception:
-                # Out-of-tree factories that return a bare policy are still
-                # supported: keep the original spec's hooks with it.
+                # Only a genuine rebuild failure keeps the stored closure and
+                # hooks; a bare-policy return is not a failure.
                 policy_fn = spec[1]
                 learn_hook = spec[5]
                 reward_hook = spec[6]
+            else:
+                if callable(built):
+                    # Out-of-tree factories returning a bare policy keep the
+                    # spec hooks, but the rebuilt policy must be used.
+                    policy_fn = built
+                else:
+                    policy_fn, learn_hook, reward_hook = built
         started = await self.start_agent(
             agent_id,
             env_factory,
