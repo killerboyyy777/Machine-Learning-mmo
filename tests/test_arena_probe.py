@@ -313,10 +313,17 @@ def test_identities():
     assert all(3 <= len(n) <= 24 and n.isascii() for n in names)
     assert names != probe.probe_identities(701, stamp="1234567")
     assert names != probe.probe_identities(700, stamp="1234568")
+    assert names == probe.probe_identities(700, stamp="1234567")
     assert "--" not in "".join(names)
     tokens = {probe.probe_token(n) for n in names}
     assert len(tokens) == 4 and all(len(t) == 64 for t in tokens)
     print("ARENA_IDENTITIES_OK")
+
+
+def test_default_identities_are_unique():
+    assert probe.probe_identities(700) != probe.probe_identities(1700)
+    assert probe.probe_identities(700) != probe.probe_identities(700)
+    print("ARENA_UNIQUE_IDENTITIES_OK")
 
 
 def test_pure_checks():
@@ -439,6 +446,7 @@ def test_absent_verb_skips_with_reason():
 
 def main():
     test_identities()
+    test_default_identities_are_unique()
     test_pure_checks()
     test_honest_server()
     test_leaky_server_fails_the_checks()
