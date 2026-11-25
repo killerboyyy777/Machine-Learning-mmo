@@ -4077,6 +4077,14 @@ async def main():
     print("STARTUP_LEAK_OK")
 
     # shutdown cancels background tasks before the final save (#244)
+    arena_saves = []
+    saved_save_arena = srv.save_arena
+
+    def spy_save_arena(path=None):
+        arena_saves.append(path)
+        return True
+
+    srv.save_arena = spy_save_arena
     saved_ports2 = (srv.PORT, srv.GM_PORT, srv.HTTP_PORT)
     saved_scores2 = {}
     for _sfx in ("", ".1", ".2"):
@@ -4096,6 +4104,7 @@ async def main():
                 pass
         else:
             raise AssertionError("test server did not boot")
+        arena_saves.clear()
         main_task.cancel()
         try:
             await main_task
@@ -4108,7 +4117,9 @@ async def main():
             and getattr(t.get_coro(), "__qualname__", "") == "_run_resilient"
         ]
         assert not lingering, f"background tasks survive shutdown: {lingering}"
+        assert arena_saves == [None], f"arena not flushed at shutdown: {arena_saves}"
     finally:
+        srv.save_arena = saved_save_arena
         srv.PORT, srv.GM_PORT, srv.HTTP_PORT = saved_ports2
         for _sfx, _data in saved_scores2.items():
             _p = srv.SCORES_FILE + _sfx
