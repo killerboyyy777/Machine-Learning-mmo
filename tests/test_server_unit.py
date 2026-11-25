@@ -2008,6 +2008,58 @@ async def main():
         srv._scores_dirty = saved_scores_dirty
     print("FREIGHT_DUPLICATE_ITEM_SELECTION_OK")
 
+    # --- #907: a station display name is not a payable refund owner -----------
+    saved_freight = srv.FREIGHT
+    saved_freight_stats = srv.FREIGHT_STATS
+    saved_freight_counter = srv._freight_counter
+    saved_freight_dirty = srv._freight_dirty
+    station_hauler = namesake = None
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_STATS = {key: 0 for key in saved_freight_stats}
+        srv._freight_counter = srv.itertools.count(1)
+        inbox.clear()
+        station_hauler = mkplayer("FreightStationHauler", 70405, room="market")
+        station_hauler.gold = 50
+        rec = {
+            "id": 1,
+            "poster": "Station Display Name",
+            "poster_kind": "station",
+            "hauler": station_hauler.name,
+            "origin": "market",
+            "destination": "smithy",
+            "items": ["rat_tail"],
+            "fee": 20,
+            "deposit": 5,
+            "bonus": 0,
+            "bonus_until": 0.0,
+            "posted_at": 1.0,
+            "expires_at": 1000.0,
+            "state": "carried",
+            "refund": 0,
+            "delivered_at": 0.0,
+            "lost_at": 0.0,
+        }
+        srv.FREIGHT[1] = rec
+        srv._freight_release_on_death(station_hauler, "deep_forest")
+        assert rec["state"] == "lost"
+        assert rec["refund"] == 0, rec["refund"]
+        namesake = mkplayer("Station Display Name", 70406, room="market")
+        gold_before = namesake.gold
+        await srv.cmd_freight(namesake, {"action": "list"})
+        assert namesake.gold == gold_before, namesake.gold
+    finally:
+        if station_hauler:
+            unplayer(station_hauler)
+        if namesake:
+            unplayer(namesake)
+        srv._remove_ground("deep_forest", "rat_tail")
+        srv.FREIGHT = saved_freight
+        srv.FREIGHT_STATS = saved_freight_stats
+        srv._freight_counter = saved_freight_counter
+        srv._freight_dirty = saved_freight_dirty
+    print("FREIGHT_STATION_REFUND_OWNER_OK")
+
     # --- Companion DroneLang (#534) unit tests ---
     print("DRONE_LANG_TESTS_STARTED")
     await _test_parse_and_validate(srv)
