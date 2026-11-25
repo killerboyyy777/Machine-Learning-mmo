@@ -154,7 +154,7 @@ print("LOSS_REFUNDS_POSTER_OK")
 _reset()
 srv._add_ground(ORIGIN, ITEM)
 srv._add_ground(ORIGIN, OTHER)
-srv.tick_station_freight(10000.0)
+srv.tick_station_freight(time.time())
 station = _only_contract()
 assert station["poster_kind"] == "station", station
 assert station["origin"] in srv.FREIGHT_STATION_ROOMS, station["origin"]
@@ -355,6 +355,9 @@ srv._add_ground(ORIGIN, OTHER)
 srv.tick_station_freight(10000.0)
 station = _only_contract()
 assert station["poster_kind"] == "station", station
+# The fake 10000.0 station clock is historical; give this contract a live
+# deadline so the expiry guard from #906 does not reject the hauler.
+station["expires_at"] = time.time() + 60
 hauler = _player("StationHauler", station["origin"], 100, [], pid=910)
 srv.players["StationHauler"] = hauler
 _run(hauler, action="accept", id=station["id"])
@@ -371,5 +374,52 @@ for iid in list(srv._ground_items("deep_forest")):
     srv._remove_ground("deep_forest", iid)
 srv.players.pop("StationHauler", None)
 print("STATION_DEATH_NO_REFUND_OK")
+
+# --- expired contracts are refused until the prune settles them ---------------
+# #906: accept and deliver checked only state, so a contract past its expiry
+# could still be acted on during the prune window.
+
+_reset()
+sender = _player("Sender", ORIGIN, 100, [ITEM], pid=901)
+hauler = _player("Hauler", ORIGIN, 50, [], pid=902)
+_run(sender, action="post", destination=DEST, fee=20, items=[ITEM])
+rec = _only_contract()
+rec["expires_at"] = time.time() - 1
+_run(hauler, action="accept", id=rec["id"])
+assert rec["state"] == "open", rec["state"]
+assert rec["hauler"] is None, rec["hauler"]
+assert hauler.gold == 50, hauler.gold
+print("EXPIRED_ACCEPT_REFUSED_OK")
+
+srv._freight_station_at = time.time()
+srv.prune_freight(time.time())
+assert rec["state"] == "expired", rec["state"]
+assert rec["refund"] == 20, rec["refund"]
+print("EXPIRED_ACCEPT_PRUNE_SETTLES_OK")
+
+_reset()
+sender = _player("Sender", ORIGIN, 100, [ITEM], pid=901)
+hauler = _player("Hauler", ORIGIN, 50, [], pid=902)
+srv.players["Hauler"] = hauler
+_run(sender, action="post", destination=DEST, fee=20, items=[ITEM])
+rec = _only_contract()
+_run(hauler, action="accept", id=rec["id"])
+deposit = rec["deposit"]
+assert hauler.gold == 50 - deposit, hauler.gold
+hauler.room = DEST
+rec["expires_at"] = time.time() - 1
+_run(hauler, action="deliver", id=rec["id"])
+assert rec["state"] == "carried", rec["state"]
+assert hauler.gold == 50 - deposit, hauler.gold
+print("EXPIRED_DELIVER_REFUSED_OK")
+
+srv._freight_station_at = time.time()
+srv.prune_freight(time.time())
+assert rec["state"] == "lost", rec["state"]
+assert rec["refund"] == 20 + deposit, rec["refund"]
+for iid in list(srv._ground_items(hauler.room)):
+    srv._remove_ground(hauler.room, iid)
+srv.players.pop("Hauler", None)
+print("EXPIRED_DELIVER_PRUNE_SETTLES_OK")
 
 print("FREIGHT_CONSERVATION_OK")
