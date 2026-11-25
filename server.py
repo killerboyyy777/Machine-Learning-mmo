@@ -1870,6 +1870,7 @@ def load_freight(path=None):
             f"Warning: {os.path.basename(path)} version is not {FREIGHT_VERSION}; not loaded"
         )
         return {}
+    FREIGHT_STATS.update(data.get("stats") or {})
     raw = data.get("contracts")
     if not isinstance(raw, list):
         return {}
