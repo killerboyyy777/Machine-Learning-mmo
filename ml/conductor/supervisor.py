@@ -369,6 +369,7 @@ class Supervisor:
         metrics=None,
         episode_hook=None,
         transcript_dir=None,
+        structured_log=None,
     ):
         self.registry = registry
         self.max_concurrent = max_concurrent
@@ -388,6 +389,7 @@ class Supervisor:
         # Transcript directory (#624): when set, each agent gets one JSONL
         # file of per-step observations/actions/rewards. None writes nothing.
         self._transcript_dir = transcript_dir
+        self._structured_log = structured_log
         self._tasks = {}  # agent_id -> AgentTask
         # Policy closures are shared by every agent in a slot (one plugin
         # instance per slot), so the worker that serialises calls belongs to
@@ -491,6 +493,10 @@ class Supervisor:
             f"[conductor] plugin disabled after {faults} policy faults: {reason}",
             file=sys.stderr,
         )
+        if self._structured_log is not None:
+            self._structured_log.log(
+                "plugin_disabled", faults=faults, error=str(reason)
+            )
 
     def _clear_policy_faults(self, policy_fn):
         try:

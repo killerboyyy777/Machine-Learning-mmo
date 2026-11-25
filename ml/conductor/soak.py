@@ -31,6 +31,7 @@ sys.path.insert(
 
 from ml.conductor.conductor import Conductor
 from ml.runlog import new_session_id, seed_everything, start_run
+from ml.structured_log import StructuredLog
 from ml.telemetry import Telemetry
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -199,6 +200,12 @@ def parse_args():
         "default unless TEXTMMO_RELOAD is truthy",
     )
     p.add_argument(
+        "--structured-log-dir",
+        default=None,
+        help="directory for structured.jsonl (#316); off by default "
+        "unless TEXTMMO_STRUCTURED_LOG is truthy",
+    )
+    p.add_argument(
         "--no-run-record",
         dest="run_record",
         action="store_false",
@@ -333,6 +340,12 @@ async def main():
     if args.reload_dir is not None or _truthy_env("TEXTMMO_RELOAD"):
         reload_dir = args.reload_dir or os.path.join(args.base_dir, "registry")
         os.makedirs(reload_dir, exist_ok=True)
+    structured_log = None
+    structured_dir = args.structured_log_dir
+    if structured_dir is not None or _truthy_env("TEXTMMO_STRUCTURED_LOG"):
+        structured_dir = structured_dir or args.base_dir
+        os.makedirs(structured_dir, exist_ok=True)
+        structured_log = StructuredLog(os.path.join(structured_dir, "structured.jsonl"))
     loop = asyncio.get_running_loop()
 
     def _async_handler(loop, context):
@@ -387,6 +400,7 @@ async def main():
         transcript_dir=args.transcript_dir,
         telemetry=telemetry,
         reload=reload_dir,
+        structured_log=structured_log,
     )
     if args.reset == "all":
         # Registry tree is wiped by reset_state; metrics live outside
@@ -402,6 +416,13 @@ async def main():
         flush=True,
     )
     print(f"[soak] settings: {vars(args)}", flush=True)
+    if structured_log is not None:
+        structured_log.log(
+            "startup",
+            agents=args.agents,
+            duration=args.duration,
+            checkpoint=ckpt or "fresh",
+        )
     run = None
     session_id = new_session_id()
     if args.run_record:
@@ -437,6 +458,14 @@ async def main():
         alive = st["registry"]["alive"]
         running = st["supervisor"]["running"]
         print(f"[soak] end: alive={alive}/{args.agents} running={running}")
+        if structured_log is not None:
+            structured_log.log(
+                "run_complete",
+                scope="soak",
+                agents=args.agents,
+                alive=alive,
+                supervisor_running=running,
+            )
         by_type = st.get("by_type", {})
         for ptype, cell in sorted(by_type.items()):
             print(

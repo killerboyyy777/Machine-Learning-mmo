@@ -120,10 +120,12 @@ class Conductor:
         transcript_dir=None,
         telemetry=None,
         reload=None,
+        structured_log=None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.telemetry = telemetry
+        self.structured_log = structured_log
         self._watcher = CheckpointWatcher(reload, interval=5.0) if reload else None
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
@@ -152,6 +154,7 @@ class Conductor:
             metrics=self.metrics,
             episode_hook=self.churn.report_episode,
             transcript_dir=transcript_dir,
+            structured_log=structured_log,
         )
         # Slots (#152): weighted round-robin over agent kinds. `runners`
         # is a list of slot specs (plugin or raw); legacy `runner` is one
@@ -274,6 +277,13 @@ class Conductor:
                         path=path,
                         sha256=digest,
                     )
+                    if self.structured_log is not None:
+                        self.structured_log.log(
+                            "checkpoint_reload",
+                            ids=[entry.agent_id],
+                            path=path,
+                            sha256=digest,
+                        )
                 except Exception as e:
                     self.metrics.log(
                         "checkpoint_reload_error",
@@ -292,6 +302,8 @@ class Conductor:
         target = self.registry.max_agents
 
         print(f"[conductor] Starting {target} agents in waves of {wave_size}...")
+        if self.structured_log is not None:
+            self.structured_log.log("startup", target=target, wave_size=wave_size)
         wave_count = 0
         for delay in wave_startup(target, wave_size, wave_delay):
             if not self._running:
@@ -309,6 +321,13 @@ class Conductor:
                 alive = len(self.registry.alive_agents())
                 print(f"[conductor] Wave complete: {alive}/{target} agents alive")
                 self.metrics.log_wave(wave_count // wave_size, wave_size, alive)
+                if self.structured_log is not None:
+                    self.structured_log.log(
+                        "wave",
+                        wave=wave_count // wave_size,
+                        agents_added=wave_size,
+                        total_alive=alive,
+                    )
 
         print(
             f"[conductor] Startup complete: {len(self.registry.alive_agents())} agents"
@@ -341,6 +360,8 @@ class Conductor:
                 moves = self.mixer.rebalance()
                 if moves:
                     self.metrics.log_rebalance(moves)
+                    if self.structured_log is not None:
+                        self.structured_log.log("rebalance", moves=moves)
                 last_rebalance = now
 
             # Periodic PBT exploit/explore (no-op when disabled)
@@ -363,6 +384,12 @@ class Conductor:
                         f"[conductor] PBT: {len(ops)} exploit(s) "
                         + ", ".join(f"{o['loser']}<-{o['winner']}" for o in ops)
                     )
+                    if self.structured_log is not None:
+                        self.structured_log.log(
+                            "promotion",
+                            ids=[o["loser"] for o in ops],
+                            ops=len(ops),
+                        )
                 last_pbt = now
 
             alive = len(self.registry.alive_agents())
@@ -378,6 +405,13 @@ class Conductor:
             f"[conductor] Run complete: {elapsed:.0f}s, "
             f"{self.registry.snapshot()['alive']} agents alive"
         )
+        if self.structured_log is not None:
+            self.structured_log.log(
+                "run_complete",
+                scope="conductor",
+                elapsed=round(elapsed, 3),
+                alive=self.registry.snapshot()["alive"],
+            )
 
     def stop(self):
         self._running = False
