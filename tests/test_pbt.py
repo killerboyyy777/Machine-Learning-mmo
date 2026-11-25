@@ -5,6 +5,7 @@ Covers #38: exploit copies winner weights + mutated hparams to the loser,
 no-op on tied fitness, min_episodes gating, Conductor wiring.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -90,6 +91,55 @@ c.enroll_pbt("c1", {"lr": 0.002})
 c.report_fitness("c1", -1.0, episodes=11, vector={"gold": 4.0})
 assert c.status()["pbt"]["c1"]["fitness"] == 4.0
 print("PBT_CONDUCTOR_OK")
+
+# --- #849: watcher-triggered reload keeps PBT's mutated hparams ---
+watch_dir = os.path.join(tmpdir, "watch849")
+os.makedirs(watch_dir)
+cond = Conductor(
+    os.path.join(tmpdir, "cond849"),
+    max_agents=4,
+    pbt={},
+    reload=watch_dir,
+    resume=False,
+)
+w849 = cond.registry.register(
+    "w849", "linear", checkpoint=os.path.join(watch_dir, "w849.pt")
+)
+l849 = cond.registry.register(
+    "l849", "linear", checkpoint=os.path.join(watch_dir, "l849.pt")
+)
+cond.enroll_pbt("w849", {"lr": 0.002, "batch": 32})
+cond.enroll_pbt("l849", {"lr": 0.002, "batch": 32})
+with open(w849.checkpoint_path, "w") as f:
+    f.write("WINNER-WEIGHTS-v0")
+with open(l849.checkpoint_path, "w") as f:
+    f.write("LOSER-WEIGHTS-v0")
+cond._watcher.interval = 0.0
+assert cond._watcher.poll() == []
+
+assert cond.pbt.hparams_for("ghost") is None
+copied = cond.pbt.hparams_for("l849")
+copied["lr"] = -1.0
+assert cond.pbt.hparams_for("l849")["lr"] != -1.0  # accessor returns a copy
+
+cond.report_fitness("w849", 10.0, episodes=11)
+cond.report_fitness("l849", 1.0, episodes=11)
+assert len(cond.pbt.step()) == 1  # copies winner weights onto loser
+
+restarts = []
+
+
+class _PbtReloadSupervisor:
+    async def restart_agent(self, agent_id, hparams=None):
+        restarts.append((agent_id, hparams))
+        return True
+
+
+cond.supervisor = _PbtReloadSupervisor()
+asyncio.run(cond._reload_checkpoints())
+assert restarts == [("l849", cond.pbt.hparams_for("l849"))], restarts
+assert restarts[0][1], restarts  # enrolled agent never gets empty hparams
+print("PBT_RELOAD_HPARAMS_OK")
 
 # --- goal-weighted fitness: weights influence selection (#288) ---
 from ml.ml_env import GOAL_AXES, reward_vector  # noqa: E402

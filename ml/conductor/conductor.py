@@ -273,8 +273,20 @@ class Conductor:
             for entry in self.registry.alive_agents():
                 if entry.checkpoint_path != path:
                     continue
+                # A watcher reload must carry PBT's current genes, or an
+                # exploit's checkpoint copy undoes them (#849).
+                hparams = (
+                    self.pbt.hparams_for(entry.agent_id)
+                    if self.pbt is not None
+                    else None
+                )
                 try:
-                    await self.supervisor.restart_agent(entry.agent_id)
+                    if hparams is not None:
+                        await self.supervisor.restart_agent(
+                            entry.agent_id, hparams=hparams
+                        )
+                    else:
+                        await self.supervisor.restart_agent(entry.agent_id)
                     self.metrics.log(
                         "checkpoint_reload",
                         agent_id=entry.agent_id,
