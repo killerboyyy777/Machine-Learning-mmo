@@ -5961,6 +5961,17 @@ async def _test_parse_and_validate(srv):
     assert rules3 == []
     print("DRONE_PARSE_EMPTY_OK")
 
+    # tick_mod divisor below 1 is rejected at parse time (#885)
+    for bad_script in ("if (tick_mod(0)) { idle };", "if (tick_mod(-1)) { idle };"):
+        try:
+            srv.dronelang_parse(bad_script)
+            assert False, "tick_mod divisor below 1 should be rejected"
+        except srv.DroneLangError as e:
+            assert "at least 1" in str(e).lower()
+    valid_tick = srv.dronelang_parse("if (tick_mod(1)) { idle };")
+    assert valid_tick[0]["predicate"]["args"] == [1]
+    print("DRONE_PARSE_TICK_MOD_MIN_OK")
+
 
 async def _test_predicates(srv):
     """Predicate evaluation tests - all 11 predicates in True and False states."""
