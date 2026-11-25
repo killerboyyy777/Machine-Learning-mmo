@@ -9,6 +9,9 @@ from pathlib import Path
 import websockets
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from server import HANDLERS  # noqa: E402
 
 
 def room_view(room_id, npcs=None, items=None, gold=0):
@@ -54,6 +57,11 @@ async def main():
         async for raw in ws:
             msg = json.loads(raw)
             cmd = msg.get("cmd")
+            if cmd not in HANDLERS:
+                await ws.send(
+                    json.dumps({"type": "error", "text": f"unknown command {cmd}"})
+                )
+                continue
             if cmd == "login":
                 await ws.send(
                     json.dumps(
@@ -249,28 +257,29 @@ async def main():
                         json.dumps({"type": "error", "text": f"You don't have {item}."})
                     )
                 await ws.send(json.dumps(stats_view()))
-            elif cmd == "companion_script_set":
-                script = msg.get("script")
-                await ws.send(
-                    json.dumps({"type": "companion", "text": f"Script set: {script}."})
-                )
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "companion_script_show":
-                await ws.send(
-                    json.dumps(
-                        {"type": "companion", "text": "Current script: (none set)."}
+            elif cmd == "companion":
+                action = msg.get("action")
+                sub = msg.get("sub")
+                if action == "script" and sub in ("set", "show", "clear"):
+                    text = {
+                        "set": f"Script set: {msg.get('script')}.",
+                        "show": "Current script: (none set).",
+                        "clear": "Script cleared.",
+                    }[sub]
+                    await ws.send(json.dumps({"type": "message", "text": text}))
+                elif action == "status":
+                    await ws.send(
+                        json.dumps({"type": "companion", "text": "Companion is ready."})
                     )
-                )
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "companion_script_clear":
-                await ws.send(
-                    json.dumps({"type": "companion", "text": "Script cleared."})
-                )
-                await ws.send(json.dumps(stats_view()))
-            elif cmd == "companion_status":
-                await ws.send(
-                    json.dumps({"type": "companion", "text": "Companion is ready."})
-                )
+                else:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "text": f"unknown companion action {action}",
+                            }
+                        )
+                    )
                 await ws.send(json.dumps(stats_view()))
             else:
                 await ws.send(json.dumps({"type": "error", "text": "unknown command"}))
