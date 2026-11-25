@@ -429,6 +429,33 @@ async def main():
             assert srv._guild_transfer_incoming_count(gid) == 1
             print("INCOMING_CAP_OK")
 
+            # --- disband clears incoming rows on both sides (#858) -----------
+            # Ids are recycled, so a successor would inherit the cap spent on
+            # the dead guild and rows whose source is the dead id.
+            srv.GUILD_TRANSFERS.clear()
+            srv.GUILD_TRANSFER_INCOMING.clear()
+            gid = capguild["id"]
+            now = time.time()
+            srv.GUILD_TRANSFER_INCOMING[gid] = [
+                {"ts": now, "from": mine["id"]}
+            ] * srv.GUILD_TRANSFER_MAX_INCOMING_PER_PAIR
+            srv.GUILD_TRANSFER_INCOMING[theirs["id"]] = [
+                {"ts": now, "from": gid},
+                {"ts": now, "from": mine["id"]},
+            ]
+            srv._guild_dissolve(capguild, now)
+            assert srv._guild_transfer_incoming_count(gid) == 0
+            assert srv._guild_transfer_incoming_count(theirs["id"], gid) == 0
+            assert srv._guild_transfer_incoming_count(theirs["id"], mine["id"]) == 1
+
+            # The recycled id can be offered gold again.
+            successor = make_guild("Fresh Company", [("fresh", "leader", 10)])
+            assert successor["id"] == gid, (successor["id"], gid)
+            out = await say(leader, action="transfer", guild="Fresh Company", amount=3)
+            assert any("Proposal #" in t for t in out), out
+            assert srv._guild_transfer_incoming_count(gid, mine["id"]) == 1
+            print("DISSOLVE_CLEARS_INCOMING_OK")
+
             print("GUILD_TRANSFERS_OK")
         finally:
             (
