@@ -7828,6 +7828,12 @@ async def _cmd_guild_promote(player, msg):
             },
         )
         return
+    if target_key == player.name.lower():
+        await send(
+            player,
+            {"type": "error", "text": "You cannot promote yourself."},
+        )
+        return
     shown = _guild_display_name(target_key)
     row["rank"] = "officer"
     _guild_audit(
@@ -7894,6 +7900,12 @@ async def _cmd_guild_demote(player, msg):
                 "type": "error",
                 "text": f"{shown} is already a member of {record['name']}.",
             },
+        )
+        return
+    if target_key == player.name.lower():
+        await send(
+            player,
+            {"type": "error", "text": "You cannot demote yourself."},
         )
         return
     shown = _guild_display_name(target_key)
