@@ -249,24 +249,24 @@
 
 <div id="skeleton" class="skeleton" hidden></div>
 
-<div class="tabs">
-  <div class="tab active" data-tab="overview" role="tab" tabindex="0">Overview</div>
-  <div class="tab" data-tab="world" role="tab" tabindex="-1">World</div>
-  <div class="tab" data-tab="players" role="tab" tabindex="-1">Players</div>
-  <div class="tab" data-tab="market" role="tab" tabindex="-1">Market</div>
-  <div class="tab" data-tab="dungeon" role="tab" tabindex="-1">Dungeons</div>
-  <div class="tab" data-tab="arena" role="tab" tabindex="-1">Arena</div>
-  <div class="tab" data-tab="agents" role="tab" tabindex="-1">Agents</div>
-  <div class="tab" data-tab="plugins" role="tab" tabindex="-1">Plugins</div>
-  <div class="tab" data-tab="quests" role="tab" tabindex="-1">Quests</div>
-  <div class="tab" data-tab="crafting" role="tab" tabindex="-1">Crafting</div>
-  <div class="tab" data-tab="guilds" role="tab" tabindex="-1">Guilds</div>
-  <div class="tab" data-tab="config" role="tab" tabindex="-1">Config</div>
-  <div class="tab" data-tab="runs" role="tab" tabindex="-1">Runs</div>
-  <div class="tab" data-tab="gm" role="tab" tabindex="-1">GM</div>
+<div class="tabs" role="tablist">
+  <div class="tab active" data-tab="overview" role="tab" tabindex="0" id="tab-overview" aria-selected="true" aria-controls="view-overview">Overview</div>
+  <div class="tab" data-tab="world" role="tab" tabindex="-1" id="tab-world" aria-selected="false" aria-controls="view-world">World</div>
+  <div class="tab" data-tab="players" role="tab" tabindex="-1" id="tab-players" aria-selected="false" aria-controls="view-players">Players</div>
+  <div class="tab" data-tab="market" role="tab" tabindex="-1" id="tab-market" aria-selected="false" aria-controls="view-market">Market</div>
+  <div class="tab" data-tab="dungeon" role="tab" tabindex="-1" id="tab-dungeon" aria-selected="false" aria-controls="view-dungeon">Dungeons</div>
+  <div class="tab" data-tab="arena" role="tab" tabindex="-1" id="tab-arena" aria-selected="false" aria-controls="view-arena">Arena</div>
+  <div class="tab" data-tab="agents" role="tab" tabindex="-1" id="tab-agents" aria-selected="false" aria-controls="view-agents">Agents</div>
+  <div class="tab" data-tab="plugins" role="tab" tabindex="-1" id="tab-plugins" aria-selected="false" aria-controls="view-plugins">Plugins</div>
+  <div class="tab" data-tab="quests" role="tab" tabindex="-1" id="tab-quests" aria-selected="false" aria-controls="view-quests">Quests</div>
+  <div class="tab" data-tab="crafting" role="tab" tabindex="-1" id="tab-crafting" aria-selected="false" aria-controls="view-crafting">Crafting</div>
+  <div class="tab" data-tab="guilds" role="tab" tabindex="-1" id="tab-guilds" aria-selected="false" aria-controls="view-guilds">Guilds</div>
+  <div class="tab" data-tab="config" role="tab" tabindex="-1" id="tab-config" aria-selected="false" aria-controls="view-config">Config</div>
+  <div class="tab" data-tab="runs" role="tab" tabindex="-1" id="tab-runs" aria-selected="false" aria-controls="view-runs">Runs</div>
+  <div class="tab" data-tab="gm" role="tab" tabindex="-1" id="tab-gm" aria-selected="false" aria-controls="view-gm">GM</div>
 </div>
 
-<div id="view-overview" class="tabview active">
+<div id="view-overview" class="tabview active" role="tabpanel" aria-labelledby="tab-overview">
   <div class="panel">
     <h2>Health <span id="ovHealth" class="tag">-</span></h2>
     <div class="statrow" id="ovCards"></div>
@@ -285,7 +285,7 @@
   </div>
 </div>
 
-<div id="view-world" class="tabview">
+<div id="view-world" class="tabview" role="tabpanel" aria-labelledby="tab-world">
   <div class="grid">
     <div>
       <div class="panel">
@@ -311,7 +311,7 @@
   </div>
 </div>
 
-<div id="view-players" class="tabview">
+<div id="view-players" class="tabview" role="tabpanel" aria-labelledby="tab-players">
   <div class="grid">
     <div>
       <div class="panel">
@@ -340,7 +340,7 @@
   </div>
 </div>
 
-<div id="view-market" class="tabview">
+<div id="view-market" class="tabview" role="tabpanel" aria-labelledby="tab-market">
   <div class="panel">
     <h2>Market</h2>
     <div class="statrow">
@@ -401,7 +401,7 @@
   </div>
 </div>
 
-<div id="view-dungeon" class="tabview">
+<div id="view-dungeon" class="tabview" role="tabpanel" aria-labelledby="tab-dungeon">
   <div class="panel">
     <h2>World event buffs</h2>
     <div id="buffs"></div>
@@ -424,7 +424,7 @@
   </div>
 </div>
 
-<div id="view-arena" class="tabview">
+<div id="view-arena" class="tabview" role="tabpanel" aria-labelledby="tab-arena">
   <div class="panel">
     <h2>Live matches <span class="legend" style="font-size:11px;color:var(--dim);font-weight:normal">read-only feed: match rooms are not world rooms, so they never appear on the map</span></h2>
     <div id="arenaLive"></div>
@@ -455,7 +455,7 @@
   </div>
 </div>
 
-<div id="view-agents" class="tabview">
+<div id="view-agents" class="tabview" role="tabpanel" aria-labelledby="tab-agents">
   <div class="panel">
     <h2>Live roster</h2>
     <div class="tscroll cap"><table data-sort="agents">
@@ -485,7 +485,7 @@
   </div>
 </div>
 
-<div id="view-plugins" class="tabview">
+<div id="view-plugins" class="tabview" role="tabpanel" aria-labelledby="tab-plugins">
   <div class="panel">
     <h2>Drop-in plugins <span class="legend" id="pluginDir">-</span></h2>
     <p class="empty" id="pluginAbout">-</p>
@@ -510,7 +510,7 @@
   </div>
 </div>
 
-<div id="view-quests" class="tabview">
+<div id="view-quests" class="tabview" role="tabpanel" aria-labelledby="tab-quests">
   <div class="panel">
     <h2>Quests</h2>
     <div class="statrow">
@@ -550,7 +550,7 @@
 
 <!-- Round 3 order: live flow first, reference material after, recipe
      browser last. -->
-<div id="view-crafting" class="tabview">
+<div id="view-crafting" class="tabview" role="tabpanel" aria-labelledby="tab-crafting">
   <div class="panel">
     <h2>Recent flow</h2>
     <div class="statrow">
@@ -596,7 +596,7 @@
   </div>
 </div>
 
-<div id="view-guilds" class="tabview">
+<div id="view-guilds" class="tabview" role="tabpanel" aria-labelledby="tab-guilds">
   <div class="panel">
     <h2>Guilds <span class="legend">aggregate only: rosters and per-guild vaults stay behind guild info</span></h2>
     <div class="statrow">
@@ -618,7 +618,7 @@
   </div>
 </div>
 
-<div id="view-config" class="tabview">
+<div id="view-config" class="tabview" role="tabpanel" aria-labelledby="tab-config">
   <div class="panel">
     <h2>Config editor <span class="sortctl">file
       <select id="cfgFile"></select>
@@ -634,7 +634,7 @@
   </div>
 </div>
 
-<div id="view-runs" class="tabview">
+<div id="view-runs" class="tabview" role="tabpanel" aria-labelledby="tab-runs">
   <div class="panel">
     <h2>Runs <span class="legend" id="runsCount">-</span>
       <span class="sortctl">best by<select id="runsMetric"></select></span></h2>
@@ -673,7 +673,7 @@
   </div>
 </div>
 
-<div id="view-gm" class="tabview">
+<div id="view-gm" class="tabview" role="tabpanel" aria-labelledby="tab-gm">
   <div class="panel">
     <h2>GM console</h2>
     <div class="gmcred">
@@ -3345,10 +3345,12 @@ for (const tab of tabEls) {
     document.querySelectorAll(".tab").forEach(t => {
       t.classList.remove("active");
       t.setAttribute("tabindex", "-1");
+      t.setAttribute("aria-selected", "false");
     });
     document.querySelectorAll(".tabview").forEach(v => v.classList.remove("active"));
     tab.classList.add("active");
     tab.setAttribute("tabindex", "0");
+    tab.setAttribute("aria-selected", "true");
     activeTab = tab.dataset.tab;
     $("view-" + activeTab).classList.add("active");
     if (activeTab === "runs") {

@@ -23,7 +23,7 @@ ids = set(re.findall(r'id="([\w-]+)"', html))
 used = set(re.findall(r'\$\("([\w-]+)"\)', html))
 assert not (used - ids), f"JS references missing ids: {sorted(used - ids)}"
 m = re.search(
-    r'<div class="tab active" data-tab="([\w-]+)" role="tab" tabindex="0">', html
+    r'<div class="tab active" data-tab="([\w-]+)" role="tab"[^>]*tabindex="0"', html
 )
 assert m and m.group(1) == "overview", "default tab is not overview"
 # Vendored chart lib referenced (served by the dashboard HTTP handler).
@@ -73,10 +73,10 @@ for wid in (
 ):
     assert f'id="{wid}"' in html, f"missing widget {wid}"
 # Players tab split out of World (more tabs, less content each).
-assert (
-    '<div class="tab" data-tab="players" role="tab" tabindex="-1">Players</div>' in html
+assert re.search(
+    r'<div class="tab" data-tab="players" role="tab"[^>]*>Players</div>', html
 )
-assert '<div id="view-players" class="tabview">' in html
+assert re.search(r'<div id="view-players" class="tabview" role="tabpanel"[^>]*>', html)
 # North-up map: compass deltas put north exits above their source.
 assert "north: [0, -1]" in html and "south: [0, 1]" in html
 # No forced horizontal scroll: the 720px canvas floor is gone.
@@ -388,8 +388,8 @@ for tok in (
 print("HISTORY_TABLES_OK")
 
 # --- Runs tab (#65): compare a finished run against the one still going ---
-assert '<div class="tab" data-tab="runs" role="tab" tabindex="-1">Runs</div>' in html
-assert '<div id="view-runs" class="tabview">' in html
+assert re.search(r'<div class="tab" data-tab="runs" role="tab"[^>]*>Runs</div>', html)
+assert re.search(r'<div id="view-runs" class="tabview" role="tabpanel"[^>]*>', html)
 for tid in ("runsTable", "runCmpTable"):
     assert f'data-sort="{tid}"' in html, f"table {tid} not sortable"
 for wid in (
@@ -652,10 +652,10 @@ for tok in ("status, result = _train_start", "status, result = _train_stop"):
 print("TRAINING_PANEL_OK")
 
 # --- drop-in plugins (#177): same control-plane shape as training ----------
-assert (
-    '<div class="tab" data-tab="plugins" role="tab" tabindex="-1">Plugins</div>' in html
+assert re.search(
+    r'<div class="tab" data-tab="plugins" role="tab"[^>]*>Plugins</div>', html
 )
-assert '<div id="view-plugins" class="tabview">' in html
+assert re.search(r'<div id="view-plugins" class="tabview" role="tabpanel"[^>]*>', html)
 for wid in (
     "pluginDir",
     "pluginAbout",
@@ -781,6 +781,7 @@ print("PERF_PANEL_OK")
 # --- #755 accessibility: keyboard tabs, visible focus, text state, narrow forms ---
 # The tabs are divs, so an explicit role and a roving tabindex put them in the
 # tab order; a click-only handler left keyboard users with no way to reach them.
+assert '<div class="tabs" role="tablist">' in html, "tab bar has no tablist role"
 _tabs = re.findall(r'<div class="tab(?: active)?" data-tab="[\w-]+"[^>]*>', html)
 assert len(_tabs) == 14, f"expected 14 tabs, found {len(_tabs)}"
 assert all('role="tab"' in t for t in _tabs), "a tab is missing role=tab"
@@ -790,6 +791,23 @@ assert (
 assert (
     sum('tabindex="-1"' in t for t in _tabs) == 13
 ), "inactive tabs must be out of the tab order"
+_tab_meta = re.findall(
+    r'data-tab="([\w-]+)"[^>]*id="tab-([\w-]+)"[^>]*aria-selected="(true|false)"'
+    r'[^>]*aria-controls="view-([\w-]+)"',
+    html,
+)
+assert len(_tab_meta) == 14, "tabs lack id/aria-selected/aria-controls"
+for _name, _id, _selected, _panel in _tab_meta:
+    assert _name == _id == _panel, f"tab ARIA linkage drifted for {_name}"
+assert [m[2] for m in _tab_meta].count("true") == 1, "exactly one tab is selected"
+_panels = re.findall(
+    r'<div id="view-([\w-]+)" class="tabview(?: active)?"'
+    r' role="tabpanel" aria-labelledby="tab-([\w-]+)">',
+    html,
+)
+assert len(_panels) == 14, "views lack role=tabpanel/aria-labelledby"
+for _name, _label in _panels:
+    assert _name == _label, f"panel ARIA linkage drifted for {_name}"
 _kd = re.search(
     r'tab\.addEventListener\("keydown", e => \{(.*?)\n  \}\);', html, re.DOTALL
 )
@@ -798,6 +816,14 @@ for _key in ("ArrowRight", "ArrowLeft", "Home", "End"):
     assert f'e.key === "{_key}"' in _kd.group(1), f"tab keydown ignores {_key}"
 assert "e.preventDefault()" in _kd.group(1), "tab keydown does not cancel scrolling"
 assert "next.click()" in _kd.group(1) and "next.focus()" in _kd.group(1)
+_click = re.search(r'tab\.addEventListener\("click",.*?\n  \}\);', html, re.DOTALL)
+assert _click, "tabs have no click handler"
+assert 't.setAttribute("aria-selected", "false")' in _click.group(
+    0
+), "activation does not deselect other tabs"
+assert 'tab.setAttribute("aria-selected", "true")' in _click.group(
+    0
+), "activated tab is not marked selected"
 assert 't.setAttribute("tabindex", "-1")' in html, "activation does not clear tabindex"
 assert (
     'tab.setAttribute("tabindex", "0")' in html
