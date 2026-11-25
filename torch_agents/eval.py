@@ -334,6 +334,8 @@ def main():
         help="write run record JSON (scores + comparison for #65)",
     )
     args = p.parse_args()
+    if args.seeds < 1:
+        p.error("--seeds must be >= 1")
 
     seeds = list(range(args.seeds))
     print(

@@ -8,6 +8,7 @@ the env and the checkpoint loader are replaced with fakes.
 """
 
 import asyncio
+import io
 import json
 import os
 import sys
@@ -184,8 +185,48 @@ def test_eval_names_are_unique_across_runs_and_checkpoint_paths():
     print("EVAL_NAMES_RUN_SCOPED_OK")
 
 
+def test_main_rejects_non_positive_seed_count():
+    saved_eval = ev.evaluate
+    saved_report = ev.report
+    saved_argv = sys.argv
+    saved_stderr = sys.stderr
+    seen = {}
+
+    async def fake_evaluate(*args, **kwargs):
+        seen["seeds"] = args[3]
+        return {"scores": [1.0], "rewards": [2.0]}
+
+    try:
+        ev.evaluate = fake_evaluate
+        ev.report = lambda name, scores: (0.0, 0.0)
+        err = io.StringIO()
+        sys.stderr = err
+
+        sys.argv = ["eval", "--checkpoint", "weights.pt", "--seeds", "0"]
+        try:
+            ev.main()
+        except SystemExit as exc:
+            assert exc.code == 2, exc.code
+        else:
+            raise AssertionError("--seeds 0 must be rejected by argparse")
+        assert "--seeds must be >= 1" in err.getvalue(), err.getvalue()
+        assert "Traceback" not in err.getvalue(), err.getvalue()
+        assert "seeds" not in seen, seen
+
+        sys.argv = ["eval", "--checkpoint", "weights.pt", "--seeds", "3"]
+        ev.main()
+        assert seen["seeds"] == [0, 1, 2], seen
+    finally:
+        ev.evaluate = saved_eval
+        ev.report = saved_report
+        sys.argv = saved_argv
+        sys.stderr = saved_stderr
+    print("EVAL_SEED_COUNT_OK")
+
+
 if __name__ == "__main__":
     test_eval_seed_reports_reward_distinct_from_score()
+    test_main_rejects_non_positive_seed_count()
     test_eval_names_are_unique_across_runs_and_checkpoint_paths()
     test_evaluate_collects_parallel_score_and_reward_lists()
     test_main_writes_rewards_and_formula_to_run_record()
