@@ -71,6 +71,13 @@ class PBTManager:
         m["fitness"] = float(fitness)
         m["episodes"] += episodes
 
+    def hparams_for(self, agent_id):
+        """Return a copy of an enrolled member's current hparams, else None."""
+        m = self._members.get(agent_id)
+        if m is None:
+            return None
+        return dict(m["hparams"])
+
     def mutate(self, hparams):
         """Perturb numeric hyperparameters by a uniform factor in range."""
         out = dict(hparams)
