@@ -41,6 +41,7 @@ jobs:
       - run: python tests/test_pbt.py
       - run: python tests/test_curriculum.py
       - run: python tests/test_plugins.py
+      - run: python tests/test_torch_plugin_slots.py
       - run: python tests/test_env_reset.py
       - run: python tests/test_env_parsing.py
       - run: python tests/test_dashboard.py
