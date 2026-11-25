@@ -27,6 +27,13 @@ area:tests:
       - any-glob-to-any-file:
           - tests/**/*
 
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - .github/dependabot.yml
+          - scripts/enable-protection.sh
+
 # area:docs - README, protocol docs
 area:docs:
   - changed-files:
@@ -57,5 +64,4 @@ area:conductor:
 documentation:
   - changed-files:
       - any-glob-to-any-file:
-          - README.md
           - docs/**/*
