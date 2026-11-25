@@ -28,6 +28,8 @@ COPY start.py ./
 COPY tui/ ./tui/
 COPY ml/ ./ml/
 COPY torch_agents/ ./torch_agents/
+COPY harness/ ./harness/
+COPY plugins/ ./plugins/
 
 # Docker turns a non-existent volume target into a directory; seed the file
 # so the opt-in server-scores mount lands on scores.json and saves still rotate.

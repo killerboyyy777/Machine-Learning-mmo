@@ -190,6 +190,16 @@ The gate profile also runs the arena probe. It queues four fresh fighters for tw
 
 Thresholds live in `DEFAULT_THRESHOLDS`. `--thresholds FILE` deep-merges a JSON override without editing code. The release gate requires measured coverage for economy, combat, craft, acquisition (#532), guilds (#588), arena (#656), market, liveness, and NPC AI v2 (#536). A missing probe or telemetry for any required scenario is a blocking failure, not a passing skip. The `progression` and `party` scenarios are observational because the server does not expose every metric needed to threshold them. Item and gold conservation and companion damage share are blocking checks.
 
+## Generalist doctrine pilot
+
+`ml/generalist.py` supplies a generalist whose TRAINING reward is one signal summed across four archetype rewards, plus purist specialists trained on one archetype each. Registering the plugins is an explicit opt-in; the module has no runtime, gate, or reward-default hook. Its same-frame curves and pilot report are informational and never gate a run.
+
+Training reward is not an evaluation score. Because the generalist reward adds all four archetype rewards while a purist uses one, comparing those sums head-to-head makes the generalist lead whenever several axes are positive, even though no generalist policy acted or learned. `same_frame_curve` records those same-frame training-reward curves only; it cannot by itself establish that a generalist outperforms a purist.
+
+`pilot_report` makes the distinction explicit. With `objective` set, its curves are cumulative outcomes on one common objective from separate per-policy trajectories on matched seeds and frames, and a positive lead is a genuine outcome difference. Without `objective`, curves are treated as training rewards and the generalist is reduced to a weighted average across its active archetypes, so summing more axes cannot manufacture a lead and the verdict stays inconclusive. Curves of unequal length are rejected as `misaligned_data` instead of being compared over a common prefix.
+
+The same-frame training-reward comparison is provisional: it carries no honest performance claim. Before v0.19 either confirm a lead that survives this normalization on a common objective, or drop the claim that the pilot compares generalist and purist performance.
+
 ## Observability
 
 Three measurement surfaces exist, all off by default. A normal server or soak run writes none of them.
