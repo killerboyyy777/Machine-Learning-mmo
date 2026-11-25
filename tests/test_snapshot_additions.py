@@ -17,7 +17,6 @@ def test_commissions_snapshot():
     try:
         srv._commissions.clear()
         statuses = ["open", "filled", "cancelled"]
-        # Create 120 commissions with sequential IDs 1..120 and varying statuses
         for i in range(1, 121):
             st = statuses[i % len(statuses)]
             srv._commissions[i] = {
@@ -33,24 +32,20 @@ def test_commissions_snapshot():
             }
 
         snap = srv._commission_snapshot()
-        # Cap check: length is 100
         assert (
             len(snap) == 100
         ), f"Expected 100 commissions in snapshot, got {len(snap)}"
 
-        # Order check: newest-first (descending ID)
         ids = [c["id"] for c in snap]
         assert ids == list(
             range(120, 20, -1)
         ), "Snapshot is not newest-first or truncated improperly"
 
-        # Truncation check: IDs 1..20 are absent, 21..120 are present
         assert 120 in ids, "Newest commission ID 120 missing"
         assert 21 in ids, "Newest commission ID 21 missing"
         assert 20 not in ids, "Oldest truncated commission ID 20 present"
         assert 1 not in ids, "Oldest truncated commission ID 1 present"
 
-        # All statuses check
         snap_statuses = {c["status"] for c in snap}
         assert snap_statuses == {
             "open",
@@ -58,7 +53,6 @@ def test_commissions_snapshot():
             "cancelled",
         }, f"Missing statuses in snapshot: {snap_statuses}"
 
-        # Verify world_snapshot() commissions key matches
         world_snap = srv.world_snapshot()
         assert "commissions" in world_snap
         assert len(world_snap["commissions"]) == 100
@@ -78,7 +72,6 @@ def test_recent_turnins():
         srv.quest_turnin_feed.clear()
         srv.quest_feed_seq = 0
 
-        # Simulate 60 quest turnins
         for i in range(1, 61):
             srv.quest_feed_seq += 1
             srv.quest_turnin_feed.append(
@@ -92,36 +85,30 @@ def test_recent_turnins():
             while len(srv.quest_turnin_feed) > srv.TURNIN_FEED_SIZE:
                 del srv.quest_turnin_feed[0]
 
-        # Ring buffer size check: capped at 50
         assert (
             len(srv.quest_turnin_feed) == 50
         ), f"Expected 50 items in ring, got {len(srv.quest_turnin_feed)}"
 
-        # Eviction check: seq 1..10 evicted, 11..60 present in ring
         ring_seqs = [t["seq"] for t in srv.quest_turnin_feed]
         assert ring_seqs == list(range(11, 61)), "Ring buffer eviction failed"
         assert 10 not in ring_seqs, "Evicted seq 10 still present in ring"
         assert 1 not in ring_seqs, "Evicted seq 1 still present in ring"
 
-        # Check snapshot key quests.recent_turnins directly from world_snapshot()
         world_snap = srv.world_snapshot()
         recent = world_snap["quests"]["recent_turnins"]
         assert isinstance(recent, list)
         assert len(recent) <= 50, "recent_turnins exceeds 50-deep ring size"
 
         recent_seqs = [t["seq"] for t in recent]
-        # Verify evicted items 1..10 are absent from recent_turnins
         for evicted_seq in range(1, 11):
             assert (
                 evicted_seq not in recent_seqs
             ), f"Evicted seq {evicted_seq} present in recent_turnins"
 
-        # Raw feed slice in snapshot is chronological (newest at recent[-1])
         assert (
             recent[-1]["seq"] == 60
         ), f"Expected newest seq 60 at end of recent_turnins feed, got {recent[-1]['seq']}"
 
-        # In newest-first order (e.g. recent[::-1]): newest seq 60 is first, descending sequence
         newest_first = recent[::-1]
         assert (
             newest_first[0]["seq"] == 60
@@ -153,7 +140,6 @@ def test_recipes_snapshot():
         assert "tier" in r and isinstance(r["tier"], int)
         assert "category" in r and isinstance(r["category"], str)
 
-        # Verify raw item ID vs resolved display name
         raw_rec = srv.RECIPES.get(r["id"], {})
         raw_result_id = raw_rec.get("result", r["id"])
         expected_result_name = srv.ITEM_DEFS.get(raw_result_id, {}).get(
@@ -187,11 +173,9 @@ def test_steam_medians():
             m = n // 2
             return s[m] if n % 2 != 0 else (s[m - 1] + s[m]) / 2.0
 
-        # Test empty fill set from snapshot
         srv.market_history.clear()
         assert get_steam_item_median_from_snapshot("Wolf Pelt") is None
 
-        # Test odd count fill set from snapshot (3 fills: 10, 30, 20 -> sorted: 10, 20, 30 -> median 20)
         srv.market_history.extend(
             [
                 {
@@ -240,7 +224,6 @@ def test_steam_medians():
             get_steam_item_median_from_snapshot("Wolf Pelt") == 20.0
         ), "Odd count median failed on snapshot history"
 
-        # Test even count fill set from snapshot (4 fills: 10, 30, 20, 40 -> sorted: 10, 20, 30, 40 -> median 25.0)
         srv.market_history.append(
             {
                 "time": "12:04",

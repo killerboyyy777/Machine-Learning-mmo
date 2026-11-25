@@ -175,7 +175,6 @@ class TuiApp:
         self._state = None
         self.extras = {}
 
-    # --- lifecycle -----------------------------------------------------
     def start(self):
         self.keys.start()
         self.poller.start()
@@ -206,7 +205,6 @@ class TuiApp:
         finally:
             self.stop()
 
-    # --- state ---------------------------------------------------------
     def load_tab_extras(self):
         """Fetch the active tab's own payload when it has one."""
         extra = load_extra(self.poller.client, self.tab)

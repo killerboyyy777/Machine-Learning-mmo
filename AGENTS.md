@@ -42,6 +42,8 @@ Ask these questions before writing a comment:
 
 If any answer is no, delete the comment.
 
+The target is zero unnecessary comments. A harmless comment is still an unnecessary comment: if it fails any test above, delete it rather than leaving it in place. `tests/test_source_policy.py` enforces the mechanical subset (signature comments and commented-out code); the rest is enforced in review.
+
 ## Proof bar
 
 State what you ran, the exit codes, and what you did not run. In the report, give the branch, the base SHA, the head SHA, a one-line summary of each item, and the files changed.

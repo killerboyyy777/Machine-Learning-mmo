@@ -154,12 +154,10 @@ def report(name, scores):
     return mean, std
 
 
-# ---------------------------------------------------------------------------
 # Paired comparison statistics (#69). Same seeds => paired differences, so
 # a one-sample t-test on challenger-minus-baseline is the right tool.
 # Implemented exactly (regularized incomplete beta + bisection for the
 # critical value) so no scipy dependency is needed.
-# ---------------------------------------------------------------------------
 
 
 def _betacf(a, b, x):
@@ -285,7 +283,6 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
         out.update(t=None, p_value=None, ci95=None)
         return out
     if sd == 0.0:
-        # Identical diffs: difference is exact (or exactly zero).
         out.update(
             t=float("inf") if mean_d != 0.0 else 0.0,
             p_value=0.0 if mean_d != 0.0 else 1.0,

@@ -653,9 +653,6 @@ OBSERVATIONS = (
 REQUIRED_MEASUREMENT_FIELDS = ("meta", "samples", "derived")
 
 
-# --- thresholds / profiles -------------------------------------------------
-
-
 def _deep_merge(base, override):
     """Recursive dict merge; later values win, unknown keys are kept."""
     out = dict(base)
@@ -690,9 +687,6 @@ def resolve_threshold(thresholds, path):
             raise KeyError(f"threshold not configured: {'.'.join(path)}")
         node = node[key]
     return node
-
-
-# --- derived measurements --------------------------------------------------
 
 
 def _slope(series):
@@ -981,7 +975,6 @@ def derive(samples, ledger=None, telemetry=None):
     solo_clears = []
     group_clears = []
     spreads = []
-    # Stability trackers
     stability_avg_levels = []
     stability_total_scores = []
     stability_economy = []
@@ -1046,7 +1039,6 @@ def derive(samples, ledger=None, telemetry=None):
             }
         previous_t = t
 
-        # Stability tracking
         online_players = [p for p in players if p.get("level") is not None]
         if online_players:
             avg_level = sum(_num(p.get("level")) or 0 for p in online_players) / len(
@@ -1313,9 +1305,6 @@ def _min_alive(samples):
         return None
     steady = [value for t, value in samples if t >= LIVENESS_WARMUP_S]
     return int(min(steady if steady else [value for _, value in samples]))
-
-
-# --- metric evaluation -----------------------------------------------------
 
 
 def _treasury_points(measurements, thresholds):
@@ -1684,7 +1673,6 @@ def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
     scenarios = _scenario_rows(profile, checks, derived)
     coverage = PROFILES[profile].get("coverage", ())
 
-    # --- stability profile assertions ---
     if profile == "stability":
         stability = derived.get("stability") or {}
         economic_slope = _num(stability.get("economic_slope"))
@@ -1911,9 +1899,6 @@ def evaluate_profile(measurements_by_run, thresholds, profile, baseline=None):
     return report
 
 
-# --- baseline --------------------------------------------------------------
-
-
 def _get_path(node, path):
     current = node
     for key in path:
@@ -1979,9 +1964,6 @@ def compare_baseline(measurement_entry, baseline):
         },
         "deltas": rows,
     }
-
-
-# --- live collection -------------------------------------------------------
 
 
 class HarnessError(RuntimeError):
@@ -2337,9 +2319,6 @@ async def collect(args, profile, seed):
         },
     }
     return measurements
-
-
-# --- CLI -------------------------------------------------------------------
 
 
 def _write_json(path, payload):

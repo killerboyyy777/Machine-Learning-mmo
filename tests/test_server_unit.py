@@ -783,21 +783,17 @@ async def main():
     # --- HP regeneration test ---
     regen_player = srv.Player(ws=FakeWS(), id=9998, name="RegenTester", logged_in=True)
     regen_player.max_hp = 30
-    regen_player.hp = 20  # Start with less than max HP
+    regen_player.hp = 20
     srv.add_member(regen_player)
-    # Initialize timestamp trackers
     regen_player.last_damage_ts = 0
     regen_player.last_regen_ts = 0
 
     # Simulate time passage for regen to be ready (HP_REGEN_SECONDS = 10)
     # We'll manipulate the timestamps directly to test the logic
     old_time = time.time()
-    regen_player.last_regen_ts = old_time - srv.HP_REGEN_SECONDS - 1  # Ready to regen
-    regen_player.last_damage_ts = (
-        old_time - srv.HP_REGEN_DAMAGE_WINDOW - 1
-    )  # No recent damage
+    regen_player.last_regen_ts = old_time - srv.HP_REGEN_SECONDS - 1
+    regen_player.last_damage_ts = old_time - srv.HP_REGEN_DAMAGE_WINDOW - 1
 
-    # Manually trigger the regeneration logic from npc_ai_loop
     now = time.time()
     if (
         regen_player.logged_in
@@ -872,13 +868,13 @@ async def main():
     await srv.cmd_equip(knight, {"item": "old shield"})
     assert knight.armor == "reinforced_leather" and knight.offhand == "old_shield"
     assert knight.equipped is None
-    assert srv._player_defense(knight) == 3  # leather 2 + shield 1
+    assert srv._player_defense(knight) == 3
     no_sword_attack = knight.attack
     await srv.cmd_equip(knight, {"item": "rusty sword"})
     assert knight.equipped == "rusty_sword" and knight.armor == "reinforced_leather"
-    assert knight.attack == no_sword_attack + 4  # sword adds attack; armor never does
+    assert knight.attack == no_sword_attack + 4
     await srv.cmd_equip(knight, {"item": "rat tail"})
-    assert inbox[-1]["type"] == "error"  # junk is not wearable
+    assert inbox[-1]["type"] == "error"
     print("EQUIP_SLOTS_OK")
 
     # --- Ammo families: best variant fires first with its flat bonus ---
@@ -904,13 +900,13 @@ async def main():
         "contributors": {},
     }
     await srv.cmd_attack(archer, {"target": "ammo test"})
-    assert "steel_arrow" not in archer.inventory  # best-first consumption
+    assert "steel_arrow" not in archer.inventory
     assert "iron_arrow" in archer.inventory and "arrow" in archer.inventory
     hp_after_shot = srv.npcs["ammo_dummy"]["hp"]
-    assert hp_after_shot < 1000  # steel +2 bonus damage applied
+    assert hp_after_shot < 1000
     archer.inventory = ["oak_longbow"]
     await srv.cmd_attack(archer, {"target": "ammo test"})
-    assert inbox[-1]["type"] == "error"  # empty quiver refuses to fire
+    assert inbox[-1]["type"] == "error"
     assert srv.npcs["ammo_dummy"]["hp"] == hp_after_shot  # no shot fired
     del srv.npcs["ammo_dummy"]
     print("AMMO_FAMILY_OK")
@@ -937,15 +933,15 @@ async def main():
     assert srv._inventory_units(packer) == 24
     assert srv._pack_full(packer)
     packer.gold = 1000
-    await srv.cmd_buy(packer, {"item": "healing herb"})  # blocked, gold untouched
+    await srv.cmd_buy(packer, {"item": "healing herb"})
     assert inbox[-1]["type"] == "error" and packer.gold == 1000
     assert "healing_herb" not in packer.inventory
     srv.room_items["market"].append("wolf_pelt")
     gold_before = packer.gold
-    await srv.cmd_take(packer, {"item": "wolf pelt"})  # blocked at cap
+    await srv.cmd_take(packer, {"item": "wolf pelt"})
     assert inbox[-1]["type"] == "error" and "pack is full" in inbox[-1]["text"].lower()
     assert "wolf_pelt" not in packer.inventory and packer.gold == gold_before
-    assert "wolf_pelt" in srv.room_items["market"]  # ground untouched
+    assert "wolf_pelt" in srv.room_items["market"]
     srv.room_items["market"].remove("wolf_pelt")
     await srv.cmd_drop(packer, {"item": "rat tail", "amount": 3})
     assert packer.inventory.count("rat_tail") == 20
@@ -953,7 +949,7 @@ async def main():
     assert not srv._pack_full(packer)
     await srv.cmd_drop(packer, {"item": "rat tail"})  # below cap: refused
     assert inbox[-1]["type"] == "error"
-    assert packer.inventory.count("rat_tail") == 20  # nothing dropped
+    assert packer.inventory.count("rat_tail") == 20
     for _ in range(3):
         srv.room_items["market"].remove("rat_tail")
     print("CARRY_CAP_OK")
@@ -969,9 +965,9 @@ async def main():
     await srv.cmd_gather(gatherer, {})
     assert "pine_timber" in gatherer.inventory and len(gatherer.inventory) > n0
     assert node["available"] is False and node["respawn_at"] is not None
-    await srv.cmd_gather(gatherer, {})  # node on cooldown
+    await srv.cmd_gather(gatherer, {})
     assert inbox[-1]["type"] == "error"
-    node["available"] = True  # respawn tick
+    node["available"] = True
     node["respawn_at"] = None
     await srv.cmd_gather(gatherer, {"node": "pine timber"})
     assert gatherer.inventory.count("pine_timber") >= 2  # second harvest lands
@@ -991,7 +987,7 @@ async def main():
     assert srv._inventory_units(capper) == srv.INVENTORY_CAP, srv._inventory_units(
         capper
     )
-    assert capper.inventory.count("pine_timber") == 1  # truncated 3 -> 1
+    assert capper.inventory.count("pine_timber") == 1
     srv.remove_member(capper)
     print("GATHER_CAP_OK")
 
@@ -1002,13 +998,13 @@ async def main():
     await srv.cmd_use(juicer, {"item": "sharpening oil"})
     assert juicer.active_buffs["attack"]["amount"] == 2
     await srv.cmd_use(juicer, {"item": "greater sharpening oil"})
-    assert juicer.active_buffs["attack"]["amount"] == 4  # replaces, never stacks
+    assert juicer.active_buffs["attack"]["amount"] == 4
     assert juicer.active_buffs["attack"]["remaining"] == 20
     for _ in range(19):
         srv._tick_player_buffs(juicer)
     assert juicer.active_buffs["attack"]["remaining"] == 1
     srv._tick_player_buffs(juicer)
-    assert "attack" not in juicer.active_buffs  # expired and removed
+    assert "attack" not in juicer.active_buffs
     assert srv._player_buff_amount(juicer, "attack") == 0
     print("BUFF_STACK_OK")
 
@@ -1110,7 +1106,7 @@ async def main():
     assert boss["max_hp"] == srv.WARDEN_HP and boss["attack"] == srv.WARDEN_ATK
     assert boss["loot"] == ["warden_trophy"]
     assert boss["respawn_seconds"] == srv.WARDEN_RESPAWN_SECONDS
-    assert d.floor(srv.DUNGEON_MAX_FLOOR + 10) is w  # depth clamps at the cap
+    assert d.floor(srv.DUNGEON_MAX_FLOOR + 10) is w
     assert srv.ITEM_DEFS["wardens_blade"]["damage"] == 13
     assert srv.RECIPES["wardens_blade"]["inputs"]["warden_trophy"] == 1
     print("WARDEN_OK")
@@ -1657,7 +1653,6 @@ async def main():
         )
         assert srv.load_companions(comp_path) == {}
 
-    # Clean up original companion core players
     drop_job_entry("CompOwner", comp_owner)
     drop_job_entry("CompBystander", bystander)
     drop_job_entry("GMCompanion", gm_player)
@@ -1667,7 +1662,6 @@ async def main():
 
     # --- Companion acquisition (#532): adopt wolf/mule/sheep ---
     comp2 = mkplayer("CompAdopter", 60400, room="town_square")
-    # Wolf: needs wolf_pup in inventory
     await srv.cmd_companion(comp2, {"action": "adopt", "species": "wolf"})
     assert inbox[-1]["type"] == "error" and "need a wolf pup" in inbox[-1]["text"]
     comp2.inventory.append("wolf_pup")
@@ -1680,7 +1674,6 @@ async def main():
         and rec2["species"] == "wolf"
         and rec2["hp"] == srv.COMPANIONS["wolf"]["base_hp"]
     )
-    # Mule: needs mule_deed in inventory
     comp3 = mkplayer("CompMuleOwner", 60500, room="town_square")
     comp3.inventory.append("mule_deed")
     await srv.cmd_companion(comp3, {"action": "adopt", "species": "mule"})
@@ -1688,7 +1681,6 @@ async def main():
     assert "mule_deed" not in comp3.inventory
     rec3 = srv._companion_active("CompMuleOwner")
     assert rec3 is not None and rec3["species"] == "mule"
-    # Sheep: needs sheep_deed in inventory
     comp4 = mkplayer("CompSheepOwner", 60600, room="town_square")
     comp4.inventory.append("sheep_deed")
     await srv.cmd_companion(comp4, {"action": "adopt", "species": "sheep"})
@@ -1696,18 +1688,15 @@ async def main():
     assert "sheep_deed" not in comp4.inventory
     rec4 = srv._companion_active("CompSheepOwner")
     assert rec4 is not None and rec4["species"] == "sheep"
-    # Cannot adopt if already have companion
     await srv.cmd_companion(comp2, {"action": "adopt", "species": "mule"})
     assert (
         inbox[-1]["type"] == "error" and "already have a companion" in inbox[-1]["text"]
     )
-    # Unknown species
     await srv.cmd_companion(comp2, {"action": "adopt", "species": "dragon"})
     assert (
         inbox[-1]["type"] == "error"
         and "Unknown companion species" in inbox[-1]["text"]
     )
-    # Clean up
     drop_job_entry("CompAdopter", comp2)
     drop_job_entry("CompMuleOwner", comp3)
     drop_job_entry("CompSheepOwner", comp4)
@@ -1801,7 +1790,6 @@ async def main():
     sheep_owner.inventory.append("sheep_deed")
     await srv.cmd_companion(sheep_owner, {"action": "adopt", "species": "sheep"})
     assert srv._companion_heal_mult(sheep_owner) == srv.COMPANION_SHEPHERD_HEAL_MULT
-    # Level cap: companion cannot exceed COMPANION_LEVEL_CAP
     cap_owner = mkplayer("CapOwner", 70004, room="town_square")
     cap_owner.inventory.append("wolf_pup")
     await srv.cmd_companion(cap_owner, {"action": "adopt", "species": "wolf"})
@@ -1810,7 +1798,6 @@ async def main():
     rec_cap["xp"] = 999999
     srv._companion_award_xp(cap_owner, 100, "cap_test")
     assert rec_cap["level"] == srv.COMPANION_LEVEL_CAP, "Level should not exceed cap"
-    # Cleanup
     for n, pl in [
         ("xpowner", xp_owner),
         ("wolfowner", wolf_owner),
@@ -1960,14 +1947,14 @@ async def main():
     # --- Quest-giver immunity (#193): attacks rejected, givers unharmed ---
     griefer = mkplayer("Griefer", 60001, room="town_square")
     guard_hp0 = srv.npcs["guard"]["hp"]
-    for _ in range(3):  # repeated attempts hold the rule
+    for _ in range(3):
         await srv.cmd_attack(griefer, {"target": "guard"})
         assert (
             inbox[-1]["type"] == "error" and "protection" in inbox[-1]["text"]
         ), inbox[-1]
     assert srv.npcs["guard"]["alive"] and srv.npcs["guard"]["hp"] == guard_hp0
     assert srv.npcs["guard"]["contributors"] == {}
-    assert srv.get_score_entry("Griefer")["score"] == 0  # not even the -0.5 fired
+    assert srv.get_score_entry("Griefer")["score"] == 0
     griefer2 = mkplayer("Griefer2", 60002, room="healing_spring")
     await srv.cmd_attack(griefer2, {"target": "maren"})
     assert inbox[-1]["type"] == "error" and "protection" in inbox[-1]["text"], inbox[-1]
@@ -2025,11 +2012,11 @@ async def main():
     srv.send = send_then_b
     await srv.cmd_attack(racer_a, {"target": "race dummy"})
     srv.send = saved_send
-    assert interleaved.get("b_ran")  # the race actually happened
+    assert interleaved.get("b_ran")
     # Exactly one kill block ran: one loot drop, one split payout.
     assert srv.room_items["town_square"].count("rat_tail") == tails_before + 1
     srv.room_items["town_square"].remove("rat_tail")
-    assert racer_a.gold + racer_b.gold == 10  # single payout split, not doubled
+    assert racer_a.gold + racer_b.gold == 10
     assert racer_a.gold == 5 and racer_b.gold == 5
     del srv.npcs["race_dummy"]
     unplayer(racer_a)
@@ -2132,7 +2119,7 @@ async def main():
     assert (
         inbox[-1]["type"] == "error" and "archway rejects" in inbox[-1]["text"]
     ), inbox[-1]
-    assert farmer.room == room_before  # not moved
+    assert farmer.room == room_before
     fentry["dungeon_left_ts"] -= srv.DUNGEON_REENTER_DELAY_SECONDS + 1
     await srv._enter_dungeon(farmer)
     assert srv.dungeon_for_room(farmer.room) is not None
@@ -2218,10 +2205,10 @@ async def main():
     lentry["xp"] = 0.0
     lentry["xp_to_next"] = srv.xp_to_next(1)
     leveled = await srv.award_xp("Leveler", 100000, "test surge")
-    assert len(leveled) >= 2, leveled  # multi-level surge
+    assert len(leveled) >= 2, leveled
     assert leveler.max_hp == 20 + srv.LEVEL_HP_PER_LEVEL * len(leveled)
     assert leveler.hp == 5 + srv.LEVEL_HP_PER_LEVEL * len(leveled)
-    assert leveler.hp < leveler.max_hp  # the old full-heal is gone
+    assert leveler.hp < leveler.max_hp
     unplayer(leveler)
     print("LEVEL_HEAL_OK")
 
@@ -2359,7 +2346,7 @@ async def main():
     assert _env_tax(1) == 0
     assert _env_tax(2) == 1
     assert _env_tax(10) == 1
-    assert _env_tax(25) == 3  # half-up: banker's round(2.5) would say 2
+    assert _env_tax(25) == 3
     assert _env_tax(100) == 10
     # A configured minimum above the transaction value must never make tax
     # exceed the sale price or produce a negative seller payout.
@@ -2402,7 +2389,7 @@ async def main():
     dime.gold = 200
     penny_gold0 = penny.gold
     await srv.cmd_market_buy(dime, {"id": poid})
-    assert penny.gold == penny_gold0 + 1  # full 1g payout, 0 tax (was 0)
+    assert penny.gold == penny_gold0 + 1
     assert srv.tax_treasury == 0.0 and srv.tax_collected_lifetime == 0.0
     assert dime.gold == 199  # conservation: 1 + 0 == price
     srv.tax_treasury, srv.tax_collected_lifetime = t_saved
@@ -2709,8 +2696,7 @@ async def main():
     assert canposter.gold == 100  # escrowed 100
     await srv.cmd_commission_cancel(canposter, {"commission_id": ccid})
     assert srv._commissions[ccid]["status"] == "cancelled"
-    assert canposter.gold == 150  # half refund: 50
-    # Non-poster cannot cancel
+    assert canposter.gold == 150
     other = mkplayer("Other", 40021)
     await srv.cmd_commission_cancel(other, {"commission_id": ccid})
     assert inbox[-1]["type"] == "error"
@@ -2790,7 +2776,7 @@ async def main():
     assert "treant_bark" not in risker.inventory
     assert "iron_ore" not in risker.inventory
     assert "rat_tail" not in risker.inventory
-    assert "rusty_sword" in risker.inventory  # equipped slot protected first
+    assert "rusty_sword" in risker.inventory
     ground = srv.room_items["market"]
     assert ground.count("treant_bark") == 1 and ground.count("iron_ore") == 1
     # floor-value penalty: treant_bark 10 + iron_ore 8 + rat_tail 1 = 19
@@ -2966,14 +2952,13 @@ async def main():
     print("CRAFT_PROFITABILITY_OK")
 
     # --- Quest system: list, accept, turn_in, giver check, repeat ---
-    srv.send = fake_send  # re-patch after GM tests restored orig_send
+    srv.send = fake_send
     inbox.clear()
     qtester = srv.Player(ws=FakeWS(), id=10010, name="Quester", logged_in=True)
     qtester.room = "town_square"
     srv.add_member(qtester)
     qentry = srv.get_score_entry("Quester")
 
-    # List shows all quests
     await srv.cmd_quest(qtester, {"action": "list"})
     quest_list_msg = [
         m
@@ -2982,14 +2967,12 @@ async def main():
     ]
     assert quest_list_msg, "quest list should show guard_charm and delver"
 
-    # Accept requires giver present
-    qtester.room = "lumber_camp"  # no guard here
+    qtester.room = "lumber_camp"
     await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
     err_msgs = [m for m in inbox if m.get("type") == "error"]
     assert err_msgs and "isn't here" in err_msgs[-1]["text"]
     assert not qentry.get("quest_guard_active")
 
-    # Accept with giver present
     qtester.room = "town_square"
     await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
     assert qentry.get("quest_guard_active")
@@ -2998,7 +2981,6 @@ async def main():
     ]
     assert ok_msgs
 
-    # Cannot accept same quest twice
     await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
     dup_msgs = [
         m
@@ -3007,7 +2989,6 @@ async def main():
     ]
     assert dup_msgs
 
-    # Turn_in without conditions fails
     await srv.cmd_quest(qtester, {"action": "turn_in", "quest": "guard_charm"})
     fail_msgs = [
         m
@@ -3016,7 +2997,6 @@ async def main():
     ]
     assert fail_msgs
 
-    # Simulate charm crafted, turn_in succeeds
     qentry["guard_charm_crafted"] = True
     qtester.inventory.append(srv.QUEST_CHARM_RESULT)
     old_xp = qentry["xp"]
@@ -3028,7 +3008,6 @@ async def main():
     assert qtester.gold > old_gold
     assert srv.QUEST_CHARM_RESULT not in qtester.inventory
 
-    # Can repeat: accept again
     await srv.cmd_quest(qtester, {"action": "accept", "quest": "guard_charm"})
     assert qentry.get("quest_guard_active")
     qentry["guard_charm_crafted"] = False
@@ -3049,8 +3028,8 @@ async def main():
     assert inbox[-1]["type"] == "error" and "own listing" in inbox[-1]["text"], inbox[
         -1
     ]
-    assert any(o["id"] == oid for o in srv.market_orders)  # not consumed
-    assert srv.get_score_entry("Wash")["xp"] == wash_xp0  # nothing minted
+    assert any(o["id"] == oid for o in srv.market_orders)
+    assert srv.get_score_entry("Wash")["xp"] == wash_xp0
     patsy = mkplayer("Patsy", 50002, room="market")
     patsy.gold = 200
     patsy_xp0 = srv.get_score_entry("Patsy")["xp"]
@@ -3075,7 +3054,7 @@ async def main():
     await srv.cmd_market_buy_order(bbuyer, {"item": herb_name, "price": 12})
     assert not any(o["seller"] == "Asker" for o in srv.market_orders)
     assert not any(b["buyer"] == "Bidder" for b in srv.market_bids)
-    assert "healing_herb" in bbuyer.inventory  # filled
+    assert "healing_herb" in bbuyer.inventory
     assert bbuyer.gold == 200 - 13 + 2  # escrow 12 + fee 1, refund 2
     assert basker.gold == 50 + 9  # ask price 10 minus tax 1
     assert srv.market_history[-1].get("via") == "ask"
@@ -3087,7 +3066,7 @@ async def main():
     bbuyer2 = mkplayer("Bidder2", 50012, room="market")
     bbuyer2.gold = 200
     await srv.cmd_market_buy_order(bbuyer2, {"item": herb_name, "price": 12})
-    assert any(b["buyer"] == "Bidder2" for b in srv.market_bids)  # rests
+    assert any(b["buyer"] == "Bidder2" for b in srv.market_bids)
     basker2 = mkplayer("Asker2", 50013, room="market")
     basker2.gold = 50
     basker2.inventory.append("healing_herb")
@@ -3113,7 +3092,7 @@ async def main():
         assert srv.tax_sunk_lifetime == sink_sunk0
         assert srv._treasury_credit(6) == 0.0  # tops the reserve up exactly
         assert srv.tax_treasury == sink_reserve
-        assert srv._treasury_credit(3) == 3.0  # at reserve: fully sunk
+        assert srv._treasury_credit(3) == 3.0
         assert srv.tax_treasury == sink_reserve
         assert srv.tax_sunk_lifetime == sink_sunk0 + 3.0
         assert srv.tax_collected_lifetime == sink_coll0 + 13.0  # gross income
@@ -3199,7 +3178,7 @@ async def main():
     await srv.cmd_market_cancel(
         bcan, {"id": next(b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")}
     )
-    assert any(b["buyer"] == "BidCan" for b in srv.market_bids)  # refused
+    assert any(b["buyer"] == "BidCan" for b in srv.market_bids)
     bcan.room = "market"
     await srv.cmd_market_cancel(
         bcan, {"id": next(b["id"] for b in srv.market_bids if b["buyer"] == "BidCan")}
@@ -3440,12 +3419,12 @@ async def main():
     inbox.clear()
     await srv.cmd_commission_fill(zfill, {"commission_id": cid_z})
     assert srv._commissions[cid_z]["status"] == "completed"
-    assert zfill.gold == zfill_gold0  # no 1g mint
+    assert zfill.gold == zfill_gold0
     assert zfentry["score"] == zfscore0
     assert "+0g, +0xp" in inbox[0]["text"], inbox[0]
     filled_note = next(m["text"] for m in inbox if "was filled by" in m.get("text", ""))
     assert "+0 score, +0xp" in filled_note, filled_note
-    assert zentry["score"] == zscore0 and zentry["xp"] == zxp0  # no poster mint
+    assert zentry["score"] == zscore0 and zentry["xp"] == zxp0
     assert srv.tax_treasury == 0.0
     # repeat-pair collusion: first fill full (no remainder), second fill
     # halved with the other half sunk to the treasury
@@ -4829,23 +4808,23 @@ async def main():
         _fp, {"target": "rat", "required_kills": 1, "reward_gold": 10, "reward_xp": 0}
     )
     _fc = max(srv._commissions)
-    await srv.cmd_commission_fill(_fp, {"commission_id": _fc})  # self-fill
-    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # no kills
+    await srv.cmd_commission_fill(_fp, {"commission_id": _fc})
+    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})
     srv.record_npc_kill("FailFiller", "Giant Rat")
-    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # real fill
+    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})
     _fscore = srv.get_score_entry("FailFiller")["score"]
     _fxp = srv.total_xp(srv.get_score_entry("FailFiller"))
     _fgold = _ff.gold
-    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})  # double fill
+    await srv.cmd_commission_fill(_ff, {"commission_id": _fc})
     assert srv._commissions[_fc]["status"] == "completed"
     assert srv.get_score_entry("FailFiller")["score"] == _fscore
     assert srv.total_xp(srv.get_score_entry("FailFiller")) == _fxp
     assert _ff.gold == _fgold
-    await srv.cmd_commission_cancel(_fp, {"commission_id": _fc})  # cancel filled
-    await srv.cmd_commission_cancel(_ff, {"commission_id": _fc})  # non-poster
+    await srv.cmd_commission_cancel(_fp, {"commission_id": _fc})
+    await srv.cmd_commission_cancel(_ff, {"commission_id": _fc})
     assert srv.comm_feed[-1]["seq"] == _s0 + 1, srv.comm_feed[-1]
     assert len([e for e in srv.comm_feed if e["seq"] > _s0]) == 1
-    await srv.cmd_commission_cancel(_fp, {"commission_id": _fc + 99999})  # missing
+    await srv.cmd_commission_cancel(_fp, {"commission_id": _fc + 99999})
     assert srv.comm_feed[-1]["seq"] == _s0 + 1
     unplayer(_fp)
     unplayer(_ff)
@@ -5473,17 +5452,9 @@ async def _test_parse_and_validate(srv):
         assert "too many rules" in str(e).lower()
         print("DRONE_PARSE_RULE_LIMIT_OK")
 
-    # Node-visit budget exceeded
-    # Create a script with deeply nested predicates in a single rule to exceed visit budget
-    # Each predicate adds visits; we need >200 visits in one rule
     nested_pred = "always"
     for _ in range(120):  # 120 nested checks should exceed 200 visits
         nested_pred = f"always && {nested_pred}"
-    # But the grammar doesn't support && - it's flat IF/ELSE only
-    # Instead, use many predicates in sequence via many rules
-    # Actually, the visit budget is per-node during parsing. Let's just use many rules.
-    # The rule limit is 32, visit budget is 200. We need <32 rules but >200 visits.
-    # Each rule parse adds multiple visits. Let's use ~50 rules with complex predicates.
     deep_rules = []
     for i in range(50):
         pred = "companion_hp_below(50)" if i % 2 == 0 else 'room_is("town_square")'
@@ -5496,7 +5467,6 @@ async def _test_parse_and_validate(srv):
         assert "visit budget" in str(e).lower() or "too many rules" in str(e).lower()
         print("DRONE_PARSE_VISIT_BUDGET_OK")
 
-    # Empty script
     rules3 = srv.dronelang_parse("")
     assert rules3 == []
     print("DRONE_PARSE_EMPTY_OK")
@@ -5505,8 +5475,6 @@ async def _test_parse_and_validate(srv):
 async def _test_predicates(srv):
     """Predicate evaluation tests - all 11 predicates in True and False states."""
 
-    # We'll test with companion records and owners set up
-    # Create a minimal companion record
     rec = {
         "name": "TestCompanion",
         "species": "wolf",
@@ -5515,7 +5483,6 @@ async def _test_predicates(srv):
         "room": "town_square",
         "inventory": [],
     }
-    # Owner in town_square with no combat/targets
     owner = type(
         "Owner",
         (),
@@ -5528,37 +5495,31 @@ async def _test_predicates(srv):
         },
     )()
 
-    # Mock npcs_in_room and ROOMS
     import server as srv_mod
 
-    # Test always - always True
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "always", "args": []}, time.time()
     )
     assert result is True
     print("DRONE_PRED_ALWAYS_OK")
 
-    # Test companion_hp_below (True when hp is below threshold)
-    rec["hp"] = 5  # below 50%
+    rec["hp"] = 5
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "companion_hp_below", "args": [50]}, time.time()
     )
     assert result is True
-    # Test companion_hp_below (False when hp is at/above threshold)
-    rec["hp"] = 20  # at max
+    rec["hp"] = 20
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "companion_hp_below", "args": [50]}, time.time()
     )
     assert result is False
     print("DRONE_PRED_COMPANION_HP_OK")
 
-    # Test owner_hp_below (True when owner hp below threshold)
     owner.hp = 5
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "owner_hp_below", "args": [50]}, time.time()
     )
     assert result is True
-    # Test owner_hp_below (False)
     owner.hp = 20
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "owner_hp_below", "args": [50]}, time.time()
@@ -5566,26 +5527,19 @@ async def _test_predicates(srv):
     assert result is False
     print("DRONE_PRED_OWNER_HP_OK")
 
-    # Test owner_in_combat (True when owner in COMPANION_TARGETS)
-    # Owner not in targets -> False
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "owner_in_combat", "args": []}, time.time()
     )
     assert result is False
     print("DRONE_PRED_OWNER_COMBAT_OK")
 
-    # Test owner_has_item (True when item in inventory)
-    # Use a known item ID from world.json
     item_id = "rusty_sword"
     owner.inventory = [item_id]
-    # The predicate checks if the search string is in the item's name.
-    # Let's verify the name of "rusty_sword" first.
     item_name = srv_mod.ITEM_DEFS.get(item_id, {}).get("name", "Rusty Sword")
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "owner_has_item", "args": [item_name]}, time.time()
     )
     assert result is True
-    # Test owner_has_item (False)
     owner.inventory = []
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "owner_has_item", "args": [item_name]}, time.time()
@@ -5593,30 +5547,23 @@ async def _test_predicates(srv):
     assert result is False
     print("DRONE_PRED_OWNER_HAS_ITEM_OK")
 
-    # Test sees_hostile (True when hostile NPCs in room)
-    # Default room "town_square" should have hostile NPCs set up
-    # Just verify it doesn't crash - we'll check the logic indirectly
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "sees_hostile", "args": []}, time.time()
     )
     assert isinstance(result, bool)
     print("DRONE_PRED_SEES_HOSTILE_OK")
 
-    # Test has_target (True when companion has assist target)
-    # Default: no target -> False
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "has_target", "args": []}, time.time()
     )
     assert result is False
     print("DRONE_PRED_HAS_TARGET_OK")
 
-    # Test room_is (True when room matches)
     owner.room = "town_square"
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "room_is", "args": ["town_square"]}, time.time()
     )
     assert result is True
-    # Test room_is (False)
     owner.room = "old_shop"
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "room_is", "args": ["town_square"]}, time.time()
@@ -5624,41 +5571,34 @@ async def _test_predicates(srv):
     assert result is False
     print("DRONE_PRED_ROOM_IS_OK")
 
-    # Test room_not (True when room does NOT match)
     owner.room = "town_square"
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "room_not", "args": ["town_square"]}, time.time()
     )
-    assert result is False  # room IS town_square
-    # Test room_not (True when room does not match)
+    assert result is False
     owner.room = "old_shop"
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "room_not", "args": ["town_square"]}, time.time()
     )
-    assert result is True  # room is NOT town_square
+    assert result is True
     print("DRONE_PRED_ROOM_NOT_OK")
 
-    # Test exit_exists (True when exit exists in room)
-    # Default room exits depend on ROOMS config; just verify it doesn't crash
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "exit_exists", "args": ["east"]}, time.time()
     )
     assert isinstance(result, bool)
     print("DRONE_PRED_EXIT_EXISTS_OK")
 
-    # Test tick_mod (True on certain ticks)
     result = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "tick_mod", "args": [1]}, time.time()
     )
-    assert result is True  # mod 1 == 0 always
-    # tick_mod with 2 - alternates
+    assert result is True
     result_even = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "tick_mod", "args": [2]}, time.time()
     )
     result_odd = srv_mod._dronelang_eval_predicate(
         owner, rec, {"name": "tick_mod", "args": [2]}, time.time() + 0.5
     )
-    # Both could be True or False depending on exact now, just verify bool
     assert isinstance(result_even, bool) and isinstance(result_odd, bool)
     print("DRONE_PRED_TICK_MOD_OK")
 
@@ -5668,7 +5608,6 @@ async def _test_actions(srv):
     import server as srv_mod
     from server import _dronelang_exec_action
 
-    # Create a minimal companion record
     rec = {
         "name": "TestCompanion",
         "hp": 10,
@@ -5688,9 +5627,7 @@ async def _test_actions(srv):
         },
     )()
 
-    # Mock npcs_in_room - need to set up a town_square with hostile NPC
     srv_mod.npcs = getattr(srv_mod, "npcs", {})
-    # Set up a hostile NPC in town_square for attack testing
     srv_mod.npcs["test_hostile_npc"] = {
         "id": "test_hostile_npc",
         "name": "Test Hostile",
@@ -5740,15 +5677,12 @@ async def _test_actions(srv):
         "contributors": {},
     }
 
-    # Test follow
     result = await _dronelang_exec_action(
         owner, rec, {"name": "follow", "args": []}, time.time()
     )
     assert result is True
     print("DRONE_ACTION_FOLLOW_OK")
 
-    # Test assist
-    # Set up a target for the owner in COMPANION_TARGETS
     import server as srv_mod
 
     target_npc_id = "test_hostile_npc"
@@ -5759,37 +5693,30 @@ async def _test_actions(srv):
     assert result is True
     print("DRONE_ACTION_ASSIST_OK")
 
-    # Test attack - should target hostile NPC, NOT player
     result = await _dronelang_exec_action(
         owner, rec, {"name": "attack", "args": ["Test Hostile"]}, time.time()
     )
     assert result is True
     print("DRONE_ACTION_ATTACK_HOSTILE_OK")
 
-    # Test attack - should NOT target player (name matches but not hostile)
     result = await _dronelang_exec_action(
         owner, rec, {"name": "attack", "args": ["Test Player"]}, time.time()
     )
-    # Should return False because test_player_npc is not hostile
     assert result is False
     print("DRONE_ACTION_ATTACK_NEVER_PLAYERS_OK")
 
-    # Test attack - unknown NPC name
     result = await _dronelang_exec_action(
         owner, rec, {"name": "attack", "args": ["Unknown NPC"]}, time.time()
     )
     assert result is False
     print("DRONE_ACTION_ATTACK_UNKNOWN_OK")
 
-    # Test gather
     result = await _dronelang_exec_action(
         owner, rec, {"name": "gather", "args": ["healing_herb"]}, time.time()
     )
-    # May return False if no gather nodes, but shouldn't crash
     assert isinstance(result, bool)
     print("DRONE_ACTION_GATHER_OK")
 
-    # Test guard
     result = await _dronelang_exec_action(
         owner, rec, {"name": "guard", "args": ["town_square"]}, time.time()
     )
@@ -5797,44 +5724,38 @@ async def _test_actions(srv):
     assert rec["_dronelang_guard"] == "town_square"
     print("DRONE_ACTION_GUARD_OK")
 
-    # Test rest
-    rec["hp"] = 10  # not at max
+    rec["hp"] = 10
     result = await _dronelang_exec_action(
         owner, rec, {"name": "rest", "args": []}, time.time()
     )
-    assert result is True  # town_square has rest_area
+    assert result is True
     print("DRONE_ACTION_REST_OK")
 
-    # Test rest - False when at max HP
-    rec["hp"] = 20  # at max
+    rec["hp"] = 20
     result = await _dronelang_exec_action(
         owner, rec, {"name": "rest", "args": []}, time.time()
     )
     assert result is False
     print("DRONE_ACTION_REST_MAX_HP_OK")
 
-    # Test say
     result = await _dronelang_exec_action(
         owner, rec, {"name": "say", "args": ["Hello!"]}, time.time()
     )
     assert result is True
     print("DRONE_ACTION_SAY_OK")
 
-    # Test emote
     result = await _dronelang_exec_action(
         owner, rec, {"name": "emote", "args": ["waves"]}, time.time()
     )
     assert result is True
     print("DRONE_ACTION_EMOTE_OK")
 
-    # Test idle
     result = await _dronelang_exec_action(
         owner, rec, {"name": "idle", "args": []}, time.time()
     )
     assert result is True
     print("DRONE_ACTION_IDLE_OK")
 
-    # Clean up test NPCs
     for key in ["test_hostile_npc", "test_neutral_npc", "test_player_npc"]:
         srv_mod.npcs.pop(key, None)
 
@@ -5842,7 +5763,6 @@ async def _test_actions(srv):
 async def _test_runtime_fallback(srv):
     """Runtime error fallback tests."""
 
-    # Create companion record with a script that will cause runtime error
     rec = {
         "name": "ErrorTestCompanion",
         "species": "wolf",
@@ -5850,10 +5770,9 @@ async def _test_runtime_fallback(srv):
         "max_hp": 20,
         "room": "town_square",
         "inventory": [],
-        "script": "if (invalid_pred) { attack }",  # invalid predicate
+        "script": "if (invalid_pred) { attack }",
     }
 
-    # Simulate companion state
     owner = type(
         "Owner",
         (),
@@ -5866,7 +5785,6 @@ async def _test_runtime_fallback(srv):
         },
     )()
 
-    # Set up a hostile NPC for potential attack fallback
     import server as srv_mod
 
     srv_mod.npcs = getattr(srv_mod, "npcs", {})
@@ -5887,32 +5805,21 @@ async def _test_runtime_fallback(srv):
         "contributors": {},
     }
 
-    # Execute tick - should get parse error first (since script has invalid predicate)
-    # Actually, the script set validates on set, but let's test runtime error
-    # For runtime, we'll test with a script that parses but causes runtime error
-    rec["script"] = "if (always) { attack }"  # valid parse, but attack may error
+    rec["script"] = "if (always) { attack }"
 
     action_taken, error = await srv_mod.dronelang_tick(owner, rec, time.time())
-    # Should either take action or return error
     assert isinstance(action_taken, bool) or error is None or isinstance(error, str)
     print("DRONE_RUNTIME_FALLBACK_OK")
 
     # Test fallback to default-assist on runtime error
-    # Create a script that will cause a runtime error during execution
-    rec["script"] = (
-        "if (always) { nonexistent_action }"  # valid parse, unknown action at runtime
-    )
+    rec["script"] = "if (always) { nonexistent_action }"
 
-    # Actually, unknown actions are caught at parse time. Let's test with a script
-    # that has a valid parse but causes runtime issues
-    rec["script"] = "if (always) { attack }"  # should work
+    rec["script"] = "if (always) { attack }"
 
     action_taken, error = await srv_mod.dronelang_tick(owner, rec, time.time())
-    # If no error, that's fine - the action was taken
     assert isinstance(action_taken, bool)
     print("DRONE_RUNTIME_ACTION_OK")
 
-    # Clean up
     for key in ["test_hostile"]:
         srv_mod.npcs.pop(key, None)
 
@@ -5942,7 +5849,6 @@ async def _test_commands(srv):
     }
     comp_owner._companion_record = rec
 
-    # Test companion script set - valid script
     valid_script = "if (always) { follow };"
     srv.dronelang_parse(valid_script)
     await srv.cmd_companion(
@@ -5951,7 +5857,6 @@ async def _test_commands(srv):
     assert rec["script"] == valid_script
     print("DRONE_CMD_SET_VALID_OK")
 
-    # Test companion script set - invalid script (unknown predicate)
     invalid_script = "if (nonexistent) { follow };"
     try:
         await srv.cmd_companion(
@@ -5959,13 +5864,10 @@ async def _test_commands(srv):
         )
         assert False, "Invalid script should be rejected"
     except AssertionError as e:
-        # Should get error about unknown predicate
         assert "unknown" in str(e).lower() or "invalid" in str(e).lower()
         print("DRONE_CMD_SET_INVALID_OK")
 
-    # Test companion script show
     await srv.cmd_companion(comp_owner, {"action": "script", "sub": "show"})
-    # Should show the current script
     print("DRONE_CMD_SHOW_OK")
 
     # Test companion script clear
@@ -5973,7 +5875,6 @@ async def _test_commands(srv):
     assert rec["script"] == ""
     print("DRONE_CMD_CLEAR_OK")
 
-    # Clean up
     srv_mod.COMPANION_PLAYERS.pop(comp_owner_key, None)
     srv.COMPANION_SUMMONED.discard(comp_owner_key)
     srv.COMPANION_SUMMONED.discard("cmdowner")
