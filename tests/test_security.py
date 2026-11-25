@@ -9,6 +9,8 @@ bound so a tokenless login cannot mint unbounded SCORES keys pre-auth.
 """
 
 import asyncio
+import contextlib
+import io
 import json
 import os
 import sys
@@ -39,6 +41,62 @@ def unplayer(p):
 def drop_entry(name):
     srv.SCORES.pop(name.lower(), None)
     srv.name_owners.pop(name.lower(), None)
+
+
+async def test_json_hardening():
+    class HostileWS:
+        remote_address = ("127.0.0.1", 1234)
+
+        def __init__(self, payloads):
+            self.payloads = payloads
+
+        def __aiter__(self):
+            async def frames():
+                for raw in self.payloads:
+                    yield raw
+
+            return frames()
+
+        async def send(self, payload):
+            raise AssertionError("outbound writer must stay disabled")
+
+    async def noop_writer(player):
+        return None
+
+    huge = b'{"cmd":"noop","n":' + b"9" * 5000 + b"}"
+    deep = b'{"cmd":"noop","n":' + b"[" * 100 + b"0" + b"]" * 100 + b"}"
+    deeper = b'{"cmd":"noop","n":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+    hostile = [
+        huge,
+        deep,
+        deeper,
+        b'{"cmd":"noop","n":NaN}',
+        b'{"cmd":"noop","n":Infinity}',
+        b'{"cmd":"noop","n":-Infinity}',
+        b'{"cmd":"noop","n":1e9999}',
+    ]
+    payloads = hostile + [b'{"cmd":"noop"}']
+    ws = HostileWS(payloads)
+    real_writer = srv._outbound_writer
+    INBOX.clear()
+    output = io.StringIO()
+    try:
+        srv._outbound_writer = noop_writer
+        with contextlib.redirect_stdout(output):
+            await srv.handle_connection(ws)
+    except Exception as exc:
+        raise AssertionError(f"hostile JSON escaped: {exc!r}") from exc
+    finally:
+        srv._outbound_writer = real_writer
+    messages = list(INBOX)
+    assert len(messages) == len(payloads), messages
+    for raw, msg in zip(hostile, messages):
+        assert msg.get("type") == "error" and msg.get("text") == "invalid JSON", (
+            raw[:60],
+            msg,
+        )
+    assert messages[-1].get("text") == "You must 'login' first.", messages[-1]
+    assert "Traceback" not in output.getvalue(), output.getvalue()
 
 
 async def main():
@@ -222,6 +280,7 @@ async def main():
             srv.name_owners.pop("legacyowner", None)
             drop_entry("LegacyOwner")
 
+        await test_json_hardening()
         print("SECURITY_NAME_BOUNDS_OK")
     finally:
         srv.send = real_send

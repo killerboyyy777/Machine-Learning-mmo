@@ -244,6 +244,48 @@ ALLOW_LEGACY_TOKEN_CLAIM = str(
 SNAPSHOT_REFRESH_SECONDS = 1.0
 TASK_RESTART_DELAY = 2.0
 
+# One untrusted frame can overflow the C decoder's recursion limit, exceed
+# the int-string digit limit, or carry NaN/Infinity that would reach handlers
+# as floats. All three must cost one error frame, not a traceback.
+JSON_MAX_DEPTH = 64
+JSON_MAX_INT_DIGITS = 1000
+
+
+def _reject_json_constant(value):
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _parse_json_int(text):
+    if len(text.lstrip("-")) > JSON_MAX_INT_DIGITS:
+        raise ValueError("integer too large")
+    return int(text)
+
+
+def _json_shape_ok(value):
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > JSON_MAX_DEPTH:
+            return False
+        if isinstance(node, dict):
+            stack.extend((v, depth + 1) for v in node.values())
+        elif isinstance(node, list):
+            stack.extend((v, depth + 1) for v in node)
+        elif isinstance(node, float) and not math.isfinite(node):
+            return False
+    return True
+
+
+def safe_json_loads(raw):
+    """Decode one peer frame; hostile shapes raise ValueError/RecursionError."""
+    value = json.loads(
+        raw, parse_constant=_reject_json_constant, parse_int=_parse_json_int
+    )
+    if not _json_shape_ok(value):
+        raise ValueError("JSON nesting too deep")
+    return value
+
+
 DUNGEON_ENTRANCE_ROOM = "graveyard"
 DUNGEON_ENTRANCE_DIR = "enter"
 DUNGEON_BASE_HP = 20
@@ -11545,8 +11587,8 @@ async def handle_gm_connection(ws):
     try:
         async for raw in ws:
             try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
+                msg = safe_json_loads(raw)
+            except (ValueError, RecursionError):
                 await send(player, {"type": "error", "text": "invalid JSON"})
                 continue
             if not isinstance(msg, dict):
@@ -12739,7 +12781,12 @@ activity_seq = 0
 # poll, which still carries activity), so a dead viewer never blocks the
 # game loop. 2-3 viewers + bot growth: trivial.
 ACTIVITY_STREAM_SIZE = 500
+ACTIVITY_STREAM_MAX_SUBSCRIBERS = 16
+ACTIVITY_STREAM_MAX_SECONDS = 300
 activity_subscribers = []
+# HTTP threads append and remove concurrently, so the cap is a reservation
+# under this lock rather than a racy len() check.
+_activity_subscribers_lock = threading.Lock()
 _score_history = {}
 # [{ts, players_online, top_scores, market_orders, treasury, trades}]
 _dashboard_history = []
@@ -14007,7 +14054,14 @@ def start_dashboard():
                 # and why, plus each plugin's config schema.
                 self._send_json(_plugins_payload(self.client_address[0]))
             elif path == "/api/activity/stream":
-                self._serve_activity_stream()
+                peer = self.client_address[0] if self.client_address else ""
+                origin = self.headers.get("Origin")
+                if not _loopback_peer(peer) or (
+                    origin and not _loopback_origin(origin)
+                ):
+                    self.send_error(403)
+                else:
+                    self._serve_activity_stream()
             elif path == "/metrics" and METRICS_ENABLED:
                 self._send(
                     _metrics_text().encode(),
@@ -14135,7 +14189,7 @@ def start_dashboard():
             Query ?since=SEQ and/or Last-Event-ID resume from a sequence;
             replays missed entries (cap 100), then streams new ones as
             `id:` + `data:` frames with :ping heartbeats. Ends when the
-            viewer disconnects (write raises) and unsubscribes itself.
+            viewer disconnects or the lifetime cap passes, then unsubscribes.
             Runs in this request's HTTP thread; never touches game state.
             """
             import urllib.parse as _up
@@ -14153,6 +14207,14 @@ def start_dashboard():
                     since = int(leid)
             except (ValueError, TypeError):
                 pass
+            sub = queue.Queue(ACTIVITY_STREAM_SIZE)
+            with _activity_subscribers_lock:
+                full = len(activity_subscribers) >= ACTIVITY_STREAM_MAX_SUBSCRIBERS
+                if not full:
+                    activity_subscribers.append(sub)
+            if full:
+                self.send_error(503)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -14174,25 +14236,27 @@ def start_dashboard():
                 for e in missed:
                     self.wfile.write(_frame(e))
                 self.wfile.flush()
-                sub = queue.Queue(ACTIVITY_STREAM_SIZE)
-                activity_subscribers.append(sub)
-                try:
-                    while True:
-                        try:
-                            entry = sub.get(timeout=20)
-                        except queue.Empty:
-                            self.wfile.write(b": ping\n\n")
-                            self.wfile.flush()
-                            continue
-                        self.wfile.write(_frame(entry))
+                deadline = time.monotonic() + ACTIVITY_STREAM_MAX_SECONDS
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        entry = sub.get(timeout=min(20, remaining))
+                    except queue.Empty:
+                        self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
-                finally:
+                        continue
+                    self.wfile.write(_frame(entry))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with _activity_subscribers_lock:
                     try:
                         activity_subscribers.remove(sub)
                     except ValueError:
                         pass
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
 
     try:
         refresh_snapshot_json()
@@ -14860,8 +14924,8 @@ async def handle_connection(ws):
     try:
         async for raw in ws:
             try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
+                msg = safe_json_loads(raw)
+            except (ValueError, RecursionError):
                 await send(player, {"type": "error", "text": "invalid JSON"})
                 continue
             # Top guard (#190): malformed input must error, never drop the

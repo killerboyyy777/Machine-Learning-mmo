@@ -191,9 +191,44 @@ def test_cli_and_source_gate():
     print("METRICS_GATE_OK")
 
 
+def test_activity_stream_guard():
+    with open(SRC, encoding="utf-8") as fh:
+        src = fh.read()
+    tree = ast.parse(src)
+    start = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "start_dashboard"
+    )
+    handler = next(
+        n for n in start.body if isinstance(n, ast.ClassDef) and n.name == "Handler"
+    )
+    methods = {
+        n.name: ast.get_source_segment(src, n)
+        for n in handler.body
+        if isinstance(n, ast.FunctionDef)
+    }
+    route = methods["do_GET"].split('elif path == "/api/activity/stream":', 1)[1]
+    route = route.split("elif path ==", 1)[0]
+    assert "_loopback_peer" in route, route
+    assert "_loopback_origin" in route, route
+    assert "send_error" in route, route
+    assert "_serve_activity_stream" in route, route
+    stream = methods["_serve_activity_stream"]
+    assert "ACTIVITY_STREAM_MAX_SUBSCRIBERS" in stream, stream
+    assert "ACTIVITY_STREAM_MAX_SECONDS" in stream, stream
+    assert "len(activity_subscribers)" in stream, stream
+    assert "_activity_subscribers_lock" in stream, stream
+    assert "time.monotonic" in stream, stream
+    assert srv.ACTIVITY_STREAM_MAX_SUBSCRIBERS > 0
+    assert srv.ACTIVITY_STREAM_MAX_SECONDS > 0
+    print("ACTIVITY_STREAM_GUARD_OK")
+
+
 if __name__ == "__main__":
     test_flag_off_404()
     test_flag_on_text()
     test_missing_cache_safe()
     test_cli_and_source_gate()
+    test_activity_stream_guard()
     print("ALL_METRICS_OK")
