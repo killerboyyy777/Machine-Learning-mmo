@@ -414,14 +414,22 @@ class McpServer:
                     -32602, "companion_script_set takes a non-empty 'script'"
                 )
             envelope = await self._call(
-                "companion_script_set", {"script": script}, expect=("companion",)
+                "companion",
+                {"action": "script", "sub": "set", "script": script},
+                expect=("message",),
             )
         elif name == "companion_script_show":
-            envelope = await self._call("companion_script_show", expect=("companion",))
+            envelope = await self._call(
+                "companion", {"action": "script", "sub": "show"}, expect=("message",)
+            )
         elif name == "companion_script_clear":
-            envelope = await self._call("companion_script_clear", expect=("companion",))
+            envelope = await self._call(
+                "companion", {"action": "script", "sub": "clear"}, expect=("message",)
+            )
         elif name == "companion_status":
-            envelope = await self._call("companion_status", expect=("companion",))
+            envelope = await self._call(
+                "companion", {"action": "status"}, expect=("companion",)
+            )
         else:
             raise RpcError(-32602, f"unknown tool: {name}")
         return {
