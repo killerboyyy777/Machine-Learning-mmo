@@ -2985,7 +2985,7 @@ async def main():
     dup_msgs = [
         m
         for m in inbox
-        if m.get("type") == "message" and "already have" in m.get("text", "")
+        if m.get("type") == "error" and "already have" in m.get("text", "")
     ]
     assert dup_msgs
 
@@ -2993,7 +2993,7 @@ async def main():
     fail_msgs = [
         m
         for m in inbox
-        if m.get("type") == "message" and "haven't crafted" in m.get("text", "")
+        if m.get("type") == "error" and "haven't crafted" in m.get("text", "")
     ]
     assert fail_msgs
 
@@ -3702,7 +3702,7 @@ async def main():
     inbox.clear()
     await srv.cmd_quest(charmer, {"action": "turn_in", "quest": "guard_charm"})
     assert (
-        inbox[-1]["type"] == "message" and "no longer in your pack" in inbox[-1]["text"]
+        inbox[-1]["type"] == "error" and "no longer in your pack" in inbox[-1]["text"]
     ), inbox[-1]
     assert chentry.get("quest_guard_active")  # still active, nothing consumed
     charmer.inventory.append(srv.QUEST_CHARM_RESULT)
@@ -5393,6 +5393,63 @@ async def main():
     # --- One-click training launch surface (#64) --------------------------
     with tempfile.TemporaryDirectory() as folder:
         training_launch_check(folder)
+
+    # --- Server-consistency fixes (#755) --------------------------------
+    selfcheck_src = read_bytes(os.path.join(ROOT, "server.py")).decode("utf-8")
+    gm_guard = selfcheck_src.split('if cmd.startswith("gm_")', 1)[1].split(
+        "continue", 1
+    )[0]
+    assert "127.0.0.1" not in gm_guard, gm_guard
+    assert "GM_PORT" not in gm_guard, gm_guard
+    assert '"type": "error"' in gm_guard and "GM actions" in gm_guard, gm_guard
+    print("GM_PORT_NO_LOOPBACK_LEAK_OK")
+
+    qd_name = "QuestDeny755"
+    qd_player = mkplayer(qd_name, 755001)
+    qd_entry = srv.get_score_entry(qd_name)
+    saved_send = srv.send
+    denial_out = []
+
+    async def denial_send(p, payload):
+        denial_out.append(payload if isinstance(payload, dict) else json.loads(payload))
+
+    srv.send = denial_send
+    try:
+        srv._set_quest_active(qd_entry, "guard_charm", True)
+        denial_out.clear()
+        await srv.cmd_quest(qd_player, {"action": "accept", "quest": "guard_charm"})
+        assert denial_out and denial_out[-1]["type"] == "error", denial_out
+        assert "already have an active" in denial_out[-1]["text"], denial_out
+
+        srv._set_quest_active(qd_entry, "guard_charm", False)
+        denial_out.clear()
+        await srv.cmd_quest(qd_player, {"action": "turn_in", "quest": "guard_charm"})
+        assert denial_out and denial_out[-1]["type"] == "error", denial_out
+        assert "don't have that quest active" in denial_out[-1]["text"], denial_out
+
+        srv._set_quest_active(qd_entry, "guard_charm", True)
+        denial_out.clear()
+        await srv.cmd_quest(qd_player, {"action": "turn_in", "quest": "guard_charm"})
+        assert denial_out and denial_out[-1]["type"] == "error", denial_out
+        assert "haven't crafted" in denial_out[-1]["text"], denial_out
+
+        srv._set_quest_active(qd_entry, "delver", True)
+        denial_out.clear()
+        await srv.cmd_quest(qd_player, {"action": "turn_in", "quest": "delver"})
+        assert denial_out and denial_out[-1]["type"] == "error", denial_out
+        assert "not yet quiet" in denial_out[-1]["text"], denial_out
+
+        srv._set_quest_active(qd_entry, "remedy", True)
+        qd_player.inventory = []
+        denial_out.clear()
+        await srv.cmd_quest(qd_player, {"action": "turn_in", "quest": "remedy"})
+        assert denial_out and denial_out[-1]["type"] == "error", denial_out
+        assert "still needs" in denial_out[-1]["text"], denial_out
+    finally:
+        srv.send = saved_send
+        unplayer(qd_player)
+        srv.SCORES.pop(qd_name.lower(), None)
+    print("QUEST_DENIAL_TYPE_ERROR_OK")
 
 
 # ---------------------------------------------------------------------------
