@@ -203,7 +203,7 @@ class GameBridge:
             raise BridgeError(f"connection closed: {exc}") from exc
         try:
             frame = json.loads(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             return None
         return frame if isinstance(frame, dict) else None
 
