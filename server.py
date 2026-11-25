@@ -5604,6 +5604,7 @@ async def cmd_attack(player, msg):
                 _ce = get_score_entry(p.name)
                 _ce["dungeon_floors_cleared"] += 1
                 _ce["dungeon_death_streak"] = 0
+                _ce["dungeon_reenter_delay"] = DUNGEON_REENTER_DELAY_SECONDS
                 await award_points(p, clear_pts, f"cleared Dungeon Floor {floor_no}")
                 await award_xp(p.name, clear_xp, f"cleared Dungeon Floor {floor_no}")
             if first_clear:
@@ -11650,6 +11651,9 @@ async def handle_gm_connection(ws):
                 )
                 continue
             cmd = msg.get("cmd")
+            if not isinstance(cmd, str):
+                await send(player, {"type": "error", "text": "invalid command"})
+                continue
             handler = GM_HANDLERS.get(cmd)
             if not handler:
                 await send(
@@ -13563,7 +13567,7 @@ def _config_apply(file_id, edits):
         import config_write
     except ImportError as exc:
         return 503, {"ok": False, "error": f"config editor unavailable ({exc})"}
-    if file_id not in config_schema.FILES:
+    if not isinstance(file_id, str) or file_id not in config_schema.FILES:
         return 400, {"ok": False, "error": f"unknown config file {file_id!r}"}
     if not isinstance(edits, dict) or not edits:
         return 400, {"ok": False, "error": "edits must be a non-empty object"}

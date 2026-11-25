@@ -352,6 +352,7 @@ def config_editor_http_check():
                 "unknown config file",
             ),
             ({"file": 7, "edits": {"economy.TAX_RATE": "0.2"}}, "unknown config file"),
+            ({"file": [], "edits": {"economy.TAX_RATE": "0.2"}}, "unknown config file"),
             ({"file": "server", "edits": [1, 2]}, "non-empty object"),
             ({"file": "server", "edits": "economy.TAX_RATE=0.2"}, "non-empty object"),
             ({"file": "server", "edits": {}}, "edits must be a non-empty object"),

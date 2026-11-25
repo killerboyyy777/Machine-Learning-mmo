@@ -355,6 +355,8 @@ def config_editor_check(folder):
         assert status == 400 and not body["ok"] and "outside" in body["error"], body
         status, body = srv._config_apply("nope", {"economy.TAX_RATE": "0.2"})
         assert status == 400 and "unknown config file" in body["error"], body
+        status, body = srv._config_apply([], {"economy.TAX_RATE": "0.2"})
+        assert status == 400 and "unknown config file" in body["error"], body
         status, body = srv._config_apply("server", {})
         assert status == 400 and "non-empty" in body["error"], body
         for edits, fragment in refusals:
@@ -2276,6 +2278,48 @@ async def main():
     unplayer(host)
     unplayer(guest)
     print("REENTER_DELAY_OK")
+
+    # --- Death-escalated re-entry delay resets on floor clear (#883) ---
+    # Two deaths raise the wait to base + growth; a clear must put it back to
+    # base so a later uncleared leave only costs the base delay.
+    reentry = mkplayer("Reentry", 60025, hp=200, max_hp=200, room="graveyard")
+    await srv._enter_dungeon(reentry)
+    assert srv.dungeon_for_room(reentry.room) is not None
+    srv._stamp_dungeon_death(reentry)
+    srv._stamp_dungeon_death(reentry)
+    rentry = srv.get_score_entry("Reentry")
+    escalated = (
+        srv.DUNGEON_REENTER_DELAY_SECONDS + srv.DUNGEON_REENTER_DELAY_GROWTH_SECONDS
+    )
+    assert rentry["dungeon_death_streak"] == 2
+    assert rentry["dungeon_reenter_delay"] == escalated
+    # Serve the escalated wait and re-enter, as after a death respawn.
+    srv._relocate_from_dungeon(reentry)
+    rentry["dungeon_left_ts"] -= escalated + 1
+    await srv._enter_dungeon(reentry)
+    assert srv.dungeon_for_room(reentry.room) is not None
+    for _ in range(60):
+        guard = next((g for g in srv.npcs_in_room(reentry.room) if g["alive"]), None)
+        if guard is None:
+            break
+        await srv.cmd_attack(reentry, {"target": guard["id"]})
+    assert not any(g["alive"] for g in srv.npcs_in_room(reentry.room))
+    assert rentry["dungeon_death_streak"] == 0
+    assert rentry["dungeon_reenter_delay"] == srv.DUNGEON_REENTER_DELAY_SECONDS
+    # Descend to a live floor and leave (stamps left_ts), then re-enter after
+    # just past the base delay: the archway must accept, not hold the streak.
+    await srv.cmd_move(reentry, {"dir": "down"})
+    assert srv.floor_from_room(reentry.room) == 2
+    await srv.cmd_party_leave(reentry, {})
+    assert rentry["dungeon_left_ts"] > 0
+    rentry["dungeon_left_ts"] -= srv.DUNGEON_REENTER_DELAY_SECONDS + 1
+    await srv._enter_dungeon(reentry)
+    assert srv.dungeon_for_room(reentry.room) is not None, inbox[-1]
+    for p in list(srv.parties.values()):
+        if reentry.id in p.member_ids:
+            srv._delete_party(p)
+    unplayer(reentry)
+    print("REENTER_DELAY_RESET_OK")
 
     # --- Disconnect stamps like leave (#195.2 review): quitting to title
     # with live guards in the instance delays re-entry after relog.
