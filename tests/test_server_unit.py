@@ -66,13 +66,31 @@ def dashboard_post_json_check():
         def send_error(self, code, *args, **kwargs):
             raise AssertionError(f"unexpected send_error({code})")
 
-    for raw in (b"[" * 20000 + b"]" * 20000, b"{not json"):
-        stub = Stub(raw)
-        do_post(stub)
-        assert len(stub.out) == 1, stub.out
-        obj, status = stub.out[0]
-        assert status == 400, stub.out
-        assert obj["ok"] is False and "invalid JSON" in obj["error"], stub.out
+    nested = Stub(b"[" * 20000 + b"]" * 20000)
+    do_post(nested)
+    assert len(nested.out) == 1, nested.out
+    obj, status = nested.out[0]
+    assert status == 400, nested.out
+    assert obj["ok"] is False, nested.out
+    assert (
+        "invalid JSON" in obj["error"] or "body must be a JSON object" in obj["error"]
+    ), nested.out
+
+    malformed = Stub(b"{not json")
+    do_post(malformed)
+    assert len(malformed.out) == 1, malformed.out
+    obj, status = malformed.out[0]
+    assert status == 400, malformed.out
+    assert obj["ok"] is False and "invalid JSON" in obj["error"], malformed.out
+
+    non_object = Stub(b"null")
+    do_post(non_object)
+    assert len(non_object.out) == 1, non_object.out
+    obj, status = non_object.out[0]
+    assert status == 400, non_object.out
+    assert (
+        obj["ok"] is False and "body must be a JSON object" in obj["error"]
+    ), non_object.out
     print("DASHBOARD_POST_JSON_OK")
 
 
