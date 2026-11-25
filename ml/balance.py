@@ -135,6 +135,12 @@ DEFAULT_THRESHOLDS = {
     "liveness": {
         "min_agents": 10,
     },
+    "stability": {
+        "economic_slope_max": -1e-4,
+        "level_slope_max": -1e-4,
+        "score_slope_max": -1e-4,
+        "min_population_ratio": 0.8,
+    },
     "determinism": {
         "enabled": True,
     },
@@ -319,10 +325,12 @@ PROFILES = {
         ),
         "coverage": ("economy", "combat", "craft", "market", "liveness", "progression"),
         "threshold_overrides": {
-            "economic_slope_max": 1e-4,
-            "level_slope_max": 1e-4,
-            "score_slope_max": 1e-4,
-            "min_population_ratio": 0.8,
+            "stability": {
+                "economic_slope_max": 1e-4,
+                "level_slope_max": 1e-4,
+                "score_slope_max": 1e-4,
+                "min_population_ratio": 0.8,
+            },
         },
     },
     "baseline": {
@@ -1679,65 +1687,83 @@ def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
         level_slope = _num(stability.get("level_slope"))
         score_slope = _num(stability.get("score_slope"))
         population_ratio = _num(stability.get("population_ratio"))
+        slope_max = {
+            name: resolve_threshold(thresholds, ("stability", name))
+            for name in ("economic_slope_max", "level_slope_max", "score_slope_max")
+        }
+        population_min = resolve_threshold(
+            thresholds, ("stability", "min_population_ratio")
+        )
 
-        if economic_slope is not None and economic_slope < -1e-4:
+        if economic_slope is not None and not _passes(
+            economic_slope, ">=", slope_max["economic_slope_max"]
+        ):
             checks.append(
                 {
                     "id": "stability.economic_drift",
                     "scenario": "economy",
                     "metric": "stability.economic_drift",
-                    "op": "<=",
+                    "op": ">=",
                     "value": economic_slope,
-                    "limit": ("stability", "economic_slope_max"),
+                    "limit": slope_max["economic_slope_max"],
                     "blocking": True,
                     "provisional": True,
                     "status": "fail",
                     "detail": f"economic_drift slope={economic_slope:.6f} too negative; not converging",
                 }
             )
-        if level_slope is not None and level_slope < -1e-4:
+        if level_slope is not None and not _passes(
+            level_slope, ">=", slope_max["level_slope_max"]
+        ):
             checks.append(
                 {
                     "id": "stability.level_decline",
                     "scenario": "progression",
                     "metric": "stability.level_slope",
-                    "op": "<=",
+                    "op": ">=",
                     "value": level_slope,
-                    "limit": ("stability", "level_slope_max"),
+                    "limit": slope_max["level_slope_max"],
                     "blocking": True,
                     "provisional": True,
                     "status": "fail",
                     "detail": f"level_slope={level_slope:.6f} negative; progression not monotonic",
                 }
             )
-        if score_slope is not None and score_slope < -1e-4:
+        if score_slope is not None and not _passes(
+            score_slope, ">=", slope_max["score_slope_max"]
+        ):
             checks.append(
                 {
                     "id": "stability.score_decline",
                     "scenario": "progression",
                     "metric": "stability.score_slope",
-                    "op": "<=",
+                    "op": ">=",
                     "value": score_slope,
-                    "limit": ("stability", "score_slope_max"),
+                    "limit": slope_max["score_slope_max"],
                     "blocking": True,
                     "provisional": True,
                     "status": "fail",
                     "detail": f"score_slope={score_slope:.6f} negative; score not monotonic",
                 }
             )
-        if population_ratio is not None and population_ratio < 0.8:
+        if population_ratio is not None and not _passes(
+            population_ratio, ">=", population_min
+        ):
             checks.append(
                 {
                     "id": "stability.population_vitality",
                     "scenario": "liveness",
                     "metric": "stability.population_ratio",
-                    "op": "<=",
+                    "op": ">=",
                     "value": population_ratio,
-                    "limit": ("stability", "min_population_ratio"),
+                    "limit": population_min,
                     "blocking": True,
                     "provisional": True,
                     "status": "fail",
-                    "detail": f"population_ratio={population_ratio:.3f} below 80%% threshold",
+                    "detail": (
+                        f"population_ratio={population_ratio:.3f} "
+                        f"below {population_min} threshold"
+                    ),
                 }
             )
 

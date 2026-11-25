@@ -859,6 +859,63 @@ def test_profile_overrides_and_threshold_file():
         print("THRESHOLD_OVERRIDE_OK")
 
 
+def test_stability_thresholds_are_resolvable_and_flip_verdicts():
+    profile = bal.load_thresholds(profile="stability")
+    stability = profile["stability"]
+    names = (
+        "economic_slope_max",
+        "level_slope_max",
+        "score_slope_max",
+        "min_population_ratio",
+    )
+    for name in names:
+        assert bal.resolve_threshold(profile, ("stability", name)) == stability[name]
+        assert name not in profile
+    assert stability["min_population_ratio"] == 0.8
+
+    measurements = make_measurements(profile="stability", alive=16)
+    measurements["derived"]["stability"].update(
+        economic_slope=-0.0005,
+        level_slope=-0.0005,
+        score_slope=-0.0005,
+        population_ratio=0.75,
+    )
+    ids = (
+        "stability.economic_drift",
+        "stability.level_decline",
+        "stability.score_decline",
+        "stability.population_vitality",
+    )
+    before = bal.evaluate_run(measurements, profile, "stability", 700)
+    assert before["verdict"] == "FAIL"
+    for check_id in ids:
+        row = next(c for c in before["checks"] if c["id"] == check_id)
+        assert row["status"] == "fail"
+        assert not isinstance(row["limit"], tuple)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "thresholds.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "stability": {
+                        "economic_slope_max": -0.001,
+                        "level_slope_max": -0.001,
+                        "score_slope_max": -0.001,
+                        "min_population_ratio": 0.5,
+                    }
+                },
+                fh,
+            )
+        relaxed = bal.load_thresholds(path, "stability")
+    after = bal.evaluate_run(measurements, relaxed, "stability", 700)
+    assert after["verdict"] == "PASS"
+    assert not _failing(after)
+    assert set(ids) <= _failing(before)
+    assert bal.resolve_threshold(relaxed, ("stability", "min_population_ratio")) == 0.5
+    print("STABILITY_THRESHOLDS_OK")
+
+
 # --- determinism ----------------------------------------------------------
 
 
@@ -1136,6 +1193,7 @@ def main():
     test_guild_telemetry_ignores_a_bot_founded_guild()
     test_guild_absence_and_zero_world_fail_gate()
     test_profile_overrides_and_threshold_file()
+    test_stability_thresholds_are_resolvable_and_flip_verdicts()
     test_determinism_repeats()
     test_median_seed_decides_profile()
     test_worst_seed_guard_fails_profile()
