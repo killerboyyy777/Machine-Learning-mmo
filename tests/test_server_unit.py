@@ -4119,6 +4119,163 @@ async def main():
                 write_bytes(_p, _data)
     print("SHUTDOWN_TASKS_OK")
 
+    # #865: drive the real main() wiring so an unregistered save loop or a
+    # shutdown flush that skips freight cannot pass this round trip.
+    import shutil as _shutil
+    import socket as _socket
+
+    _fdir = tempfile.mkdtemp(prefix="freight865-")
+    _saved_freight = dict(srv.FREIGHT)
+    _saved_counter = srv._freight_counter
+    _saved_dirty = srv._freight_dirty
+    _saved_blocked = srv.FREIGHT_FILE_BLOCKED
+    _saved_stats = dict(srv.FREIGHT_STATS)
+    _saved_files = {}
+    for _attr in (
+        "FREIGHT_FILE",
+        "SCORES_FILE",
+        "COMPANIONS_FILE",
+        "GUILDS_FILE",
+        "INTEL_FILE",
+    ):
+        _saved_files[_attr] = getattr(srv, _attr)
+        setattr(srv, _attr, os.path.join(_fdir, _attr.lower() + ".json"))
+    _saved_ports3 = (srv.PORT, srv.GM_PORT, srv.HTTP_PORT)
+    _real_freight_loop = srv.freight_save_loop
+    try:
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = 18791, 18792, 18793
+        srv.FREIGHT.clear()
+        srv.FREIGHT_FILE_BLOCKED = False
+        for _key in srv.FREIGHT_STATS:
+            srv.FREIGHT_STATS[_key] = 0
+        _loop_seen = asyncio.Event()
+
+        async def _spy_freight_loop():
+            _loop_seen.set()
+            await _real_freight_loop()
+
+        srv.freight_save_loop = _spy_freight_loop
+        _items = sorted(srv.ITEM_DEFS)
+        _sender = srv.Player(
+            ws=None,
+            id=71500,
+            name="FreightPersist",
+            logged_in=True,
+            hp=20,
+            max_hp=20,
+            room="market",
+            gold=100,
+            inventory=[_items[0], _items[1]],
+        )
+        _hauler_a = srv.Player(
+            ws=None,
+            id=71501,
+            name="HaulerA",
+            logged_in=True,
+            hp=20,
+            max_hp=20,
+            room="market",
+            gold=50,
+            inventory=[],
+        )
+        _hauler_b = srv.Player(
+            ws=None,
+            id=71502,
+            name="HaulerB",
+            logged_in=True,
+            hp=20,
+            max_hp=20,
+            room="market",
+            gold=50,
+            inventory=[],
+        )
+        await srv.cmd_freight(
+            _sender,
+            {
+                "action": "post",
+                "destination": "smithy",
+                "fee": 20,
+                "items": [_items[0]],
+            },
+        )
+        await srv.cmd_freight(
+            _sender,
+            {
+                "action": "post",
+                "destination": "smithy",
+                "fee": 15,
+                "items": [_items[1]],
+            },
+        )
+        assert len(srv.FREIGHT) == 2, srv.FREIGHT
+        _kept = next(r for r in srv.FREIGHT.values() if r["fee"] == 20)
+        _lost = next(r for r in srv.FREIGHT.values() if r["fee"] == 15)
+        await srv.cmd_freight(_hauler_a, {"action": "accept", "id": _kept["id"]})
+        await srv.cmd_freight(_hauler_b, {"action": "accept", "id": _lost["id"]})
+        assert _kept["state"] == "carried" and _lost["state"] == "carried"
+        srv._freight_release_on_death(_hauler_b, "deep_forest")
+        # #857 keeps terminal refund rows only when items is an empty list;
+        # the death path drops the key, so restore the shape the loader reads.
+        _lost["items"] = []
+        assert _lost["state"] == "lost" and _lost["refund"] > 0, _lost
+
+        _mainsrv = asyncio.create_task(srv.main())
+        for _ in range(100):
+            await asyncio.sleep(0.1)
+            try:
+                _probe3 = _socket.socket()
+                _probe3.connect(("127.0.0.1", 18791))
+                _probe3.close()
+                break
+            except OSError:
+                pass
+        else:
+            raise AssertionError("freight-persistence test server did not boot")
+        await asyncio.wait_for(_loop_seen.wait(), 5)
+        _mainsrv.cancel()
+        try:
+            await _mainsrv
+        except asyncio.CancelledError:
+            pass
+        assert os.path.isfile(srv.FREIGHT_FILE), "shutdown did not flush freight"
+
+        srv.FREIGHT = {}
+        _loaded = srv.load_freight(srv.FREIGHT_FILE)
+        assert set(_loaded) == {_kept["id"], _lost["id"]}, _loaded
+        assert _loaded[_kept["id"]]["state"] == "carried"
+        assert _loaded[_kept["id"]]["hauler"] == "HaulerA"
+        assert _loaded[_kept["id"]]["items"] == [_items[0]]
+        assert _loaded[_lost["id"]]["state"] == "lost"
+        assert _loaded[_lost["id"]]["refund"] == _lost["refund"]
+        srv.FREIGHT = _loaded
+        _poster = srv.Player(
+            ws=None,
+            id=71500,
+            name="FreightPersist",
+            logged_in=True,
+            hp=20,
+            max_hp=20,
+            room="market",
+            gold=0,
+            inventory=[],
+        )
+        _owed = srv._freight_flush_refunds(_poster)
+        assert _owed == _lost["refund"] and _poster.gold == _owed, (_owed, _poster.gold)
+        assert _loaded[_lost["id"]]["refund"] == 0
+        print("FREIGHT_SHUTDOWN_PERSISTENCE_OK")
+    finally:
+        srv.freight_save_loop = _real_freight_loop
+        srv.PORT, srv.GM_PORT, srv.HTTP_PORT = _saved_ports3
+        srv.FREIGHT = _saved_freight
+        srv._freight_counter = _saved_counter
+        srv._freight_dirty = _saved_dirty
+        srv.FREIGHT_FILE_BLOCKED = _saved_blocked
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(_saved_stats)
+        for _attr, _path in _saved_files.items():
+            setattr(srv, _attr, _path)
+        _shutil.rmtree(_fdir, ignore_errors=True)
+
     # /health reads the cached snapshot, never the live dict (#224)
     import json as _json2
 

@@ -15164,6 +15164,7 @@ async def main():
                 ),
                 asyncio.create_task(_run_resilient("arena", arena_loop)),
                 asyncio.create_task(_run_resilient("arena_save", arena_save_loop)),
+                asyncio.create_task(_run_resilient("freight_save", freight_save_loop)),
             ]
         )
         try:
@@ -15193,6 +15194,7 @@ async def main():
         save_companions()
         save_guilds()
         save_intel()
+        save_freight()
         print("Scores saved. Bye.", flush=True)
 
 
