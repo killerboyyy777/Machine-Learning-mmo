@@ -19,8 +19,8 @@ reason the gate prints, as the guild probe does.
 import asyncio
 import hashlib
 import json
-import os
 import time
+import uuid
 
 from harness.bridge import GameBridge
 
@@ -55,8 +55,9 @@ def probe_identities(seed, stamp=None, tag=""):
     provisional for their first match, which is what the conservation
     arithmetic below assumes.
     """
-    stamp = stamp or f"{os.getpid() % 1000:03d}{int(time.time()) % 10000:04d}"
-    suffix = f"{int(seed) % 1000:03d}{stamp}"
+    # A uuid4 stamp keeps two runs in the same second from sharing rating rows.
+    stamp = uuid.uuid4().hex[:8] if stamp is None else stamp
+    suffix = f"{int(seed)}{stamp}"
     return [f"Arena{tag}{i}{suffix}" for i in range(1, 5)]
 
 
