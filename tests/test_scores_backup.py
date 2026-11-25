@@ -55,6 +55,28 @@ with tempfile.TemporaryDirectory() as tmp:
             f.write("{not json")
         assert srv.load_scores() == {"a": 1, "b": 2}
         print("RECOVER_OK")
+
+        # A failed final replace must not leave the live path absent (#810):
+        # backups are copied, never moved, so the old live file survives.
+        with open(db, "w") as f:
+            json.dump({"z": 9}, f)
+        real_replace = os.replace
+
+        def fail_live_replace(src, dst):
+            if dst == db:
+                raise OSError("simulated replace failure")
+            return real_replace(src, dst)
+
+        srv.os.replace = fail_live_replace
+        try:
+            srv.SCORES["d"] = 4
+            assert srv.save_scores() is False
+            assert os.path.exists(db), "live file vanished on failed replace"
+            assert _read(db) == {"z": 9}, "live file changed on failed replace"
+            assert not os.path.exists(db + ".tmp"), "temp file left behind"
+        finally:
+            srv.os.replace = real_replace
+        print("FAILED_REPLACE_KEEPS_LIVE_OK")
     finally:
         srv.SCORES_FILE = old_file
         srv.SCORES.clear()
