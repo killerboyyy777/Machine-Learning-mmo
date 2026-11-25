@@ -468,6 +468,53 @@ def freight_death_refund_save_load_check(folder):
     print("FREIGHT_DEATH_REFUND_SAVE_LOAD_OK")
 
 
+def freight_stats_round_trip_check(folder):
+    """Freight stats survive a save/load cycle (#908)."""
+    path = os.path.join(folder, "freight-stats.json")
+    saved = (
+        srv.FREIGHT,
+        srv._freight_counter,
+        srv._freight_dirty,
+        srv.FREIGHT_FILE_BLOCKED,
+        dict(srv.FREIGHT_STATS),
+    )
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_FILE_BLOCKED = False
+        expected = dict(srv.FREIGHT_STATS)
+        expected["posted"] = 7
+        expected["delivered"] = 3
+        expected["deposits_forfeited"] = 42
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(expected)
+        assert srv.save_freight(path) is True
+        srv.FREIGHT_STATS.clear()
+        assert srv.load_freight(path) == {}
+        assert srv.FREIGHT_STATS == expected, srv.FREIGHT_STATS
+
+        # Older files (no stats key) or a null stats field still load.
+        for payload in (
+            {"version": srv.FREIGHT_VERSION, "contracts": []},
+            {"version": srv.FREIGHT_VERSION, "contracts": [], "stats": None},
+        ):
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            srv.FREIGHT_STATS.clear()
+            assert srv.load_freight(path) == {}, payload
+            assert srv.FREIGHT_STATS == {}, srv.FREIGHT_STATS
+    finally:
+        (
+            srv.FREIGHT,
+            srv._freight_counter,
+            srv._freight_dirty,
+            srv.FREIGHT_FILE_BLOCKED,
+            stats,
+        ) = saved
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(stats)
+    print("FREIGHT_STATS_ROUND_TRIP_OK")
+
+
 with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
     linear_bad_checkpoint_check(folder)
@@ -477,4 +524,5 @@ with tempfile.TemporaryDirectory() as folder:
     runlog_pkg_import_check()
     freight_refund_persistence_check(folder)
     freight_death_refund_save_load_check(folder)
+    freight_stats_round_trip_check(folder)
 print("PERSISTENCE_ALL_OK")
