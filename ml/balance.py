@@ -2413,11 +2413,20 @@ async def _run(args, profile, seeds):
     thresholds = load_thresholds(args.thresholds, profile)
     baseline = _load_baseline(args.baseline) if args.baseline else None
     entries = []
+    seen = {}
     for seed in seeds:
         measurements = await collect(args, profile, seed)
         entries.append({"seed": seed, "measurements": measurements})
         if args.save_measurements:
-            path = os.path.join(args.out_dir, f"measurements-{profile}-{seed}.json")
+            # Repeats share a seed but carry different evidence (#899): keep
+            # the first path unchanged and suffix later ones, or the last
+            # repeat silently overwrites earlier determinism runs.
+            occurrence = seen.get(seed, 0)
+            seen[seed] = occurrence + 1
+            suffix = "" if occurrence == 0 else f"-r{occurrence}"
+            path = os.path.join(
+                args.out_dir, f"measurements-{profile}-{seed}{suffix}.json"
+            )
             _write_json(path, measurements)
             print(f"[balance] measurements: {path}")
     report = evaluate_profile(entries, thresholds, profile, baseline=baseline)
