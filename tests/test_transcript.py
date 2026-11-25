@@ -42,6 +42,21 @@ def test_writer_reader_round_trip():
     print("TRANSCRIPT_ROUND_TRIP_OK")
 
 
+def test_reader_skips_torn_records():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "agent.jsonl")
+        writer = TranscriptWriter(path)
+        writer.record(agent_id="a1", episode=1, step=0, action=2, reward=1.0)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("not-json\\n")
+            fh.write("[1, 2]\\n")
+            fh.write('{"agent_id":"partial"')
+        rows = read_transcript(path)
+        assert len(rows) == 1, rows
+        assert rows[0]["agent_id"] == "a1" and rows[0]["step"] == 0
+    print("TRANSCRIPT_TORN_RECORD_OK")
+
+
 def test_writer_stamps_incarnation_and_carried_clock():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "a.jsonl")
@@ -229,6 +244,7 @@ def test_transcript_is_off_by_default():
 
 if __name__ == "__main__":
     test_writer_reader_round_trip()
+    test_reader_skips_torn_records()
     test_writer_stamps_incarnation_and_carried_clock()
     test_writer_never_raises_and_reader_empty()
     test_agent_task_records_steps_without_changing_episode_event()
