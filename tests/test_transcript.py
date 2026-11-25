@@ -48,8 +48,8 @@ def test_reader_skips_torn_records():
         writer = TranscriptWriter(path)
         writer.record(agent_id="a1", episode=1, step=0, action=2, reward=1.0)
         with open(path, "a", encoding="utf-8") as fh:
-            fh.write("not-json\\n")
-            fh.write("[1, 2]\\n")
+            fh.write("not-json\n")
+            fh.write("[1, 2]\n")
             fh.write('{"agent_id":"partial"')
         rows = read_transcript(path)
         assert len(rows) == 1, rows
