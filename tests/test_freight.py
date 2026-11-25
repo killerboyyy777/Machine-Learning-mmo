@@ -282,6 +282,99 @@ srv._remove_ground("deep_forest", ITEM)
 srv.players.pop("Hauler", None)
 print("DEATH_RETURNS_BONUS_OK")
 
+# --- #905: a late bonus refund on a delivered row is flushed exactly once -----
+
+_reset()
+sender = _player("LateSender", ORIGIN, 100, [ITEM], pid=906)
+hauler = _player("LateHauler", ORIGIN, 50, [], pid=907)
+_run(
+    sender,
+    action="post",
+    destination=DEST,
+    fee=20,
+    bonus=5,
+    bonus_seconds=1,
+    items=[ITEM],
+)
+rec = _only_contract()
+_run(hauler, action="accept", id=rec["id"])
+rec["bonus_until"] = time.time() - 1  # delivered after the rush window closed
+hauler.room = DEST
+_run(hauler, action="deliver", id=rec["id"])
+assert rec["state"] == "delivered", rec["state"]
+assert rec["refund"] == 5, rec["refund"]
+assert sender.gold == 100 - 20 - 5, sender.gold
+gold_before = sender.gold
+assert srv._freight_flush_refunds(sender) == 5
+assert sender.gold == gold_before + 5, sender.gold
+assert rec["refund"] == 0, rec["refund"]
+assert srv._freight_flush_refunds(sender) == 0
+sender.room = DEST
+_run(sender, action="claim", id=rec["id"])
+assert sender.gold == gold_before + 5, sender.gold  # claim pays nothing twice
+print("LATE_DELIVERY_REFUND_FLUSH_OK")
+
+# --- #905: retention pays an unclaimed delivered refund before deleting -------
+
+_reset()
+sender = _player("RetentionSender", ORIGIN, 100, [ITEM], pid=908)
+hauler = _player("RetentionHauler", ORIGIN, 50, [], pid=909)
+srv.add_member(sender)  # an online poster is paid directly, not banked
+_run(
+    sender,
+    action="post",
+    destination=DEST,
+    fee=20,
+    bonus=5,
+    bonus_seconds=1,
+    items=[ITEM],
+)
+rec = _only_contract()
+_run(hauler, action="accept", id=rec["id"])
+rec["bonus_until"] = time.time() - 1
+hauler.room = DEST
+_run(hauler, action="deliver", id=rec["id"])
+assert rec["refund"] == 5, rec["refund"]
+now = rec["delivered_at"] + srv.FREIGHT_DELIVERED_RETENTION_SECONDS + 1
+srv._freight_station_at = now  # keep station consignments out of this probe
+gold_before = sender.gold
+srv.prune_freight(now)
+assert rec["id"] not in srv.FREIGHT, srv.FREIGHT
+assert sender.gold == gold_before + 5, sender.gold
+assert srv._freight_flush_refunds(sender) == 0  # already settled, never paid twice
+for iid in list(srv._ground_items(DEST)):
+    srv._remove_ground(DEST, iid)
+srv.remove_member(sender)
+print("PRUNE_PAYS_DELIVERED_REFUND_OK")
+
+# --- #907: station freight never leaves a collectable death refund -----------
+
+_reset()
+srv._add_ground(ORIGIN, ITEM)
+srv._add_ground(ORIGIN, OTHER)
+srv.tick_station_freight(10000.0)
+station = _only_contract()
+assert station["poster_kind"] == "station", station
+# The fake 10000.0 station clock is historical; give this contract a live
+# deadline so the expiry guard from #906 does not reject the hauler.
+station["expires_at"] = time.time() + 60
+hauler = _player("StationHauler", station["origin"], 100, [], pid=910)
+srv.players["StationHauler"] = hauler
+_run(hauler, action="accept", id=station["id"])
+srv._freight_release_on_death(hauler, "deep_forest")
+assert station["state"] == "lost", station["state"]
+assert station["refund"] == 0, station["refund"]
+station["refund"] = 50  # even a stray station refund is not a player's to take
+namesake = _player(station["poster"], ORIGIN, 500, [], pid=911)
+gold_before = namesake.gold
+_run(namesake, action="list")
+assert namesake.gold == gold_before, namesake.gold
+assert station["refund"] == 50, station["refund"]
+for iid in list(srv._ground_items("deep_forest")):
+    srv._remove_ground("deep_forest", iid)
+srv.players.pop("StationHauler", None)
+print("STATION_DEATH_NO_REFUND_OK")
+
 # --- expired contracts are refused until the prune settles them ---------------
 # #906: accept and deliver checked only state, so a contract past its expiry
 # could still be acted on during the prune window.
