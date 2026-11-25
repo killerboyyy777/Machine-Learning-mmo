@@ -5823,6 +5823,11 @@ async def cmd_use(player, msg):
             player, {"type": "error", "text": f"You can't use '{msg.get('item', '')}'."}
         )
         return
+    if not effect and player.hp >= player.max_hp:
+        await send(
+            player, {"type": "message", "text": "You are already at full health."}
+        )
+        return
     player.inventory.remove(iid)
     if effect:
         category = effect["category"]

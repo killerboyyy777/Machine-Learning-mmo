@@ -936,6 +936,64 @@ async def main():
     assert "sharpening_oil" not in crafter.inventory
     print("CRAFTED_BUFF_OK")
 
+    # --- Consumable healing respects the full-HP guard (#864) ---
+    healer_p = srv.Player(ws=FakeWS(), id=10100, name="HealTester", logged_in=True)
+    srv.add_member(healer_p)
+
+    # A pure heal at full HP stays in the pack and changes nothing.
+    healer_p.inventory = ["healing_herb"]
+    healer_p.hp = healer_p.max_hp
+    before = len(inbox)
+    await srv.cmd_use(healer_p, {"item": "healing herb"})
+    assert "healing_herb" in healer_p.inventory
+    assert healer_p.hp == healer_p.max_hp
+    assert any(
+        m.get("type") == "message" and "full health" in m.get("text", "")
+        for m in inbox[before:]
+    ), inbox[before:]
+    print("FULL_HP_HEAL_NOT_CONSUMED_OK")
+
+    # Below full HP the same item still heals and is consumed.
+    healer_p.hp = healer_p.max_hp - 4
+    before_hp = healer_p.hp
+    before = len(inbox)
+    await srv.cmd_use(healer_p, {"item": "healing herb"})
+    assert "healing_herb" not in healer_p.inventory
+    assert healer_p.hp == min(healer_p.max_hp, before_hp + 10)
+    assert healer_p.hp > before_hp
+    assert any(
+        m.get("type") == "message" and "recover" in m.get("text", "")
+        for m in inbox[before:]
+    ), inbox[before:]
+    print("WOUNDED_HEAL_CONSUMES_OK")
+
+    # A buff + heal item still applies its buff at full HP.
+    srv.ITEM_DEFS["test_heal_elixir"] = {
+        "name": "Test Heal Elixir",
+        "type": "consumable",
+        "heal_amount": 10,
+        "buff": {
+            "category": "attack",
+            "amount": 3,
+            "duration_actions": 7,
+            "description": "+3 attack",
+        },
+    }
+    try:
+        healer_p.inventory = ["test_heal_elixir"]
+        healer_p.hp = healer_p.max_hp
+        before_attack = healer_p.attack
+        await srv.cmd_use(healer_p, {"item": "test heal elixir"})
+        assert healer_p.active_buffs["attack"]["amount"] == 3
+        assert healer_p.active_buffs["attack"]["remaining"] == 7
+        assert srv._player_buff_amount(healer_p, "attack") == 3
+        assert healer_p.attack == before_attack + 3
+        assert "test_heal_elixir" not in healer_p.inventory
+        assert healer_p.hp == healer_p.max_hp
+    finally:
+        srv.ITEM_DEFS.pop("test_heal_elixir", None)
+    print("FULL_HP_BUFF_HEAL_APPLIES_OK")
+
     # --- Equipment slots: weapon / armor / offhand coexist, defense stacks ---
     knight = srv.Player(ws=FakeWS(), id=10002, name="SlotTester", logged_in=True)
     knight.inventory = ["rusty_sword", "reinforced_leather", "old_shield", "rat_tail"]
