@@ -104,6 +104,7 @@ jobs:
       - run: python tests/test_plugin_inventory.py
       - run: python tests/test_repro.py
       - run: python tests/test_transcript.py
+      - run: python tests/test_json_encoding.py
 
   live:
     name: Live protocol + ML env (py${{ matrix.python-version }})

@@ -559,7 +559,7 @@ def _apply_config():
     if not os.path.isfile(CONFIG_FILE):
         return
     try:
-        with open(CONFIG_FILE) as f:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
             cfg = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"Warning: could not load {CONFIG_FILE}: {e}")
@@ -656,7 +656,7 @@ def apply_xp_loss(entry, pct):
 # World data
 # ---------------------------------------------------------------------------
 
-with open(WORLD_FILE) as f:
+with open(WORLD_FILE, encoding="utf-8") as f:
     WORLD = json.load(f)
 
 ROOMS = WORLD["rooms"]
@@ -1361,7 +1361,7 @@ def load_scores():
     ]
     for path in candidates:
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     if path != SCORES_FILE:
@@ -1521,7 +1521,7 @@ def load_companions(path=None):
     global COMPANION_FILE_BLOCKED
     path = path or COMPANIONS_FILE
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}
@@ -1838,7 +1838,7 @@ def load_freight(path=None):
     data = None
     for candidate in (path, path + ".1"):
         try:
-            with open(candidate) as f:
+            with open(candidate, encoding="utf-8") as f:
                 data = json.load(f)
             break
         except FileNotFoundError:
@@ -1914,7 +1914,7 @@ def load_guilds(path=None):
     path = path or GUILDS_FILE
     for candidate in (path, path + ".1"):
         try:
-            with open(candidate) as f:
+            with open(candidate, encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
             continue
@@ -2327,7 +2327,7 @@ def load_intel(path=None):
     path = path or INTEL_FILE
     for candidate in (path, path + ".1"):
         try:
-            with open(candidate) as f:
+            with open(candidate, encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
             continue
@@ -11707,7 +11707,7 @@ def load_arena(path=None):
     path = path or ARENA_FILE
     for candidate in (path, path + ".1"):
         try:
-            with open(candidate) as f:
+            with open(candidate, encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
             continue
