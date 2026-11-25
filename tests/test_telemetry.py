@@ -109,6 +109,39 @@ def test_on_records_json_safe():
     print("ON_RECORD_OK")
 
 
+def test_incomplete_rows_skipped():
+    good = {"event": "agent_step_ms", "schema_version": 1, "value_ms": 12.0}
+    bad_rows = [
+        {"event": "agent_step_ms", "schema_version": 1},
+        "not-a-dict",
+        {"event": "agent_step_ms", "schema_version": 1, "value_ms": "fast"},
+        {"event": "agent_step_ms", "schema_version": 1, "value_ms": True},
+    ]
+    report = summarize([good] + bad_rows)
+    step = report["metrics"]["agent_step_ms"]
+    assert step["count"] == 1
+    assert step["mean_ms"] == 12.0
+    assert step["p50_ms"] == 12.0
+    assert step["p95_ms"] == 12.0
+    assert step["max_ms"] == 12.0
+
+    with tempfile.TemporaryDirectory() as d:
+        raw = os.path.join(d, "telemetry.jsonl")
+        out = os.path.join(d, "report.json")
+        with open(raw, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(good) + "\n")
+            for row in bad_rows:
+                fh.write(json.dumps(row) + "\n")
+        assert main(["--input", raw, "--out", out]) == 0
+        with open(out, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        step = saved["metrics"]["agent_step_ms"]
+        assert step["count"] == 1
+        assert step["mean_ms"] == 12.0
+        assert step["max_ms"] == 12.0
+    print("INCOMPLETE_ROWS_OK")
+
+
 class _StubWS:
     def __init__(self, seconds=0.012):
         self.seconds = seconds
@@ -203,6 +236,7 @@ def test_source_guard():
 if __name__ == "__main__":
     test_default_off()
     test_on_records_json_safe()
+    test_incomplete_rows_skipped()
     test_rtt_stub()
     test_source_guard()
     print("ALL_TELEMETRY_OK")

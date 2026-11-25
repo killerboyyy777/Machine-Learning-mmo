@@ -36,7 +36,12 @@ def summarize(samples, enabled=True):
     metrics = {}
     for name in METRIC_NAMES:
         values = sorted(
-            sample["value_ms"] for sample in samples if sample.get("event") == name
+            sample["value_ms"]
+            for sample in samples
+            if isinstance(sample, dict)
+            and sample.get("event") == name
+            and isinstance(sample.get("value_ms"), (int, float))
+            and not isinstance(sample.get("value_ms"), bool)
         )
         if not values:
             continue
