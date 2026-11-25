@@ -9,6 +9,7 @@ declared skips.
 Run from the repo root:  python tests/test_balance_harness.py
 """
 
+import asyncio
 import contextlib
 import copy
 import io
@@ -16,6 +17,7 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -983,6 +985,64 @@ def test_worst_seed_guard_fails_profile():
     print("WORST_SEED_GUARD_OK")
 
 
+# --- repeat measurement files ---------------------------------------------
+
+
+def test_run_repeats_write_distinct_measurement_files():
+    # #899: repeats expand the seed list, but a filename keyed only by seed
+    # let the last repeat overwrite the earlier determinism evidence.
+    seeds = [700, 701, 702] * 2
+    collected = []
+
+    async def fake_collect(args, profile, seed):
+        collected.append(seed)
+        return make_measurements(profile=profile, seed=seed)
+
+    original = bal.collect
+    original_verdict = bal._print_verdict
+    bal.collect = fake_collect
+    bal._print_verdict = lambda report: None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(
+                thresholds=None,
+                baseline=None,
+                save_measurements=True,
+                out_dir=tmp,
+                out=None,
+            )
+            asyncio.run(bal._run(args, "gate", seeds))
+
+            assert collected == seeds
+            names = sorted(os.listdir(tmp))
+            assert names == sorted(
+                [
+                    "balance_report.json",
+                    "measurements-gate-700-r1.json",
+                    "measurements-gate-700.json",
+                    "measurements-gate-701-r1.json",
+                    "measurements-gate-701.json",
+                    "measurements-gate-702-r1.json",
+                    "measurements-gate-702.json",
+                ]
+            ), names
+            # Report entries stay keyed only by seed; the suffix is disk-only.
+            with open(os.path.join(tmp, "balance_report.json"), encoding="utf-8") as fh:
+                report = json.load(fh)
+            assert report["seeds"] == seeds
+            for seed in (700, 701, 702):
+                for name in (
+                    f"measurements-gate-{seed}.json",
+                    f"measurements-gate-{seed}-r1.json",
+                ):
+                    with open(os.path.join(tmp, name), encoding="utf-8") as fh:
+                        assert json.load(fh)["meta"]["seed"] == seed
+    finally:
+        bal.collect = original
+        bal._print_verdict = original_verdict
+    print("REPEAT_MEASUREMENT_FILES_OK")
+
+
 # --- CLI ------------------------------------------------------------------
 
 
@@ -1167,6 +1227,7 @@ def main():
     test_determinism_repeats()
     test_median_seed_decides_profile()
     test_worst_seed_guard_fails_profile()
+    test_run_repeats_write_distinct_measurement_files()
     test_cli_exit_codes()
     test_evaluate_input_errors()
     test_baseline_comparison()
