@@ -11650,6 +11650,9 @@ async def handle_gm_connection(ws):
                 )
                 continue
             cmd = msg.get("cmd")
+            if not isinstance(cmd, str):
+                await send(player, {"type": "error", "text": "invalid command"})
+                continue
             handler = GM_HANDLERS.get(cmd)
             if not handler:
                 await send(
@@ -13563,7 +13566,7 @@ def _config_apply(file_id, edits):
         import config_write
     except ImportError as exc:
         return 503, {"ok": False, "error": f"config editor unavailable ({exc})"}
-    if file_id not in config_schema.FILES:
+    if not isinstance(file_id, str) or file_id not in config_schema.FILES:
         return 400, {"ok": False, "error": f"unknown config file {file_id!r}"}
     if not isinstance(edits, dict) or not edits:
         return 400, {"ok": False, "error": "edits must be a non-empty object"}

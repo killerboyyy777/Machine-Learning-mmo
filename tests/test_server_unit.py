@@ -355,6 +355,8 @@ def config_editor_check(folder):
         assert status == 400 and not body["ok"] and "outside" in body["error"], body
         status, body = srv._config_apply("nope", {"economy.TAX_RATE": "0.2"})
         assert status == 400 and "unknown config file" in body["error"], body
+        status, body = srv._config_apply([], {"economy.TAX_RATE": "0.2"})
+        assert status == 400 and "unknown config file" in body["error"], body
         status, body = srv._config_apply("server", {})
         assert status == 400 and "non-empty" in body["error"], body
         for edits, fragment in refusals:
