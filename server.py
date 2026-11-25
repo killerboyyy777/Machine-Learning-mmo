@@ -12617,7 +12617,20 @@ async def cmd_arena(player, msg):
     if action == "leave":
         if player.arena_spectating:
             detach_spectator(player)
-            await send(player, {"type": "message", "text": "You stop watching."})
+            # Queueing first and then watching leaves an entry behind: the
+            # spectator gate blocks 'enter' but not the pairing tick.
+            size = arena_queued_size(player)
+            if size:
+                ARENA_QUEUES[size].remove(player.id)
+                await send(
+                    player,
+                    {
+                        "type": "message",
+                        "text": "You stop watching and leave the arena queue.",
+                    },
+                )
+            else:
+                await send(player, {"type": "message", "text": "You stop watching."})
             return
         size = arena_queued_size(player)
         if size:

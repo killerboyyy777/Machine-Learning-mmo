@@ -7,7 +7,8 @@ These exercise command-boundary and lifecycle edges not covered by the
 original spectator suite. They lock in the read-only queue guard and stale
 audience pruning fixed in PR #666, alongside switching, disconnect, and
 invalid-match cleanup. Spectators may inspect or leave, but may not queue;
-stale sessions must not consume the bounded audience.
+stale sessions must not consume the bounded audience. Leaving while watching
+must also drop a queue entry held from before the watch began.
 """
 
 import asyncio
@@ -121,6 +122,65 @@ async def main():
         check(
             not ended.arena_spectating and ended.arena_watch == 0,
             "SPECTATOR_ENDED_MATCH",
+        )
+
+        # A queued player may watch; leaving must clear both the feed and the
+        # stale queue entry, or the pairing tick seats them in a new match.
+        third = srv.ArenaMatch(1)
+        srv.ARENA_MATCHES[third.id] = third
+        queued = player("EdgeQueuedWatcher", 64905)
+        await srv.cmd_arena(queued, {"action": "enter", "mode": "1v1"})
+        check(srv.arena_queued_size(queued) == 1, "QUEUED_WATCHER_ENTER")
+        await srv.cmd_arena(queued, {"action": "watch", "match": str(third.id)})
+        check(
+            queued.arena_spectating
+            and queued.id in third.spectators
+            and srv.arena_queued_size(queued) == 1,
+            "QUEUED_WATCHER_WATCH",
+        )
+        inbox[queued.name].clear()
+        await srv.cmd_arena(queued, {"action": "leave"})
+        check(
+            not queued.arena_spectating
+            and queued.arena_watch == 0
+            and queued.id not in third.spectators
+            and srv.arena_queued_size(queued) == 0
+            and all(queued.id not in q for q in srv.ARENA_QUEUES.values())
+            and any(
+                item.get("type") == "message"
+                and "stop watching" in item.get("text", "")
+                and "leave the arena queue" in item.get("text", "")
+                for item in inbox.get(queued.name, [])
+            ),
+            "QUEUED_WATCHER_LEAVE_CLEARS_BOTH",
+        )
+        before = set(srv.ARENA_MATCHES)
+        probe = player("EdgePairProbe", 64906)
+        await srv.cmd_arena(probe, {"action": "enter", "mode": "1v1"})
+        check(
+            set(srv.ARENA_MATCHES) == before
+            and srv.arena_queued_size(probe) == 1
+            and probe.arena_match == 0,
+            "QUEUED_WATCHER_LEAVE_NO_LATER_PAIR",
+        )
+        await srv.cmd_arena(probe, {"action": "leave"})
+
+        # A spectator who never queued still takes the plain stop-watching exit.
+        plain = player("EdgePlainWatcher", 64907)
+        await srv.cmd_arena(plain, {"action": "watch", "match": str(third.id)})
+        inbox[plain.name].clear()
+        await srv.cmd_arena(plain, {"action": "leave"})
+        check(
+            not plain.arena_spectating
+            and plain.arena_watch == 0
+            and plain.id not in third.spectators
+            and srv.arena_queued_size(plain) == 0
+            and any(
+                item.get("type") == "message"
+                and item.get("text") == "You stop watching."
+                for item in inbox.get(plain.name, [])
+            ),
+            "SPECTATOR_LEAVE_PLAIN",
         )
     finally:
         srv.send = saved_send
