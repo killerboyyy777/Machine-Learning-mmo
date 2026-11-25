@@ -12710,6 +12710,15 @@ VERBOSE = os.environ.get("TEXTMMO_VERBOSE", "").strip().lower() in (
     "on",
 )
 
+# The dashboard binds 0.0.0.0 and its GET routes have no auth, so the
+# metrics surface stays opt-in (#21).
+METRICS_ENABLED = os.environ.get("TEXTMMO_METRICS", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 
 def vlog(msg):
     if VERBOSE:
@@ -13190,6 +13199,52 @@ def _memory_mb():
         return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
     except Exception:
         return None
+
+
+# Aggregate numbers only: this route is unauthenticated and LAN-visible (#21).
+def _metrics_text():
+    try:
+        snap = json.loads(world_snapshot_json) if world_snapshot_json else {}
+    except (TypeError, ValueError):
+        snap = {}
+    server = snap.get("server") or {}
+    rooms = snap.get("rooms") or []
+    market = snap.get("market") or {}
+    freight = snap.get("freight") or {}
+    series = {
+        "mmo_uptime_seconds": (server.get("uptime", 0), "Server uptime in seconds."),
+        "mmo_players_online": (server.get("players_online", 0), "Players logged in."),
+        "mmo_connections": (server.get("connections", 0), "Live connections."),
+        "mmo_rooms": (len(rooms), "Rooms in the world."),
+        "mmo_npcs_alive": (
+            sum(1 for r in rooms for n in (r.get("npcs") or []) if n.get("alive")),
+            "Living NPCs across all rooms.",
+        ),
+        "mmo_bosses_alive": (len(snap.get("bosses") or []), "Living world bosses."),
+        "mmo_dungeons_active": (
+            len(snap.get("dungeons") or []),
+            "Active instanced dungeons.",
+        ),
+        "mmo_trade_count": (market.get("trade_count", 0), "Completed market trades."),
+        "mmo_market_orders": (len(market.get("orders") or []), "Open market orders."),
+        "mmo_market_bids": (len(market.get("bids") or []), "Open market bids."),
+        "mmo_freight_delivered": (
+            freight.get("delivered", 0),
+            "Freight contracts delivered.",
+        ),
+    }
+    memory_mb = _memory_mb()
+    if memory_mb is not None:
+        series["mmo_memory_mb"] = (memory_mb, "Process resident memory in MB.")
+    lines = []
+    for name in sorted(series):
+        value, help_text = series[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f"{name} {value}")
+    return "\n".join(lines) + "\n"
 
 
 def _runs_payload(query, root=None):
@@ -13953,6 +14008,11 @@ def start_dashboard():
                 self._send_json(_plugins_payload(self.client_address[0]))
             elif path == "/api/activity/stream":
                 self._serve_activity_stream()
+            elif path == "/metrics" and METRICS_ENABLED:
+                self._send(
+                    _metrics_text().encode(),
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )
             else:
                 self.send_error(404)
 
@@ -15057,6 +15117,12 @@ def parse_args(argv=None):
     ap.add_argument("--http-port", type=int, default=HTTP_PORT, help="dashboard port")
     ap.add_argument("--gm-port", type=int, default=GM_PORT, help="GM port")
     ap.add_argument(
+        "--metrics",
+        action="store_true",
+        default=METRICS_ENABLED,
+        help="serve Prometheus metrics on the dashboard port (off by default)",
+    )
+    ap.add_argument(
         "--config",
         default=None,
         help="server config file (default: server_config.json next to "
@@ -15072,6 +15138,7 @@ if __name__ == "__main__":
     HOST, PORT = _args.host, _args.port
     HTTP_HOST, HTTP_PORT = _args.host, _args.http_port
     GM_PORT = _args.gm_port
+    METRICS_ENABLED = _args.metrics
     if _args.config:
         # Config also loads at import (before flags exist); re-apply here so
         # the flag wins. All tunables are read at runtime, so late override
