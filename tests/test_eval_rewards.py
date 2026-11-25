@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
@@ -133,7 +134,12 @@ def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
         seen["run_id"] = kwargs.get("run_id")
         return {"scores": [1.0, 2.0], "rewards": [3.0, 4.0]}
 
-    out = os.path.join(ROOT, "tests", "_eval_rewards_record.json")
+    if tmp_path is None:
+        tmp = tempfile.TemporaryDirectory()
+        folder = tmp.name
+    else:
+        folder = tmp_path
+    out = os.path.join(folder, "_eval_rewards_record.json")
     try:
         ev.evaluate = fake_evaluate
         ev.report = lambda name, scores: (0.0, 0.0)
@@ -155,8 +161,6 @@ def test_main_writes_rewards_and_formula_to_run_record(tmp_path=None):
         ev.evaluate = saved_eval
         ev.report = saved_report
         sys.argv = saved_argv
-        if os.path.exists(out):
-            os.remove(out)
 
     assert seen["reward_formula"] == "xp_delta * 2", seen
     assert seen["run_id"] == record["evaluation_id"], (seen, record)

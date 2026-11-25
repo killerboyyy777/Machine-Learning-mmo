@@ -94,6 +94,16 @@ jobs:
       - run: python tests/test_structured_log.py
       - run: python tests/test_wheel_assets.py
       - run: python tests/test_ci_config.py
+      - run: python tests/test_arena_probe.py
+      - run: python tests/test_diversity.py
+      - run: python tests/test_dungeon_generator.py
+      - run: python tests/test_generalist.py
+      - run: python tests/test_league.py
+      - run: python tests/test_market_equilibrium.py
+      - run: python tests/test_open_mode.py
+      - run: python tests/test_plugin_inventory.py
+      - run: python tests/test_repro.py
+      - run: python tests/test_transcript.py
 
   live:
     name: Live protocol + ML env (py${{ matrix.python-version }})
@@ -139,6 +149,7 @@ jobs:
       - run: python tests/test_rnd.py
       - run: python tests/test_runners.py
       - run: python tests/test_eval_stats.py
+      - run: python tests/test_eval_rewards.py
 
   audit:
     name: Dependency audit (pip-audit)

@@ -19,10 +19,12 @@ from ml import plugin_inventory  # noqa: E402
 from ml.plugins import REGISTRY, parse_slot  # noqa: E402
 
 # --- inventory: built-ins, schemas, and a JSON-safe reply -----------------
+empty_tmp = tempfile.TemporaryDirectory()
+empty_dir = empty_tmp.name
 plugin_inventory.reset_cache()
-data = plugin_inventory.inventory()
+data = plugin_inventory.inventory(empty_dir)
 by_name = {row["name"]: row for row in data["plugins"]}
-assert data["plugin_dir"] == plugin_inventory.PLUGIN_DIR
+assert data["plugin_dir"] == os.path.abspath(empty_dir)
 assert data["plugin_dir_present"] is True
 assert {"linear", "torch", "gather", "arena"} <= set(by_name), "built-ins missing"
 assert by_name["linear"]["source"] == "built-in"
@@ -66,8 +68,8 @@ with tempfile.TemporaryDirectory() as tmp:
         assert os.path.exists(marker), "child never imported the drop-in"
         with open(marker, encoding="utf-8") as fh:
             assert int(fh.read().strip()) != os.getpid()
-        # The cache is per folder: the default folder's result is untouched.
-        assert plugin_inventory.inventory()["rejected"] == []
+        # The cache is per folder: the empty folder's result is untouched.
+        assert plugin_inventory.inventory(empty_dir)["rejected"] == []
     finally:
         for name in set(REGISTRY) - before:
             REGISTRY.pop(name, None)
@@ -132,6 +134,9 @@ class FakeProc:
         return self.code
 
     def send_signal(self, sig):
+        self.signalled = True
+
+    def terminate(self):
         self.signalled = True
 
     def kill(self):
