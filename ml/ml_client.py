@@ -160,7 +160,9 @@ class LinearQAgent:
             and (version is None or isinstance(version, dict))
         )
         if not valid:
-            print(f"Warning: {path} doesn't match the checkpoint schema, starting fresh.")
+            print(
+                f"Warning: {path} doesn't match the checkpoint schema, starting fresh."
+            )
             return False
 
         self.weights = weights
