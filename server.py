@@ -3991,7 +3991,10 @@ class DroneLangParser:
             self._expect("(")
             if self.current[0] != "NUMBER":
                 raise DroneLangError(f"Expected number argument for {name}")
-            args.append(int(self.current[1]))
+            arg = int(self.current[1])
+            if name == "tick_mod" and arg < 1:
+                raise DroneLangError("tick_mod argument must be at least 1")
+            args.append(arg)
             self._advance()
             self._expect(")")
         elif name in ("owner_has_item", "room_is", "room_not", "exit_exists"):
