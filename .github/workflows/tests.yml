@@ -92,6 +92,7 @@ jobs:
       - run: python tests/test_checkpoint_reload.py
       - run: python tests/test_source_policy.py
       - run: python tests/test_structured_log.py
+      - run: python tests/test_wheel_assets.py
 
   live:
     name: Live protocol + ML env (py${{ matrix.python-version }})

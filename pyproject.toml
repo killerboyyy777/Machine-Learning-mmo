@@ -18,3 +18,6 @@ small-text-mmo = "start:main"
 [tool.setuptools]
 py-modules = ["server", "start", "config_schema", "config_write"]
 packages = ["ml", "ml.conductor", "ml.modes", "ml.plugins", "torch_agents", "tui", "harness"]
+
+[tool.setuptools.package-data]
+ml = ["*.json", "conductor/*.json", "../dashboard.html", "../uplot.min.js", "../world.json", "../server_config.json", "../plugins/*.py", "../plugins/README.md"]
