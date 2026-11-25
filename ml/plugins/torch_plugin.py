@@ -35,16 +35,12 @@ class TorchPlugin(AgentPlugin):
             },
         }
 
-    # Class-level throttle (#292, slice 5/6): the slot's agents share one
-    # plugin instance, so one shared counter spaces learn() calls across
-    # the whole slot -- every K shared steps, not per agent. learn() itself
-    # stays minibatch-gated (#222): early calls are cheap no-ops until the
-    # buffer fills. RND stays on inside the agent (rnd_lambda) for the 1-2
-    # torch learners; CPU-bound (agent falls back to cpu device).
-    _shared_learn_steps = 0
-
     def __init__(self, **config):
         super().__init__(**config)
+        # One plugin instance is shared by the agents assigned to a slot.
+        # Keep the throttle on that instance so independent slots do not
+        # advance each other's cadence or starve one another of learning.
+        self._shared_learn_steps = 0
         try:
             from torch_agents.dqn_agent import TorchDQNAgent
         except ImportError as e:
@@ -57,7 +53,7 @@ class TorchPlugin(AgentPlugin):
         return self._agent.act(flatten_obs(obs), self.epsilon, mask)
 
     def learn(self, prev_obs, action, reward, next_obs, done):
-        """Store every transition; learn every K shared steps (#292)."""
+        """Store every transition; learn every K shared slot steps."""
         self._agent.store(
             {
                 "state": flatten_obs(prev_obs),
@@ -67,8 +63,8 @@ class TorchPlugin(AgentPlugin):
                 "done": done,
             }
         )
-        type(self)._shared_learn_steps += 1
-        if type(self)._shared_learn_steps % max(1, self.learn_every) == 0:
+        self._shared_learn_steps += 1
+        if self._shared_learn_steps % max(1, self.learn_every) == 0:
             self._agent.learn()
 
     def save(self, path):
