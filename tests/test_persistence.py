@@ -4,6 +4,7 @@ Run from the repo root: python tests/test_persistence.py
 No game server is needed.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -375,6 +376,98 @@ def freight_refund_persistence_check(folder):
     print("FREIGHT_REFUND_PERSISTENCE_OK")
 
 
+def freight_death_refund_save_load_check(folder):
+    """A real hauler death leaves a refund row that survives save/load (#872).
+
+    The #857 check injects an empty-items row by hand. Here a real package goes
+    post -> accept -> death, so a production pop that drops the items key is
+    caught before the row reaches disk.
+    """
+    path = os.path.join(folder, "freight-death-refund.json")
+    marker = "ISSUE872_REFUND_MARKER"
+    saved = (
+        srv.FREIGHT,
+        srv._freight_counter,
+        srv._freight_dirty,
+        srv.FREIGHT_FILE_BLOCKED,
+        dict(srv.FREIGHT_STATS),
+    )
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_FILE_BLOCKED = False
+        poster = srv.Player(
+            ws=None,
+            id=1,
+            name=marker,
+            logged_in=False,
+            hp=10,
+            max_hp=10,
+            room="market",
+            gold=100,
+            inventory=[marker],
+        )
+        hauler = srv.Player(
+            ws=None,
+            id=2,
+            name="Issue872Hauler",
+            logged_in=True,
+            hp=10,
+            max_hp=10,
+            room="market",
+            gold=50,
+            inventory=[],
+        )
+        asyncio.run(
+            srv.cmd_freight(
+                poster,
+                {
+                    "action": "post",
+                    "destination": "smithy",
+                    "fee": 20,
+                    "items": [marker],
+                },
+            )
+        )
+        rec = next(iter(srv.FREIGHT.values()))
+        assert rec["items"] == [marker], rec
+        deposit = rec["deposit"]
+        asyncio.run(srv.cmd_freight(hauler, {"action": "accept", "id": rec["id"]}))
+        assert rec["state"] == "carried", rec["state"]
+        srv._freight_release_on_death(hauler, "deep_forest")
+        assert rec["state"] == "lost", rec["state"]
+        assert rec["items"] == [], rec
+        assert marker in srv._ground_items("deep_forest")
+        expected = 20 + deposit
+        assert rec["refund"] == expected, rec["refund"]
+        assert srv.save_freight(path) is True
+        cid = rec["id"]
+        srv.FREIGHT = {}
+        loaded = srv.load_freight(path)
+        assert cid in loaded, loaded
+        assert loaded[cid]["poster"] == marker, loaded[cid]
+        assert (
+            loaded[cid]["state"] == "lost" and loaded[cid]["refund"] == expected
+        ), loaded[cid]
+        assert loaded[cid]["items"] == [], loaded[cid]
+        srv.FREIGHT = loaded
+        poster.gold = 0
+        owed = srv._freight_flush_refunds(poster)
+        assert owed == expected and poster.gold == expected, (owed, poster.gold)
+        assert loaded[cid]["refund"] == 0, loaded[cid]
+    finally:
+        srv._remove_ground("deep_forest", marker)
+        (
+            srv.FREIGHT,
+            srv._freight_counter,
+            srv._freight_dirty,
+            srv.FREIGHT_FILE_BLOCKED,
+            stats,
+        ) = saved
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(stats)
+    print("FREIGHT_DEATH_REFUND_SAVE_LOAD_OK")
+
+
 with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
     linear_bad_checkpoint_check(folder)
@@ -383,4 +476,5 @@ with tempfile.TemporaryDirectory() as folder:
     runlog_sendback_check(folder)
     runlog_pkg_import_check()
     freight_refund_persistence_check(folder)
+    freight_death_refund_save_load_check(folder)
 print("PERSISTENCE_ALL_OK")
