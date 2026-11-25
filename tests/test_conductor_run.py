@@ -50,14 +50,17 @@ async def _supervisor_flow(tmpdir):
     mlog = MetricsLogger(os.path.join(tmpdir, "m.jsonl"))
     cm = ChurnManager(reg)
     sup = Supervisor(reg, mixer=mx, metrics=mlog, episode_hook=cm.report_episode)
-    for aid in ("k1", "k2"):
+    for aid in ("k1", "k2", "k3"):
         reg.register(aid, "linear")
-        cm._lifetimes[aid] = 1  # one episode each, then churn death
+        if aid != "k3":
+            cm._lifetimes[aid] = 1  # one episode each, then churn death
         await sup.start_agent(aid, lambda i: FakeEnv(), lambda o, a: 0, max_steps=5)
     await asyncio.sleep(0.5)
     assert reg.get("k1").episodes >= 1 and reg.get("k2").episodes >= 1
     assert reg.get("k1").alive is False  # hook-fired lifetime expiry
     assert await sup.reap() >= 1  # dead tasks reaped
+    assert "k1" not in sup._specs and "k2" not in sup._specs
+    assert "k3" in sup._specs  # live agent keeps its restart spec
     mlog.flush()
     rows = [json.loads(line) for line in open(os.path.join(tmpdir, "m.jsonl"))]
     kinds = [r["event"] for r in rows]
@@ -65,6 +68,7 @@ async def _supervisor_flow(tmpdir):
     assert "agent_death" in kinds
     await sup.stop_all()
     assert sup.status()["running"] == 0
+    assert not sup._specs
     print("SUPERVISOR_FLOW_OK")
 
 

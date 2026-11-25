@@ -410,6 +410,13 @@ class Supervisor:
         )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook, policy_timeout)
         self._lock = asyncio.Lock()
 
+    def _drop_specs(self, agent_ids):
+        for aid in agent_ids:
+            try:
+                self._specs.pop(aid, None)
+            except Exception:
+                pass
+
     def _log_death(self, agent_id, episodes, total_reward, error=None):
         if self._metrics is None:
             return
@@ -662,7 +669,12 @@ class Supervisor:
                 at.agent_id, at.episodes, at.total_reward, error=traceback.format_exc()
             )
         finally:
+            # A restart installs a fresh task and spec while this one is
+            # shutting down; its teardown must not drop the replacement.
+            owns_spec = self._tasks.get(at.agent_id) is at
             self._tasks.pop(at.agent_id, None)
+            if owns_spec:
+                self._drop_specs((at.agent_id,))
             # The agent isn't running anymore (cancelled, crashed, or
             # reaped): drop it from the mixer too, or dead ids pile up in
             # floor lists and inflate rebalance/snapshot counts.
@@ -691,6 +703,7 @@ class Supervisor:
     async def stop_agent(self, agent_id):
         async with self._lock:
             at = self._tasks.pop(agent_id, None)
+            self._drop_specs((agent_id,))
         await self._shutdown(at)
 
     async def restart_agent(self, agent_id, hparams=None):
@@ -713,7 +726,7 @@ class Supervisor:
             return False
         entry = self.registry.get(agent_id)
         if entry is None or not entry.alive:
-            self._specs.pop(agent_id, None)
+            self._drop_specs((agent_id,))
             return False
         if self.policy_disabled(spec[1]):
             # PBT must not hand a retired plugin another agent (#176): the
@@ -782,6 +795,7 @@ class Supervisor:
                 if entry is None or not entry.alive:
                     dead.append(aid)
             tasks = [self._tasks.pop(aid, None) for aid in dead]
+            self._drop_specs(dead)
         for at in tasks:
             if at is not None:
                 self._log_death(at.agent_id, at.episodes, at.total_reward)
@@ -792,6 +806,7 @@ class Supervisor:
         async with self._lock:
             tasks = list(self._tasks.values())
             self._tasks.clear()
+            self._drop_specs([at.agent_id for at in tasks])
         for at in tasks:
             await self._shutdown(at)
 

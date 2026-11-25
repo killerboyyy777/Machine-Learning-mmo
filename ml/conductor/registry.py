@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 # Reset ladder for the resume CLI (#290, slice 6/6): increasing wipe
@@ -21,6 +22,10 @@ from pathlib import Path
 # learned weights (agents restart fresh), all wipes the whole tree.
 # Metrics live outside the registry tree; the caller clears them on all.
 RESET_MODES = ("none", "lineage", "cell", "all")
+
+# Disk persistence keeps every row; the run's in-memory history and lineage
+# views are rings so a long soak cannot pin every id it has ever seen (#759).
+REGISTRY_HISTORY_CAP = 512
 
 
 class AgentEntry:
@@ -101,6 +106,8 @@ class Registry:
         self.base_dir = Path(base_dir)
         self.max_agents = max_agents
         self._agents = {}  # agent_id -> AgentEntry
+        self._history = deque(maxlen=REGISTRY_HISTORY_CAP)
+        self._lineages = deque(maxlen=REGISTRY_HISTORY_CAP)
         self._lock = threading.RLock()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,6 +144,7 @@ class Registry:
                 parent_id=parent_id,
             )
             self._agents[agent_id] = entry
+            self._history.append(agent_id)
             return entry
 
     def alloc_character(self):
@@ -263,6 +271,7 @@ class Registry:
             f.write(parent_id or "")
         if checkpoint_path and os.path.isfile(checkpoint_path):
             shutil.copyfile(checkpoint_path, d / "ckpt")
+        self._lineages.append(agent_id)
         return True
 
     def load_lineage(self, agent_id):
