@@ -14,6 +14,7 @@ import math
 import os
 import queue
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -1353,6 +1354,35 @@ def _room_is_risk(room_id):
 SCORES_BACKUP_GENERATIONS = 2  # rotated copies kept: scores.json.1 (+ .2)
 
 
+def _atomic_json_write(path, payload, generations=1):
+    # Backups are copied, never moved: the live path must stay present even
+    # if the final replace or a backup copy fails (#810, #811).
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+            f.flush()
+            os.fsync(f.fileno())
+        for i in range(generations, 0, -1):
+            src = path if i == 1 else f"{path}.{i - 1}"
+            dst = f"{path}.{i}"
+            if os.path.exists(src):
+                try:
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    shutil.copyfile(src, dst)
+                except OSError:
+                    pass
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def load_scores():
     # Prefer the primary file; fall back to rotated backups so one torn
     # write or corrupt save never loses the whole world (#166).
@@ -1376,27 +1406,9 @@ def load_scores():
 
 
 def save_scores():
-    # Atomic write: a kill mid-flush must never leave a truncated scores.json.
-    # The previous good copy rotates aside first, so there is always a
-    # fallback generation even if this write itself goes bad.
-    # Returns success: callers must not clear-dirty on failure (#373).
-    # Serialization failures (a corrupt SCORES value) report False like
-    # I/O errors instead of propagating out of the save path.
-    tmp = SCORES_FILE + ".tmp"
-    try:
-        with open(tmp, "w") as f:
-            json.dump(SCORES, f)
-        for i in range(SCORES_BACKUP_GENERATIONS, 0, -1):
-            src = SCORES_FILE if i == 1 else f"{SCORES_FILE}.{i - 1}"
-            if os.path.exists(src):
-                try:
-                    os.replace(src, f"{SCORES_FILE}.{i}")
-                except OSError:
-                    pass
-        os.replace(tmp, SCORES_FILE)
-    except (OSError, TypeError, ValueError):
-        return False
-    return True
+    # Serialization failures report False like I/O errors; callers must not
+    # clear-dirty on failure (#373).
+    return _atomic_json_write(SCORES_FILE, SCORES, SCORES_BACKUP_GENERATIONS)
 
 
 SCORES = load_scores()
@@ -11749,26 +11761,15 @@ def save_arena(path=None):
     if path is None and ARENA_FILE_BLOCKED:
         return False
     path = path or ARENA_FILE
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w") as f:
-            json.dump(
-                {
-                    "version": ARENA_VERSION,
-                    "ratings": ARENA_RATINGS,
-                    "history": ARENA_HISTORY[-ARENA_HISTORY_MAX:],
-                    "clamps": ARENA_RATING_CLAMPS,
-                },
-                f,
-            )
-        if os.path.exists(path):
-            os.replace(path, path + ".1")
-        os.replace(tmp, path)
-    except (OSError, TypeError, ValueError):
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+    if not _atomic_json_write(
+        path,
+        {
+            "version": ARENA_VERSION,
+            "ratings": ARENA_RATINGS,
+            "history": ARENA_HISTORY[-ARENA_HISTORY_MAX:],
+            "clamps": ARENA_RATING_CLAMPS,
+        },
+    ):
         return False
     _arena_dirty = False
     return True

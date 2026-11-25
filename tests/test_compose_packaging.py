@@ -127,4 +127,31 @@ for phrase in (
 assert "- run: python tests/test_compose_packaging.py" in WORKFLOW, "not in CI"
 print("COMPOSE_COMMAND_OK")
 
+# #816: the image must ship the top-level trees imported by probes, the
+# conductor and the botfarm entry point.
+for package in ("harness", "plugins"):
+    assert (
+        f"COPY {package}/ ./{package}/" in docker_lines
+    ), f"Dockerfile lost COPY {package}/"
+    assert (ROOT / package).is_dir(), f"{package}/ missing from repo"
+
+botfarm_args = _command(_service("botfarm"))
+assert "ml/ml_botfarm.py" in botfarm_args, "botfarm entry point changed"
+entry = ROOT / "ml" / "ml_botfarm.py"
+assert entry.is_file(), "botfarm entry point missing"
+botfarm_source = entry.read_text(encoding="utf-8")
+assert re.search(
+    r"^\s*from plugins\.scripted import", botfarm_source, re.M
+), "botfarm no longer uses the plugins.scripted fallback"
+
+for name in ("arena_probe.py", "guild_probe.py"):
+    probe_source = (ROOT / "ml" / name).read_text(encoding="utf-8")
+    assert re.search(
+        r"^from harness\.bridge import", probe_source, re.M
+    ), f"{name} no longer uses harness.bridge"
+
+for relative in ("harness/bridge.py", "ml/plugins/scripted.py"):
+    assert (ROOT / relative).is_file(), f"{relative} missing from repo"
+print("DOCKERFILE_HARNESS_PLUGINS_OK")
+
 print("ALL_COMPOSE_PACKAGING_OK")
