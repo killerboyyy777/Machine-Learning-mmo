@@ -7295,6 +7295,15 @@ def _guild_dissolve(record, now):
     for tid, row in list(GUILD_TRANSFERS.items()):
         if row.get("from") == gid or row.get("to") == gid:
             GUILD_TRANSFERS.pop(tid, None)
+    # The daily caps also key on the recycled numeric id, so stale rows would
+    # spend a successor's allowance or credit it with offers a dead guild made.
+    GUILD_TRANSFER_INCOMING.pop(gid, None)
+    for target_id, rows in list(GUILD_TRANSFER_INCOMING.items()):
+        kept = [row for row in rows if row.get("from") != gid]
+        if kept:
+            GUILD_TRANSFER_INCOMING[target_id] = kept
+        else:
+            GUILD_TRANSFER_INCOMING.pop(target_id, None)
     _guild_index_drop(record)
     _guild_add_tombstone(record, now)
     _intel_drop_guild(record.get("id"))
