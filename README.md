@@ -57,10 +57,9 @@ Use `edge` for the current development image. Replace the tag with a version or 
 python3 server.py                      # terminal 1: world
 python3 ml/ml_client.py                # terminal 2: learning agent
 python3 ml/ml_botfarm.py --bots 4      # or a 4-bot training farm
-python3 torch_agents/dqn_agent.py --steps 5000   # or the PyTorch DQN
-
 # Optional, only for the PyTorch DQN / Torch agents:
 pip install -r requirements-train.txt
+python3 torch_agents/dqn_agent.py --steps 5000   # or the PyTorch DQN
 ```
 
 ```bash
