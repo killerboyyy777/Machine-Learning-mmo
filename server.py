@@ -120,7 +120,6 @@ DRONELANG_ACTIONS = frozenset(
         "assist",
         "attack",
         "gather",
-        "guard",
         "rest",
         "say",
         "emote",
@@ -128,9 +127,7 @@ DRONELANG_ACTIONS = frozenset(
     }
 )
 
-DRONELANG_ACTION_TARGET_REQUIRED = frozenset(
-    {"attack", "gather", "guard", "say", "emote"}
-)
+DRONELANG_ACTION_TARGET_REQUIRED = frozenset({"attack", "gather", "say", "emote"})
 DRONELANG_ACTION_TARGET_FORBIDDEN = frozenset({"follow", "assist", "rest", "idle"})
 
 HOST = "0.0.0.0"
@@ -3905,6 +3902,20 @@ def _dronelang_tokenize(script: str):
     return tokens
 
 
+def _dronelang_unescape_string(raw):
+    """Decode the escapes the tokenizer skips inside a string body (#910)."""
+    out = []
+    i = 0
+    while i < len(raw):
+        if raw[i] == "\\" and i + 1 < len(raw) and raw[i + 1] in ('"', "\\"):
+            out.append(raw[i + 1])
+            i += 2
+        else:
+            out.append(raw[i])
+            i += 1
+    return "".join(out)
+
+
 class DroneLangParser:
     """Parser for the flat IF/ELSE DroneLang grammar."""
 
@@ -4001,7 +4012,7 @@ class DroneLangParser:
             self._expect("(")
             if self.current[0] != "STRING":
                 raise DroneLangError(f"Expected string argument for {name}")
-            args.append(self.current[1][1:-1])
+            args.append(_dronelang_unescape_string(self.current[1][1:-1]))
             self._advance()
             self._expect(")")
         elif name not in ("always", "owner_in_combat", "sees_hostile", "has_target"):
@@ -4014,6 +4025,8 @@ class DroneLangParser:
             raise DroneLangError(f"Expected action name, got {self.current}")
         name = self.current[1]
         self._advance()
+        if name == "guard":
+            raise DroneLangError("The guard action is not supported")
         if name not in DRONELANG_ACTIONS:
             raise DroneLangError(f"Unknown action: {name}")
 
@@ -4023,12 +4036,12 @@ class DroneLangParser:
             if name in ("say", "emote"):
                 if self.current[0] != "STRING":
                     raise DroneLangError(f"Expected string argument for {name}")
-                args.append(self.current[1][1:-1])
+                args.append(_dronelang_unescape_string(self.current[1][1:-1]))
                 self._advance()
             else:
                 if self.current[0] != "STRING":
                     raise DroneLangError(f"Expected string argument for {name}")
-                args.append(self.current[1][1:-1])
+                args.append(_dronelang_unescape_string(self.current[1][1:-1]))
                 self._advance()
             self._expect(")")
         elif name in DRONELANG_ACTION_TARGET_FORBIDDEN:
@@ -4133,9 +4146,6 @@ async def _dronelang_exec_action(owner, rec, action, now):
                 await sync_room(owner.room)
                 return True
         return False
-    if name == "guard":
-        rec["_dronelang_guard"] = args[0]
-        return True
     if name == "rest":
         if not ROOMS.get(owner.room, {}).get("rest_area"):
             return False
@@ -9836,7 +9846,7 @@ async def cmd_companion(player, msg):
         sub = str(msg.get("sub") or "").strip().lower()
         if sub == "set":
             script = str(msg.get("script") or "")
-            if not script:
+            if not script.strip():
                 await send(
                     player,
                     {"type": "error", "text": "Usage: companion script set <script>"},
