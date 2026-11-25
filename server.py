@@ -14215,24 +14215,24 @@ def start_dashboard():
             if full:
                 self.send_error(503)
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-
-            def _frame(entry):
-                return (
-                    f"id: {entry['seq']}\n" f"data: {json.dumps(entry)}\n\n"
-                ).encode()
-
-            missed = [e for e in command_log if e.get("seq", 0) > since][-100:]
-            if not missed and since > activity_seq:
-                # Stale cursor (e.g. server restarted, seq reset): send a
-                # fresh tail so the viewer never waits on a dead offset.
-                missed = list(command_log[-30:])
             try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+
+                def _frame(entry):
+                    return (
+                        f"id: {entry['seq']}\n" f"data: {json.dumps(entry)}\n\n"
+                    ).encode()
+
+                missed = [e for e in command_log if e.get("seq", 0) > since][-100:]
+                if not missed and since > activity_seq:
+                    # Stale cursor (e.g. server restarted, seq reset): send a
+                    # fresh tail so the viewer never waits on a dead offset.
+                    missed = list(command_log[-30:])
                 for e in missed:
                     self.wfile.write(_frame(e))
                 self.wfile.flush()

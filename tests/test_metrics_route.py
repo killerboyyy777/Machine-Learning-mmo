@@ -220,6 +220,11 @@ def test_activity_stream_guard():
     assert "len(activity_subscribers)" in stream, stream
     assert "_activity_subscribers_lock" in stream, stream
     assert "time.monotonic" in stream, stream
+    assert "activity_subscribers.append(sub)" in stream, stream
+    reserved_at = stream.index("activity_subscribers.append(sub)")
+    headers_at = stream.index("self.send_response(")
+    guard_window = stream[reserved_at:headers_at]
+    assert "try:" in guard_window, guard_window
     assert srv.ACTIVITY_STREAM_MAX_SUBSCRIBERS > 0
     assert srv.ACTIVITY_STREAM_MAX_SECONDS > 0
     print("ACTIVITY_STREAM_GUARD_OK")
