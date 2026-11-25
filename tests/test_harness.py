@@ -13,6 +13,12 @@ sys.path.insert(0, str(REPO))
 
 from harness.bridge import GameBridge  # noqa: E402
 
+DEEP_NESTING = 200000
+
+
+def deep_json_frame():
+    return '{"nested":' + '{"a":' * DEEP_NESTING + "0" + "}" * (DEEP_NESTING + 1)
+
 
 def room_view(room_id):
     name = "Town Square" if room_id == "town_square" else "Old Shop"
@@ -52,12 +58,19 @@ def stats_view():
 
 async def test_bridge_recursion_frame():
     class FakeWS:
+        def __init__(self):
+            self.frames = [
+                deep_json_frame().encode(),
+                b'{"type": "stats", "hp": 20}',
+            ]
+
         async def recv(self):
-            return b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+            return self.frames.pop(0)
 
     bridge = GameBridge("ws://127.0.0.1:1", "BadFrame")
     bridge._ws = FakeWS()
     assert await bridge._recv_frame(1) is None
+    assert await bridge._recv_frame(1) == {"type": "stats", "hp": 20}
     print("HARNESS_BRIDGE_RECURSION_OK")
 
 
@@ -172,7 +185,7 @@ async def main():
                 if reply.get("id") == message["id"]:
                     return reply
 
-        deep = '{"nested":' + "[" * 2000 + "0" + "]" * 2000 + "}"
+        deep = deep_json_frame()
         proc.stdin.write((deep + "\n").encode())
         await proc.stdin.drain()
         parse_error = json.loads(await asyncio.wait_for(proc.stdout.readline(), 10))
