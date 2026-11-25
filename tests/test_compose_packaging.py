@@ -99,6 +99,19 @@ assert {"8765:8765", "8766:8766"} <= set(publishes), publishes
 assert not any(p.startswith("8767:") for p in publishes), "GM published to host"
 print("SOAK_LOOPBACK_OK")
 
+# #759: every service carries explicit memory and CPU limits.
+for name in ("server", "botfarm", "soak", "torch-farm"):
+    active = _active("\n".join(_service(name)))
+    limits = {}
+    for line in active:
+        match = re.match(r"^    (mem_limit|cpus):\s*(\S+)", line)
+        if match:
+            limits[match.group(1)] = match.group(2)
+    assert "mem_limit" in limits and "cpus" in limits, (name, limits)
+    assert re.fullmatch(r"\d+(?:m|g)", limits["mem_limit"]), (name, limits)
+    assert float(limits["cpus"]) > 0, (name, limits)
+print("COMPOSE_LIMITS_OK")
+
 # The documented compose command still resolves to the soak service.
 command = "docker compose --profile soak up soak"
 assert command in README, "README dropped the soak command"

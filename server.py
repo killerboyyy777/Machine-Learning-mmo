@@ -13192,11 +13192,34 @@ def world_snapshot():
 
 world_snapshot_json = None
 
+# Parsing the full snapshot on every /health probe cost ms (#759). The
+# refresh loop builds these scalars beside the JSON string, so a probe is a
+# dict lookup; a cold cache still reads the JSON cache exactly once.
+_health_scalars_cache = None
+
+
+def _set_health_scalars(snap):
+    global _health_scalars_cache
+    server = snap.get("server") or {}
+    _health_scalars_cache = {"players_online": server.get("players_online", 0)}
+
+
+def _health_scalars():
+    if _health_scalars_cache is None:
+        try:
+            snap = json.loads(world_snapshot_json) if world_snapshot_json else {}
+        except (TypeError, ValueError):
+            snap = {}
+        _set_health_scalars(snap)
+    return _health_scalars_cache
+
 
 def refresh_snapshot_json():
     global world_snapshot_json
     try:
-        world_snapshot_json = json.dumps(world_snapshot())
+        snap = world_snapshot()
+        world_snapshot_json = json.dumps(snap)
+        _set_health_scalars(snap)
     except Exception:
         traceback.print_exc()
 
@@ -13988,24 +14011,15 @@ def start_dashboard():
                     status = 503
                 self._send_json(body, status)
             elif path == "/health":
-                # Liveness probe for CI/Docker/monitoring (#56). Served
-                # from the cached snapshot (#224): iterating live `players`
-                # from this HTTP thread raced logins/disconnects and raised
-                # RuntimeError, failing probes under exactly the load that
-                # matters. The snapshot string is immutable once built.
-                try:
-                    snap = (
-                        json.loads(world_snapshot_json) if world_snapshot_json else {}
-                    )
-                except (TypeError, ValueError):
-                    snap = {}
+                # Liveness probe for CI/Docker/monitoring (#56). Scalars come
+                # from the refresh loop's cached view, not a fresh parse of
+                # the whole snapshot; reading live `players` here also raced
+                # logins and failed probes under load (#224).
                 body = json.dumps(
                     {
                         "status": "ok",
                         "uptime": round(time.time() - START_TIME, 1),
-                        "players_online": (snap.get("server") or {}).get(
-                            "players_online", 0
-                        ),
+                        "players_online": _health_scalars().get("players_online", 0),
                         "memory_mb": _memory_mb(),
                     }
                 )
