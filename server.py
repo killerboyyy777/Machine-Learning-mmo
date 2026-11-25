@@ -1832,7 +1832,11 @@ def _normalize_freight_record(row):
     if not isinstance(items, list):
         return None
     rec["items"] = [str(iid) for iid in items if isinstance(iid, str)]
-    if not rec["items"]:
+    # Terminal rows can have empty items: pruning dropped the goods but left a
+    # refund owed to a poster who was offline when the contract ended.
+    if not rec["items"] and not (
+        rec["state"] in ("lost", "expired") and rec["refund"] > 0
+    ):
         return None
     if rec.get("state") not in ("open", "carried", "delivered", "expired", "lost"):
         return None
