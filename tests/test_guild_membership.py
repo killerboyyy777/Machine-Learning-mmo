@@ -370,6 +370,80 @@ async def main():
                 "permissions, transfer, accept, decline, or cancel."
             )
             print("UNKNOWN_ACTION_OK")
+
+            # --- #867: a stale invite must not join a recycled guild id ----
+            srv.GUILDS = {}
+            srv.GUILD_TOMBSTONES = []
+            srv._rebuild_guild_index()
+            srv._pending_guild_invites.clear()
+            ivy = mkplayer("Ivy", 70120)
+            moss = mkplayer("Moss", 70121)
+            faye = mkplayer("Faye", 70122)
+            players.extend([ivy, moss, faye])
+
+            inbox.clear()
+            await srv.cmd_guild(ivy, {"action": "create", "name": "Alpha"})
+            alpha_id = max(srv.GUILDS)
+            assert alpha_id == 1, alpha_id
+            await srv.cmd_guild(ivy, {"action": "invite", "target": "Faye"})
+            assert "faye" in srv._pending_guild_invites, texts(inbox)
+            invite = srv._pending_guild_invites["faye"]
+            assert invite["guild_id"] == alpha_id, invite
+            assert invite["name_key"] == "alpha", invite
+            await srv.cmd_guild(ivy, {"action": "disband"})
+            assert alpha_id not in srv.GUILDS
+            assert "faye" not in srv._pending_guild_invites
+            print("DISSOLVE_CLEARS_INVITE_OK")
+
+            # The freed id is reused; Faye has no invite to the successor.
+            await srv.cmd_guild(moss, {"action": "create", "name": "Beta"})
+            assert max(srv.GUILDS) == alpha_id
+            inbox.clear()
+            await srv.cmd_guild(faye, {"action": "join"})
+            assert "No pending guild invitation" in texts(inbox)[-1], texts(inbox)
+            assert srv._guild_for_member(faye.name) is None
+            print("RECYCLED_ID_NO_INVITE_OK")
+
+            # Even a surviving stale invite names Alpha, so the recycled id
+            # cannot bind Faye to Beta on a bare join.
+            srv._pending_guild_invites["faye"] = {
+                "guild_id": alpha_id,
+                "name_key": "alpha",
+                "ts": time.time(),
+                "inviter": "Ivy",
+            }
+            inbox.clear()
+            await srv.cmd_guild(faye, {"action": "join"})
+            assert "no longer exists" in texts(inbox)[-1], texts(inbox)
+            assert srv._guild_for_member(faye.name) is None
+            assert "faye" not in srv._pending_guild_invites
+            print("STALE_NAME_KEY_REJECTED_OK")
+
+            # A real invite to Beta still works: a wrong name is refused and
+            # the matching name joins.
+            await srv.cmd_guild(moss, {"action": "invite", "target": "Faye"})
+            assert srv._pending_guild_invites["faye"]["name_key"] == "beta"
+            inbox.clear()
+            await srv.cmd_guild(faye, {"action": "join", "name": "Alpha"})
+            assert "pending invitation is for Beta" in texts(inbox)[-1], texts(inbox)
+            assert srv._guild_for_member(faye.name) is None
+            inbox.clear()
+            await srv.cmd_guild(faye, {"action": "join", "name": "Beta"})
+            assert texts(inbox)[-1] == "You join Beta as a member.", texts(inbox)
+            assert srv._guild_for_member(faye.name) is srv._guild_for_name("Beta")
+            assert "faye" not in srv._pending_guild_invites
+            print("NAMED_JOIN_OK")
+
+            # A plain invite and bare join still work within the TTL.
+            reed = mkplayer("Reed", 70123)
+            players.append(reed)
+            await srv.cmd_guild(moss, {"action": "invite", "target": "Reed"})
+            inbox.clear()
+            await srv.cmd_guild(reed, {"action": "join"})
+            assert texts(inbox)[-1] == "You join Beta as a member.", texts(inbox)
+            assert srv._guild_for_member(reed.name) is srv._guild_for_name("Beta")
+            srv._pending_guild_invites.clear()
+            print("BARE_JOIN_OK")
         finally:
             for pl in players:
                 unplayer(pl)
