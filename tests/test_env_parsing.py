@@ -554,7 +554,10 @@ def test_reader_survives_recursion_error():
 
     deep = b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
     env = TextMMOEnv("ReaderDepth")
-    env.ws = FakeWS([deep, b'{"type":"welcome","protocol_version":2}'])
+    overflow = b'{"type":"stats","buffs":{"attack":{"amount":1e9999,"remaining":1}}}'
+    env.ws = FakeWS(
+        [deep, overflow, b'{"type":"welcome","protocol_version":2}']
+    )
     asyncio.run(env._reader())
     assert env._state["server_version"] == 2
     print("READER_RECURSION_OK")
