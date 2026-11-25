@@ -403,6 +403,57 @@ async def main():
             index_ok()
             print("PROMOTE_DEMOTE_OK")
 
+            # --- #911: an override must not let a member re-rank themselves
+            sx = mkplayer("Sx", 70220)
+            sy = mkplayer("Sy", 70221)
+            players.extend([sx, sy])
+            selfrank = make_guild(
+                "Self Rank",
+                [
+                    ("sx", "leader", 10.0),
+                    ("sy", "member", 20.0),
+                ],
+            )
+            inbox.clear()
+            await srv.cmd_guild(
+                sx, {"action": "permissions", "verb": "promote", "rank": "member"}
+            )
+            assert texts(inbox)[-1] == "Self Rank: promote now needs member."
+            assert selfrank["permissions"]["promote"] == "member"
+            assert srv._guild_allows(selfrank, "sy", "promote") is True
+            audit_len = len(selfrank["audit"])
+            srv._guilds_dirty = False
+            inbox.clear()
+            await srv.cmd_guild(sy, {"action": "promote", "target": "Sy"})
+            assert texts(inbox)[-1] == "You cannot promote yourself."
+            assert selfrank["members"]["sy"]["rank"] == "member"
+            assert len(selfrank["audit"]) == audit_len
+            assert srv._guilds_dirty is False
+            # A leader can still promote a member while the override stands.
+            inbox.clear()
+            await srv.cmd_guild(sx, {"action": "promote", "target": "Sy"})
+            assert texts(inbox)[-1] == "Sy is now an officer of Self Rank."
+            assert selfrank["members"]["sy"]["rank"] == "officer"
+            assert len(selfrank["audit"]) == audit_len + 1
+            index_ok()
+            # The mirror case: demote lowered to officer must not self-demote.
+            inbox.clear()
+            await srv.cmd_guild(
+                sx, {"action": "permissions", "verb": "demote", "rank": "officer"}
+            )
+            assert texts(inbox)[-1] == "Self Rank: demote now needs officer."
+            assert srv._guild_allows(selfrank, "sy", "demote") is True
+            audit_len = len(selfrank["audit"])
+            srv._guilds_dirty = False
+            inbox.clear()
+            await srv.cmd_guild(sy, {"action": "demote", "target": "Sy"})
+            assert texts(inbox)[-1] == "You cannot demote yourself."
+            assert selfrank["members"]["sy"]["rank"] == "officer"
+            assert len(selfrank["audit"]) == audit_len
+            assert srv._guilds_dirty is False
+            index_ok()
+            print("SELF_RANK_GUARD_OK")
+
             # --- INV-3: the index and the records never drift -------------
             index_ok()
             names = list(srv.GUILD_BY_MEMBER)
