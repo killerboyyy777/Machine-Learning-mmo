@@ -58,6 +58,12 @@ def read_transcript(path):
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
     return rows

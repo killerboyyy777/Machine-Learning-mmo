@@ -4,6 +4,7 @@ Run from the repo root: python tests/test_persistence.py
 No game server is needed.
 """
 
+import json
 import os
 import re
 import sys
@@ -38,6 +39,36 @@ def linear_check(folder):
     assert v and v["obs_size"] == OBS_SIZE and v["n_actions"] == N_ACTIONS, v
     assert v["git_sha"] and v["config_hash"] and v["saved_at"], v
     print("LINEAR_PERSISTENCE_OK")
+
+
+def linear_bad_checkpoint_check(folder):
+    path = os.path.join(folder, "bad-linear.json")
+    cases = [
+        {"weights": [[0, 0, 0], [0]], "bias": [0, 0]},
+        {
+            "weights": [[0, 0, 0], [0, float("nan"), 0]],
+            "bias": [0, 0],
+        },
+        {"weights": [[0, 0, 0], [0, 0, 0]], "bias": [0, float("inf")]},
+        {
+            "weights": [[0, 0, 0], [0, 0, 0]],
+            "bias": [0, 0],
+            "training_steps": "not-an-int",
+        },
+        [],
+    ]
+    for data in cases:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        agent = LinearQAgent(3, 2)
+        original = [row[:] for row in agent.weights]
+        assert not agent.load(path), data
+        assert agent.weights == original
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{")
+    assert not LinearQAgent(3, 2).load(path)
+    print("LINEAR_BAD_CHECKPOINT_OK")
 
 
 def torch_check(folder):
@@ -278,6 +309,7 @@ def runlog_pkg_import_check():
 
 with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
+    linear_bad_checkpoint_check(folder)
     torch_check(folder)
     runlog_check(folder)
     runlog_sendback_check(folder)

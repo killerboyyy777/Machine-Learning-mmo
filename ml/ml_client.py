@@ -25,6 +25,7 @@ every run) rather than resetting each "episode" -- see README.md's
 import argparse
 import asyncio
 import json
+import math
 import os
 import random
 
@@ -121,24 +122,57 @@ class LinearQAgent:
     def load(self, path):
         if not os.path.exists(path):
             return False
-        with open(path) as f:
-            data = json.load(f)
-        if (
-            len(data.get("weights", [])) == self.n_actions
-            and data["weights"]
-            and len(data["weights"][0]) == self.obs_size
-            and len(data.get("bias", [])) == self.n_actions
-        ):
-            self.weights = data["weights"]
-            self.bias = data["bias"]
-            self.training_steps = int(data.get("training_steps", 0))
-            self.ckpt_version = data.get("version")
-            notes = version_notes(self.ckpt_version, self.obs_size, self.n_actions)
-            if notes:
-                print(f"Checkpoint {path} version notes: " + "; ".join(notes))
-            return True
-        print(f"Warning: {path} doesn't match current obs/action size, starting fresh.")
-        return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError, RecursionError) as exc:
+            print(f"Warning: {path} is unreadable or invalid ({exc}); starting fresh.")
+            return False
+
+        def finite_number(value):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False
+            try:
+                return math.isfinite(float(value))
+            except (OverflowError, ValueError):
+                return False
+
+        weights = data.get("weights") if isinstance(data, dict) else None
+        bias = data.get("bias") if isinstance(data, dict) else None
+        steps = data.get("training_steps", 0) if isinstance(data, dict) else None
+        version = data.get("version") if isinstance(data, dict) else None
+        valid = (
+            isinstance(data, dict)
+            and isinstance(weights, list)
+            and len(weights) == self.n_actions
+            and all(
+                isinstance(row, list)
+                and len(row) == self.obs_size
+                and all(finite_number(value) for value in row)
+                for row in weights
+            )
+            and isinstance(bias, list)
+            and len(bias) == self.n_actions
+            and all(finite_number(value) for value in bias)
+            and isinstance(steps, int)
+            and not isinstance(steps, bool)
+            and steps >= 0
+            and (version is None or isinstance(version, dict))
+        )
+        if not valid:
+            print(
+                f"Warning: {path} doesn't match the checkpoint schema, starting fresh."
+            )
+            return False
+
+        self.weights = weights
+        self.bias = bias
+        self.training_steps = steps
+        self.ckpt_version = version
+        notes = version_notes(self.ckpt_version, self.obs_size, self.n_actions)
+        if notes:
+            print(f"Checkpoint {path} version notes: " + "; ".join(notes))
+        return True
 
 
 async def train(
