@@ -193,6 +193,12 @@ def parse_args():
         "off by default unless TEXTMMO_TELEMETRY is truthy",
     )
     p.add_argument(
+        "--reload-dir",
+        default=None,
+        help="directory to watch for checkpoint changes (#75); off by "
+        "default unless TEXTMMO_RELOAD is truthy",
+    )
+    p.add_argument(
         "--no-run-record",
         dest="run_record",
         action="store_false",
@@ -323,6 +329,10 @@ async def main():
         telemetry_dir = telemetry_dir or args.base_dir
         os.makedirs(telemetry_dir, exist_ok=True)
         telemetry = Telemetry(True, os.path.join(telemetry_dir, "telemetry.jsonl"))
+    reload_dir = None
+    if args.reload_dir is not None or _truthy_env("TEXTMMO_RELOAD"):
+        reload_dir = args.reload_dir or os.path.join(args.base_dir, "registry")
+        os.makedirs(reload_dir, exist_ok=True)
     loop = asyncio.get_running_loop()
 
     def _async_handler(loop, context):
@@ -376,6 +386,7 @@ async def main():
         reset=args.reset,
         transcript_dir=args.transcript_dir,
         telemetry=telemetry,
+        reload=reload_dir,
     )
     if args.reset == "all":
         # Registry tree is wiped by reset_state; metrics live outside

@@ -12,6 +12,7 @@ from .churn import ChurnManager, wave_startup
 from .metrics import MetricsLogger
 from .mixer import Mixer
 from .pbt import PBTManager
+from .reload import CheckpointWatcher
 from .registry import Registry
 from .supervisor import Supervisor
 
@@ -118,10 +119,12 @@ class Conductor:
         reset="none",
         transcript_dir=None,
         telemetry=None,
+        reload=None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.telemetry = telemetry
+        self._watcher = CheckpointWatcher(reload, interval=5.0) if reload else None
 
         self.registry = Registry(str(self.base_dir / "registry"), max_agents)
         if reset != "none":
@@ -253,6 +256,32 @@ class Conductor:
         if self.pbt is not None:
             self.pbt.register(agent_id, hparams)
 
+    async def _reload_checkpoints(self):
+        try:
+            changed = self._watcher.poll()
+        except Exception as e:
+            self.metrics.log("checkpoint_reload_error", error=str(e)[-300:])
+            return
+        for path, digest in changed:
+            for entry in self.registry.alive_agents():
+                if entry.checkpoint_path != path:
+                    continue
+                try:
+                    await self.supervisor.restart_agent(entry.agent_id)
+                    self.metrics.log(
+                        "checkpoint_reload",
+                        agent_id=entry.agent_id,
+                        path=path,
+                        sha256=digest,
+                    )
+                except Exception as e:
+                    self.metrics.log(
+                        "checkpoint_reload_error",
+                        agent_id=entry.agent_id,
+                        path=path,
+                        error=str(e)[-300:],
+                    )
+
     async def run(self, duration_seconds=3600, wave_size=10, wave_delay=5.0):
         """Run the conductor for a fixed duration.
 
@@ -304,6 +333,9 @@ class Conductor:
                     self.metrics.log_agent_spawn(aid, entry.agent_type, entry.branch)
                     self.mixer.assign_one(aid)
             await self.supervisor.reap()
+
+            if self._watcher is not None:
+                await self._reload_checkpoints()
 
             if now - last_rebalance >= rebalance_interval:
                 moves = self.mixer.rebalance()
