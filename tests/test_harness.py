@@ -172,7 +172,7 @@ async def main():
                 if reply.get("id") == message["id"]:
                     return reply
 
-        deep = '{"nested":' + '[' * 2000 + '0' + ']' * 2000 + '}'
+        deep = '{"nested":' + "[" * 2000 + "0" + "]" * 2000 + "}"
         proc.stdin.write((deep + "\n").encode())
         await proc.stdin.drain()
         parse_error = json.loads(await asyncio.wait_for(proc.stdout.readline(), 10))
