@@ -89,6 +89,7 @@ jobs:
       - run: python tests/test_arena_spectator.py
       - run: python tests/test_metrics_route.py
       - run: python tests/test_telemetry.py
+      - run: python tests/test_checkpoint_reload.py
       - run: python tests/test_source_policy.py
 
   live:
