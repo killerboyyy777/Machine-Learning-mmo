@@ -6102,6 +6102,20 @@ async def _test_parse_and_validate(srv):
     assert rules3 == []
     print("DRONE_PARSE_EMPTY_OK")
 
+    # guard only wrote an unread field, so it is refused at parse time (#910)
+    try:
+        srv.dronelang_parse('if (always) { guard("town_square") };')
+        assert False, "guard should be rejected at parse time"
+    except srv.DroneLangError as e:
+        assert "not supported" in str(e).lower()
+    print("DRONE_PARSE_GUARD_REJECTED_OK")
+
+    # string args decode the escapes the tokenizer skips (#910)
+    rules4 = srv.dronelang_parse(r'if (room_is("a\\b")) { say("he said \"hi\"") };')
+    assert rules4[0]["predicate"]["args"] == ["a\\b"]
+    assert rules4[0]["then"]["args"] == ['he said "hi"']
+    print("DRONE_PARSE_STRING_ESCAPES_OK")
+
     # tick_mod divisor below 1 is rejected at parse time (#885)
     for bad_script in ("if (tick_mod(0)) { idle };", "if (tick_mod(-1)) { idle };"):
         try:
@@ -6376,7 +6390,6 @@ async def _test_actions(srv):
         "hp": 10,
         "max_hp": 20,
         "inventory": [],
-        "_dronelang_guard": None,
     }
     owner = type(
         "Owner",
@@ -6479,13 +6492,6 @@ async def _test_actions(srv):
     )
     assert isinstance(result, bool)
     print("DRONE_ACTION_GATHER_OK")
-
-    result = await _dronelang_exec_action(
-        owner, rec, {"name": "guard", "args": ["town_square"]}, time.time()
-    )
-    assert result is True
-    assert rec["_dronelang_guard"] == "town_square"
-    print("DRONE_ACTION_GUARD_OK")
 
     rec["hp"] = 10
     result = await _dronelang_exec_action(
@@ -6619,6 +6625,13 @@ async def _test_commands(srv):
     )
     assert rec["script"] == valid_script
     print("DRONE_CMD_SET_VALID_OK")
+
+    # whitespace-only input must be refused before it is stored as zero rules (#910)
+    await srv.cmd_companion(
+        comp_owner, {"action": "script", "sub": "set", "script": "  \n\t "}
+    )
+    assert rec["script"] == valid_script
+    print("DRONE_CMD_SET_WHITESPACE_REJECTED_OK")
 
     invalid_script = "if (nonexistent) { follow };"
     try:
