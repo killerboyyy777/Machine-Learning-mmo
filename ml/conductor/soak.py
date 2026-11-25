@@ -31,6 +31,7 @@ sys.path.insert(
 
 from ml.conductor.conductor import Conductor
 from ml.runlog import new_session_id, seed_everything, start_run
+from ml.telemetry import Telemetry
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PLUGIN_DIR = os.path.join(REPO_ROOT, "plugins")
@@ -58,6 +59,10 @@ def setup_file_logging(base_dir):
     sys.stdout = logf
     sys.stderr = logf
     return logf
+
+
+def _truthy_env(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def parse_args():
@@ -180,6 +185,12 @@ def parse_args():
         default=None,
         help="directory for per-agent action-level transcripts (#624); "
         "off by default so a normal run (and the gate) writes nothing",
+    )
+    p.add_argument(
+        "--telemetry-dir",
+        default=None,
+        help="directory for telemetry.jsonl / telemetry.json (#73); "
+        "off by default unless TEXTMMO_TELEMETRY is truthy",
     )
     p.add_argument(
         "--no-run-record",
@@ -306,6 +317,12 @@ def count_server_errors(log_path):
 async def main():
     args = parse_args()
     logf = setup_file_logging(args.base_dir)
+    telemetry = None
+    telemetry_dir = args.telemetry_dir
+    if telemetry_dir is not None or _truthy_env("TEXTMMO_TELEMETRY"):
+        telemetry_dir = telemetry_dir or args.base_dir
+        os.makedirs(telemetry_dir, exist_ok=True)
+        telemetry = Telemetry(True, os.path.join(telemetry_dir, "telemetry.jsonl"))
     loop = asyncio.get_running_loop()
 
     def _async_handler(loop, context):
@@ -358,6 +375,7 @@ async def main():
         resume=args.resume and args.reset != "all",
         reset=args.reset,
         transcript_dir=args.transcript_dir,
+        telemetry=telemetry,
     )
     if args.reset == "all":
         # Registry tree is wiped by reset_state; metrics live outside
@@ -447,6 +465,12 @@ async def main():
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
         print(f"[soak] report: {report_path}", flush=True)
+        if telemetry is not None:
+            raw_path = telemetry.flush()
+            telemetry_report = telemetry.write_report(
+                os.path.join(telemetry_dir, "telemetry.json")
+            )
+            print(f"[soak] telemetry: {raw_path} {telemetry_report}", flush=True)
         if run is not None:
             # Recorded before the verdict so a FAIL still leaves a comparable row.
             run.finish(

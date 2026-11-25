@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import os
 import sys
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
@@ -92,6 +93,7 @@ class AgentTask:
         reward_hook=None,
         transcript_writer=None,
         episode_offset=0,
+        telemetry=None,
     ):
         self.agent_id = agent_id
         self.env = env
@@ -138,6 +140,7 @@ class AgentTask:
         # Consecutive failed connects (reset on every success); drives
         # the reconnect backoff. Disconnects never kill the task.
         self.reconnects = 0
+        self.telemetry = telemetry
         self.last_error = None
         self.done = asyncio.Event()
 
@@ -187,6 +190,8 @@ class AgentTask:
         """Run episodes until the task is cancelled or the agent dies."""
         try:
             while not self.done.is_set():
+                if self.telemetry is not None:
+                    reset_started = time.perf_counter_ns()
                 try:
                     obs = await self.env.reset()
                 except _CONNECTION_ERRORS:
@@ -207,6 +212,13 @@ class AgentTask:
                     )
                     await asyncio.sleep(delay)
                     continue
+                if self.telemetry is not None:
+                    self.telemetry.record(
+                        "env_reset_ms",
+                        (time.perf_counter_ns() - reset_started) / 1e6,
+                        agent_id=self.agent_id,
+                        episode=self.episodes + 1,
+                    )
                 self.reconnects = 0
                 episode_reward = 0.0
                 for step in range(self.max_steps):
@@ -231,6 +243,8 @@ class AgentTask:
                             call_args = (obs, self.agent_id, mask)
                     else:
                         call_args = (obs, self.agent_id)
+                    if self.telemetry is not None:
+                        step_started = time.perf_counter_ns()
                     try:
                         action = await self._call_policy(call_args)
                     except PolicyTimeout as exc:
@@ -274,6 +288,14 @@ class AgentTask:
                         )
                         break
                     episode_reward += reward
+                    if self.telemetry is not None:
+                        self.telemetry.record(
+                            "agent_step_ms",
+                            (time.perf_counter_ns() - step_started) / 1e6,
+                            agent_id=self.agent_id,
+                            episode=self.episodes + 1,
+                            step=step,
+                        )
                     self.steps += 1
                     if self.learn_hook is not None:
                         try:
@@ -501,6 +523,7 @@ class Supervisor:
         episode_offset=0,
         transcript_incarnation=0,
         transcript_started=None,
+        telemetry=None,
     ):
         """Start an isolated task for one agent.
 
@@ -548,6 +571,8 @@ class Supervisor:
                 # different reward than the rest.
                 if reward_hook is not None:
                     env.reward_fn = reward_hook
+                if telemetry is not None:
+                    env.telemetry = telemetry
             except Exception:
                 pass
             writer = None
@@ -575,6 +600,7 @@ class Supervisor:
                 reward_hook=reward_hook,
                 transcript_writer=writer,
                 episode_offset=episode_offset,
+                telemetry=telemetry,
             )
             self._tasks[agent_id] = at
             self._specs[agent_id] = (
