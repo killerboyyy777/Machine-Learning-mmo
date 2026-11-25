@@ -1228,7 +1228,13 @@ class TextMMOEnv:
             async for raw in self.ws:
                 try:
                     self._apply_event(json.loads(raw))
-                except (ValueError, RecursionError, KeyError, TypeError, AttributeError) as e:
+                except (
+                    ValueError,
+                    RecursionError,
+                    KeyError,
+                    TypeError,
+                    AttributeError,
+                ) as e:
                     # One malformed event must not kill the reader: decoder
                     # recursion exhaustion and field access are frame-local.
                     print(f"[{self.name}] reader event error: {e}", flush=True)
