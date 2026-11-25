@@ -85,6 +85,20 @@ def test_filters_and_reproducibility():
     print("DIVERSITY_FILTERS_OK")
 
 
+def test_timeline_forwards_collapse_threshold_and_filters():
+    from diversity import diversity_timeline
+
+    rows = [{"action": 0, "agent_id": "a"}] * 3 + [{"action": 1, "agent_id": "a"}]
+    timeline = diversity_timeline(rows, window=4, collapse_top_share=0.5, agent_id="a")
+    assert len(timeline) == 1
+    window = timeline[0]
+    assert window["top_action_share"] == 0.75
+    assert window["collapse_top_share"] == 0.5
+    assert window["mode_collapse"] is True
+    assert window["filters"] == {"agent_id": "a"}
+    print("DIVERSITY_TIMELINE_FILTERS_OK")
+
+
 def test_empty_and_edges():
     assert action_histogram([]) == {}
     assert top_action_share([]) == 0.0
@@ -116,6 +130,7 @@ def main():
     test_reuse_ratio_order_sensitive()
     test_entropy_and_collapse_fire()
     test_filters_and_reproducibility()
+    test_timeline_forwards_collapse_threshold_and_filters()
     test_empty_and_edges()
     test_write_read_round_trip()
     print("ALL_DIVERSITY_OK")
