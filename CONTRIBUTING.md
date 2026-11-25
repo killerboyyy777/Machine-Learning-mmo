@@ -32,6 +32,16 @@ No code required.
 - **Conductor runs** need a live server: `python ml/conductor/soak.py --agents N --duration S`. Keep the `--min-agents` gates honest; a failed gate is a failure. The tool resumes prior state by default. Select wipes with `--reset none|lineage|cell|all` and `--resume/--no-resume`.
 - **Mind the perf budget.** The server is single-process asyncio. If your PR adds per-command or per-tick work, note its cost. Watch the nightly soak and the 30-agent farm for regressions.
 
+## Observability
+
+These surfaces are off by default, so a normal test run does not exercise them. Check them when you change the server, dashboard, or conductor:
+
+- `TEXTMMO_METRICS=1` or `python server.py --metrics` exposes `/metrics` on the dashboard port. The route has no auth and serves aggregate gauges only.
+- `TEXTMMO_TELEMETRY=1` or `python ml/conductor/soak.py --telemetry-dir DIR` writes `telemetry.jsonl` and `telemetry.json` for a soak run.
+- `TEXTMMO_STRUCTURED_LOG=1` or `--structured-log-dir DIR` writes the conductor's `structured.jsonl` event log.
+
+Run `python tests/test_metrics_route.py`, `python tests/test_telemetry.py`, and `python tests/test_structured_log.py` alongside the suites in step 3.
+
 ## Branch protection
 
 The "Master Branch Protection" ruleset guards `master`. A PR merge needs four green CI checks on an up-to-date branch, and force pushes and deletions are forbidden.

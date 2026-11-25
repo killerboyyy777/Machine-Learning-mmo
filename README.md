@@ -18,6 +18,41 @@ python3 server.py          # world on ws://0.0.0.0:8765
 
 Run `python start.py` on any OS to start the server with a banner. Add `--roles "gather:8,dungeon:4,market:3,commissioner:2"` to also start bots. Edit `world.json` for your own rooms, NPCs, and items. The [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) covers game systems, the ML guide, and the API.
 
+## Configuration
+
+Environment variables are read at startup. A boolean option is enabled by `1`, `true`, `yes`, or `on` (case-insensitive); unset or any other value leaves it off.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `TEXTMMO_GM_SEED` | `0` | World RNG seed and starting GM treasury. Set it for reproducible runs and the live tests. |
+| `TEXTMMO_GM_HOST` | `127.0.0.1` | Bind address for the GM stream on port 8767. That stream has no auth, so `0.0.0.0` opts into Docker-network reachability only; keep the port unpublished (see [SECURITY.md](SECURITY.md)). |
+| `TEXTMMO_REQUIRE_TOKEN` | off | Security-sensitive: require a login token for every account. Unset leaves the server-wide gate off, but a name with existing progress still needs a token. |
+| `TEXTMMO_ALLOW_LEGACY_TOKEN_CLAIM` | off | Security-sensitive: let an account with no stored token hash claim a token at login. Off by default; only a server that never issued tokens should enable it. |
+| `TEXTMMO_MAX_CONNECTIONS` | `1000` | Cap on total connections. |
+| `TEXTMMO_MAX_ROOM_PLAYERS` | `12` | Cap on players per room. |
+| `TEXTMMO_OUTBOUND_QUEUE` | `64` | Cap on the outbound queue. |
+| `TEXTMMO_VERBOSE` | off | Print extra server logs and full tracebacks for handler errors. |
+| `TEXTMMO_LOG_FILE` | unset | Append server stdout and stderr to this file instead of the console. |
+| `TEXTMMO_METRICS` | off | Serve `/metrics` on the dashboard port. Passing `--metrics` to `server.py` does the same; see [Observability](#observability). |
+| `TEXTMMO_TELEMETRY` | off | Conductor/soak only: write `telemetry.jsonl` for a run. |
+| `TEXTMMO_STRUCTURED_LOG` | off | Conductor/soak only: write the `structured.jsonl` event log. |
+| `TEXTMMO_RELOAD` | off | Conductor/soak only: watch the reload directory for changed checkpoints. |
+
+## State files
+
+The server keeps durable state in JSON files beside `server.py`. Saves go through a temporary file, and most files rotate the previous copy to a `.1` name first, so a crash mid-write cannot leave a truncated file.
+
+| File | Holds | If you delete it |
+| --- | --- | --- |
+| `scores.json` | Short-lived per-player scores, flushed every five seconds and evicted on a TTL. | Player score entries reset; the next start begins with an empty table. |
+| `arena.json` | Arena ratings, recent match history, and the clamp count. | The ladder, history, and clamps reset to empty. |
+| `guilds.json` | Guilds and their vaults. | Guilds and vault balances are lost. |
+| `companions.json` | Player companions. | Companion progress is lost. |
+| `intel.json` | Bot-cadence intel rows. | Intel history is lost. |
+| `freight.json` | Freight contracts and the contract counter. | Freight state is lost. |
+
+`world.json` and `server_config.json` are inputs you edit, not saved state. The rotated backups are safe to delete only while their primary file is present and valid: `scores.json.1` and `scores.json.2` are its two generations, while `guilds.json`, `intel.json`, `freight.json`, and `arena.json` keep one `.1` copy each (`companions.json` has none). A missing or unreadable primary falls back to a backup with a warning; a file written by a newer version is left on disk but not loaded. If both the primary and its backups are gone, that state is lost permanently.
+
 ## Docker
 
 The full stack needs no local Python install.
@@ -165,11 +200,21 @@ Training reward is not an evaluation score. Because the generalist reward adds a
 
 The same-frame training-reward comparison is provisional: it carries no honest performance claim. Before v0.19 either confirm a lead that survives this normalization on a common objective, or drop the claim that the pilot compares generalist and purist performance.
 
+## Observability
+
+Three measurement surfaces exist, all off by default. A normal server or soak run writes none of them.
+
+- **`/metrics`.** The dashboard port serves Prometheus text with aggregate gauges only, such as players online, live connections, rooms, living NPCs, and market trades. No per-player data is exposed. Set `TEXTMMO_METRICS=1` or pass `--metrics` to `server.py` to enable the route. The dashboard has no auth, so leave it off unless you need it.
+- **Conductor telemetry.** `ml/conductor/soak.py` writes `telemetry.jsonl` and a summary `telemetry.json` in the run directory. Enable it with `TEXTMMO_TELEMETRY=1` or `--telemetry-dir DIR`. This is a conductor feature, not a server feature.
+- **Structured event log.** The conductor can append `structured.jsonl` records for episodes and run events. Enable it with `TEXTMMO_STRUCTURED_LOG=1` or `--structured-log-dir DIR`.
+
+CI covers these with `tests/test_metrics_route.py`, `tests/test_telemetry.py`, and `tests/test_structured_log.py`.
+
 ## Architecture
 
 The engine is a WebSocket server that keeps world state in memory.
 
-- **Server.** Python handles JSON-RPC style messages.
+- **Server.** Python reads a simple JSON message format: clients send a `cmd` command and receive typed events with a `type` field. It is not JSON-RPC.
 - **Dashboard.** Static HTML and JavaScript provide live monitoring through `/api/state`.
 - **ML stack.** A Gym environment wraps the game protocol, so DQN and other agents can play.
 
