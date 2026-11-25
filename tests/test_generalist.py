@@ -64,15 +64,17 @@ def test_pilot_verdict():
         {"score_delta": 1, "profit": 1, "xp_delta": 1, "social": 1} for _ in range(9)
     ]
     report = generalist.pilot_report(generalist.same_frame_curve(growing, bin_steps=3))
-    assert report["verdict"] == "promising", report
-    assert report["final_lead"] == 27, report
+    assert report["schema_version"] == 2, report
+    assert report["verdict"] == "inconclusive", report
+    assert report["final_lead"] == 0, report
     assert report["bins"] == 3
-    assert report["lead_curve"] == [9, 18, 27]
+    assert report["lead_curve"] == [0, 0, 0]
+    assert report["objective"] is None
 
     flat = [{"score_delta": 1} for _ in range(9)]
     tied = generalist.pilot_report(generalist.same_frame_curve(flat, bin_steps=3))
     assert tied["verdict"] == "inconclusive", tied
-    assert tied["final_lead"] == 0
+    assert tied["final_lead"] < 0
 
     losing = [{"score_delta": 1, "deaths": -2, "profit": -1} for _ in range(9)]
     loss = generalist.pilot_report(generalist.same_frame_curve(losing, bin_steps=3))
@@ -86,6 +88,49 @@ def test_pilot_verdict():
     print("GENERALIST_VERDICT_OK")
 
 
+def test_pilot_rejects_misaligned_curves():
+    mismatched = {
+        "generalist": [1, 2, 3],
+        "fighter": [1, 2],
+        "trader": [1, 2, 3],
+        "explorer": [1, 2, 3],
+        "social": [1, 2, 3],
+    }
+    report = generalist.pilot_report(mismatched)
+    assert report["verdict"] == "misaligned_data", report
+    assert report["lengths"] == {
+        "generalist": 3,
+        "fighter": 2,
+        "trader": 3,
+        "explorer": 3,
+        "social": 3,
+    }, report
+    assert report["final_lead"] == 0, report
+    assert "lead_curve" not in report, report
+    print("GENERALIST_ALIGNMENT_OK")
+
+
+def test_pilot_common_objective_can_be_promising():
+    outcomes = {
+        "generalist": [2, 4, 6],
+        "fighter": [1, 2, 3],
+        "trader": [1, 2, 3],
+        "explorer": [1, 2, 3],
+        "social": [1, 2, 3],
+    }
+    report = generalist.pilot_report(outcomes, objective="return")
+    assert report["verdict"] == "promising", report
+    assert report["final_lead"] == 3, report
+    assert report["lead_curve"] == [1, 2, 3], report
+    assert report["objective"] == "return", report
+    tied = generalist.pilot_report(
+        {name: [1, 2, 3] for name in outcomes}, objective="return"
+    )
+    assert tied["verdict"] == "inconclusive", tied
+    assert tied["final_lead"] == 0, tied
+    print("GENERALIST_OBJECTIVE_OK")
+
+
 def test_report_io():
     with tempfile.TemporaryDirectory() as folder:
         path = os.path.join(folder, "reports", "pilot.json")
@@ -93,6 +138,11 @@ def test_report_io():
         assert generalist.write_report(report, path) == os.path.abspath(path)
         assert generalist.read_report(path) == report
         assert generalist.read_report(os.path.join(folder, "missing.json")) == {}
+        full = generalist.pilot_report(
+            {"generalist": [2, 4, 6], "fighter": [1, 2, 3]}, objective="return"
+        )
+        assert generalist.write_report(full, path) == os.path.abspath(path)
+        assert generalist.read_report(path) == full
     print("GENERALIST_IO_OK")
 
 
@@ -101,6 +151,8 @@ def main():
     test_plugins_and_manifest()
     test_same_frame_curve()
     test_pilot_verdict()
+    test_pilot_rejects_misaligned_curves()
+    test_pilot_common_objective_can_be_promising()
     test_report_io()
     print("ALL_GENERALIST_OK")
 
