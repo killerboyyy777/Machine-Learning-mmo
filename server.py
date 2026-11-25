@@ -97,6 +97,9 @@ COMPANION_SHEPHERD_HEAL_MULT = 1.20
 DRONELANG_MAX_CHARS = 2000
 DRONELANG_MAX_RULES = 32
 DRONELANG_MAX_VISITS = 200
+# tick_mod must count companion ticks, not wall-clock seconds: a real-time
+# clock fires scripts at arbitrary points in the AI loop (#909).
+DRONELANG_TICK = 0
 
 DRONELANG_PREDICATES = frozenset(
     {
@@ -4074,7 +4077,7 @@ def _dronelang_eval_predicate(owner, rec, pred, now):
     if name == "owner_hp_below":
         return owner.hp < owner.max_hp * args[0] / 100
     if name == "owner_in_combat":
-        return owner.name.lower() in COMPANION_TARGETS
+        return _companion_assist_target(owner) is not None
     if name == "owner_has_item":
         return any(
             args[0].lower() in ITEM_DEFS.get(i, {}).get("name", "").lower()
@@ -4089,10 +4092,17 @@ def _dronelang_eval_predicate(owner, rec, pred, now):
     if name == "room_not":
         return owner.room != args[0]
     if name == "exit_exists":
-        exits = ROOMS.get(owner.room, {}).get("exits", {})
+        d = dungeon_for_room(owner.room)
+        # Instanced floors keep their exits on the dungeon state, not in ROOMS,
+        # so a cleared floor's stairs are invisible to a static lookup (#909).
+        exits = (
+            dungeon_room_view(owner.room, d)["exits"]
+            if d
+            else ROOMS.get(owner.room, {}).get("exits", {})
+        )
         return args[0] in exits
     if name == "tick_mod":
-        return int(now) % args[0] == 0
+        return DRONELANG_TICK % args[0] == 0
     return False
 
 
@@ -4236,6 +4246,8 @@ async def dronelang_tick(owner, rec, now=None):
 
 
 async def tick_companions(now=None):
+    global DRONELANG_TICK
+    DRONELANG_TICK += 1
     now = now if now is not None else time.time()
     for key in list(COMPANION_PLAYERS):
         rec = _companion_active(key)
