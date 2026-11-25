@@ -16,6 +16,7 @@ companions.json*
 guilds.json*
 intel.json*
 arena.json*
+freight.json*
 
 # ML / Torch training checkpoints (local training progress, never commit)
 ml/ml_weights.json
