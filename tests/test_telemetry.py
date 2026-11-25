@@ -161,6 +161,44 @@ class _FailingWS:
         raise ConnectionError("gone")
 
 
+def test_nonfinite_samples_skipped():
+    collector = Telemetry(True)
+    for value in (float("nan"), float("inf"), float("-inf")):
+        collector.record("agent_step_ms", value)
+    assert collector.samples == []
+
+    good = {"event": "agent_step_ms", "value_ms": 12.0}
+    bad = [
+        {"event": "agent_step_ms", "value_ms": float("nan")},
+        {"event": "agent_step_ms", "value_ms": float("inf")},
+        {"event": "agent_step_ms", "value_ms": float("-inf")},
+    ]
+    report = summarize([good] + bad)
+    step = report["metrics"]["agent_step_ms"]
+    assert step["count"] == 1
+    assert step["mean_ms"] == step["p50_ms"] == step["p95_ms"] == step["max_ms"] == 12.0
+    json.dumps(report, allow_nan=False)
+
+    with tempfile.TemporaryDirectory() as d:
+        raw = os.path.join(d, "telemetry.jsonl")
+        out = os.path.join(d, "report.json")
+        with open(raw, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(good) + "\n")
+            for row in bad:
+                fh.write(json.dumps(row) + "\n")
+        assert main(["--input", raw, "--out", out]) == 0
+        with open(out, encoding="utf-8") as fh:
+            saved_text = fh.read()
+        assert "NaN" not in saved_text and "Infinity" not in saved_text
+
+        def reject_constant(value):
+            raise ValueError(value)
+
+        saved = json.loads(saved_text, parse_constant=reject_constant)
+        assert saved["metrics"]["agent_step_ms"]["count"] == 1
+    print("NONFINITE_SAMPLES_OK")
+
+
 def test_rtt_stub():
     assert rtt_ms(0.012) == 12.0
     with tempfile.TemporaryDirectory() as d:
@@ -237,6 +275,7 @@ if __name__ == "__main__":
     test_default_off()
     test_on_records_json_safe()
     test_incomplete_rows_skipped()
+    test_nonfinite_samples_skipped()
     test_rtt_stub()
     test_source_guard()
     print("ALL_TELEMETRY_OK")
