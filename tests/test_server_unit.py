@@ -2208,6 +2208,94 @@ async def main():
     unplayer(loser_b)
     print("CORPSE_NO_RETALIATION_OK")
 
+    # --- A dead player cannot re-enter combat (#893): an attack arriving in
+    # the await window before respawn restores HP must not charge the death
+    # twice.
+    doomed = mkplayer("Doomed", 60028, room="town_square", hp=1, max_hp=20)
+    doomed.gold = 100
+    srv.npcs["doom_dummy"] = {
+        "id": "doom_dummy",
+        "name": "Doom Dummy",
+        "room": "town_square",
+        "hp": 100,
+        "max_hp": 100,
+        "attack": 20,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": [],
+        "gold": 0,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
+    }
+    deaths_before = srv.get_score_entry("Doomed")["deaths"]
+    log_before = len(srv.DEATH_LOG)
+    gold_before = doomed.gold
+    floor_before = srv.room_gold["town_square"]
+    npc_hp_before = srv.npcs["doom_dummy"]["hp"]
+    saved_send3 = srv.send
+    npc_hit = asyncio.Event()
+    release_npc = asyncio.Event()
+    respawn_entered = asyncio.Event()
+    release_respawn = asyncio.Event()
+    raiders = []
+
+    async def send_then_attack(p, payload):
+        if (
+            p is doomed
+            and payload.get("type") == "combat"
+            and "attacks you for" in payload.get("text", "")
+        ):
+            npc_hit.set()
+            raiders.append(
+                asyncio.create_task(srv.cmd_attack(doomed, {"target": "doom dummy"}))
+            )
+            await release_npc.wait()
+        elif (
+            p is doomed
+            and payload.get("type") == "score"
+            and payload.get("reason") == "died"
+        ):
+            respawn_entered.set()
+            await release_respawn.wait()
+        else:
+            await saved_send3(p, payload)
+
+    srv.send = send_then_attack
+    npc_task = None
+    try:
+        npc_task = asyncio.create_task(
+            srv.npc_apply(
+                srv.npcs["doom_dummy"],
+                {"kind": "attack", "target": doomed.id, "dmg": 5, "state": "AGGRO"},
+                {"targets": [doomed]},
+                time.time(),
+            )
+        )
+        await npc_hit.wait()
+        await asyncio.sleep(0)
+        release_npc.set()
+        await respawn_entered.wait()
+        await asyncio.sleep(0)
+        release_respawn.set()
+        await npc_task
+        for raider in raiders:
+            await raider
+    finally:
+        srv.send = saved_send3
+        release_npc.set()
+        release_respawn.set()
+    assert raiders
+    assert srv.get_score_entry("Doomed")["deaths"] == deaths_before + 1
+    assert len(srv.DEATH_LOG) == log_before + 1
+    assert doomed.gold == gold_before - 50
+    assert srv.room_gold["town_square"] == floor_before + 40
+    assert srv.npcs["doom_dummy"]["hp"] == npc_hp_before
+    del srv.npcs["doom_dummy"]
+    unplayer(doomed)
+    print("DEAD_NO_RE_ATTACK_OK")
+
     # --- Training-mode damage dampening (#416a): flag-gated fraction of
     # incoming damage; default 1.0 (off, civilian runs identical).
     assert srv.TRAINING_DAMAGE_FRACTION == 1.0

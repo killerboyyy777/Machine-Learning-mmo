@@ -5406,6 +5406,10 @@ async def cmd_move(player, msg):
 
 
 async def cmd_attack(player, msg):
+    # respawn_player restores HP only after its awaits; a dead player must
+    # not re-enter here and charge the same death a second time (#893).
+    if player.hp <= 0:
+        return
     target_name = msg.get("target", "")
     npc = find_npc_in_room(player.room, target_name)
     if not npc:
