@@ -79,6 +79,22 @@ def test_watcher_baseline_and_change():
     print("WATCHER_OK")
 
 
+def test_watcher_nested_checkpoint():
+    with tempfile.TemporaryDirectory() as d:
+        agent_dir = os.path.join(d, "agent-1")
+        os.makedirs(agent_dir)
+        ckpt = os.path.join(agent_dir, "checkpoint.pt")
+        _write_checkpoint(ckpt, 0.0)
+        watcher = CheckpointWatcher(d, interval=0.0)
+        assert watcher.poll() == []
+        _write_checkpoint(ckpt, _HEAVY_MARKER)
+        changed = watcher.poll()
+        assert len(changed) == 1, changed
+        assert os.path.normpath(changed[0][0]) == os.path.normpath(ckpt)
+        assert watcher.poll() == []
+    print("NESTED_OK")
+
+
 def test_watcher_interval_gate():
     with tempfile.TemporaryDirectory() as d:
         ckpt = os.path.join(d, "gated.pt")
@@ -141,6 +157,7 @@ def test_source_guard():
 if __name__ == "__main__":
     test_off_by_default()
     test_watcher_baseline_and_change()
+    test_watcher_nested_checkpoint()
     test_watcher_interval_gate()
     test_conductor_restarts_only_matching_agents()
     test_source_guard()

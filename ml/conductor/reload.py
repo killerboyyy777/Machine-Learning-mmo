@@ -36,23 +36,21 @@ class CheckpointWatcher:
 
     def _snapshot(self):
         found = {}
-        try:
-            names = os.listdir(self.directory)
-        except OSError:
-            return found
-        for name in names:
-            if name.startswith(".") or name.endswith(".tmp"):
-                continue
-            if not name.endswith(_SUFFIXES):
-                continue
-            path = os.path.join(self.directory, name)
-            try:
-                st = os.stat(path)
-                if not os.path.isfile(path):
+        for root, dirs, names in os.walk(self.directory):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for name in names:
+                if name.startswith(".") or name.endswith(".tmp"):
                     continue
-            except OSError:
-                continue
-            found[path] = (st.st_mtime_ns, st.st_size)
+                if not name.endswith(_SUFFIXES):
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    st = os.stat(path)
+                    if not os.path.isfile(path):
+                        continue
+                except OSError:
+                    continue
+                found[path] = (st.st_mtime_ns, st.st_size)
         return found
 
     def poll(self):
