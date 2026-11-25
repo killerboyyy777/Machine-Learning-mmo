@@ -578,13 +578,22 @@ async def _restart_rebuilds_weights():
         a.save(ckpt)
 
     build = _plugin_policy_factory("linear", {"epsilon": 0.0})
+
+    def rebuilt(*args):
+        policy, learn, reward = build(*args)
+        assert learn.__self__ is reward.__self__
+        assert learn.__self__ in [
+            cell.cell_contents for cell in (policy.__closure__ or ())
+        ], "policy must act on the same rebuilt instance it learns into"
+        return policy
+
     _save(1)
-    assert build(ckpt, {})(obs, "w") == 0
+    assert rebuilt(ckpt, {})(obs, "w") == 0
     _save(2)
-    assert build(ckpt, {"epsilon": 0.0})(obs, "w") == 3
-    wild = {build(ckpt, {"epsilon": 1.0, "bogus": 1})(obs, "w") for _ in range(50)}
+    assert rebuilt(ckpt, {"epsilon": 0.0})(obs, "w") == 3
+    wild = {rebuilt(ckpt, {"epsilon": 1.0, "bogus": 1})(obs, "w") for _ in range(50)}
     assert len(wild) > 1, wild
-    assert build(os.path.join(tmpdir, "nope.pt"), {})(obs, "w") == 0
+    assert rebuilt(os.path.join(tmpdir, "nope.pt"), {})(obs, "w") == 0
 
 
 asyncio.run(_restart_rebuilds_weights())
@@ -603,7 +612,7 @@ async def _restart_uses_factory_and_reassigns():
 
     def factory(ckpt, hp):
         calls.append((ckpt, dict(hp)))
-        return lambda o, a: 7
+        return (lambda o, a: 7, None, None)
 
     env = _FakeEnv()
     assert (
@@ -622,6 +631,102 @@ async def _restart_uses_factory_and_reassigns():
 
 asyncio.run(_restart_uses_factory_and_reassigns())
 print("RESTART_FACTORY_OK")
+
+
+async def _restart_rebuilds_hooks():
+    # A PBT restart must swap the learn/reward hooks with the rebuilt
+    # plugin (#782): a stateful plugin that acts on the copied weights
+    # would otherwise keep training the stale shared slot instance.
+    r = Registry(os.path.join(tmpdir, "rsthooks"), max_agents=5)
+    r.register("h1", "linear")
+    sup = Supervisor(r, max_concurrent=1)
+    envs = iter([_FakeEnv(), _FakeEnv()])
+    old_calls = []
+    new_calls = []
+    stepped = asyncio.Event()
+
+    def old_learn(p, a, rw, n, d):
+        old_calls.append((p, a, rw, n, d))
+
+    def new_learn(p, a, rw, n, d):
+        new_calls.append((p, a, rw, n, d))
+        stepped.set()
+
+    def old_reward(signals):
+        return 0.0
+
+    def new_reward(signals):
+        return 1.0
+
+    def new_policy(o, a):
+        return 7
+
+    def factory(ckpt, hp):
+        return (new_policy, new_learn, new_reward)
+
+    assert (
+        await sup.start_agent(
+            "h1",
+            lambda aid: next(envs),
+            lambda o, a: 0,
+            learn_hook=old_learn,
+            reward_hook=old_reward,
+            policy_factory=factory,
+        )
+        is True
+    )
+    assert sup._tasks["h1"].env.reward_fn is old_reward
+    assert await sup.restart_agent("h1") is True
+    task = sup._tasks["h1"]
+    assert task.learn_hook is new_learn
+    assert sup._specs["h1"][5] is new_learn
+    assert sup._specs["h1"][6] is new_reward
+    assert task.env.reward_fn is new_reward
+    old_calls.clear()
+    await asyncio.wait_for(stepped.wait(), 2.0)
+    await sup.stop_all()
+    assert new_calls and not old_calls, (new_calls, old_calls)
+    assert new_calls[0][0] == {"obs": 0} and new_calls[0][3] == {"obs": 1}
+
+
+asyncio.run(_restart_rebuilds_hooks())
+print("RESTART_HOOKS_OK")
+
+
+async def _restart_bare_factory_fallback():
+    # Out-of-tree factories that still return a bare policy keep the
+    # original spec's hooks instead of breaking on the bundle unpack.
+    r = Registry(os.path.join(tmpdir, "rstbare"), max_agents=5)
+    r.register("b1", "linear")
+    sup = Supervisor(r, max_concurrent=1)
+    env = _FakeEnv()
+
+    def old_learn(p, a, rw, n, d):
+        return None
+
+    def old_reward(signals):
+        return 0.0
+
+    assert (
+        await sup.start_agent(
+            "b1",
+            lambda aid: env,
+            lambda o, a: 0,
+            learn_hook=old_learn,
+            reward_hook=old_reward,
+            policy_factory=lambda ckpt, hp: lambda o, a: 9,
+        )
+        is True
+    )
+    assert await sup.restart_agent("b1") is True
+    assert sup._tasks["b1"].policy_fn({"obs": 0}, "b1") == 0
+    assert sup._tasks["b1"].learn_hook is old_learn
+    assert env.reward_fn is old_reward
+    await sup.stop_all()
+
+
+asyncio.run(_restart_bare_factory_fallback())
+print("RESTART_BARE_FACTORY_OK")
 
 
 async def _maybe_start_check():

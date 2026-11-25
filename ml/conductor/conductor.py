@@ -18,14 +18,17 @@ from .supervisor import Supervisor
 
 
 def _plugin_policy_factory(name, base_config):
-    """Build a restart-time policy rebuilder for a plugin slot.
+    """Build a restart-time rebuilder for a plugin slot.
 
-    Returns factory(checkpoint_path, hparams) -> policy_fn: a FRESH
-    plugin instance (never the shared slot instance, which serves every
-    agent on the slot) loading checkpoint_path when the file exists,
-    with hparams overlaid onto the slot config wherever they match the
-    plugin schema (e.g. epsilon); unknown hparams are ignored. A missing
-    checkpoint file keeps the slot's own checkpoint/fresh default.
+    Returns factory(checkpoint_path, hparams) -> (policy_fn, learn_hook,
+    reward_hook): all three come from a FRESH plugin instance (never the
+    shared slot instance, which serves every agent on the slot). The
+    bundle lets a restart swap the hooks with the policy, so a stateful
+    plugin trains the weights it actually acts on. The instance loads
+    checkpoint_path when the file exists, with hparams overlaid onto the
+    slot config wherever they match the plugin schema (e.g. epsilon);
+    unknown hparams are ignored. A missing checkpoint file keeps the
+    slot's own checkpoint/fresh default.
     """
 
     def build(checkpoint_path, hparams):
@@ -38,7 +41,8 @@ def _plugin_policy_factory(name, base_config):
                 config[key] = value
         if checkpoint_path and Path(checkpoint_path).is_file():
             config["checkpoint"] = checkpoint_path
-        return instantiate(name, **config).make_policy()
+        plugin = instantiate(name, **config)
+        return (plugin.make_policy(), plugin.learn, plugin.reward)
 
     return build
 
