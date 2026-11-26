@@ -206,7 +206,7 @@ def test_supervisor_carries_the_budget_and_its_specs():
         assert started
         task = sup._tasks["sup"]
         assert task.policy_timeout == 0.2, task.policy_timeout
-        assert len(sup._specs["sup"]) == 8, sup._specs["sup"]
+        assert len(sup._specs["sup"]) == 9, sup._specs["sup"]
         await asyncio.sleep(0.6)
         assert "sup" not in sup._tasks
         return metrics
