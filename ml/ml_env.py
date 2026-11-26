@@ -22,8 +22,10 @@ curve, so they track the score signal instead of dwarfing it late in a run.
 Specialist reward modes (constructor flag `reward_mode`, same obs/actions):
 "xp" pays raw XP gained plus XP_LEVEL_BONUS per level-up (pure combat/quest
 agent, ignores gold); "econ" pays gold_delta plus ECON_INV_LAMBDA times the
-merchant-value delta of carried items (pure market/craft/loot agent, ignores
-XP). Both are tuned via ml_config.json like the social terms.
+merchant payout for carried items (pure market/craft/loot agent, ignores XP).
+The stats event carries gathered_units, so harvested copies price at the
+server's discounted buyback and looted copies at full value. Both are tuned
+via ml_config.json like the social terms.
 
 Curriculum (flags `curriculum_stage` 0-3 + `curriculum_auto`): progressive
 action-space unlock -- rats (0), +dungeons (1), +crafting (2), full
@@ -228,14 +230,14 @@ def best_market_bid(bids, iid, exclude_buyer=None):
     return max(prices) if prices else None
 
 
-def flip_margin(iid, orders, exclude_seller=None):
+def flip_margin(iid, orders, exclude_seller=None, gathered=False):
     """Expected profit of listing over merchant sale: best ask minus tax
     minus merchant value. None when no comparable ask exists (the market
     hasn't priced it yet -- first listings do price discovery)."""
     ask = best_market_ask(orders, iid, exclude_seller)
     if ask is None:
         return None
-    return market_net(ask) - merchant_value(iid)
+    return market_net(ask) - merchant_value(iid, gathered)
 
 
 # Item ids the agent must never liquidate blindly (resolved once; rules
@@ -485,16 +487,34 @@ def broker_fee(price):
     return max(1, int(price * BROKER_FEE_PCT / 100 + 0.5))
 
 
-def inventory_value(names):
-    """Merchant value of a carried item list (unresolvable names count 0).
+def _credit_counts(credits):
+    """Normalize the server's gathered_units map to nonnegative int counts."""
+    out = {}
+    for iid, qty in (credits or {}).items():
+        try:
+            out[iid] = max(0, int(qty or 0))
+        except (TypeError, ValueError):
+            out[iid] = 0
+    return out
+
+
+def inventory_value(names, gathered_units=None):
+    """Merchant payout for a carried item list (unresolvable names count 0).
 
     Used by the "econ" reward mode to price loot pickups, crafts, and
-    sales into the step reward."""
+    sales into the step reward. Credits from gathered_units price only as
+    many copies of an item as the player actually harvested; the rest keep
+    full value."""
+    credits = _credit_counts(gathered_units)
     total = 0
     for n in names or []:
         iid = srv.find_item_by_name(list(srv.ITEM_DEFS), n)
-        if iid:
-            total += merchant_value(iid)
+        if not iid:
+            continue
+        gathered = credits.get(iid, 0) > 0
+        if gathered:
+            credits[iid] -= 1
+        total += merchant_value(iid, gathered)
     return total
 
 
@@ -1182,6 +1202,7 @@ class TextMMOEnv:
             "offhand": None,
             "defense": 0,
             "inv_names": [],
+            "gathered_units": {},
             "deaths": 0,
             # Server-authoritative pack load + cap from the stats event
             # (None until the first stats lands; pack_units() falls back
@@ -1310,6 +1331,9 @@ class TextMMOEnv:
                 "party_size", self._state["party_size"]
             )
             self._state["inv_names"] = event.get("inv", [])
+            credits = event.get("gathered_units")
+            if isinstance(credits, dict):
+                self._state["gathered_units"] = dict(credits)
             # The name list truncates at 20 while the cap is 24, so
             # masks must use the server's own unit count (#191).
             if event.get("pack") is not None:
@@ -1628,7 +1652,8 @@ class TextMMOEnv:
         cmd = self._action_to_cmd(action)
         gold_before = self._state["gold"]
         inv_before = list(self._state["inv_names"] or [])
-        inv_value_before = inventory_value(inv_before)
+        credits_before = dict(self._state.get("gathered_units") or {})
+        inv_value_before = inventory_value(inv_before, credits_before)
         flags_before = {
             k: bool(self._state.get(k))
             for _, akey, rkey in _QUEST_FLAG_SPECS
@@ -1650,7 +1675,10 @@ class TextMMOEnv:
         levels_gained = self._pending_levels
         score_gain = self._pending_reward
         gold_delta = self._state["gold"] - gold_before
-        inv_delta = inventory_value(self._state["inv_names"]) - inv_value_before
+        inv_delta = (
+            inventory_value(self._state["inv_names"], self._state.get("gathered_units"))
+            - inv_value_before
+        )
         signals = None
         if self._has_custom_reward:
             # Read before the bump, so a step carrying a death reports 0.
@@ -2146,17 +2174,23 @@ class TextMMOEnv:
     def _refresh_holdings(self):
         s = self._state
         orders = (s.get("market_state") or {}).get("orders") or []
+        credits = _credit_counts(s.get("gathered_units"))
         rows = []
         for name in s.get("inv_names") or []:
             iid = srv.find_item_by_name(list(srv.ITEM_DEFS), name)
             if not iid:
                 continue
+            gathered = credits.get(iid, 0) > 0
+            if gathered:
+                credits[iid] -= 1
             rows.append(
                 {
                     "name": name,
                     "iid": iid,
-                    "value": merchant_value(iid),
-                    "margin": flip_margin(iid, orders, exclude_seller=self.name),
+                    "value": merchant_value(iid, gathered),
+                    "margin": flip_margin(
+                        iid, orders, exclude_seller=self.name, gathered=gathered
+                    ),
                 }
             )
         self._flip_table = rows
@@ -3150,7 +3184,7 @@ class TextMMOEnv:
             "tax_min_norm": s["tax_min"] / 10.0,
             "own_net_norm": min(own_net / 200.0, 1.0),
             "flip_margin_norm": flip_margin_norm,  # best list-over-merchant margin held
-            "inv_value_norm": inv_value_norm,  # merchant value of everything carried
+            "inv_value_norm": inv_value_norm,  # merchant payout for everything carried
             "quest_active": quest_active,
             "quest_ready": quest_ready,
             "quest_has_charm": quest_has_charm,
