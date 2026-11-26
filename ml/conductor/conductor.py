@@ -138,12 +138,17 @@ class Conductor:
             # load. reset="all" deletes registry.json, so the load below
             # is a no-op and the run starts fresh.
             self.registry.reset_state(reset)
+        self._pending_resume = []
         if resume:
             # Resume-by-default (#293, slice 4/6): pick up the previous
             # run's population (entries, goals, parents) instead of
             # starting empty. Missing registry.json (first run) is a
             # no-op; pass resume=False for a guaranteed-fresh population.
             self.registry.load()
+            # Live entries have no task yet. run() restarts them before its
+            # startup wave so they do not silently count against the cap
+            # (#995).
+            self._pending_resume = [a.agent_id for a in self.registry.alive_agents()]
         self.mixer = Mixer(
             self.registry, floors or ["town_square", "graveyard", "d_10_f1"]
         )
@@ -197,8 +202,8 @@ class Conductor:
             return slot
         return None
 
-    async def _maybe_start(self, agent_id):
-        """Start a supervised task for a fresh agent.
+    async def _maybe_start(self, agent_id, episode_offset=0):
+        """Start a supervised task for an agent.
 
         Returns True when a task is running afterwards. Never raises: a
         bad spawn is logged as spawn_error and skipped, so one raising
@@ -238,6 +243,7 @@ class Conductor:
                 policy_factory=slot.get("policy_factory"),
                 learn_hook=slot.get("learn_hook"),
                 reward_hook=slot.get("reward_hook"),
+                episode_offset=episode_offset,
                 telemetry=self.telemetry,
             )
             if not started:
@@ -250,6 +256,33 @@ class Conductor:
                 pass
             self.registry.mark_dead(agent_id)
             return False
+
+    async def _resume_live_entries(self):
+        """Restart tasks for entries restored by registry.load() (#995).
+
+        A stop/save leaves entries alive; without a task they still occupy
+        the cap and the startup wave then fails with "Registry full".
+        Rehydrate each one with its goal, character, checkpoint and a fresh
+        episode lifetime, then let run() spawn only the missing slots.
+        """
+        pending, self._pending_resume = self._pending_resume, []
+        for agent_id in pending:
+            entry = self.registry.get(agent_id)
+            if entry is None or not entry.alive:
+                continue
+            self.churn.seed_lifetime(agent_id)
+            if not await self._maybe_start(agent_id, episode_offset=entry.episodes):
+                continue
+            self.metrics.log_agent_spawn(agent_id, entry.agent_type, entry.branch)
+            self.mixer.assign_one(agent_id)
+            if not entry.checkpoint_path or not Path(entry.checkpoint_path).is_file():
+                continue
+            # The slot's plugin loads its own checkpoint; the agent's saved
+            # weights live at entry.checkpoint_path and need a rebuild.
+            if not await self.supervisor.restart_agent(agent_id):
+                self.registry.mark_dead(agent_id)
+                await self.supervisor.stop_agent(agent_id)
+                self.mixer.remove_agent(agent_id)
 
     def report_fitness(self, agent_id, fitness, episodes=1, vector=None):
         """Feed an evaluation result into the PBT population (no-op when
@@ -317,11 +350,13 @@ class Conductor:
         self._start_time = time.time()
         target = self.registry.max_agents
 
-        print(f"[conductor] Starting {target} agents in waves of {wave_size}...")
+        print(f"[conductor] Starting up to {target} agents in waves of {wave_size}...")
         if self.structured_log is not None:
             self.structured_log.log("startup", target=target, wave_size=wave_size)
+        await self._resume_live_entries()
+        needed = max(0, target - len(self.registry.alive_agents()))
         wave_count = 0
-        for delay in wave_startup(target, wave_size, wave_delay):
+        for delay in wave_startup(needed, wave_size, wave_delay):
             if not self._running:
                 break
             await asyncio.sleep(delay)

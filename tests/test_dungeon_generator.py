@@ -1,5 +1,7 @@
 """Standalone tests for the seedable dungeon generator (#67)."""
 
+import json
+import math
 import os
 import sys
 import tempfile
@@ -30,6 +32,17 @@ def test_config_normalization():
         {"guard_names": []},
         {"loot_table": "not-a-list"},
         {"seed": "not-an-int"},
+        {"hp_growth": float("nan")},
+        {"atk_growth": float("nan")},
+        {"hp_growth": float("inf")},
+        {"floors": True},
+        {"base_hp": False},
+        {"guard_step": True},
+        {"floors": 2.9},
+        {"guard_step": 1.5},
+        {"seed": True},
+        {"seed": 2.9},
+        {"seed": "2.9"},
     )
     for bad in bad_configs:
         try:
@@ -39,6 +52,20 @@ def test_config_normalization():
         else:
             raise AssertionError(f"bad config accepted: {bad}")
     print("DUNGEON_CONFIG_OK")
+
+
+def test_numeric_values_are_exact_and_finite():
+    """Integer strings and integral floats stay valid; plans stay JSON-safe."""
+    assert normalize_config({"floors": "9", "seed": "7"})["floors"] == 9
+    assert normalize_config({"floors": 9.0, "seed": 7.0})["seed"] == 7
+    cfg = normalize_config({"hp_growth": 0.35, "atk_growth": 0.5})
+    assert cfg["hp_growth"] == 0.35 and cfg["atk_growth"] == 0.5
+    plan = generate_plan({"seed": 7, "floors": 3})
+    json.dumps(plan, allow_nan=False)
+    for row in plan["floors"]:
+        for key in ("hp", "atk", "gold", "respawn_seconds"):
+            assert math.isfinite(row["params"][key]), (key, row)
+    print("DUNGEON_NUMERIC_OK")
 
 
 def test_params_match_builtin_without_jitter():
@@ -125,6 +152,7 @@ def test_factory_override_and_passthrough():
 
 def main():
     test_config_normalization()
+    test_numeric_values_are_exact_and_finite()
     test_params_match_builtin_without_jitter()
     test_seed_reproducible_and_order_independent()
     test_loot_table_and_guard_names()

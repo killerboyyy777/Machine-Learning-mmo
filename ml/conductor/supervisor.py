@@ -8,11 +8,13 @@ without affecting other agents.
 import asyncio
 import inspect
 import os
+import queue
 import sys
+import threading
 import time
 import traceback
 import zlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 
 import websockets
 
@@ -76,6 +78,56 @@ class PolicyFailure(RuntimeError):
     def __init__(self, reason):
         super().__init__(reason)
         self.reason = reason
+
+
+class _PolicyExecutor:
+    """One daemon worker for a plugin's synchronous policy calls (#992).
+
+    ThreadPoolExecutor registers its workers for an atexit join, so a
+    policy that never returns holds the interpreter open at shutdown even
+    after its timeout ended the episode. A daemon worker is never joined:
+    the abandoned call still occupies the thread until the process exits,
+    but it can no longer put a bound on process exit. The queue keeps one
+    call in flight per closure, as the single-worker pool did.
+    """
+
+    def __init__(self, thread_name_prefix="policy"):
+        self._queue = queue.Queue()
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._work,
+            name=f"{thread_name_prefix}_0",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _work(self):
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            future, fn, args, kwargs = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:
+                future.set_exception(exc)
+
+    def submit(self, fn, *args, **kwargs):
+        if self._closed:
+            raise RuntimeError("cannot schedule new futures after shutdown")
+        future = Future()
+        self._queue.put((future, fn, args, kwargs))
+        return future
+
+    def shutdown(self, wait=False):
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        if wait:
+            self._thread.join()
 
 
 class AgentTask:
@@ -183,9 +235,7 @@ class AgentTask:
         if self._policy_executor is not None:
             return self._policy_executor
         if self._own_executor is None:
-            self._own_executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix=f"policy-{self.agent_id}"
-            )
+            self._own_executor = _PolicyExecutor(f"policy-{self.agent_id}")
         return self._own_executor
 
     async def run(self):
@@ -466,9 +516,7 @@ class Supervisor:
         try:
             executor = self._policy_executors.get(policy_fn)
             if executor is None:
-                executor = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="policy"
-                )
+                executor = _PolicyExecutor()
                 self._policy_executors[policy_fn] = executor
             self._policy_users[policy_fn] = self._policy_users.get(policy_fn, 0) + 1
             return executor

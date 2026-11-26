@@ -1199,7 +1199,9 @@ assert _cc.registry.snapshot()["total"] == 0
 import ml.conductor.soak as _soak  # noqa: E402
 
 with _mock.patch.object(
-    sys, "argv", ["soak", "--reset", "cell", "--no-resume", "--agents", "3"]
+    sys,
+    "argv",
+    ["soak", "--reset", "cell", "--no-resume", "--agents", "3", "--min-agents", "1"],
 ):
     _sa = _soak.parse_args()
 assert (_sa.reset, _sa.resume, _sa.agents) == ("cell", False, 3)

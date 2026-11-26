@@ -140,6 +140,10 @@ class ChurnManager:
             entry.alive = False
         return True
 
+    def seed_lifetime(self, agent_id):
+        """Give an agent a fresh episode lifetime (also used on resume)."""
+        self._lifetimes[agent_id] = geometric_lifetime(self.mean_lifetime_episodes)
+
     def _sample_goal(self):
         """Fresh Dirichlet goal, or a mutation of a recent one (offspring).
 
@@ -189,7 +193,7 @@ class ChurnManager:
         # copy lands on the next registry.save() once training has written
         # a checkpoint file.
         self.registry.save_lineage(agent_id)
-        self._lifetimes[agent_id] = geometric_lifetime(self.mean_lifetime_episodes)
+        self.seed_lifetime(agent_id)
         self._recent_goals.append((agent_id, goal))
         return agent_id
 
