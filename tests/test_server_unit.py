@@ -3807,6 +3807,94 @@ async def main():
     unplayer(wmatch)
     print("MATCH_WASH_OK")
 
+    # #1023: a self-crossing wash pair must not freeze the item for other
+    # traders. No self-fill, but a crossed pair behind the wash clears.
+    sw_time = time.time()
+    sw_start = len(srv.market_history)
+    sw_wash_bid = next(srv._id_counter)
+    sw_wash_ask = next(srv._id_counter)
+    sw_ask = next(srv._id_counter)
+    sw_bid = next(srv._id_counter)
+    sw_players = [
+        mkplayer("SweepWash", 50024, room="market"),
+        mkplayer("SweepSeller", 50025, room="market"),
+        mkplayer("SweepBuyer", 50026, room="market"),
+    ]
+    for oid, side, name, price, ts in (
+        (sw_wash_bid, "buyer", "SweepWash", 100, sw_time - 200),
+        (sw_wash_ask, "seller", "SweepWash", 1, sw_time - 150),
+        (sw_ask, "seller", "SweepSeller", 50, sw_time - 100),
+        (sw_bid, "buyer", "SweepBuyer", 99, sw_time - 50),
+    ):
+        entry = {
+            "id": oid,
+            side: name,
+            "item": "rat_tail",
+            "price": price,
+            "ts": ts,
+        }
+        (srv.market_bids if side == "buyer" else srv.market_orders).append(entry)
+    try:
+        await srv._sweep_crossed_orders("rat_tail")
+        sw_fills = srv.market_history[sw_start:]
+        assert sw_fills, "self-cross froze the market"
+        assert all(
+            f["buyer"].lower() != f["seller"].lower() for f in sw_fills
+        ), sw_fills
+        assert not any(o["id"] == sw_ask for o in srv.market_orders), srv.market_orders
+        assert not any(b["id"] == sw_bid for b in srv.market_bids), srv.market_bids
+        assert any(
+            f["buyer"] in ("SweepBuyer", "SweepWash")
+            and f["seller"] in ("SweepSeller", "SweepWash")
+            for f in sw_fills
+        ), sw_fills
+    finally:
+        srv.market_bids[:] = [
+            b for b in srv.market_bids if b["id"] not in (sw_wash_bid, sw_bid)
+        ]
+        srv.market_orders[:] = [
+            o for o in srv.market_orders if o["id"] not in (sw_wash_ask, sw_ask)
+        ]
+        for pl in sw_players:
+            unplayer(pl)
+    print("SELF_CROSS_NO_FREEZE_OK")
+
+    # positive control: an ordinary crossed pair still fills at ask price
+    nc_bid = next(srv._id_counter)
+    nc_ask = next(srv._id_counter)
+    nc_buyer = mkplayer("SweepNormalBuyer", 50027, room="market")
+    nc_seller = mkplayer("SweepNormalSeller", 50028, room="market")
+    srv.market_bids.append(
+        {
+            "id": nc_bid,
+            "buyer": "SweepNormalBuyer",
+            "item": "wolf_pelt",
+            "price": 12,
+            "ts": sw_time - 10,
+        }
+    )
+    srv.market_orders.append(
+        {
+            "id": nc_ask,
+            "seller": "SweepNormalSeller",
+            "item": "wolf_pelt",
+            "price": 9,
+            "ts": sw_time - 20,
+        }
+    )
+    try:
+        await srv._sweep_crossed_orders("wolf_pelt")
+        assert not any(b["id"] == nc_bid for b in srv.market_bids), srv.market_bids
+        assert not any(o["id"] == nc_ask for o in srv.market_orders), srv.market_orders
+        assert srv.market_history[-1]["price"] == 9, srv.market_history[-1]
+        assert srv.market_history[-1]["via"] == "ask", srv.market_history[-1]
+    finally:
+        srv.market_bids[:] = [b for b in srv.market_bids if b["id"] != nc_bid]
+        srv.market_orders[:] = [o for o in srv.market_orders if o["id"] != nc_ask]
+        unplayer(nc_buyer)
+        unplayer(nc_seller)
+    print("SWEEP_NORMAL_CROSS_OK")
+
     # commission XP cap + kill consumption (#189)
     rich = mkplayer("RichPoster", 50003, room="guild_hall")
     rich.gold = 1000000
@@ -5990,6 +6078,122 @@ async def main():
         ]
     unplayer(_tp)
     print("TRADE_GHOST_OK")
+
+    # #1025: an endless gather node must not pay full retail buyback, but a
+    # looted copy of the SAME item id still pays full value. With yield 2 per
+    # 30s, the old 8g/unit printed up to 0.53 g/s; a quarter payout caps the
+    # harvested copies at 0.13 g/s. Credits follow units the player harvested,
+    # never the item id alone.
+    ga_node = srv.gather_nodes["iron_ore_node"]
+    ga_iid = ga_node["item"]
+    ga_value = srv.ITEM_DEFS[ga_iid]["value"]
+    ga_payout = srv.merchant_sell_value(ga_iid, gathered=True)
+    ga_worst_old = ga_node["max_yield"] * ga_value / ga_node["respawn_seconds"]
+    ga_worst_new = ga_node["max_yield"] * ga_payout / ga_node["respawn_seconds"]
+    assert ga_value == 8 and ga_node["respawn_seconds"] == 30
+    assert ga_payout == max(1, ga_value // srv.GATHER_BUYBACK_DIVISOR)
+    assert srv.merchant_sell_value(ga_iid) == ga_value
+    assert ga_worst_new == ga_worst_old / srv.GATHER_BUYBACK_DIVISOR
+    ga_player = mkplayer("GatherSellLoop", 67010, room="smithy")
+    ga_player.gold = 0
+    ga_player.inventory = []
+    ga_saved = (
+        ga_node["available"],
+        ga_node["respawn_at"],
+        ga_node["min_yield"],
+        ga_node["max_yield"],
+    )
+    try:
+        ga_node["min_yield"] = ga_node["max_yield"] = 2
+        ga_cycles = 8
+        ga_earned = 0
+        ga_units_total = 0
+        for _ in range(ga_cycles):
+            ga_node["available"] = True
+            ga_node["respawn_at"] = None
+            ga_count = ga_player.inventory.count(ga_iid)
+            await srv.cmd_gather(ga_player, {"node": "iron_ore"})
+            ga_units = ga_player.inventory.count(ga_iid) - ga_count
+            ga_units_total += ga_units
+            ga_earned += ga_units * ga_payout
+            ga_player.room = "market"
+            for _ in range(ga_units):
+                await srv.cmd_sell(ga_player, {"item": ga_iid})
+            ga_player.room = "smithy"
+        assert ga_player.gold == ga_earned, (ga_player.gold, ga_earned)
+        assert ga_earned > 0, ga_earned
+        assert ga_player.gold < ga_units_total * ga_value  # counterfactual faucet
+    finally:
+        (
+            ga_node["available"],
+            ga_node["respawn_at"],
+            ga_node["min_yield"],
+            ga_node["max_yield"],
+        ) = ga_saved
+        srv.get_score_entry(ga_player.name).pop("gathered_units", None)
+        unplayer(ga_player)
+
+    # An overlapping id acquired as loot settles at full value, even when a
+    # different player has harvest credits for that id in the same session.
+    ga_loot = mkplayer("LootIronControl", 67011, room="market")
+    ga_loot.gold = 0
+    ga_loot.inventory = [ga_iid]
+    try:
+        await srv.cmd_sell(ga_loot, {"item": ga_iid})
+        assert ga_loot.gold == ga_value == 8, ga_loot.gold
+    finally:
+        unplayer(ga_loot)
+    print("LOOT_OVERLAP_FULL_VALUE_OK")
+
+    # Mixed sources in one pack: only the harvested unit is discounted.
+    ga_mixed = mkplayer("MixedSourceControl", 67012, room="smithy")
+    ga_mixed.gold = 0
+    ga_mixed.inventory = []
+    ga_node["min_yield"] = ga_node["max_yield"] = 1
+    ga_node["available"] = True
+    ga_node["respawn_at"] = None
+    try:
+        await srv.cmd_gather(ga_mixed, {"node": "iron_ore"})
+        srv._add_ground("smithy", ga_iid)
+        await srv.cmd_take(ga_mixed, {"item": ga_iid})
+        assert ga_mixed.inventory.count(ga_iid) == 2, ga_mixed.inventory
+        ga_mixed.room = "market"
+        await srv.cmd_sell(ga_mixed, {"item": ga_iid})
+        await srv.cmd_sell(ga_mixed, {"item": ga_iid})
+        assert ga_mixed.gold == ga_payout + ga_value, ga_mixed.gold
+    finally:
+        for _id in list(srv._ground_items("smithy")):
+            if _id == ga_iid:
+                srv._remove_ground("smithy", _id)
+        (
+            ga_node["min_yield"],
+            ga_node["max_yield"],
+            ga_node["available"],
+            ga_node["respawn_at"],
+        ) = (ga_saved[2], ga_saved[3], ga_saved[0], ga_saved[1])
+        srv.get_score_entry(ga_mixed.name).pop("gathered_units", None)
+        unplayer(ga_mixed)
+    print("MIXED_SOURCE_BUYBACK_OK")
+
+    # Cheap gather items keep a 1g floor instead of becoming unsellable.
+    ga_cheap_node = srv.gather_nodes["reed_fiber_node"]
+    ga_cheap = mkplayer("CheapGatherControl", 67013, room="reed_beds")
+    ga_cheap.gold = 0
+    ga_cheap.inventory = []
+    ga_cheap_saved = (ga_cheap_node["available"], ga_cheap_node["respawn_at"])
+    ga_cheap_node["available"] = True
+    ga_cheap_node["respawn_at"] = None
+    try:
+        await srv.cmd_gather(ga_cheap, {"node": "reed_fiber"})
+        assert ga_cheap.inventory.count("reed_fiber") >= 1, ga_cheap.inventory
+        ga_cheap.room = "market"
+        await srv.cmd_sell(ga_cheap, {"item": "reed_fiber"})
+        assert ga_cheap.gold == 1, ga_cheap.gold
+    finally:
+        ga_cheap_node["available"], ga_cheap_node["respawn_at"] = ga_cheap_saved
+        srv.get_score_entry(ga_cheap.name).pop("gathered_units", None)
+        unplayer(ga_cheap)
+    print("GATHER_BUYBACK_CAP_OK")
 
     # gather-by-name matches the _iname() display name, never KeyError:
     # registered display names resolve, ghost ids fall back to the raw id

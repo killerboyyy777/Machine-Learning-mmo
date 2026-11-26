@@ -4665,6 +4665,7 @@ async def _dronelang_exec_action(owner, rec, action, now):
                 )
                 qty = min(qty, _inventory_cap(owner) - _inventory_units(owner))
                 owner.inventory.extend([node["item"]] * qty)
+                _credit_gathered(owner.name, node["item"], qty)
                 await send(
                     owner,
                     {
@@ -6379,6 +6380,7 @@ async def cmd_gather(player, msg):
     # remaining space (a full pack already refused above, so >= 1 fits).
     quantity = min(quantity, _inventory_room(player))
     player.inventory.extend([node["item"]] * quantity)
+    _credit_gathered(player.name, node["item"], quantity)
     item_name = _iname(node["item"])
     await send(
         player, {"type": "message", "text": f"You gather {quantity}x {item_name}."}
@@ -6568,6 +6570,36 @@ async def cmd_buy(player, msg):
     await send(player, stats_view(player))
 
 
+# Node output is free and respawns without limit, so retail buyback on a
+# gathered copy printed gold on demand. Only copies the player actually
+# harvested carry the discount; loot, ground stock and bought copies settle
+# at full static value even when they share an item id.
+GATHER_BUYBACK_DIVISOR = 4
+
+
+def merchant_sell_value(iid, gathered=False):
+    """Gold paid for one unit; a harvested unit pays a quarter, floor 1."""
+    value = ITEM_DEFS.get(iid, {}).get("value", 1)
+    if gathered:
+        value = max(1, (value or 1) // GATHER_BUYBACK_DIVISOR)
+    return value
+
+
+def _gather_credits(name):
+    """Unsold harvest units a player holds, keyed by item id."""
+    entry = get_score_entry(name)
+    credits = entry.setdefault("gathered_units", {})
+    if not isinstance(credits, dict):
+        entry["gathered_units"] = credits = {}
+    return credits
+
+
+def _credit_gathered(name, iid, qty):
+    credits = _gather_credits(name)
+    credits[iid] = int(credits.get(iid, 0) or 0) + qty
+    mark_scores_dirty()
+
+
 async def cmd_sell(player, msg):
     iid = find_item_by_name(player.inventory, msg.get("item", ""))
     if not iid:
@@ -6577,7 +6609,13 @@ async def cmd_sell(player, msg):
     if not merchant:
         await send(player, {"type": "error", "text": "No merchant here."})
         return
-    value = ITEM_DEFS.get(iid, {}).get("value", 1)
+    credits = _gather_credits(player.name)
+    held = player.inventory.count(iid)
+    gathered = int(credits.get(iid, 0) or 0) > 0 and held > 0
+    if gathered:
+        credits[iid] = max(0, min(int(credits.get(iid, 0)), held) - 1)
+        mark_scores_dirty()
+    value = merchant_sell_value(iid, gathered)
     player.inventory.remove(iid)
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
@@ -10231,6 +10269,15 @@ async def _freight_claim(player, msg):
 
 async def _freight_cancel(player, msg):
     rec = _freight_find(msg.get("id", msg.get("contract_id")))
+    if rec is not None and rec.get("poster_kind") == "station":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Station freight settles on delivery; there is nothing to cancel.",
+            },
+        )
+        return
     if rec is None or _freight_identity(rec["poster"]) != _freight_identity(
         player.name
     ):
@@ -11286,7 +11333,16 @@ async def _sweep_crossed_orders(iid):
         if best_bid is None or best_ask is None:
             return
         if best_bid["buyer"].lower() == best_ask["seller"].lower():
-            return
+            # A wash pair cannot fill, but it must not block other traders.
+            # Look past it with the same own-deal guards the entry paths use.
+            alt_bid = _best_bid_for_ask(iid, best_ask["seller"], best_ask["price"])
+            if alt_bid is not None:
+                best_bid = alt_bid
+            else:
+                alt_ask = _best_ask_for_bid(iid, best_bid["buyer"], best_bid["price"])
+                if alt_ask is None:
+                    return
+                best_ask = alt_ask
         if best_bid["price"] < best_ask["price"]:
             return
         if best_bid["ts"] <= best_ask["ts"]:
