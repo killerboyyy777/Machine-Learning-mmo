@@ -46,6 +46,12 @@ If any answer is no, delete the comment.
 
 The target is zero unnecessary comments. A harmless comment is still an unnecessary comment: if it fails any test above, delete it rather than leaving it in place. `tests/test_source_policy.py` enforces the mechanical subset (signature comments and commented-out code); the rest is enforced in review.
 
+## Prose
+
+Every agent runs the unslop skill over prose before committing it to the repo or publishing it to the wiki. Apply the skill to README.md, docs, wiki pages, release notes, and PR bodies, one line at a time.
+
+Remove em dashes and hyphen dashes used as dashes, AI vocabulary, filler phrases, vague attributions, forced rules of three, passive voice when the actor is known, mid-sentence colons, title-case headings, and generic conclusions. Use straight quotes and sentence case. Name the actor and state facts instead of hedging.
+
 ## Proof bar
 
 State what you ran, the exit codes, and what you did not run. In the report, give the branch, the base SHA, the head SHA, a one-line summary of each item, and the files changed.
