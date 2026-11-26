@@ -47,12 +47,16 @@ The server keeps durable state in JSON files beside `server.py`. Saves go throug
 | --- | --- | --- |
 | `scores.json` | Short-lived per-player scores, flushed every five seconds and evicted on a TTL. | Player score entries reset; the next start begins with an empty table. |
 | `arena.json` | Arena ratings, recent match history, and the clamp count. | The ladder, history, and clamps reset to empty. |
-| `guilds.json` | Guilds and their vaults. | Guilds and vault balances are lost. |
+| `guilds.json` | Guilds, their vaults, and pending transfer offers with their rolling caps. | Guilds, vault balances and pending offers are lost. |
+| `market.json` | Open sell orders and escrowed standing bids. | Listed items and bid escrow are lost; restore the file or its `.1` backup. |
+| `commissions.json` | Open and recent bounties with their prepaid escrow. | Bounties and their escrow are lost; restore the file or its `.1` backup. |
 | `companions.json` | Player companions. | Companion progress is lost. |
 | `intel.json` | Bot-cadence intel rows. | Intel history is lost. |
 | `freight.json` | Freight contracts and the contract counter. | Freight state is lost. |
 
-`world.json` and `server_config.json` are inputs you edit, not saved state. Checkpoints record a canonical `world.json` hash alongside the config hash, so changing rooms, NPCs, items or recipes marks older checkpoints as world drift; checkpoints saved before that field existed are treated as compatible. The rotated backups are safe to delete only while their primary file is present and valid: `scores.json.1` and `scores.json.2` are its two generations, while `guilds.json`, `intel.json`, `freight.json`, and `arena.json` keep one `.1` copy each (`companions.json` has none). A missing or unreadable primary falls back to a backup with a warning; a file written by a newer version is left on disk but not loaded. If both the primary and its backups are gone, that state is lost permanently.
+`world.json` and `server_config.json` are inputs you edit, not saved state. Checkpoints record a canonical `world.json` hash alongside the config hash, so changing rooms, NPCs, items or recipes marks older checkpoints as world drift; checkpoints saved before that field existed are treated as compatible. The rotated backups are safe to delete only while their primary file is present and valid: `scores.json.1` and `scores.json.2` are its two generations, while `guilds.json`, `market.json`, `commissions.json`, `intel.json`, `freight.json`, and `arena.json` keep one `.1` copy each (`companions.json` has none). A missing or unreadable primary falls back to a backup with a warning; a file written by a newer version is left on disk but not loaded. If both the primary and its backups are gone, that state is lost permanently.
+
+Market and commission rows that fail validation are dropped with a warning, and their escrow is banked to the owner for the next login. An unknown version loads empty without blocking later saves.
 
 ## Docker
 
@@ -133,7 +137,7 @@ Adopt a wolf, mule, or sheep companion, then summon it. Companions earn a share 
 
 Found and run a guild at the Adventurers Guild hall. A guild has a shared vault, three ranks (member, officer, leader), a configurable permission table, and a 500-entry audit log. `guild transfer` proposes gold to another guild and `guild accept` completes it. Nothing is escrowed, and the server re-checks the sending vault when the offer is accepted. Either side can close a proposal early. The receiver runs `guild decline` (leader or officer) and the sender runs `guild cancel`. Both write terminal audit rows on each side and notify the other guild.
 
-An offer costs the target an audit row whether or not anyone accepts it. Both the queue and the day are bounded: three offers waiting with one guild, twenty in total, an hour to answer, and per target ten received from any one sender and twenty from everyone combined in a rolling day. Declining frees the queue, not the day. The wiki covers the vault, rank, and withdrawal rules.
+An offer costs the target an audit row whether or not anyone accepts it. Both the queue and the day are bounded: three offers waiting with one guild, twenty in total, an hour to answer, and per target ten received from any one sender and twenty from everyone combined in a rolling day. Declining frees the queue, not the day. Pending offers and the rolling caps are stored in `guilds.json` and survive a restart. The wiki covers the vault, rank, and withdrawal rules.
 
 ## Arena
 
