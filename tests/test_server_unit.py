@@ -4640,6 +4640,13 @@ async def main():
     del srv.SCORES["unversioned"]
     print("VERSION_WARN_OK")
 
+    # #974: shutdown flushes market and commissions now; keep those writes
+    # out of the repository while the main() tests below run.
+    _escrow_dir = tempfile.mkdtemp(prefix="escrow974-")
+    _saved_escrow_files = (srv.MARKET_FILE, srv.COMMISSIONS_FILE)
+    srv.MARKET_FILE = os.path.join(_escrow_dir, "market.json")
+    srv.COMMISSIONS_FILE = os.path.join(_escrow_dir, "commissions.json")
+
     # failed GM bind closes the game listener, propagates (#242)
     import socket as _socket
 
@@ -4749,6 +4756,8 @@ async def main():
         "SCORES_FILE",
         "COMPANIONS_FILE",
         "GUILDS_FILE",
+        "MARKET_FILE",
+        "COMMISSIONS_FILE",
         "INTEL_FILE",
     ):
         _saved_files[_attr] = getattr(srv, _attr)
@@ -4888,6 +4897,8 @@ async def main():
         for _attr, _path in _saved_files.items():
             setattr(srv, _attr, _path)
         _shutil.rmtree(_fdir, ignore_errors=True)
+    srv.MARKET_FILE, srv.COMMISSIONS_FILE = _saved_escrow_files
+    _shutil.rmtree(_escrow_dir, ignore_errors=True)
 
     # /health reads the cached snapshot, never the live dict (#224)
     import json as _json2

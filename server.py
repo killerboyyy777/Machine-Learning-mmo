@@ -42,6 +42,12 @@ FREIGHT_FILE = join(dirname(abspath(__file__)), "freight.json")
 # Arena ratings keep one too: a ladder is durable, while scores.json evicts
 # entries on a TTL and a rating must outlive the session that earned it.
 ARENA_FILE = join(dirname(abspath(__file__)), "arena.json")
+# Escrowed listings, bids and bounties outlive a score flush, so they get
+# versioned files like the vault does.
+MARKET_FILE = join(dirname(abspath(__file__)), "market.json")
+COMMISSIONS_FILE = join(dirname(abspath(__file__)), "commissions.json")
+MARKET_VERSION = 1
+COMMISSIONS_VERSION = 1
 
 NPC_TICK_SECONDS = 3
 # Mob spawn cap (#337 headroom): extra concurrent instances per HOSTILE
@@ -1170,6 +1176,8 @@ def prune_commissions(now=None):
         if now - latest > COMMISSION_TTL_SECONDS:
             del _commissions[cid]
             pruned += 1
+    if pruned:
+        mark_commissions_dirty()
     return pruned
 
 
@@ -1237,6 +1245,8 @@ async def prune_market_orders(now=None):
             entry["gold_bank"] = entry.get("gold_bank", 0) + b["price"]
             mark_scores_dirty()
         pruned += 1
+    if pruned:
+        mark_market_dirty()
     return pruned
 
 
@@ -1928,8 +1938,41 @@ async def freight_save_loop():
 FREIGHT = load_freight()
 
 
+GUILD_TRANSFERS = {}
+# Offers made in the last day, per target guild: what has been written to their
+# queue and their audit, which the wait cap above does not limit.
+GUILD_TRANSFER_INCOMING = {}
+_guild_transfer_ids = itertools.count(1)
+GUILD_TRANSFERS_COMPLETED = 0
+GUILD_TRANSFERS_EXPIRED = 0
+GUILD_GOLD_TRANSFERRED = 0
+
+
+def _valid_guild_transfer(row, tid):
+    if not isinstance(row, dict) or row.get("id") != tid:
+        return False
+    for key in ("from", "to", "amount"):
+        value = row.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return False
+    if not all(isinstance(row.get(key), str) for key in ("from_key", "to_key", "by")):
+        return False
+    ts = row.get("ts")
+    return (
+        isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts)
+    )
+
+
 def load_guilds(path=None):
     global GUILDS_FILE_BLOCKED
+    global GUILD_TRANSFERS, GUILD_TRANSFER_INCOMING, _guild_transfer_ids
+    global GUILD_TRANSFERS_COMPLETED, GUILD_TRANSFERS_EXPIRED, GUILD_GOLD_TRANSFERRED
+    GUILD_TRANSFERS = {}
+    GUILD_TRANSFER_INCOMING = {}
+    GUILD_TRANSFERS_COMPLETED = 0
+    GUILD_TRANSFERS_EXPIRED = 0
+    GUILD_GOLD_TRANSFERRED = 0
+    _guild_transfer_ids = itertools.count(1)
     path = path or GUILDS_FILE
     for candidate in (path, path + ".1"):
         try:
@@ -1970,6 +2013,53 @@ def load_guilds(path=None):
             if isinstance(raw_tombstones, list)
             else []
         )
+        raw_transfers = data.get("transfers")
+        if isinstance(raw_transfers, dict):
+            for key, row in raw_transfers.items():
+                try:
+                    tid = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if _valid_guild_transfer(row, tid):
+                    GUILD_TRANSFERS[tid] = row
+            _guild_transfer_ids = itertools.count(max(GUILD_TRANSFERS, default=0) + 1)
+        raw_incoming = data.get("transfer_incoming")
+        if isinstance(raw_incoming, dict):
+            for key, rows in raw_incoming.items():
+                try:
+                    gid = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(rows, list):
+                    continue
+                kept = [
+                    row
+                    for row in rows
+                    if isinstance(row, dict)
+                    and isinstance(row.get("ts"), (int, float))
+                    and not isinstance(row.get("ts"), bool)
+                    and isinstance(row.get("from"), int)
+                    and not isinstance(row.get("from"), bool)
+                ]
+                if kept:
+                    GUILD_TRANSFER_INCOMING[gid] = kept
+        stats = data.get("transfer_stats")
+        if isinstance(stats, dict):
+            for name in ("completed", "expired"):
+                value = stats.get(name)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    continue
+                if name == "completed":
+                    GUILD_TRANSFERS_COMPLETED = value
+                else:
+                    GUILD_TRANSFERS_EXPIRED = value
+            gold = stats.get("gold_transferred")
+            if (
+                isinstance(gold, (int, float))
+                and not isinstance(gold, bool)
+                and gold >= 0
+            ):
+                GUILD_GOLD_TRANSFERRED = gold
         return guilds, tombstones
     return {}, []
 
@@ -1986,6 +2076,13 @@ def save_guilds(path=None):
                     "version": GUILD_VERSION,
                     "guilds": GUILDS,
                     "tombstones": GUILD_TOMBSTONES,
+                    "transfers": GUILD_TRANSFERS,
+                    "transfer_incoming": GUILD_TRANSFER_INCOMING,
+                    "transfer_stats": {
+                        "completed": GUILD_TRANSFERS_COMPLETED,
+                        "expired": GUILD_TRANSFERS_EXPIRED,
+                        "gold_transferred": GUILD_GOLD_TRANSFERRED,
+                    },
                 },
                 f,
             )
@@ -3371,6 +3468,252 @@ market_orders = []
 market_bids = []
 MARKET_HISTORY_SIZE = 50
 market_history = []
+MARKET_SAVE_SECONDS = 5.0
+COMMISSIONS_SAVE_SECONDS = 5.0
+
+
+def _load_versioned_state(path, version):
+    """Read a versioned state file, falling back to its rotated copy.
+
+    An unknown version loads empty without blocking later saves: unlike a
+    vault, escrow must not wedge the server after a downgrade or bad write.
+    """
+    for candidate in (path, path + ".1"):
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            print(f"Warning: could not load {os.path.basename(candidate)}: {e}")
+            continue
+        if not isinstance(data, dict) or data.get("version") != version:
+            print(
+                f"Warning: {os.path.basename(candidate)} version is not "
+                f"{version}; not loaded"
+            )
+            return None
+        if candidate != path:
+            print(
+                f"Warning: {os.path.basename(path)} missing/corrupt, "
+                f"recovered from {os.path.basename(candidate)}"
+            )
+        return data
+    return None
+
+
+def _valid_market_row(row, owner_key, seen):
+    if not isinstance(row, dict):
+        return False
+    oid = row.get("id")
+    if isinstance(oid, bool) or not isinstance(oid, int) or oid <= 0 or oid in seen:
+        return False
+    owner = row.get(owner_key)
+    if not isinstance(owner, str) or not owner or len(owner) > MAX_NAME_LEN:
+        return False
+    iid = row.get("item")
+    if not isinstance(iid, str) or not iid:
+        return False
+    price = row.get("price")
+    if isinstance(price, bool) or not isinstance(price, int) or price <= 0:
+        return False
+    try:
+        ts = float(row.get("ts"))
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(ts):
+        return False
+    row["ts"] = ts
+    return True
+
+
+def _refund_market_row(row, owner_key):
+    """Return escrow from a row that cannot be restored, banking it offline."""
+    if not isinstance(row, dict):
+        return
+    owner = row.get(owner_key)
+    if not isinstance(owner, str) or not owner:
+        return
+    entry = get_score_entry(owner)
+    if owner_key == "seller":
+        iid = row.get("item")
+        if isinstance(iid, str) and iid:
+            entry.setdefault("item_bank", []).append(iid)
+            mark_scores_dirty()
+    else:
+        price = row.get("price")
+        if isinstance(price, int) and not isinstance(price, bool) and price > 0:
+            entry["gold_bank"] = entry.get("gold_bank", 0) + price
+            mark_scores_dirty()
+
+
+def _save_market_rows(path, orders, bids):
+    return _atomic_json_write(
+        path,
+        {"version": MARKET_VERSION, "orders": orders, "bids": bids},
+    )
+
+
+def load_market(path=None):
+    global _id_counter
+    path = path or MARKET_FILE
+    data = _load_versioned_state(path, MARKET_VERSION)
+    orders, bids = [], []
+    if data is None:
+        return orders, bids
+    seen = set()
+    invalid = []
+    for key, owner_key, target in (
+        ("orders", "seller", orders),
+        ("bids", "buyer", bids),
+    ):
+        rows = data.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not _valid_market_row(row, owner_key, seen):
+                invalid.append((row, owner_key))
+                continue
+            seen.add(row["id"])
+            target.append(row)
+    if invalid:
+        # Drop the bad rows on disk before banking their escrow: a crash
+        # after a score flush must not pay the same refund twice.
+        if _save_market_rows(path, orders, bids):
+            for row, owner_key in invalid:
+                _refund_market_row(row, owner_key)
+            mark_market_dirty()
+        else:
+            print(
+                f"Warning: could not clean {os.path.basename(path)}; "
+                "escrow left in place, not refunded"
+            )
+    if seen:
+        current = next(_id_counter)
+        _id_counter = itertools.count(max(current, max(seen)) + 1)
+    return orders, bids
+
+
+def save_market(path=None):
+    path = path or MARKET_FILE
+    return _save_market_rows(path, market_orders, market_bids)
+
+
+def _valid_commission_row(row, cid):
+    if not isinstance(row, dict) or row.get("id") != cid:
+        return False
+    if not all(
+        isinstance(row.get(key), str) and row[key] for key in ("poster", "target")
+    ):
+        return False
+    for key in ("required_kills", "reward_gold", "reward_xp", "escrow"):
+        value = row.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return False
+    if row.get("status") not in ("open", "completed", "cancelled", "expired"):
+        return False
+    ts = row.get("created_ts")
+    return (
+        isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts)
+    )
+
+
+def _refund_commission_row(row):
+    """Bank prepaid gold from a bounty row that cannot be restored."""
+    if not isinstance(row, dict):
+        return
+    poster = row.get("poster")
+    escrow = row.get("escrow")
+    if not isinstance(poster, str) or not poster:
+        return
+    if not isinstance(escrow, int) or isinstance(escrow, bool) or escrow <= 0:
+        return
+    entry = get_score_entry(poster)
+    entry["gold_bank"] = entry.get("gold_bank", 0) + escrow
+    mark_scores_dirty()
+
+
+def _save_commission_rows(path, rows):
+    return _atomic_json_write(
+        path, {"version": COMMISSIONS_VERSION, "commissions": rows}
+    )
+
+
+def load_commissions(path=None):
+    global _commission_counter
+    path = path or COMMISSIONS_FILE
+    data = _load_versioned_state(path, COMMISSIONS_VERSION)
+    _commission_counter = itertools.count(1)
+    if data is None:
+        return {}
+    rows = data.get("commissions")
+    if not isinstance(rows, list):
+        return {}
+    loaded = {}
+    invalid = []
+    for row in rows:
+        cid = row.get("id") if isinstance(row, dict) else None
+        if (
+            isinstance(cid, bool)
+            or not isinstance(cid, int)
+            or cid in loaded
+            or not _valid_commission_row(row, cid)
+        ):
+            invalid.append(row)
+            continue
+        loaded[cid] = row
+    if invalid:
+        clean = list(loaded.values())
+        if _save_commission_rows(path, clean):
+            for row in invalid:
+                _refund_commission_row(row)
+            mark_commissions_dirty()
+        else:
+            print(
+                f"Warning: could not clean {os.path.basename(path)}; "
+                "escrow left in place, not refunded"
+            )
+    _commission_counter = itertools.count(max(loaded, default=0) + 1)
+    return loaded
+
+
+def save_commissions(path=None):
+    path = path or COMMISSIONS_FILE
+    return _save_commission_rows(path, list(_commissions.values()))
+
+
+_market_dirty = False
+_commissions_dirty = False
+
+
+def mark_market_dirty():
+    global _market_dirty
+    _market_dirty = True
+
+
+def mark_commissions_dirty():
+    global _commissions_dirty
+    _commissions_dirty = True
+
+
+async def market_save_loop():
+    global _market_dirty
+    while True:
+        await asyncio.sleep(MARKET_SAVE_SECONDS)
+        if _market_dirty and save_market():
+            _market_dirty = False
+
+
+async def commissions_save_loop():
+    global _commissions_dirty
+    while True:
+        await asyncio.sleep(COMMISSIONS_SAVE_SECONDS)
+        if _commissions_dirty and save_commissions():
+            _commissions_dirty = False
+
+
+market_orders, market_bids = load_market()
+_commissions = load_commissions()
 WORLD_SEED = os.environ.get("TEXTMMO_GM_SEED", 0) or 0
 tax_treasury = float(WORLD_SEED)
 tax_collected_lifetime = 0.0
@@ -6767,6 +7110,7 @@ async def cmd_commission_post(player, msg):
     }
     _commissions[cid] = commission
     mark_scores_dirty()
+    mark_commissions_dirty()
     await send(
         player,
         {
@@ -6928,6 +7272,7 @@ async def cmd_commission_fill(player, msg):
     commission["status"] = "completed"
     commission["filled_by"] = player.name
     commission["filled_ts"] = time.time()
+    mark_commissions_dirty()
     if commission.get("poster") != GUILD_POSTER:
         poster_entry = get_score_entry(commission["poster"])
         collab = poster_entry.setdefault("collab_fills", {})
@@ -7062,6 +7407,7 @@ async def cmd_commission_cancel(player, msg):
         return
     commission["status"] = "cancelled"
     commission["progress"] = {}
+    mark_commissions_dirty()
     # Refund half of the actually-escrowed gold (credit_gold pays live
     # characters directly and banks it for offline ones). The forfeited
     # half is the cancellation fee: sink it to the treasury instead of
@@ -8361,18 +8707,10 @@ async def _cmd_guild_audit(player, msg):
     )
 
 
-GUILD_TRANSFERS = {}
-# Offers made in the last day, per target guild: what has been written to their
-# queue and their audit, which the wait cap above does not limit.
-GUILD_TRANSFER_INCOMING = {}
 # A guild being torn down still sits in GUILDS until its vault has been paid
 # out, and that await is long enough for a transfer to land in a record that is
 # about to be deleted. Marking it first keeps the gold out of the void.
 GUILD_DISSOLVING = set()
-_guild_transfer_ids = itertools.count(1)
-GUILD_TRANSFERS_COMPLETED = 0
-GUILD_TRANSFERS_EXPIRED = 0
-GUILD_GOLD_TRANSFERRED = 0
 
 
 def _guild_transfer_prune(now=None):
@@ -8383,6 +8721,7 @@ def _guild_transfer_prune(now=None):
         if now - float(row.get("ts", 0) or 0) > GUILD_TRANSFER_TTL_SECONDS:
             GUILD_TRANSFERS.pop(tid, None)
             GUILD_TRANSFERS_EXPIRED += 1
+            mark_guilds_dirty()
 
 
 def _guild_transfers_for(guild_id):
@@ -8395,11 +8734,10 @@ def _guild_transfer_incoming_prune(now=None):
     now = time.time() if now is None else now
     cutoff = now - GUILD_TRANSFER_INCOMING_WINDOW_SECONDS
     for gid in list(GUILD_TRANSFER_INCOMING):
-        kept = [
-            row
-            for row in GUILD_TRANSFER_INCOMING[gid]
-            if float(row.get("ts", 0) or 0) >= cutoff
-        ]
+        current = GUILD_TRANSFER_INCOMING[gid]
+        kept = [row for row in current if float(row.get("ts", 0) or 0) >= cutoff]
+        if len(kept) != len(current):
+            mark_guilds_dirty()
         if kept:
             GUILD_TRANSFER_INCOMING[gid] = kept
         else:
@@ -10800,6 +11138,7 @@ async def _sweep_crossed_orders(iid):
             fill_price, via = best_ask["price"], "ask"
         market_bids.remove(best_bid)
         market_orders.remove(best_ask)
+        mark_market_dirty()
         refund = best_bid["price"] - fill_price
         if refund > 0:
             await credit_gold(best_bid["buyer"], refund)
@@ -10873,6 +11212,7 @@ async def cmd_market_post(player, msg):
     }
     market_orders.append(ask)
     mark_scores_dirty()
+    mark_market_dirty()
     # Standing-bid sweep (#158): a new ask lifts the best resting bid at or
     # above its price (wash-proof: own bids never match). The resting bid
     # set the price, so the fill books at the BID price; the bidder prepaid
@@ -10927,6 +11267,7 @@ async def cmd_market_cancel(player, msg):
             market_orders.remove(o)
             in_pack = _deliver_item_or_bank(player, o["item"])
             mark_scores_dirty()
+            mark_market_dirty()
             if in_pack:
                 text = f"Cancelled order #{oid}."
             else:
@@ -10948,6 +11289,7 @@ async def cmd_market_cancel(player, msg):
             market_bids.remove(b)
             await credit_gold(player.name, b["price"])
             mark_scores_dirty()
+            mark_market_dirty()
             await send(
                 player,
                 {
@@ -11096,6 +11438,7 @@ async def cmd_market_buy(player, msg):
     player.gold -= price
     market_orders.remove(choice)
     mark_scores_dirty()
+    mark_market_dirty()
     await send(
         player,
         {
@@ -11160,6 +11503,7 @@ async def cmd_market_buy_order(player, msg):
     }
     market_bids.append(bid)
     mark_scores_dirty()
+    mark_market_dirty()
     # Creation sweep (#158): a new bid lifts the cheapest resting ask at or
     # below its price (wash-proof: own asks never match). The resting ask
     # set the price, so the fill books at the ASK price and the bidder is
@@ -11246,6 +11590,7 @@ async def cmd_market_buy_modify(player, msg):
     _treasury_credit(fee)
     bid["price"] = new_price
     mark_scores_dirty()
+    mark_market_dirty()
     # Modify keeps id and queue position; sweep once like a new bid.
     ask = _best_ask_for_bid(bid["item"], bid["buyer"], new_price)
     if ask is not None:
@@ -14558,6 +14903,7 @@ def _standing_post(family_key, target, kills, reward_gold, reward_xp, now):
         "standing": family_key,
     }
     mark_scores_dirty()
+    mark_commissions_dirty()
     return True
 
 
@@ -14569,6 +14915,7 @@ def _standing_expire(commission, now):
     tax_treasury += commission.get("escrow", 0)
     commission["escrow"] = 0
     mark_scores_dirty()
+    mark_commissions_dirty()
 
 
 def tick_standing_bounties(now):
@@ -15381,6 +15728,10 @@ async def main():
                     _run_resilient("companions_save", companions_save_loop)
                 ),
                 asyncio.create_task(_run_resilient("guilds_save", guilds_save_loop)),
+                asyncio.create_task(_run_resilient("market_save", market_save_loop)),
+                asyncio.create_task(
+                    _run_resilient("commissions_save", commissions_save_loop)
+                ),
                 asyncio.create_task(_run_resilient("intel_save", intel_save_loop)),
                 asyncio.create_task(
                     _run_resilient("dashboard_snapshot", dashboard_refresh_loop)
@@ -15416,6 +15767,8 @@ async def main():
         save_scores()
         save_companions()
         save_guilds()
+        save_market()
+        save_commissions()
         save_intel()
         save_arena()
         save_freight()
