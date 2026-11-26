@@ -1125,6 +1125,79 @@ async def main():
     del srv.npcs["ammo_dummy"]
     print("AMMO_FAMILY_OK")
 
+    # --- Effect ammo: blood heals the shooter, fire burns over time ---
+    effecter = srv.Player(
+        ws=FakeWS(), id=10004, name="EffectAmmoTester", logged_in=True
+    )
+    effecter.room = archer.room
+    effecter.inventory = ["oak_longbow", "fire_arrow", "blood_arrow"]
+    srv.add_member(effecter)
+    await srv.cmd_equip(effecter, {"item": "oak longbow"})
+    effecter.hp = 10
+    srv.npcs["ammo_dummy"] = {
+        "id": "ammo_dummy",
+        "name": "Ammo Test Dummy",
+        "room": effecter.room,
+        "hp": 1000,
+        "max_hp": 1000,
+        "attack": 0,
+        "hostile": True,
+        "behavior": "idle",
+        "loot": [],
+        "gold": 0,
+        "respawn_seconds": 60,
+        "alive": True,
+        "respawn_at": None,
+        "contributors": {},
+    }
+    dummy = srv.npcs["ammo_dummy"]
+
+    await srv.cmd_attack(effecter, {"target": "ammo test"})
+    assert "blood_arrow" not in effecter.inventory
+    assert "fire_arrow" in effecter.inventory
+    assert effecter.hp == 12, effecter.hp
+    print("AMMO_BLOOD_HEAL_OK")
+
+    # Full HP must not overheal; the best variant still fires and heals zero.
+    effecter.hp = effecter.max_hp
+    dummy["hp"] = 1000
+    await srv.cmd_attack(effecter, {"target": "ammo test"})
+    assert effecter.hp == effecter.max_hp
+    print("AMMO_BLOOD_HEAL_CAP_OK")
+
+    # Fire Arrow is the best remaining variant and applies a burn status.
+    effecter.inventory = ["oak_longbow", "fire_arrow"]
+    dummy["hp"] = 1000
+    dummy.pop("burn", None)
+    await srv.cmd_attack(effecter, {"target": "ammo test"})
+    assert "fire_arrow" not in effecter.inventory
+    assert dummy["burn"] == {"amount": 2, "remaining": 2}, dummy.get("burn")
+    hp_before_ticks = dummy["hp"]
+    assert srv._tick_npc_burn(dummy) == 2
+    assert dummy["hp"] == hp_before_ticks - 2
+    assert srv._tick_npc_burn(dummy) == 2
+    assert srv._tick_npc_burn(dummy) == 0
+    print("AMMO_FIRE_BURN_OK")
+
+    # Burn chips but never kills; a plain arrow leaves no burn at all.
+    dummy["hp"] = 2
+    dummy["burn"] = {"amount": 2, "remaining": 2}
+    assert srv._tick_npc_burn(dummy) == 1
+    assert dummy["hp"] == 1
+    assert srv._tick_npc_burn(dummy) == 0
+    assert dummy["hp"] == 1
+    dummy.pop("burn", None)
+    effecter.inventory = ["oak_longbow", "steel_arrow"]
+    dummy["hp"] = 1000
+    await srv.cmd_attack(effecter, {"target": "ammo test"})
+    assert "burn" not in dummy
+    assert srv._tick_npc_burn(dummy) == 0
+    assert effecter.hp == effecter.max_hp
+    print("AMMO_BURN_NEGATIVE_OK")
+
+    del srv.npcs["ammo_dummy"]
+    srv.remove_member(effecter)
+
     # --- Carry cap: exemptions, exact enforcement, drop-to-make-room ---
     assert srv.INVENTORY_CAP == 24 and srv.AMMO_EXEMPT_COUNT == 5
     packer = srv.Player(ws=FakeWS(), id=10007, name="PackTester", logged_in=True)

@@ -49,7 +49,9 @@ and delver quests, and Sister Maren's remedy and tonic quests:
     plus the three materials and crafted-charm flag for guard_charm (accept
     and turn-in require the relevant quest giver in the room).
   - ammo terms: arrow count as a scalar (bows consume 1 arrow per shot, so
-    unlike other items the count -- not just presence -- drives decisions).
+    unlike other items the count -- not just presence -- drives decisions),
+    plus the best loaded bonus scaled by the family maximum; effect variants
+    carry a higher bonus and are selected by the same best-in-family rule.
 
 Market tax (10% with a 1-gold minimum, see server.py TAX_RATE/TAX_MINIMUM)
 is first-class here, not an ignored detail:
@@ -686,7 +688,17 @@ INVENTORY_CAP = getattr(srv, "INVENTORY_CAP", 24)
 AMMO_EXEMPT_COUNT = getattr(srv, "AMMO_EXEMPT_COUNT", 5)
 PARTY_MAX_MEMBERS = getattr(srv, "PARTY_MAX_MEMBERS", 4)
 AMMO_IDS = frozenset(
-    getattr(srv, "AMMO_BONUS", {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2})
+    getattr(
+        srv,
+        "AMMO_BONUS",
+        {
+            "arrow": 0,
+            "iron_arrow": 1,
+            "steel_arrow": 2,
+            "fire_arrow": 3,
+            "blood_arrow": 4,
+        },
+    )
 )
 
 
@@ -3056,9 +3068,18 @@ class TextMMOEnv:
         # Arrow count matters (bows eat one per shot), unlike other items
         # where binary presence suffices -- hence a scalar, not just the
         # inv_presence flag. Counts the whole ammo family (any variant
-        # fires); ammo_best tracks the best loaded bonus (+0/+1/+2).
+        # fires); ammo_best tracks the best loaded bonus, scaled by the
+        # family maximum so effect variants stay in [0, 1].
         ammo_bonus = getattr(
-            srv, "AMMO_BONUS", {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2}
+            srv,
+            "AMMO_BONUS",
+            {
+                "arrow": 0,
+                "iron_arrow": 1,
+                "steel_arrow": 2,
+                "fire_arrow": 3,
+                "blood_arrow": 4,
+            },
         )
         held_bonus = [
             ammo_bonus.get(srv.find_item_by_name(list(srv.ITEM_DEFS), n), -1)
@@ -3066,7 +3087,9 @@ class TextMMOEnv:
         ]
         held_bonus = [b for b in held_bonus if b >= 0]
         arrows_norm = min(len(held_bonus), 20) / 20.0
-        ammo_best_norm = (max(held_bonus) / 2.0) if held_bonus else 0.0
+        ammo_best_norm = (
+            max(held_bonus) / max(1, max(ammo_bonus.values())) if held_bonus else 0.0
+        )
         defense_norm = min(float(s.get("defense", 0) or 0), 10.0) / 10.0
 
         # Adaptive descent-readiness hint (#335): own level + gear + healing
