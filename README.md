@@ -54,7 +54,7 @@ The server keeps durable state in JSON files beside `server.py`. Saves go throug
 | `intel.json` | Bot-cadence intel rows. | Intel history is lost. |
 | `freight.json` | Freight contracts and the contract counter. | Freight state is lost. |
 
-`world.json` and `server_config.json` are inputs you edit, not saved state. The rotated backups are safe to delete only while their primary file is present and valid: `scores.json.1` and `scores.json.2` are its two generations, while `guilds.json`, `market.json`, `commissions.json`, `intel.json`, `freight.json`, and `arena.json` keep one `.1` copy each (`companions.json` has none). A missing or unreadable primary falls back to a backup with a warning; a file written by a newer version is left on disk but not loaded. If both the primary and its backups are gone, that state is lost permanently.
+`world.json` and `server_config.json` are inputs you edit, not saved state. Checkpoints record a canonical `world.json` hash alongside the config hash, so changing rooms, NPCs, items or recipes marks older checkpoints as world drift; checkpoints saved before that field existed are treated as compatible. The rotated backups are safe to delete only while their primary file is present and valid: `scores.json.1` and `scores.json.2` are its two generations, while `guilds.json`, `market.json`, `commissions.json`, `intel.json`, `freight.json`, and `arena.json` keep one `.1` copy each (`companions.json` has none). A missing or unreadable primary falls back to a backup with a warning; a file written by a newer version is left on disk but not loaded. If both the primary and its backups are gone, that state is lost permanently.
 
 Market and commission rows that fail validation are dropped with a warning, and their escrow is banked to the owner for the next login. An unknown version loads empty without blocking later saves.
 
@@ -129,7 +129,7 @@ Start a conductor with a plugin slot. The directory defaults to `<repo>/plugins`
 python3 ml/conductor/soak.py --agents 4 --slot hello:speed=5
 ```
 
-A plugin may also implement the optional episode, reward, learning, and checkpoint hooks described in the plugin guide. Plugins run inside the conductor process. Admission validates a plugin before use, but it is not a security sandbox. A blocking or failing policy can still affect the run.
+A plugin may also implement the optional episode, reward, learning, and checkpoint hooks described in the plugin guide. Plugins run inside the conductor process. Admission validates a plugin before use, but it is not a security sandbox. A blocking or failing policy can still affect the run: with `--policy-timeout` set, a hung call is abandoned on a daemon worker, so it cannot hold the process open at shutdown, though the call itself keeps running until the process exits.
 
 ## Companions
 

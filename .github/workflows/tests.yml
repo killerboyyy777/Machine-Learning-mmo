@@ -53,6 +53,8 @@ jobs:
       - run: python tests/test_compose_packaging.py
       - run: python tests/test_training_loops.py
       - run: python tests/test_conductor_run.py
+      - run: python tests/test_policy_exit.py
+      - run: python tests/test_soak_args.py
       - run: python tests/test_gm_unit.py
       - run: python tests/test_farm_resume.py
       - run: python tests/test_training_health.py
@@ -92,6 +94,7 @@ jobs:
       - run: python tests/test_metrics_route.py
       - run: python tests/test_telemetry.py
       - run: python tests/test_checkpoint_reload.py
+      - run: python tests/test_versioning.py
       - run: python tests/test_source_policy.py
       - run: python tests/test_structured_log.py
       - run: python tests/test_wheel_assets.py

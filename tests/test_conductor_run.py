@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -111,6 +112,7 @@ async def _conductor_resume(tmpdir):
     # resume=True (default): the next Conductor on the same dir picks up
     # the previous population with goals and parents intact.
     c2 = Conductor(d, max_agents=3)
+    assert c2._pending_resume == [aid]  # loaded, but no task until run()
     got = c2.registry.get(aid)
     assert got is not None and got.goal == goal
     assert got.parent_id == c1.registry.get(aid).parent_id
@@ -121,11 +123,123 @@ async def _conductor_resume(tmpdir):
     print("CONDUCTOR_RESUME_OK")
 
 
+def _live_ids(base):
+    with open(os.path.join(base, "registry", "registry.json")) as fh:
+        data = json.load(fh)
+    return [a["agent_id"] for a in data["agents"] if a["alive"]]
+
+
+async def _conductor_resume_restarts_tasks(tmpdir):
+    """A second run restarts saved agents and fills only missing slots."""
+    base = os.path.join(tmpdir, "resume-tasks")
+
+    def runner():
+        return {
+            "env_factory": lambda i: FakeEnv(),
+            "policy_fn": lambda o, a: 0,
+            "weight": 1,
+        }
+
+    first = Conductor(
+        base,
+        max_agents=3,
+        arrivals_per_minute=0,
+        mean_lifetime_episodes=1000000,
+        runners=[runner()],
+        url="ws://localhost:9",
+        resume=False,
+    )
+    await first.run(duration_seconds=1, wave_size=10, wave_delay=0.01)
+    saved = _live_ids(base)
+    assert len(saved) == 3, saved
+    characters = {
+        a["agent_id"]: a["character"]
+        for a in first.registry.snapshot()["agents"]
+        if a["alive"]
+    }
+
+    second = Conductor(
+        base,
+        max_agents=3,
+        arrivals_per_minute=0,
+        mean_lifetime_episodes=1000000,
+        runners=[runner()],
+        url="ws://localhost:9",
+    )
+    observed = []
+
+    async def poll():
+        for _ in range(100):
+            observed.append(second.supervisor.status()["running"])
+            await asyncio.sleep(0.02)
+
+    await asyncio.gather(
+        second.run(duration_seconds=2, wave_size=10, wave_delay=0.01), poll()
+    )
+    assert max(observed) >= len(saved), observed
+    assert set(_live_ids(base)) == set(saved)  # no fresh full wave, no registry-full
+    assert set(saved) <= set(second.churn._lifetimes)  # fresh episode lifetimes
+    assert {
+        aid: second.registry.get(aid).character for aid in saved
+    } == characters  # stable login names survived the restart
+
+    third = Conductor(
+        base,
+        max_agents=5,
+        arrivals_per_minute=0,
+        mean_lifetime_episodes=1000000,
+        runners=[runner()],
+        url="ws://localhost:9",
+    )
+    await third.run(duration_seconds=1, wave_size=10, wave_delay=0.01)
+    grown = _live_ids(base)
+    assert len(grown) == 5 and set(saved) <= set(grown), grown
+
+    # Negative control: a persisted dead entry gets no task; only the gap
+    # is refilled by a fresh spawn, and the alive count stays at the cap.
+    reg_path = os.path.join(base, "registry", "registry.json")
+    with open(reg_path) as fh:
+        data = json.load(fh)
+    dead = next(a["agent_id"] for a in data["agents"] if a["alive"])
+    for row in data["agents"]:
+        if row["agent_id"] == dead:
+            row["alive"] = False
+    with open(reg_path, "w") as fh:
+        json.dump(data, fh)
+    fourth = Conductor(
+        base,
+        max_agents=5,
+        arrivals_per_minute=0,
+        mean_lifetime_episodes=1000000,
+        runners=[runner()],
+        url="ws://localhost:9",
+    )
+    observed_dead = []
+
+    async def poll_dead():
+        for _ in range(100):
+            observed_dead.append(fourth.supervisor.status()["running"])
+            await asyncio.sleep(0.02)
+
+    await asyncio.gather(
+        fourth.run(duration_seconds=2, wave_size=10, wave_delay=0.01), poll_dead()
+    )
+    final = _live_ids(base)
+    assert len(final) == 5 and dead not in final, final
+    assert (set(grown) - {dead}) <= set(final), final
+    assert max(observed_dead) >= 4, observed_dead
+    print("CONDUCTOR_RESUME_TASKS_OK")
+
+
 async def main():
     tmpdir = tempfile.mkdtemp()
     await _supervisor_flow(tmpdir)
     await _conductor_run(tmpdir)
     await _conductor_resume(tmpdir)
+    # A geometric draw can be tiny even with a huge mean; pin it so the
+    # population in this regression cannot expire mid-run on CI.
+    with mock.patch("ml.conductor.churn.geometric_lifetime", return_value=10**9):
+        await _conductor_resume_restarts_tasks(tmpdir)
 
 
 asyncio.run(main())

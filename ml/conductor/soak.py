@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import faulthandler
 import json
+import math
 import os
 import sys
 import time
@@ -64,6 +65,43 @@ def setup_file_logging(base_dir):
 
 def _truthy_env(name):
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _validate_args(p, args):
+    """Reject operator errors before seeding RNGs or building a conductor."""
+    numeric = (
+        "duration",
+        "step_timeout",
+        "policy_timeout",
+        "arrivals",
+        "wave_delay",
+        "status_every",
+    )
+    for name in numeric:
+        if not math.isfinite(getattr(args, name)):
+            p.error(f"--{name.replace('_', '-')} must be a finite number")
+    if args.agents < 1:
+        p.error("--agents must be >= 1")
+    if args.duration < 0:
+        p.error("--duration must be >= 0")
+    if args.min_agents < 0 or args.min_agents > args.agents:
+        p.error("--min-agents must be between 0 and --agents")
+    if args.max_steps < 1:
+        p.error("--max-steps must be >= 1")
+    if args.step_timeout <= 0:
+        p.error("--step-timeout must be > 0")
+    if args.policy_timeout < 0:
+        p.error("--policy-timeout must be >= 0 (0 disables the budget)")
+    if args.arrivals < 0:
+        p.error("--arrivals must be >= 0")
+    if args.lifetime < 1:
+        p.error("--lifetime must be >= 1")
+    if args.wave_size < 1:
+        p.error("--wave-size must be >= 1")
+    if args.wave_delay < 0:
+        p.error("--wave-delay must be >= 0")
+    if args.status_every < 0:
+        p.error("--status-every must be >= 0 (0 disables status logs)")
 
 
 def parse_args():
@@ -213,6 +251,7 @@ def parse_args():
         help="do not write a run record to the dashboard index (#65)",
     )
     args = p.parse_args()
+    _validate_args(p, args)
     # Before any agent is built: churn and the mixer both draw from random.
     seed_everything(args.seed)
     return args

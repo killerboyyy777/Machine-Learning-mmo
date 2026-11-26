@@ -12,6 +12,7 @@ factory installed the server keeps its built-in formula unchanged.
 
 import hashlib
 import json
+import math
 import os
 import random
 
@@ -54,6 +55,19 @@ OVERRIDABLE = (
 )
 
 
+def _as_int(raw, name):
+    """Accept ints, integer-valued floats and numeric strings; not bools."""
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        candidate = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be an integer")
+    if not math.isfinite(candidate) or not candidate.is_integer():
+        raise ValueError(f"{name} must be an integer")
+    return int(candidate)
+
+
 def normalize_config(raw=None):
     """Validate a config dict and return a fresh, fully populated copy."""
     if raw is None:
@@ -68,10 +82,18 @@ def normalize_config(raw=None):
     cfg.update(raw)
 
     def number(key, kind, low, high):
-        try:
-            value = kind(cfg[key])
-        except (TypeError, ValueError):
-            raise ValueError(f"{key} must be a {kind.__name__}")
+        raw = cfg[key]
+        if isinstance(raw, bool):
+            raise ValueError(f"{key} must be a {kind.__name__}, not a bool")
+        if kind is int:
+            value = _as_int(raw, key)
+        else:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(f"{key} must be a {kind.__name__}")
+            if not math.isfinite(value):
+                raise ValueError(f"{key} must be finite")
         if value < low or value > high:
             raise ValueError(f"{key} must be between {low} and {high}")
         return value
@@ -116,10 +138,7 @@ def normalize_config(raw=None):
 
     seed = cfg["seed"]
     if seed is not None:
-        try:
-            seed = int(seed)
-        except (TypeError, ValueError):
-            raise ValueError("seed must be an integer or null")
+        seed = _as_int(seed, "seed")
     cfg["seed"] = seed
     return cfg
 
