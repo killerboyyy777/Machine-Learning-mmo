@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -596,6 +597,130 @@ def freight_stats_round_trip_check(folder):
     print("FREIGHT_STATS_ROUND_TRIP_OK")
 
 
+def freight_backup_recovery_check(folder):
+    """A torn primary falls back to the .1 backup instead of losing freight (#934)."""
+    path = os.path.join(folder, "freight-backup.json")
+    saved = (
+        srv.FREIGHT,
+        srv._freight_counter,
+        srv._freight_dirty,
+        srv.FREIGHT_FILE_BLOCKED,
+        dict(srv.FREIGHT_STATS),
+    )
+    row = {
+        "poster": "Poster",
+        "poster_kind": "player",
+        "hauler": None,
+        "origin": "market",
+        "destination": "smithy",
+        "items": ["rat_tail"],
+        "fee": 20,
+        "deposit": 2,
+        "bonus": 0,
+        "bonus_until": 0.0,
+        "posted_at": 1.0,
+        "expires_at": 100.0,
+        "state": "open",
+        "refund": 0,
+        "delivered_at": 0.0,
+        "lost_at": 0.0,
+    }
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_FILE_BLOCKED = False
+        srv.FREIGHT[1] = dict(row, id=1)
+        assert srv.save_freight(path) is True
+        srv.FREIGHT[2] = dict(row, id=2)
+        assert srv.save_freight(path) is True
+        assert os.path.exists(path + ".1"), "backup not written"
+        # A torn primary must not strand the contract rotation saved in .1.
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{")
+        srv.FREIGHT = {}
+        loaded = srv.load_freight(path)
+        assert set(loaded) == {1}, loaded
+        assert loaded[1]["state"] == "open", loaded[1]
+        assert loaded[1]["items"] == ["rat_tail"], loaded[1]
+    finally:
+        (
+            srv.FREIGHT,
+            srv._freight_counter,
+            srv._freight_dirty,
+            srv.FREIGHT_FILE_BLOCKED,
+            stats,
+        ) = saved
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(stats)
+    print("FREIGHT_BACKUP_RECOVERY_OK")
+
+
+def freight_station_delivery_persistence_check(folder):
+    """A delivered station row keeps its items key across save/load (#935)."""
+    path = os.path.join(folder, "freight-station-delivery.json")
+    saved = (
+        srv.FREIGHT,
+        srv._freight_counter,
+        srv._freight_dirty,
+        srv.FREIGHT_FILE_BLOCKED,
+        srv._freight_station_at,
+        dict(srv.FREIGHT_STATS),
+    )
+    item = sorted(srv.ITEM_DEFS)[0]
+    origin = "market"
+    hauler_name = "StationDeliveryHauler"
+    destination = None
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_FILE_BLOCKED = False
+        srv._freight_station_at = 0.0
+        srv._add_ground(origin, item)
+        srv.tick_station_freight(time.time())
+        rec = next(iter(srv.FREIGHT.values()))
+        assert rec["poster_kind"] == "station" and rec["state"] == "open", rec
+        destination = rec["destination"]
+        hauler = srv.Player(
+            ws=None,
+            id=99,
+            name=hauler_name,
+            logged_in=True,
+            hp=20,
+            max_hp=20,
+            room=rec["origin"],
+            gold=100,
+            inventory=[],
+        )
+        srv.players[hauler_name] = hauler
+        asyncio.run(srv.cmd_freight(hauler, {"action": "accept", "id": rec["id"]}))
+        assert rec["state"] == "carried", rec["state"]
+        hauler.room = destination
+        asyncio.run(srv.cmd_freight(hauler, {"action": "deliver", "id": rec["id"]}))
+        assert rec["state"] == "delivered", rec["state"]
+        assert rec["items"] == [], rec
+        cid = rec["id"]
+        assert srv.save_freight(path) is True
+        srv.FREIGHT = {}
+        loaded = srv.load_freight(path)
+        assert cid in loaded, loaded
+        assert loaded[cid]["state"] == "delivered", loaded[cid]
+        assert loaded[cid]["items"] == [], loaded[cid]
+    finally:
+        srv.players.pop(hauler_name, None)
+        for room in (origin, destination):
+            if room is not None and item in srv._ground_items(room):
+                srv._remove_ground(room, item)
+        (
+            srv.FREIGHT,
+            srv._freight_counter,
+            srv._freight_dirty,
+            srv.FREIGHT_FILE_BLOCKED,
+            srv._freight_station_at,
+            stats,
+        ) = saved
+        srv.FREIGHT_STATS.clear()
+        srv.FREIGHT_STATS.update(stats)
+    print("FREIGHT_STATION_DELIVERY_PERSISTENCE_OK")
+
+
 with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
     linear_bad_checkpoint_check(folder)
@@ -607,4 +732,6 @@ with tempfile.TemporaryDirectory() as folder:
     freight_death_refund_save_load_check(folder)
     freight_delivered_refund_persistence_check(folder)
     freight_stats_round_trip_check(folder)
+    freight_backup_recovery_check(folder)
+    freight_station_delivery_persistence_check(folder)
 print("PERSISTENCE_ALL_OK")
