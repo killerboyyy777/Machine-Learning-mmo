@@ -1583,7 +1583,7 @@ class TextMMOEnv:
         return self._build_obs()
 
     async def step(self, action_idx):
-        if not isinstance(action_idx, int):
+        if isinstance(action_idx, bool) or not isinstance(action_idx, int):
             raise TypeError(
                 f"{self.name}: action_idx must be int, got {type(action_idx).__name__}"
             )
