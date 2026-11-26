@@ -3,8 +3,8 @@
 rich 15 dropped its widget/`App` classes, so the shell is a plain loop
 over `rich.live.Live` with a small blocking key reader: Live owns the
 repaint and the alt screen, the poller thread owns HTTP, and the main
-loop only drains keystrokes and repaints when the snapshot version
-changed. That keeps a keystroke never waiting on the dashboard.
+loop only drains keystrokes and repaints when a snapshot or queued tab
+payload changed. That keeps a keystroke never waiting on the dashboard.
 
 Frame composition itself lives in `tui.panels` as a pure function, and
 the console/key source are injectable, so the whole shell is testable
@@ -16,6 +16,7 @@ Launch with `python -m tui`; `--once` renders a single frame and exits
 
 import argparse
 import contextlib
+import math
 import os
 import queue
 import socket
@@ -46,13 +47,25 @@ CSI_KEYS = {"[C": "right", "[D": "left", "[Z": "shift+tab"}
 SEQ_TIMEOUT = 0.05  # seconds to wait for the rest of an escape sequence
 
 # Tabs whose payload is not in /api/state. The dashboard loads these on tab
-# entry (config and plugins once, runs on a 5s poll while active), so the TUI
-# does a one-shot fetch when the tab opens rather than polling every tick.
+# entry (config and plugins once, runs on a 5s poll while active). Requests go
+# through the poller's worker so a slow endpoint never holds the key loop.
 EXTRA_LOADERS = {
     "config": "fetch_config",
     "runs": "fetch_runs",
     "plugins": "fetch_plugins",
 }
+RUNS_POLL_INTERVAL = 5.0  # matches the dashboard's runs poll
+
+
+def _positive_float(value):
+    """argparse type for a strictly positive seconds value."""
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid number: {value}") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"{value} must be a finite number > 0")
+    return number
 
 
 def load_extra(client, tab):
@@ -199,22 +212,45 @@ def _cbreak(stream):
 class TuiApp:
     """Tabbed live view of the dashboard snapshot."""
 
-    def __init__(self, poller, tab=DEFAULT_TAB, console=None, keys=None):
+    def __init__(
+        self,
+        poller,
+        tab=DEFAULT_TAB,
+        console=None,
+        keys=None,
+        runs_interval=RUNS_POLL_INTERVAL,
+    ):
         self.poller = poller
         self.tab = tab
         self.console = console if console is not None else Console()
         self.keys = keys if keys is not None else KeyReader()
+        self.runs_interval = runs_interval
         self._state = None
         self.extras = {}
+        self._extra_errors = {}
+        self._extra_version = 0
+        self._next_runs_poll = 0.0
 
     def start(self):
         self.keys.start()
         self.poller.start()
-        self.load_tab_extras()
+        self._open_tab(self.tab)
 
     def stop(self):
         self.keys.stop()
         self.poller.stop()
+
+    def request_tab_extra(self):
+        """Queue the active tab's own endpoint on the poller's worker."""
+        loader = EXTRA_LOADERS.get(self.tab)
+        if loader is not None:
+            self.poller.request_extra(self.tab, loader)
+
+    def _open_tab(self, tab):
+        self.tab = tab
+        self._state = None
+        self.request_tab_extra()
+        self._next_runs_poll = time.monotonic() + self.runs_interval
 
     def run(self):
         """Own the terminal until the user quits."""
@@ -246,10 +282,14 @@ class TuiApp:
     def frame(self):
         snapshot = self.poller.snapshot()
         age = None if snapshot is None else self.poller.age()
+        status = self.poller.status()
+        error = self._extra_errors.get(self.tab)
+        if error:
+            status = f"{status} | {error}"
         return frame(
             self.tab,
             snapshot,
-            self.poller.status(),
+            status,
             age,
             self.console.height,
             self.extras,
@@ -260,25 +300,36 @@ class TuiApp:
         if key in ("q", "quit", "ctrl+c"):
             return False
         if key in ("right", "tab", "\t"):
-            self.tab = next_tab(self.tab)
-            self.load_tab_extras()
-            self._state = None
+            self._open_tab(next_tab(self.tab))
         elif key in ("left", "shift+tab"):
-            self.tab = prev_tab(self.tab)
-            self.load_tab_extras()
-            self._state = None
+            self._open_tab(prev_tab(self.tab))
         elif key == "r":
-            self.poller.refresh()
-            self.extras.clear()
-            self.load_tab_extras()
+            self.poller.request_refresh()
+            self.request_tab_extra()
+            self._next_runs_poll = time.monotonic() + self.runs_interval
             self._state = None
         elif key == "p":
             self.poller.set_paused(not self.poller.paused())
         return True
 
+    def _poll_active_extra(self):
+        if self.tab != "runs":
+            return
+        now = time.monotonic()
+        if now < self._next_runs_poll:
+            return
+        self._next_runs_poll = now + self.runs_interval
+        self.request_tab_extra()
+
     def _tick(self, live):
         """Repaint only when something on screen actually changed."""
-        state = (self.poller.version(), self.tab)
+        self._poll_active_extra()
+        extra_version, payloads, errors = self.poller.extra_state()
+        if extra_version != self._extra_version:
+            self._extra_version = extra_version
+            self.extras.update(payloads)
+            self._extra_errors = errors
+        state = (self.poller.version(), self.tab, extra_version)
         if state != self._state:
             self._state = state
             live.update(self.frame(), refresh=True)
@@ -294,13 +345,16 @@ def build_parser():
         "--port", type=int, default=DEFAULT_PORT, help="dashboard HTTP port"
     )
     parser.add_argument(
-        "--timeout", type=float, default=DEFAULT_TIMEOUT, help="fetch timeout (s)"
+        "--timeout",
+        type=_positive_float,
+        default=DEFAULT_TIMEOUT,
+        help="fetch timeout (s, must be > 0)",
     )
     parser.add_argument(
         "--interval",
-        type=float,
+        type=_positive_float,
         default=DEFAULT_INTERVAL,
-        help="seconds between /api/state polls",
+        help="seconds between /api/state polls (must be > 0)",
     )
     parser.add_argument(
         "--tab", default=DEFAULT_TAB, choices=TAB_IDS, help="tab to open on"

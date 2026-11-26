@@ -11,6 +11,7 @@ Rich-free on purpose, so the fetch path is testable without rich.
 """
 
 import json
+import queue
 import threading
 import time
 from urllib.error import HTTPError, URLError
@@ -20,7 +21,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
 STATE_PATH = "/api/state"
 # Config, runs and plugins are not in /api/state: the dashboard fetches them
-# on tab entry, so the TUI does the same instead of polling them every tick.
+# on tab entry and re-polls runs while that tab is active. The poller runs
+# those requests off the UI thread instead of polling every render tick.
 CONFIG_PATH = "/api/config"
 RUNS_PATH = "/api/runs"
 PLUGINS_PATH = "/api/plugins"
@@ -88,7 +90,9 @@ class SnapshotPoller:
     The fetch runs on a daemon thread so a hung or slow dashboard never
     stalls the UI's keystroke handling, and the last good snapshot
     outlives an outage: `snapshot()` keeps serving stale data and
-    `status()` explains why it is stale.
+    `status()` explains why it is stale. Tab-extra and manual-refresh
+    requests are queued onto the same worker and published through
+    `extra_state()` for the UI to pick up on a later tick.
     """
 
     def __init__(self, client=None, interval=DEFAULT_INTERVAL):
@@ -102,6 +106,12 @@ class SnapshotPoller:
         self._updated_at = 0.0
         self._paused = False
         self._version = 0
+        self._refresh_requested = False
+        self._jobs = queue.Queue()
+        self._extra_pending = set()
+        self._extras = {}
+        self._extra_errors = {}
+        self._extra_version = 0
 
     def start(self):
         """Begin polling. Safe to call twice; the second call is a no-op."""
@@ -135,10 +145,70 @@ class SnapshotPoller:
             self._version += 1
         return True
 
+    def request_refresh(self):
+        """Ask the worker for a snapshot fetch without blocking the caller."""
+        with self._lock:
+            self._refresh_requested = True
+
+    def request_extra(self, tab, loader):
+        """Queue one tab-endpoint fetch; repeat calls collapse while pending.
+
+        Collapsing keeps a held key or a slow endpoint from stacking up HTTP
+        requests behind the one the UI has already asked for.
+        """
+        with self._lock:
+            if tab in self._extra_pending:
+                return False
+            self._extra_pending.add(tab)
+        self._jobs.put((tab, loader))
+        return True
+
+    def _drain_extras(self):
+        while True:
+            try:
+                tab, loader = self._jobs.get_nowait()
+            except queue.Empty:
+                return
+            payload = None
+            error = ""
+            try:
+                payload = getattr(self.client, loader)()
+            except SnapshotError as exc:
+                error = str(exc)
+            except Exception as exc:
+                # A bad loader must not kill the worker that owns every fetch.
+                error = f"{type(exc).__name__}: {exc}"
+            with self._lock:
+                self._extra_pending.discard(tab)
+                if payload is None:
+                    self._extra_errors[tab] = error
+                else:
+                    self._extras[tab] = payload
+                    self._extra_errors[tab] = ""
+                self._extra_version += 1
+
+    def extra_state(self):
+        """Return (version, payloads, errors) for completed tab fetches.
+
+        A tab with a failed first fetch gets an error payload so a panel can
+        show it; a tab that already had a good payload keeps that payload and
+        reports the error separately instead of blanking the table.
+        """
+        with self._lock:
+            payloads = dict(self._extras)
+            for tab, error in self._extra_errors.items():
+                if error and tab not in payloads:
+                    payloads[tab] = {"error": error}
+            return self._extra_version, payloads, dict(self._extra_errors)
+
     def _run(self):
         while not self._stop.is_set():
-            if not self._paused:
+            with self._lock:
+                forced = self._refresh_requested
+                self._refresh_requested = False
+            if forced or not self._paused:
                 self.refresh()
+            self._drain_extras()
             if self._stop.wait(self.interval):
                 break
 

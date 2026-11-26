@@ -10,7 +10,9 @@ Quests/Crafting/Guilds/Config/Runs/GM panels (TUI-1 through TUI-4, plus
 the #588 Guilds and #177 Plugins surfaces) render the dashboard's fields,
 every tab has a real
 panel, and the app shell routes keys, repaints only when the screen
-changed, and loads tabs whose data rides a separate endpoint.
+changed, and loads tabs whose data rides a separate endpoint. The tab
+payloads are fetched on the poller worker: runs re-polls while active,
+key handling never waits on HTTP, and non-positive intervals are rejected.
 
 The rich-dependent half is skipped (not failed) when rich is absent, so
 a websockets-only checkout still gets the contract half. One check is
@@ -652,6 +654,87 @@ class _StubClient:
         return snapshot_fixture()
 
 
+def pump_until(app, predicate, timeout=2.0):
+    """Drive app ticks until `predicate` holds, draining queued payloads."""
+    live = _FakeLive()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app._tick(live)
+        if predicate():
+            return True
+        time.sleep(0.005)
+    app._tick(live)
+    return bool(predicate())
+
+
+class _CountingRunsClient:
+    """Fake client whose /api/runs payload advances on every fetch."""
+
+    def __init__(self):
+        self.runs_calls = 0
+        self.fail = False
+
+    def fetch(self):
+        return {"server": {"players_online": 1}}
+
+    def fetch_runs(self):
+        self.runs_calls += 1
+        if self.fail:
+            raise SnapshotError("runs index unavailable")
+        return {
+            "runs": [
+                {
+                    "run_id": f"run-{self.runs_calls:02d}",
+                    "kind": "torch-farm",
+                    "status": "running",
+                    "started": 1.0,
+                    "elapsed": self.runs_calls,
+                    "metrics": {"score": self.runs_calls},
+                }
+            ],
+            "fields": [{"name": "score", "higher_is_better": True}],
+        }
+
+
+class _SlowClient:
+    """Fake client that can hold a request open past a key-loop tick."""
+
+    def __init__(self):
+        self.runs_started = threading.Event()
+        self.snapshot_started = threading.Event()
+        self.release_runs = threading.Event()
+        self.release_snapshot = threading.Event()
+        self.block_runs = True
+        self.block_snapshot = False
+        self.runs_calls = 0
+        self.fetch_calls = 0
+
+    def fetch(self):
+        self.fetch_calls += 1
+        if self.block_snapshot:
+            self.snapshot_started.set()
+            self.release_snapshot.wait(2.0)
+        return {"server": {"players_online": self.fetch_calls}}
+
+    def fetch_config(self):
+        return {}
+
+    def fetch_runs(self):
+        self.runs_calls += 1
+        if self.block_runs:
+            self.runs_started.set()
+            self.release_runs.wait(2.0)
+        return {
+            "runs": [
+                {
+                    "run_id": "late-run",
+                    "kind": "torch-farm",
+                    "status": "running",
+                }
+            ]
+        }
+
+
 # --- rich-dependent half ------------------------------------------------
 def test_panels():
     snap = snapshot_fixture()
@@ -1008,7 +1091,7 @@ def test_app_shell():
         assert app.handle("\t") is True and app.tab == "world"
         assert app.handle("shift+tab") is True and app.tab == "overview"
         assert app.handle("r") is True
-        assert poller.snapshot() is not None, "r must force a fetch"
+        assert poller._refresh_requested, "r must queue a refresh on the worker"
         assert app.handle("p") is True and poller.paused()
         assert app.handle("p") is True and not poller.paused()
         assert app.handle("z") is True, "unknown keys are ignored"
@@ -1156,27 +1239,142 @@ def test_app_extras():
         }
     )
     try:
-        poller = SnapshotPoller(SnapshotClient("127.0.0.1", port), interval=5.0)
+        poller = SnapshotPoller(SnapshotClient("127.0.0.1", port), interval=0.005)
         app = TuiApp(poller, "config", _recording_console(), _ScriptedKeys())
         assert app.extras == {}
-        app.load_tab_extras()
+        app.start()
+        assert pump_until(app, lambda: "config" in app.extras)
         assert app.extras["config"]["editable"] is True
         assert poller.refresh() is True
         text = _plain(app.frame())
         assert "config not loaded" not in text and "server_config.json" in text
         app.handle("r")
-        assert app.extras["config"]["editable"] is True
+        assert pump_until(
+            app, lambda: app.extras.get("config", {}).get("editable") is True
+        )
         app.handle("right")
         assert app.tab == "runs"
-        assert "error" in app.extras["runs"], "missing endpoint must degrade"
+        assert pump_until(app, lambda: "error" in app.extras.get("runs", {}))
         plugin_app = TuiApp(poller, "plugins", _recording_console(), _ScriptedKeys())
-        plugin_app.load_tab_extras()
+        plugin_app.start()
+        assert pump_until(plugin_app, lambda: "plugins" in plugin_app.extras)
         text = _plain(plugin_app.frame())
         assert "mybot" in text and "Refused files" in text, text
+        app.stop()
     finally:
         server.shutdown()
         server.server_close()
     print("APP_EXTRAS_OK")
+
+
+def test_parser_positive_ranges():
+    """#1006: non-positive intervals and timeouts are rejected by argparse."""
+    parser = build_parser()
+    args = parser.parse_args(["--interval", "0.01", "--timeout", "0.05"])
+    assert (args.interval, args.timeout) == (0.01, 0.05), vars(args)
+    for flag in ("--interval", "--timeout"):
+        for value in ("0", "-1", "-0.25", "nan", "inf"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                try:
+                    parser.parse_args([flag, value])
+                except SystemExit as exc:
+                    assert exc.code == 2, (flag, value, exc.code)
+                else:
+                    raise AssertionError(f"{flag} {value} must be rejected")
+            assert "finite number > 0" in err.getvalue(), (flag, value, err.getvalue())
+    print("PARSER_RANGES_OK")
+
+
+def test_runs_extra_repolls_while_active():
+    """#1005: the Runs payload advances without leaving and re-entering."""
+    client = _CountingRunsClient()
+    poller = SnapshotPoller(client, interval=0.005)
+    app = TuiApp(
+        poller,
+        "runs",
+        _recording_console(),
+        _ScriptedKeys(),
+        runs_interval=0.05,
+    )
+    app.start()
+    try:
+        assert pump_until(app, lambda: "runs" in app.extras)
+        first = app.extras["runs"]["runs"][0]["run_id"]
+        assert first == "run-01", first
+        assert pump_until(app, lambda: app.extras["runs"]["runs"][0]["run_id"] != first)
+        second = app.extras["runs"]["runs"][0]["run_id"]
+        assert int(second.split("-")[1]) > int(first.split("-")[1]), second
+        assert app.tab == "runs", "no navigation should be needed to refresh"
+        assert second in _plain(app.frame()), "rendered extras must advance"
+        early = client.runs_calls
+        for _ in range(20):
+            app._tick(_FakeLive())
+        assert client.runs_calls - early <= 1, "must not fetch on every render tick"
+        client.fail = True
+        assert pump_until(app, lambda: "runs index unavailable" in _plain(app.frame()))
+        assert (
+            app.extras["runs"]["runs"][0]["run_id"] == second
+        ), "a failed poll must not blank the last good payload"
+    finally:
+        app.stop()
+    print("RUNS_REPOLL_OK")
+
+
+def test_key_loop_never_blocks_on_http():
+    """#1007: tab keys and manual refresh never wait on a slow endpoint."""
+    client = _SlowClient()
+    poller = SnapshotPoller(client, interval=0.005)
+    app = TuiApp(poller, "config", _recording_console(), _ScriptedKeys(["right"]))
+    app.start()
+    try:
+        started = time.monotonic()
+        key = app.keys.poll()
+        assert key == "right" and app.handle(key) is True
+        assert app.tab == "runs"
+        assert time.monotonic() - started < 0.5, "tab key blocked on /api/runs"
+        assert client.runs_started.wait(2.0), "worker never started the runs fetch"
+        for _ in range(5):
+            started = time.monotonic()
+            assert app.handle("left") is True
+            assert app.handle("right") is True
+            app._tick(_FakeLive())
+            assert (
+                time.monotonic() - started < 0.5
+            ), "key loop blocked with a fetch pending"
+        assert "runs" not in app.extras, "payload must land on a later tick"
+        client.release_runs.set()
+        assert pump_until(app, lambda: "runs" in app.extras)
+        assert "late-run" in _plain(app.frame())
+    finally:
+        client.release_runs.set()
+        app.stop()
+
+    refresh_client = _SlowClient()
+    refresh_client.block_snapshot = True
+    refresh_client.block_runs = False
+    refresh_poller = SnapshotPoller(refresh_client, interval=0.005)
+    refresh_app = TuiApp(
+        refresh_poller, "overview", _recording_console(), _ScriptedKeys()
+    )
+    refresh_app.start()
+    try:
+        assert refresh_client.snapshot_started.wait(2.0)
+        started = time.monotonic()
+        assert refresh_app.handle("r") is True
+        assert time.monotonic() - started < 0.5, "r blocked on /api/state"
+        refresh_client.release_snapshot.set()
+        assert pump_until(
+            refresh_app,
+            lambda: (refresh_poller.snapshot() or {})
+            .get("server", {})
+            .get("players_online", 0)
+            >= 2,
+        )
+    finally:
+        refresh_client.release_snapshot.set()
+        refresh_app.stop()
+    print("KEY_LOOP_ASYNC_OK")
 
 
 class _ScriptedKeys:
@@ -1271,6 +1469,9 @@ def main():
         test_app_shell()
         test_key_reader_stop_restores_termios()
         test_app_extras()
+        test_parser_positive_ranges()
+        test_runs_extra_repolls_while_active()
+        test_key_loop_never_blocks_on_http()
     else:
         print("PANELS_OK skipped (rich not installed)")
         print("WORLD_OK skipped (rich not installed)")
@@ -1290,6 +1491,9 @@ def main():
         print("APP_SHELL_OK skipped (rich not installed)")
         print("KEY_READER_STOP_OK skipped (rich not installed)")
         print("APP_EXTRAS_OK skipped (rich not installed)")
+        print("PARSER_RANGES_OK skipped (rich not installed)")
+        print("RUNS_REPOLL_OK skipped (rich not installed)")
+        print("KEY_LOOP_ASYNC_OK skipped (rich not installed)")
     print("ALL_TUI_OK")
 
 
