@@ -11,6 +11,13 @@ QUIET_SECONDS = 0.12
 RESULT_EVENT_LIMIT = 50
 RESULT_EVENT_CHARS = 16000
 TEXT_LIMIT = 2000
+DRAIN_FRAME_LIMIT = 1000
+DRAIN_BUDGET_SECONDS = 1.0
+DRAIN_QUIET_POLLS = 2
+DRAIN_POLL_SECONDS = 0.005
+RECONNECT_ATTEMPTS = 3
+RECONNECT_BASE_DELAY = 0.1
+RECONNECT_MAX_DELAY = 1.0
 
 
 class BridgeError(Exception):
@@ -18,7 +25,15 @@ class BridgeError(Exception):
 
 
 class LoginError(BridgeError):
-    """The login handshake did not complete."""
+    """The login handshake was rejected; retrying will not help."""
+
+
+class ConnectionLost(BridgeError):
+    """The socket closed while a command was in flight."""
+
+
+class BacklogError(BridgeError):
+    """The receive queue never reached a quiet boundary."""
 
 
 class GameBridge:
@@ -65,7 +80,7 @@ class GameBridge:
                 max_size=2**20,
             )
         except (OSError, websockets.WebSocketException) as exc:
-            raise LoginError(f"connect failed: {exc}") from exc
+            raise BridgeError(f"connect failed: {exc}") from exc
 
         login = {
             "cmd": "login",
@@ -75,30 +90,33 @@ class GameBridge:
         if self._token:
             login["token"] = self._token
         try:
-            await self._ws.send(json.dumps(login))
-        except websockets.WebSocketException as exc:
-            raise LoginError(f"login send failed: {exc}") from exc
+            await self._send_frame(login)
 
-        deadline = time.monotonic() + self.connect_timeout
-        while time.monotonic() < deadline:
-            frame = await self._recv_frame(max(0.01, deadline - time.monotonic()))
-            if frame is None:
-                continue
-            self._observe(frame)
-            ftype = frame.get("type")
-            if ftype == "error":
-                raise LoginError(str(frame.get("text", "login rejected")))
-            if ftype == "welcome":
-                version = frame.get("protocol_version")
-                if version != PROTOCOL_VERSION:
+            deadline = time.monotonic() + self.connect_timeout
+            while time.monotonic() < deadline:
+                frame = await self._recv_frame(max(0.01, deadline - time.monotonic()))
+                if frame is None:
+                    continue
+                self._observe(frame)
+                ftype = frame.get("type")
+                if ftype == "error":
                     raise LoginError(
-                        f"server speaks protocol {version}, harness needs {PROTOCOL_VERSION}"
+                        f"login rejected: {frame.get('text', 'unknown reason')}"
                     )
-                if frame.get("version_mismatch"):
-                    raise LoginError(str(frame["version_mismatch"]))
-            if self.cache["room"] is not None and self.cache["stats"] is not None:
-                return
-        raise LoginError("login did not return room and stats before the timeout")
+                if ftype == "welcome":
+                    version = frame.get("protocol_version")
+                    if version != PROTOCOL_VERSION:
+                        raise LoginError(
+                            f"server speaks protocol {version}, harness needs {PROTOCOL_VERSION}"
+                        )
+                    if frame.get("version_mismatch"):
+                        raise LoginError(str(frame["version_mismatch"]))
+                if self.cache["room"] is not None and self.cache["stats"] is not None:
+                    return
+            raise BridgeError("login did not return room and stats before the timeout")
+        except BaseException:
+            await self.close()
+            raise
 
     async def close(self):
         ws, self._ws = self._ws, None
@@ -107,48 +125,56 @@ class GameBridge:
 
     async def command(self, cmd, params=None, *, expect, timeout=None):
         """Run one command and settle on the last expected frame."""
-        if self._ws is None:
-            raise BridgeError("not connected")
         if timeout is None:
             timeout = self.move_timeout if cmd == "move" else self.command_timeout
 
+        seen = []
+        sent = False
         async with self._lock:
-            await self._drain()
-            payload = {"cmd": cmd}
-            payload.update(params or {})
-            await self._ws.send(json.dumps(payload))
+            try:
+                if self._ws is None:
+                    await self._reconnect()
+                await self._drain()
+                payload = {"cmd": cmd}
+                payload.update(params or {})
+                await self._send_frame(payload)
+                sent = True
 
-            deadline = time.monotonic() + timeout
-            quiet_until = None
-            terminal = None
-            seen = []
-            while time.monotonic() < deadline:
-                wait = min(0.5, max(0.01, deadline - time.monotonic()))
-                if quiet_until is not None:
-                    wait = min(wait, max(0.01, quiet_until - time.monotonic()))
-                frame = await self._recv_frame(wait)
-                if frame is not None:
-                    entry = self._observe(frame)
-                    seen.append(entry)
-                    ftype = frame.get("type")
-                    if ftype == "error":
-                        terminal = frame
+                deadline = time.monotonic() + timeout
+                quiet_until = None
+                terminal = None
+                while time.monotonic() < deadline:
+                    wait = min(0.5, max(0.01, deadline - time.monotonic()))
+                    if quiet_until is not None:
+                        wait = min(wait, max(0.01, quiet_until - time.monotonic()))
+                    frame = await self._recv_frame(wait)
+                    if frame is not None:
+                        entry = self._observe(frame)
+                        seen.append(entry)
+                        ftype = frame.get("type")
+                        if ftype == "error":
+                            terminal = frame
+                            break
+                        if ftype in expect:
+                            terminal = frame
+                            quiet_until = time.monotonic() + QUIET_SECONDS
+                    if quiet_until is not None and time.monotonic() >= quiet_until:
                         break
-                    if ftype in expect:
-                        terminal = frame
-                        quiet_until = time.monotonic() + QUIET_SECONDS
-                if quiet_until is not None and time.monotonic() >= quiet_until:
-                    break
 
-            if terminal is None:
-                return self._result(
-                    cmd, seen, f"timed out after {timeout:g}s waiting for {expect}"
-                )
-            if terminal.get("type") == "error":
-                return self._result(
-                    cmd, seen, str(terminal.get("text", "command failed"))
-                )
-            return self._result(cmd, seen)
+                if terminal is None:
+                    return self._result(
+                        cmd, seen, f"timed out after {timeout:g}s waiting for {expect}"
+                    )
+                if terminal.get("type") == "error":
+                    return self._result(
+                        cmd, seen, str(terminal.get("text", "command failed"))
+                    )
+                return self._result(cmd, seen)
+            except ConnectionLost as exc:
+                detail = "result indeterminate" if sent else "command not sent"
+                return self._result(cmd, seen, f"connection lost; {detail}: {exc}")
+            except BacklogError as exc:
+                return self._result(cmd, seen, str(exc))
 
     def summary(self):
         stats = self.cache["stats"] or {}
@@ -187,11 +213,48 @@ class GameBridge:
         }
 
     async def _drain(self):
-        for _ in range(100):
-            frame = await self._recv_frame(0.005)
+        """Consume queued broadcasts up to a quiet boundary or fail as busy."""
+        deadline = time.monotonic() + DRAIN_BUDGET_SECONDS
+        quiet = 0
+        frames = 0
+        while quiet < DRAIN_QUIET_POLLS:
+            if frames >= DRAIN_FRAME_LIMIT or time.monotonic() >= deadline:
+                raise BacklogError(
+                    f"receive backlog not settled after {frames} frames; command not sent"
+                )
+            remaining = max(0.001, deadline - time.monotonic())
+            frame = await self._recv_frame(min(DRAIN_POLL_SECONDS, remaining))
             if frame is None:
+                quiet += 1
+            else:
+                quiet = 0
+                frames += 1
+                self._observe(frame)
+
+    async def _reconnect(self):
+        """Reopen and re-login with bounded retries; never replays a command."""
+        last_error = None
+        for attempt in range(RECONNECT_ATTEMPTS):
+            try:
+                await self.connect()
                 return
-            self._observe(frame)
+            except LoginError:
+                raise
+            except BridgeError as exc:
+                last_error = exc
+            if attempt + 1 < RECONNECT_ATTEMPTS:
+                delay = min(RECONNECT_MAX_DELAY, RECONNECT_BASE_DELAY * 2**attempt)
+                await asyncio.sleep(delay)
+        raise BridgeError(
+            f"reconnect failed after {RECONNECT_ATTEMPTS} attempts: {last_error}"
+        )
+
+    async def _send_frame(self, payload):
+        try:
+            await self._ws.send(json.dumps(payload))
+        except (OSError, websockets.WebSocketException) as exc:
+            self._ws = None
+            raise ConnectionLost(f"connection closed: {exc}") from exc
 
     async def _recv_frame(self, timeout):
         try:
@@ -200,7 +263,7 @@ class GameBridge:
             return None
         except websockets.ConnectionClosed as exc:
             self._ws = None
-            raise BridgeError(f"connection closed: {exc}") from exc
+            raise ConnectionLost(f"connection closed: {exc}") from exc
         try:
             frame = json.loads(raw)
         except (TypeError, ValueError, RecursionError):

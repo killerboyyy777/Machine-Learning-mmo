@@ -1041,6 +1041,10 @@ def main():
         help="do not write a run record to the dashboard index (#65)",
     )
     args = parser.parse_args()
+    if args.steps < 0:
+        parser.error("--steps must be >= 0")
+    if args.save_every < 1:
+        parser.error("--save-every must be >= 1")
 
     if args.demo:
         asyncio.run(_demo())

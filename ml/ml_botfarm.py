@@ -205,6 +205,16 @@ class Farm:
             print("Starting from fresh (zeroed) weights")
         self.next_checkpoint = max(1, args.checkpoint_every)
 
+    def reserve_step(self):
+        """Claim before the await: bots that all pass the budget check in one
+        event-loop turn would otherwise overshoot --steps (#1008)."""
+        if self.stop.is_set() or (self.args.steps and self.steps >= self.args.steps):
+            return False
+        self.steps += 1
+        if self.args.steps and self.steps >= self.args.steps:
+            self.stop.set()
+        return True
+
     def epsilon_now(self):
         """Decay shared exploration with total farm steps (0.15s of delay per
         env-step keeps a handful of bots far apart even at low eps)."""
@@ -261,7 +271,7 @@ class BotRunner:
 
     def fitness(self):
         r = self.recent_rewards
-        if len(r) < self.farm.args.reward_window // 2:
+        if len(r) < max(1, self.farm.args.reward_window // 2):
             return None  # not enough recent data to judge yet
         return sum(r) / len(r)
 
@@ -298,8 +308,7 @@ class BotRunner:
             await self.run_scripted()
             return
         while not self.farm.stop.is_set():
-            if self.farm.args.steps and self.farm.steps >= self.farm.args.steps:
-                self.farm.stop.set()
+            if not self.farm.reserve_step():
                 break
             action = self.farm.agent.act(
                 self.features, self.farm.epsilon_now(), self.env.valid_action_mask()
@@ -325,7 +334,6 @@ class BotRunner:
             self.recent_rewards.append(reward)
             if len(self.recent_rewards) > self.farm.args.reward_window:
                 del self.recent_rewards[0]
-            self.farm.steps += 1
             self.total_steps += 1
 
             if done:
@@ -336,8 +344,7 @@ class BotRunner:
         """Fixed-baseline loop: policy picks actions, no weights update.
         Rewards/scores are still tracked so RL runs can compare directly."""
         while not self.farm.stop.is_set():
-            if self.farm.args.steps and self.farm.steps >= self.farm.args.steps:
-                self.farm.stop.set()
+            if not self.farm.reserve_step():
                 break
             action = self.policy.select(self.env)
             try:
@@ -350,7 +357,6 @@ class BotRunner:
             self.recent_rewards.append(reward)
             if len(self.recent_rewards) > self.farm.args.reward_window:
                 del self.recent_rewards[0]
-            self.farm.steps += 1
             self.total_steps += 1
             if done:
                 await self._reset_with_retry()
@@ -489,6 +495,14 @@ def parse_args():
     args = p.parse_args()
     if args.bots < 1:
         p.error("--bots must be >= 1")
+    if args.steps < 0:
+        p.error("--steps must be >= 0")
+    if args.reward_window < 1:
+        p.error("--reward-window must be >= 1")
+    if args.eval_every <= 0:
+        p.error("--eval-every must be > 0")
+    if not 0 <= args.epsilon_start <= 1 or not 0 <= args.epsilon_end <= 1:
+        p.error("--epsilon-start and --epsilon-end must be in [0, 1]")
     try:
         build_role_list(args)
     except ValueError as e:

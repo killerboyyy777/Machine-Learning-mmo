@@ -128,6 +128,16 @@ class TorchFarm:
             self.args.steps > 0 and self.steps >= self.args.steps
         )
 
+    def reserve_step(self):
+        """Claim before the await: runners that all pass should_stop() in one
+        event-loop turn would otherwise overshoot the shared budget (#1008)."""
+        if self.should_stop():
+            return False
+        self.steps += 1
+        if self.args.steps > 0 and self.steps >= self.args.steps:
+            self.stop.set()
+        return True
+
     async def checkpoint(self, force=False):
         if not force and self.steps < self.args.save_every:
             return
@@ -283,7 +293,7 @@ class Runner:
     async def run(self):
         try:
             await self.reset()
-            while not self.farm.should_stop():
+            while self.farm.reserve_step():
                 epsilon = self.farm.agent._epsilon()
                 action_index = self.farm.agent.act(
                     self.features, epsilon, self.env.valid_action_mask()
@@ -341,7 +351,6 @@ class Runner:
                 self.obs = next_obs
                 self.score = next_obs["score_raw"]
                 self.steps += 1
-                self.farm.steps += 1
                 if self.score > self.farm.last_best_score:
                     self.farm.last_best_score = self.score
                     # Snapshot immediately so the saved best never lags the
@@ -413,6 +422,21 @@ async def main_async(args):
             "server's start room"
         )
     tasks = [asyncio.create_task(r.run(), name=r.name) for r in farm.runners]
+
+    def _runner_done(task):
+        # A crash has to end the whole run, not just that runner: gather()
+        # would otherwise keep an unlimited farm alive at reduced capacity
+        # forever (#999).
+        result = None if task.cancelled() else task.exception()
+        if _is_crash(result):
+            farm.stop.set()
+            for other in tasks:
+                if other is not task and not other.done():
+                    other.cancel()
+
+    for task in tasks:
+        task.add_done_callback(_runner_done)
+    crashed = []
     try:
         # return_exceptions: gather() otherwise reports only the first
         # failure and drops the rest, which is how four of sixteen pilot
@@ -465,6 +489,7 @@ async def main_async(args):
             print(
                 f"[torch-farm] run {farm.run.run_id} -> {farm.run.manifest['status']}"
             )
+    return 1 if crashed else 0
 
 
 def parse_args():
@@ -594,4 +619,4 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    asyncio.run(main_async(parse_args()))
+    sys.exit(asyncio.run(main_async(parse_args())))

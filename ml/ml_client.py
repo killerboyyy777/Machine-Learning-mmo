@@ -316,6 +316,14 @@ def main():
         help="do not write a run record to the dashboard index (#65)",
     )
     args = parser.parse_args()
+    if args.steps < 0:
+        parser.error("--steps must be >= 0")
+    if args.save_every < 1:
+        parser.error("--save-every must be >= 1")
+    if args.epsilon_decay_steps < 1:
+        parser.error("--epsilon-decay-steps must be >= 1")
+    if not 0 <= args.epsilon_start <= 1 or not 0 <= args.epsilon_end <= 1:
+        parser.error("--epsilon-start and --epsilon-end must be in [0, 1]")
 
     # Seeding is independent of the run record: --seed must work even with
     # --no-run-record, and it has to land before the first random action.
