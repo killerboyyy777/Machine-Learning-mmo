@@ -201,9 +201,9 @@ def market_slot_price(slots):
     return MARKET_SLOT_PRICE_BASE * (2 ** max(0, slots - MARKET_SLOTS_BASE))
 
 
-def merchant_value(iid):
-    """Gold the merchant pays for an item (mirrors cmd_sell)."""
-    return srv.ITEM_DEFS.get(iid, {}).get("value", 1) or 1
+def merchant_value(iid, gathered=False):
+    """Gold the merchant pays for one unit (mirrors cmd_sell)."""
+    return srv.merchant_sell_value(iid, gathered)
 
 
 def best_market_ask(orders, iid, exclude_seller=None):
