@@ -4474,6 +4474,16 @@ def find_player_anywhere(name_fragment):
     return None
 
 
+def find_player_exact(name):
+    exact = (name or "").lower()
+    if not exact:
+        return None
+    for p in players.values():
+        if p.logged_in and (p.name or "").lower() == exact:
+            return p
+    return None
+
+
 def dungeon_room_view(room_id, dungeon):
     floor_no = floor_from_room(room_id)
     f = dungeon.floors.get(floor_no) if floor_no else None
@@ -11281,7 +11291,9 @@ async def cmd_gm_reward(player, msg):
             return
         if not await _spend_tax(player, gold, f"reward {gold}g"):
             return
-        p = find_player_anywhere(target)
+        # Exact name only: a GM typing "Alice" must not credit an earlier-
+        # connected "Alice2" by substring match.
+        p = find_player_exact(target)
         if p:
             p.gold += gold
             await send(p, stats_view(p))
