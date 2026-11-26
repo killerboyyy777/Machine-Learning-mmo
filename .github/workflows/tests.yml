@@ -52,6 +52,7 @@ jobs:
       - run: python tests/test_escrow_persistence.py
       - run: python tests/test_compose_packaging.py
       - run: python tests/test_training_loops.py
+      - run: python tests/test_torch_batch_loop.py
       - run: python tests/test_conductor_run.py
       - run: python tests/test_policy_exit.py
       - run: python tests/test_soak_args.py

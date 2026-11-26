@@ -49,6 +49,7 @@ Key design:
 """
 
 import asyncio
+import copy
 import random
 import sys
 from pathlib import Path
@@ -438,6 +439,11 @@ class TorchDQNAgent:
         dones = torch.tensor(
             [b["done"] for b in batch], dtype=torch.float32, device=self.device
         )
+        next_masks = torch.tensor(
+            [b.get("next_mask", [1] * N_ACTIONS) for b in batch],
+            dtype=torch.float32,
+            device=self.device,
+        )
 
         gold_targets = torch.tensor(
             [b.get("gold_delta", 0.0) for b in batch],
@@ -484,7 +490,17 @@ class TorchDQNAgent:
             + self._rnd_weight() * rnd_targets
         )
         with torch.no_grad():
-            target_q = self.target.get_q(next_states).max(1)[0]
+            next_q = self.target.get_q(next_states)
+            valid = next_masks > 0.5
+            # act() cannot execute masked actions in the next state, so they
+            # must not supply the bootstrap value either (#991). A row with
+            # no valid action has no reachable future: bootstrap zero.
+            masked_q = next_q.masked_fill(~valid, -float("inf"))
+            target_q = torch.where(
+                valid.any(dim=1),
+                masked_q.max(dim=1).values,
+                torch.zeros_like(next_q[:, 0]),
+            )
             td_targets = shaped + self.gamma * target_q * (1.0 - dones)
 
         # #416b: fit q toward its own value plus a per-batch normalized,
@@ -608,12 +624,43 @@ class TorchDQNAgent:
         os.replace(tmp, path)
         print(f"Weights saved to {path} (epsilon={self._epsilon():.3f})")
 
+    def _load_snapshot(self):
+        return {
+            "q": copy.deepcopy(self.q.state_dict()),
+            "target": copy.deepcopy(self.target.state_dict()),
+            "optimizer": copy.deepcopy(self.optimizer.state_dict()),
+            "rnd_pred": copy.deepcopy(self.rnd_pred.state_dict()),
+            "rnd_opt": copy.deepcopy(self.rnd_opt.state_dict()),
+            "rnd_mean": self._rnd_mean,
+            "rnd_var": self._rnd_var,
+            "ckpt_version": self.ckpt_version,
+            "t_step": self.t_step,
+            "learn_step": self.learn_step,
+            "best_score": self.best_score,
+        }
+
+    def _restore_load_snapshot(self, snapshot) -> None:
+        # These state dicts came from the live modules, so restoring cannot
+        # fail on a shape mismatch the way the checkpoint itself can.
+        self.q.load_state_dict(snapshot["q"])
+        self.target.load_state_dict(snapshot["target"])
+        self.optimizer.load_state_dict(snapshot["optimizer"])
+        self.rnd_pred.load_state_dict(snapshot["rnd_pred"])
+        self.rnd_opt.load_state_dict(snapshot["rnd_opt"])
+        self._rnd_mean = snapshot["rnd_mean"]
+        self._rnd_var = snapshot["rnd_var"]
+        self.ckpt_version = snapshot["ckpt_version"]
+        self.t_step = snapshot["t_step"]
+        self.learn_step = snapshot["learn_step"]
+        self.best_score = snapshot["best_score"]
+
     def load_weights(self, path: str | None = None) -> bool:
         if path is None:
             path = str(Path(__file__).with_name("ml_weights.json"))
         if not Path(path).exists():
             print(f"No weights file at {path}, starting fresh.")
             return False
+        snapshot = self._load_snapshot()
         try:
             ckpt = torch.load(path, weights_only=True)
             self.q.load_state_dict(ckpt["q_state_dict"])
@@ -676,8 +723,9 @@ class TorchDQNAgent:
         except Exception as e:
             # Checkpoint bytes are untrusted: a shape mismatch, a truncated
             # file, or plain garbage can surface as any number of exception
-            # types across torch versions. Keep the fresh network instead of
-            # crashing startup.
+            # types across torch versions. Restore every live field first --
+            # a failed load must not leave the agent half-resumed (#990).
+            self._restore_load_snapshot(snapshot)
             print(
                 f"Weights at {path} don't match current obs/action size "
                 f"(OBS_SIZE={OBS_SIZE}, N_ACTIONS={N_ACTIONS}), starting fresh: {e}"
@@ -849,6 +897,7 @@ class TorchDQNAgent:
                     "action": action,
                     "reward": reward,
                     "next_state": next_features,
+                    "next_mask": env.valid_action_mask(),
                     "done": done,
                     "gold_delta": gold_delta,
                     "loot_delta": loot_delta,

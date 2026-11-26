@@ -13,11 +13,12 @@ Usage:
     python start.py client -- --name MLAgent --steps 5000
     python start.py torch-bot [-- --demo]
     python start.py torch-farm [-- --agents 4 --steps 1000000]
-    python start.py torch-batch-loop [steps] [rounds]
+    python start.py torch-batch-loop [steps] [rounds]  # stops on a failed worker
 """
 
 import argparse
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -32,6 +33,7 @@ GAME_PORT = 8765
 HTTP_PORT = 8766
 GM_PORT = 8767
 DEFAULT_URL = "ws://localhost:8765"
+_TORCH_BATCH_POLL_SECONDS = 5.0
 
 SERVICES = (
     ("game server", "--port"),
@@ -286,18 +288,118 @@ def cmd_torch_farm(args):
     )
 
 
-def cmd_torch_batch_worker(args):
-    """One batch worker: run a named agent, always write the done marker."""
-    code = run_child(
-        os.path.join(HERE, "torch_agents", "dqn_agent.py"),
-        ["--name", args.name, "--steps", str(args.steps), "--url", args.url],
+def _spawn_dqn_child(name, steps, url):
+    """The DQN trainer is a direct child of the worker so its exit code is
+    known and its lifetime can be bounded by the worker's finally block."""
+    return subprocess.Popen(
+        [
+            PYTHON,
+            os.path.join(HERE, "torch_agents", "dqn_agent.py"),
+            "--name",
+            name,
+            "--steps",
+            str(steps),
+            "--url",
+            url,
+        ],
+        cwd=HERE,
     )
+
+
+def cmd_torch_batch_worker(args):
+    """One batch worker: own the DQN child, always write its exit code."""
+    code = 1
+    child = None
+    try:
+        child = _spawn_dqn_child(args.name, args.steps, args.url)
+        code = child.wait()
+    except KeyboardInterrupt:
+        print()
+        print(f"[torch-batch-worker] {args.name}: interrupted", file=sys.stderr)
+    finally:
+        if child is not None:
+            try:
+                stop(child)
+            except OSError:
+                pass
     try:
         with open(args.done_file, "w") as f:
             f.write(str(code))
     except OSError as e:
         print(f"warning: could not write done marker: {e}", file=sys.stderr)
     return code
+
+
+def _torch_worker_popen_kwargs():
+    """Isolate workers so the loop can signal their whole process group/tree."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _spawn_torch_batch_worker(name, steps, done, url, log):
+    with open(log, "w") as lf:
+        return subprocess.Popen(
+            [
+                PYTHON,
+                os.path.join(HERE, "start.py"),
+                "torch-batch-worker",
+                name,
+                str(steps),
+                done,
+                "--url",
+                url,
+            ],
+            cwd=HERE,
+            stdout=lf,
+            stderr=subprocess.STDOUT,
+            **_torch_worker_popen_kwargs(),
+        )
+
+
+def _kill_process_tree(proc):
+    """Stop a worker wrapper together with the DQN child it owns."""
+    if proc is None or proc.poll() is not None:
+        return
+    pid = getattr(proc, "pid", None)
+    if pid is not None:
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except OSError:
+                pass
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            else:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    proc.wait()
+    if proc.poll() is None:
+        try:
+            stop(proc)
+        except OSError:
+            pass
+
+
+def _torch_done_code(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def cmd_torch_batch_loop(args):
@@ -328,51 +430,62 @@ def cmd_torch_batch_loop(args):
             for name in names:
                 log = os.path.join(run_dir, name + ".log")
                 done = os.path.join(run_dir, name + ".done")
-                for stale in (done,):
-                    try:
-                        os.remove(stale)
-                    except OSError:
-                        pass
+                try:
+                    os.remove(done)
+                except OSError:
+                    pass
                 print(f"  Launching {name} > {log}")
-                with open(log, "w") as lf:
-                    procs.append(
-                        subprocess.Popen(
-                            [
-                                PYTHON,
-                                os.path.join(HERE, "start.py"),
-                                "torch-batch-worker",
-                                name,
-                                str(steps),
-                                done,
-                                "--url",
-                                args.url,
-                            ],
-                            cwd=HERE,
-                            stdout=lf,
-                            stderr=subprocess.STDOUT,
-                        )
-                    )
+                procs.append(
+                    {
+                        "name": name,
+                        "log": log,
+                        "done": done,
+                        "proc": _spawn_torch_batch_worker(
+                            name, steps, done, args.url, log
+                        ),
+                    }
+                )
             while True:
                 try:
-                    time.sleep(5)
+                    time.sleep(_TORCH_BATCH_POLL_SECONDS)
                 except KeyboardInterrupt:
                     print()
                     print("Stopping loop and current agents...")
                     return 0
-                finished = sum(
-                    1
-                    for n in names
-                    if os.path.exists(os.path.join(run_dir, n + ".done"))
-                )
-                if finished >= 4:
+                finished = 0
+                failure = None
+                for rec in procs:
+                    if os.path.exists(rec["done"]):
+                        code = _torch_done_code(rec["done"])
+                        if code != 0:
+                            failure = (rec, f"exit code {code}")
+                            break
+                        finished += 1
+                        continue
+                    code = rec["proc"].poll()
+                    if code is not None:
+                        failure = (
+                            rec,
+                            f"exit code {code} without writing a done marker",
+                        )
+                        break
+                if failure is not None:
+                    rec, why = failure
+                    print(
+                        f"Batch {rnd} failed: worker {rec['name']} {why}; "
+                        f"log: {rec['log']}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if finished == len(procs):
                     break
             print(f"Batch {rnd} finished. Logs are in {run_dir}.")
             rnd += 1
         print(f"Requested batch count reached. Logs are in {run_dir}.")
         return 0
     finally:
-        for p in procs:
-            stop(p)
+        for rec in procs:
+            _kill_process_tree(rec["proc"])
 
 
 def parse_args(argv=None):
