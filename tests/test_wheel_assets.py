@@ -5,7 +5,8 @@ Run from the repo root:  python tests/test_wheel_assets.py
 The static checks need only the standard library. When the optional `build`
 package is importable, a wheel is built in a temporary copy of the checkout and
 its archive is inspected. The offline CI job installs `build` so the archive
-assertion runs on every pull request; local runs without it skip that part.
+assertion runs on every pull request (with `setuptools` as the build backend);
+local runs without it skip that part.
 """
 
 import fnmatch

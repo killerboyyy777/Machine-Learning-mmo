@@ -84,6 +84,9 @@ def test_offline_covers_policy_budget_and_wheel():
     assert "python tests/test_policy_budget.py" in offline
     assert "python tests/test_wheel_assets.py" in offline
     assert re.search(r"pip install[^\n]*build==", offline), "build not installed"
+    assert re.search(
+        r"pip install[^\n]*build==[^\n]*setuptools==", offline
+    ), "wheel backend not installed"
     print("OFFLINE_COVERAGE_OK")
 
 

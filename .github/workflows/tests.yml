@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
-      - run: pip install build==1.6.1
+      - run: pip install build==1.6.1 setuptools==78.1.0
       - run: python tests/test_server_unit.py
       - run: python tests/test_quest_grind.py
       - run: python tests/test_snapshot_additions.py
