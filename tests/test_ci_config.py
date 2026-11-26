@@ -8,6 +8,7 @@ remainder of #748: job timeouts, test/** push triggers, Dependabot ecosystems,
 the area:ci label rule, and the absence of mutable default-branch action refs.
 #982 adds a check that the offline job runs the policy budget suite and builds
 a wheel, so neither can silently drop out of CI.
+#1038 adds a check that every tests/test_*.py script has a step in tests.yml.
 The tag/pyproject version guard from #1021 is exercised as a subprocess.
 """
 
@@ -95,6 +96,15 @@ def test_offline_covers_policy_budget_and_wheel():
     print("OFFLINE_COVERAGE_OK")
 
 
+def test_every_test_script_is_wired():
+    scripts = {p.name for p in (ROOT / "tests").glob("test_*.py")}
+    workflow = _workflow("tests.yml")
+    wired = set(re.findall(r"python tests/(test_[\w]+\.py)", workflow))
+    missing = sorted(scripts - wired)
+    assert not missing, "test scripts without a CI step: " + ", ".join(missing)
+    print("TEST_SCRIPT_COVERAGE_OK")
+
+
 def test_release_version_guard():
     text = _workflow("release.yml")
     assert 'python scripts/check_release_version.py --tag "$GITHUB_REF_NAME"' in text
@@ -138,5 +148,6 @@ if __name__ == "__main__":
     test_labeler_area_ci()
     test_no_mutable_branch_refs()
     test_offline_covers_policy_budget_and_wheel()
+    test_every_test_script_is_wired()
     test_release_version_guard()
     print("CI_CONFIG_OK")
