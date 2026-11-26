@@ -61,6 +61,8 @@ def test_material_sources():
         assert carriers or iid in dungeon_loot, iid
         assert all(not srv.is_quest_giver(nid) for nid in carriers), iid
         assert all(node["item"] != iid for node in srv.gather_nodes.values()), iid
+    for rid, ids in srv.WORLD["room_items"].items():
+        assert not (set(ids or []) & srv.FIGHTER_MATERIALS), rid
 
     for iid, room in (
         ("healing_herb", "guild_hall"),
