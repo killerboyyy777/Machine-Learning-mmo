@@ -2750,6 +2750,97 @@ async def main():
     unplayer(broke)
     print("SHELTER_PENALTY_OK")
 
+    # Freight fee escrow shelters gold from the split but not from the
+    # penalty. The poster gets the fee back when the contract is cancelled.
+    expect_full = srv.DEATH_PENALTY + srv.DEATH_SCORE_PER_GOLD_LOST * 1000
+    saved_freight = srv.FREIGHT
+    saved_freight_stats = srv.FREIGHT_STATS
+    saved_freight_counter = srv._freight_counter
+    saved_freight_dirty = srv._freight_dirty
+    saved_scores_dirty = srv._scores_dirty
+    freight_shelter = None
+    try:
+        srv.FREIGHT = {}
+        srv.FREIGHT_STATS = {key: 0 for key in saved_freight_stats}
+        srv._freight_counter = srv.itertools.count(1)
+        freight_shelter = mkplayer("ShelterFreight", 60040, room="market")
+        freight_shelter.gold = 1100
+        freight_shelter.inventory = ["rat_tail"]
+        await srv.cmd_freight(
+            freight_shelter,
+            {
+                "action": "post",
+                "destination": "smithy",
+                "fee": 1000,
+                "items": ["rat_tail"],
+            },
+        )
+        assert srv.FREIGHT[1]["fee"] == 1000
+        assert srv._sheltered_gold(freight_shelter.name) == 1000
+        freight_shelter.gold = 0
+        fentry = srv.get_score_entry(freight_shelter.name)
+        fentry["score"] = 1000.0
+        await srv.respawn_player(freight_shelter)
+        assert fentry["score"] == 1000.0 - expect_full, (fentry["score"], expect_full)
+        await srv.cmd_freight(freight_shelter, {"action": "cancel", "id": 1})
+        assert freight_shelter.gold == 1000, freight_shelter.gold
+        assert "rat_tail" in freight_shelter.inventory, freight_shelter.inventory
+    finally:
+        if freight_shelter:
+            unplayer(freight_shelter)
+        srv.SCORES.pop("shelterfreight", None)
+        srv.FREIGHT = saved_freight
+        srv.FREIGHT_STATS = saved_freight_stats
+        srv._freight_counter = saved_freight_counter
+        srv._freight_dirty = saved_freight_dirty
+        srv._scores_dirty = saved_scores_dirty
+    print("SHELTER_FREIGHT_OK")
+
+    # Guild vault gold leaves the purse without a discount on dying. The
+    # member can withdraw the same gold after the death.
+    saved_guilds = srv.GUILDS
+    saved_guild_index = dict(srv.GUILD_BY_MEMBER)
+    saved_gold_in = srv.GUILD_VAULT_GOLD_IN_TOTAL
+    saved_gold_out = srv.GUILD_VAULT_GOLD_OUT_TOTAL
+    saved_guilds_dirty = srv._guilds_dirty
+    vault_shelter = None
+    try:
+        srv.GUILDS = {}
+        srv.GUILD_BY_MEMBER.clear()
+        vault_shelter = mkplayer("ShelterVault", 60041, room="guild_hall")
+        vault_shelter.gold = 1000
+        await srv.cmd_guild(
+            vault_shelter, {"action": "create", "name": "Shelter Guild"}
+        )
+        record = srv._guild_for_member(vault_shelter.name)
+        assert record is not None
+        await srv.cmd_guild(
+            vault_shelter, {"action": "vault", "op": "deposit", "gold": 1000}
+        )
+        assert record["vault_gold"] == 1000, record["vault_gold"]
+        assert srv._sheltered_gold(vault_shelter.name) == 1000
+        ventry = srv.get_score_entry(vault_shelter.name)
+        ventry["score"] = 1000.0
+        await srv.respawn_player(vault_shelter)
+        assert ventry["score"] == 1000.0 - expect_full, (ventry["score"], expect_full)
+        vault_shelter.room = "guild_hall"
+        await srv.cmd_guild(
+            vault_shelter, {"action": "vault", "op": "withdraw", "gold": 1000}
+        )
+        assert vault_shelter.gold == 1000, vault_shelter.gold
+        assert record["vault_gold"] == 0, record["vault_gold"]
+    finally:
+        if vault_shelter:
+            unplayer(vault_shelter)
+        srv.SCORES.pop("sheltervault", None)
+        srv.GUILDS = saved_guilds
+        srv.GUILD_BY_MEMBER.clear()
+        srv.GUILD_BY_MEMBER.update(saved_guild_index)
+        srv.GUILD_VAULT_GOLD_IN_TOTAL = saved_gold_in
+        srv.GUILD_VAULT_GOLD_OUT_TOTAL = saved_gold_out
+        srv._guilds_dirty = saved_guilds_dirty
+    print("SHELTER_VAULT_OK")
+
     # --- XP grind decays like score (#195.6): repeat loops earn strictly
     # less per iteration as variety collapses and score climbs.
     grinder = mkplayer("Grinder", 60014)
@@ -6174,6 +6265,40 @@ async def main():
         srv.get_score_entry(ga_mixed.name).pop("gathered_units", None)
         unplayer(ga_mixed)
     print("MIXED_SOURCE_BUYBACK_OK")
+
+    # A harvested copy that leaves through a market order spends its credit.
+    # A later looted copy of the same id still settles at full value.
+    ga_post = mkplayer("HarvestMarketControl", 67014, room="smithy")
+    ga_post.gold = 0
+    ga_post.inventory = []
+    ga_node["min_yield"] = ga_node["max_yield"] = 1
+    ga_node["available"] = True
+    ga_node["respawn_at"] = None
+    saved_orders = list(srv.market_orders)
+    saved_bids = list(srv.market_bids)
+    try:
+        await srv.cmd_gather(ga_post, {"node": "iron_ore"})
+        ga_credits = srv.get_score_entry(ga_post.name).get("gathered_units", {})
+        assert ga_credits.get(ga_iid, 0) == 1, ga_credits
+        await srv.cmd_market_post(ga_post, {"item": ga_iid, "price": 9})
+        assert ga_post.inventory == [], ga_post.inventory
+        assert ga_credits.get(ga_iid, 0) == 0, ga_credits
+        ga_post.inventory = [ga_iid]
+        ga_post.room = "market"
+        await srv.cmd_sell(ga_post, {"item": ga_iid})
+        assert ga_post.gold == ga_value, ga_post.gold
+    finally:
+        srv.market_orders[:] = saved_orders
+        srv.market_bids[:] = saved_bids
+        (
+            ga_node["min_yield"],
+            ga_node["max_yield"],
+            ga_node["available"],
+            ga_node["respawn_at"],
+        ) = (ga_saved[2], ga_saved[3], ga_saved[0], ga_saved[1])
+        srv.get_score_entry(ga_post.name).pop("gathered_units", None)
+        unplayer(ga_post)
+    print("HARVEST_MARKET_CREDIT_OK")
 
     # Cheap gather items keep a 1g floor instead of becoming unsellable.
     ga_cheap_node = srv.gather_nodes["reed_fiber_node"]

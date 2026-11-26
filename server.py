@@ -3161,6 +3161,15 @@ def _deliver_item_or_bank(player, iid):
     return False
 
 
+def _spend_gathered(player, iid, qty=1):
+    """Spend harvest credits for units that leave the pack."""
+    credits = _gather_credits(player.name)
+    left = int(credits.get(iid, 0) or 0)
+    if left > 0:
+        credits[iid] = max(0, min(left - qty, player.inventory.count(iid)))
+        mark_scores_dirty()
+
+
 def _inventory_cap(player):
     """Pack capacity with the active companion's mule bonus (#533)."""
     cap = INVENTORY_CAP
@@ -5182,23 +5191,31 @@ async def sync_room(room_id):
 
 
 def _sheltered_gold(name):
-    """Gold that escapes the death split: open-commission escrow plus resting
-    buy-order escrow plus any banked gold. Posting a bounty, resting a bid
-    (or banking) before a risky fight must not shrink the death penalty to
-    the broke-character floor (#195.5)."""
+    """Gold kept outside the purse that still counts toward a death.
+
+    Open commissions, resting bids, freight fee and bonus escrow, gold bank
+    and the player's guild vault all shelter gold from the split but not from
+    the score penalty (#195.5)."""
     entry = get_score_entry(name)
+    key = _freight_identity(name)
     escrow = sum(
         c.get("escrow", 0)
         for c in _commissions.values()
-        if c.get("status") == "open"
-        and str(c.get("poster", "")).lower() == name.lower()
+        if c.get("status") == "open" and str(c.get("poster", "")).lower() == key
+    )
+    freight = sum(
+        int(rec.get("fee", 0) or 0) + int(rec.get("bonus", 0) or 0)
+        for rec in FREIGHT.values()
+        if rec.get("state") in ("open", "carried")
+        and rec.get("poster_kind") != "station"
+        and _freight_identity(rec.get("poster")) == key
     )
     bids = sum(
-        b.get("price", 0)
-        for b in market_bids
-        if str(b.get("buyer", "")).lower() == name.lower()
+        b.get("price", 0) for b in market_bids if str(b.get("buyer", "")).lower() == key
     )
-    return escrow + bids + entry.get("gold_bank", 0)
+    guild = _guild_for_member(name)
+    vault = _guild_int(guild.get("vault_gold")) if guild is not None else 0
+    return escrow + freight + bids + entry.get("gold_bank", 0) + vault
 
 
 def death_preview(player):
@@ -5302,6 +5319,7 @@ async def respawn_player(player):
         dropped_items = unequipped[:n]
         for iid in dropped_items:
             player.inventory.remove(iid)
+            _spend_gathered(player, iid)
             _add_ground(death_room, iid)
 
     item_value = sum(ITEM_DEFS.get(iid, {}).get("value", 0) for iid in dropped_items)
@@ -6035,6 +6053,7 @@ async def cmd_attack(player, msg):
             return
         best = max(family, key=lambda iid: AMMO_BONUS.get(iid, 0))
         player.inventory.remove(best)
+        _spend_gathered(player, best)
         ammo_bonus = AMMO_BONUS.get(best, 0)
         effect = ITEM_DEFS.get(best, {}).get("ammo_effect") or {}
     dmg = random.randint(1, player.attack) + ammo_bonus
@@ -6324,6 +6343,7 @@ async def cmd_drop(player, msg):
     dropped = 0
     for _ in range(amount):
         player.inventory.remove(iid)
+        _spend_gathered(player, iid)
         dropped += 1
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
@@ -6436,6 +6456,7 @@ async def cmd_use(player, msg):
         )
         return
     player.inventory.remove(iid)
+    _spend_gathered(player, iid)
     if heal > 0:
         recovered = heal * _companion_heal_mult(player)
         before = player.hp
@@ -6612,11 +6633,9 @@ async def cmd_sell(player, msg):
     credits = _gather_credits(player.name)
     held = player.inventory.count(iid)
     gathered = int(credits.get(iid, 0) or 0) > 0 and held > 0
-    if gathered:
-        credits[iid] = max(0, min(int(credits.get(iid, 0)), held) - 1)
-        mark_scores_dirty()
     value = merchant_sell_value(iid, gathered)
     player.inventory.remove(iid)
+    _spend_gathered(player, iid)
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
     if player.armor == iid and iid not in player.inventory:
@@ -6656,6 +6675,7 @@ def _take_craft_inputs(player, inputs):
     for iid, qty in inputs.items():
         for _ in range(qty):
             player.inventory.remove(iid)
+        _spend_gathered(player, iid, qty)
         if player.equipped == iid and iid not in player.inventory:
             player.equipped = None
         if player.armor == iid and iid not in player.inventory:
@@ -8745,6 +8765,7 @@ async def _guild_vault_deposit_item(player, record, raw):
         )
         return
     player.inventory.remove(iid)
+    _spend_gathered(player, iid)
     vault_items.append(iid)
     _guild_audit(record, player.name, "deposit_item", amount=1, item=iid)
     mark_guilds_dirty()
@@ -10083,6 +10104,7 @@ async def _freight_post(player, msg):
         return
     for iid in package:
         player.inventory.remove(iid)
+        _spend_gathered(player, iid)
     player.gold -= up_front
     cid = next(_freight_counter)
     now = time.time()
@@ -10448,6 +10470,7 @@ async def cmd_companion(player, msg):
             )
             return
         player.inventory.remove(iid)
+        _spend_gathered(player, iid)
         store["companions"] = [rec]
         store["active"] = 0
         store["updated_at"] = time.time()
@@ -11052,6 +11075,7 @@ async def cmd_quest(player, msg):
         if qid == "guard_charm":
             # Guaranteed present by the gate above: unconditional consume.
             player.inventory.remove(QUEST_CHARM_RESULT)
+            _spend_gathered(player, QUEST_CHARM_RESULT)
             charm_gone = QUEST_CHARM_RESULT not in player.inventory
             if player.equipped == QUEST_CHARM_RESULT and charm_gone:
                 player.equipped = None
@@ -11068,6 +11092,7 @@ async def cmd_quest(player, msg):
             for iid, qty in quest.get("inputs", {}).items():
                 for _ in range(qty):
                     player.inventory.remove(iid)
+                _spend_gathered(player, iid, qty)
                 if player.equipped == iid and iid not in player.inventory:
                     player.equipped = None
                 if player.armor == iid and iid not in player.inventory:
@@ -11409,6 +11434,7 @@ async def cmd_market_post(player, msg):
         )
         return
     player.inventory.remove(iid)
+    _spend_gathered(player, iid)
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
     if player.armor == iid and iid not in player.inventory:
