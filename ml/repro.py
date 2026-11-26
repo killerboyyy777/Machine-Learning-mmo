@@ -81,9 +81,10 @@ def compact_repro(
 
     ``rows`` are the dicts returned by :func:`ml.transcript.read_transcript`.
     The optional filters narrow to one agent, episode and/or incarnation;
-    survivors are ordered by (incarnation, step) so the result is independent
-    of file order. A positive ``max_steps`` keeps only the earliest steps,
-    which is what makes a long episode into a minimal reproducer.
+    survivors are ordered by (incarnation, episode, step) so the result is
+    independent of file order. A positive ``max_steps`` keeps only the
+    earliest steps, which is what makes a long episode into a minimal
+    reproducer.
 
     Agents, episodes and incarnations are selected by value, never inferred:
     a caller that passes no filter gets every row, in timeline order. Rows
@@ -103,6 +104,7 @@ def compact_repro(
     selected.sort(
         key=lambda row: (
             _finite(row.get("incarnation")) or 0,
+            _finite(row.get("episode")) or 0,
             _finite(row.get("step")) or 0,
         )
     )
@@ -116,6 +118,7 @@ def compact_repro(
         steps.append(
             {
                 "step": row.get("step"),
+                "episode": row.get("episode"),
                 "incarnation": row.get("incarnation"),
                 "elapsed_s": _finite(row.get("elapsed_s")),
                 "action": row.get("action"),
