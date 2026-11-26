@@ -1832,10 +1832,11 @@ def _normalize_freight_record(row):
     if not isinstance(items, list):
         return None
     rec["items"] = [str(iid) for iid in items if isinstance(iid, str)]
-    # Terminal rows can have empty items: pruning dropped the goods but left a
-    # refund owed to a poster who was offline when the contract ended.
+    # Empty items belong to a terminal row with a refund owed to an offline
+    # poster, or to a station delivery whose goods landed on arrival.
     if not rec["items"] and not (
-        rec["state"] in ("lost", "expired") and rec["refund"] > 0
+        (rec["state"] in ("lost", "expired") and rec["refund"] > 0)
+        or (rec["state"] == "delivered" and rec["poster_kind"] == "station")
     ):
         return None
     if rec.get("state") not in ("open", "carried", "delivered", "expired", "lost"):
@@ -1861,7 +1862,7 @@ def load_freight(path=None):
             continue
         except (json.JSONDecodeError, OSError) as e:
             print(f"Warning: could not load {os.path.basename(candidate)}: {e}")
-            return {}
+            continue
     if data is None:
         return {}
     if not isinstance(data, dict) or data.get("version") != FREIGHT_VERSION:
@@ -9579,7 +9580,10 @@ async def _freight_deliver(player, msg):
     if rec.get("poster_kind") == "station":
         # Stock the station already held, moved between two stations: the goods
         # land on this floor and only the fee was ever minted.
-        _freight_drop_package(rec["destination"], rec.pop("items", []))
+        # Keep the key: normalize drops rows with no items list after a reload.
+        goods = rec.pop("items", [])
+        rec["items"] = []
+        _freight_drop_package(rec["destination"], goods)
         FREIGHT_STATS["station_fee_paid"] = FREIGHT_STATS.get("station_fee_paid", 0) + 1
     bonus = int(rec.get("bonus") or 0)
     if bonus:
