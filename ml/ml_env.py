@@ -2939,7 +2939,9 @@ class TextMMOEnv:
                     return {"cmd": "companion", "action": "dismiss"}
                 return None
             if action == "companion_summon":
-                if comp and not comp.get("summoned"):
+                # A downed pet leaves the summoned set but still owns its slot,
+                # so the server rejects a fresh summon until it recovers.
+                if comp and not comp.get("summoned") and comp.get("hp", 0) > 0:
                     return {"cmd": "companion", "action": "summon"}
                 return None
             # Adopt: use a deed already carried, else buy the cheap wolf pup
