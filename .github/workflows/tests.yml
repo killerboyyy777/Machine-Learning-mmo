@@ -35,6 +35,7 @@ jobs:
       - run: pip install build==1.6.1 setuptools==78.1.0
       - run: python tests/test_server_unit.py
       - run: python tests/test_craft_economy.py
+      - run: python tests/test_tannery_fighter_material.py
       - run: python tests/test_bank_purse.py
       - run: python tests/test_bank_live.py
       - run: python tests/test_quest_grind.py

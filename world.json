@@ -940,7 +940,6 @@
     "old_shop": ["old_shield"],
     "chandlery": ["healing_herb"],
     "tide_pools": ["healing_herb"],
-    "tannery": ["wolf_pelt"],
     "smithy": ["iron_ore"],
     "reed_beds": ["healing_herb"],
     "lumber_camp": ["oak_longbow", "arrow", "arrow", "arrow"],

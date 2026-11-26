@@ -1028,6 +1028,8 @@ def validate_world(data):
         for iid in ids or []:
             if not _known_item(iid):
                 errors.append(f"room {rid!r} holds unknown item {iid!r}")
+            elif iid in FIGHTER_MATERIALS:
+                errors.append(f"room {rid!r} holds fighter-only item {iid!r}")
     for nid, node in (data.get("gather_nodes") or {}).items():
         if node.get("room") not in rooms:
             errors.append(
