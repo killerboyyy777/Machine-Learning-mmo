@@ -925,6 +925,29 @@ def _sync_extra_spawns():
 
 RECIPES = WORLD.get("recipes", {})
 
+# Combat-only crafting inputs. They never come from a gather node, so a
+# character that never fights cannot supply endgame recipes from safe rooms.
+FIGHTER_MATERIALS = frozenset(
+    {
+        "rat_tail",
+        "wolf_pelt",
+        "treant_bark",
+        "troll_hide",
+        "ectoplasm",
+        "serpent_scale",
+        "warden_trophy",
+        "glacier_core",
+        "abyssal_heart",
+    }
+)
+
+# Tier 1 keeps the old flat reward of 8. Higher tiers pay for their larger
+# material cost, and a recipe pays a bonus the first time a character makes it.
+CRAFT_SCORE_BASE = 4
+CRAFT_SCORE_PER_TIER = 4
+CRAFT_DISCOVERY_BONUS = 10
+CRAFT_MAX_TIER = 6
+
 
 def _iname(iid):
     """Display name for an item id, raw id fallback.
@@ -1002,6 +1025,10 @@ def validate_world(data):
         if not _known_item(node.get("item")):
             errors.append(
                 f"gather node {nid!r} yields unknown item {node.get('item')!r}"
+            )
+        elif node.get("item") in FIGHTER_MATERIALS:
+            errors.append(
+                f"gather node {nid!r} yields fighter-only item {node.get('item')!r}"
             )
     for nid, npc in (data.get("npcs") or {}).items():
         if npc.get("room") not in rooms:
@@ -2728,6 +2755,9 @@ def get_score_entry(name):
     entry.setdefault("quest_tonic_active", False)
     entry.setdefault("quest_remedy_completions", 0)
     entry.setdefault("quest_tonic_completions", 0)
+    entry.setdefault("crafts_total", 0)
+    entry.setdefault("crafts_by_recipe", {})
+    entry.setdefault("craft_discoveries", [])
     entry.setdefault("crafts_tier", {})
     entry.setdefault("craft_profitability", {})
     entry.setdefault(
@@ -4660,7 +4690,7 @@ async def _dronelang_exec_action(owner, rec, action, now):
     if name == "gather":
         node_name = args[0].lower()
         for node in gather_nodes_in_room(owner.room):
-            if (
+            if node["item"] not in FIGHTER_MATERIALS and (
                 node_name in node["id"].lower()
                 or node_name in node["item"].lower()
                 or node_name in _iname(node["item"]).lower()
@@ -6385,6 +6415,12 @@ async def cmd_gather(player, msg):
             {"type": "error", "text": "No available gathering node matches that here."},
         )
         return
+    if node["item"] in FIGHTER_MATERIALS:
+        await send(
+            player,
+            {"type": "error", "text": "That material only comes from combat."},
+        )
+        return
     if _pack_full(player):
         await send(player, {"type": "error", "text": _pack_full_error()})
         return
@@ -6658,6 +6694,35 @@ def _craft_output_qty(recipe):
         return 1
 
 
+def _craft_input_value(inputs):
+    total = 0
+    for iid, qty in (inputs or {}).items():
+        try:
+            units = int(qty)
+        except (TypeError, ValueError):
+            continue
+        total += ITEM_DEFS.get(iid, {}).get("value", 0) * units
+    return total
+
+
+def _craft_output_value(result, output_qty):
+    return ITEM_DEFS.get(result, {}).get("value", 0) * output_qty
+
+
+def _craft_tier(value):
+    try:
+        tier = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(tier, CRAFT_MAX_TIER))
+
+
+def craft_reward_for(tier, first_time=False):
+    """Score and XP base before the shared variety and diminish curves."""
+    base = CRAFT_SCORE_BASE + CRAFT_SCORE_PER_TIER * _craft_tier(tier)
+    return base + (CRAFT_DISCOVERY_BONUS if first_time else 0)
+
+
 def _craft_ticks(recipe):
     try:
         return max(1, int(recipe.get("ticks", CRAFT_JOB_DEFAULT_TICKS)))
@@ -6739,20 +6804,30 @@ async def _record_craft_completion(
 ):
     global craft_feed_seq
     entry = entry or get_score_entry(name)
-    input_value = sum(
-        ITEM_DEFS.get(iid, {}).get("value", 0) * qty for iid, qty in inputs.items()
-    )
-    output_value = ITEM_DEFS.get(result, {}).get("value", 0) * output_qty
+    tier_num = _craft_tier(tier)
+    input_value = _craft_input_value(inputs)
+    output_value = _craft_output_value(result, output_qty)
     net_profit = output_value - input_value
-    entry.setdefault("craft_profitability", {})[result] = (
-        entry["craft_profitability"].get(result, 0) + net_profit
-    )
-    entry.setdefault("crafts_tier", {}).setdefault(tier, 0)
-    entry["crafts_tier"][tier] += 1
+    profitability = entry.setdefault("craft_profitability", {})
+    profitability[result] = int(profitability.get(result, 0) or 0) + net_profit
+    tiers = entry.setdefault("crafts_tier", {})
+    tier_key = str(tier_num)
+    tiers[tier_key] = int(tiers.get(tier_key, 0) or 0) + 1
+    recipe_key = str(rid or result)
+    by_recipe = entry.setdefault("crafts_by_recipe", {})
+    by_recipe[recipe_key] = int(by_recipe.get(recipe_key, 0) or 0) + 1
+    entry["crafts_total"] = int(entry.get("crafts_total", 0) or 0) + 1
+    discoveries = entry.get("craft_discoveries")
+    if not isinstance(discoveries, list):
+        discoveries = entry["craft_discoveries"] = []
+    first_time = recipe_key not in discoveries
+    if first_time:
+        discoveries.append(recipe_key)
     mark_scores_dirty()
     result_name = _iname(result)
-    await award_points_to_name(name, 8, f"crafted {result_name}")
-    await award_xp(name, 8, f"crafted {result_name}")
+    reward = craft_reward_for(tier_num, first_time)
+    await award_points_to_name(name, reward, f"crafted {result_name}")
+    await award_xp(name, reward, f"crafted {result_name}")
     craft_feed_seq += 1
     craft_feed.append(
         {

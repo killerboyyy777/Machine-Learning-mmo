@@ -126,6 +126,14 @@ python3 tests/test_live.py              # terminal 2 (protocol E2E)
 
 Units you actually harvest at a gathering node sell to merchants for a quarter of their static value (at least 1 gold). The same item id looted from an NPC, picked up off the ground, bought or crafted still sells for full value. Station freight settles on delivery or expiry only - even a player named after the station cannot cancel or claim it.
 
+## Crafting economy
+
+Common inputs come from gathering nodes in rooms without the wild flag. An herb node in the Adventurers Guild hall and a berry patch on Artisan Row yield healing herbs and mountain berries for characters that avoid combat. These feed recipes such as blood arrows, field rations and fortitude tonics, though some recipes still need combat inputs such as rat tails. Each node yields one or two units and respawns on a 45 second timer, and a mule companion adds one more unit. Harvested units settle at the quarter buyback, so the nodes add no gold at the merchant.
+
+Fighter materials come only from NPC loot tables. Rat tails, wolf pelts, treant bark, troll hides, ectoplasm, serpent scales, warden trophies, glacier cores and abyssal hearts never appear on a gather node. World validation rejects a node that yields one of them.
+
+Crafting records total crafts, a count per recipe and per tier, the recipes a character discovered and the running net material value of each result. Score and XP scale with recipe tier, and the first craft of a recipe pays a one-time bonus. These counters live in scores.json with the rest of the score entry. The command, stats event and dashboard snapshot shapes are unchanged.
+
 ## Ammo
 
 A bow fires the best arrow in the ammo family you carry: Arrow (+0), Iron Arrow (+1), Steel Arrow (+2), Fire Arrow (+3) or Blood Arrow (+4). One arrow is consumed per shot, and the best variant in the family wins regardless of the order you hold them.
