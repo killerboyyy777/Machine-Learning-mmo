@@ -7,6 +7,7 @@ Also #68 (reward formula DSL): the tokenizer, parser, signal plumbing, and
 the fail-soft contract for a formula or hook that goes wrong mid-run.
 """
 
+import asyncio
 import inspect
 import os
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server as srv
 from ml.ml_env import (
+    ACTIONS,
     ECON_INV_LAMBDA,
     FORMATION_BONUS,
     FORMATION_COOLDOWN_STEPS,
@@ -52,6 +54,75 @@ name, value = idef["name"], merchant_value(iid)
 assert inventory_value([name]) == value, (name, value)
 assert inventory_value([name, "No Such Item XYZ"]) == value
 print(f"INVENTORY_VALUE_OK ({iid}={value}g)")
+
+# --- #1036: the reward matches what the merchant actually pays ---
+_iron = "iron_ore"
+_iron_name = srv.ITEM_DEFS[_iron]["name"]
+_iron_full = merchant_value(_iron)
+_iron_harvest = merchant_value(_iron, gathered=True)
+assert _iron_full == 8 and _iron_harvest == 2
+# A looted copy has no credit and keeps full value.
+assert inventory_value([_iron_name]) == _iron_full == srv.merchant_sell_value(_iron)
+# A harvested copy pays the discounted rate. In a mixed stack only the
+# credited units take that rate.
+assert inventory_value([_iron_name], {"iron_ore": 1}) == _iron_harvest
+assert (
+    inventory_value([_iron_name, _iron_name], {"iron_ore": 1})
+    == _iron_full + _iron_harvest
+)
+assert inventory_value([_iron_name], {"iron_ore": 99}) == _iron_harvest
+_reed = "reed_fiber"
+assert inventory_value([srv.ITEM_DEFS[_reed]["name"]], {_reed: 1}) == 1
+print("GATHERED_REWARD_VALUATION_OK")
+
+# The server publishes credits in stats. The env reads them without adding
+# an observation field.
+_src = srv.Player(name="RewardProvenanceP", inventory=[_iron, _iron])
+srv._credit_gathered(_src.name, _iron, 1)
+try:
+    _view = srv.stats_view(_src)
+    assert _view["gathered_units"] == {"iron_ore": 1}
+    _priced = TextMMOEnv("RewardProvenanceE", reward_mode="econ", step_delay=0)
+    _priced._apply_event(_view)
+    assert _priced._state["gathered_units"] == {"iron_ore": 1}
+    assert (
+        inventory_value(_priced._state["inv_names"], _priced._state["gathered_units"])
+        == _iron_full + _iron_harvest
+    )
+    _priced._build_obs()
+    assert _priced._holdings()[0]["value"] == _iron_harvest
+finally:
+    srv.SCORES.pop(_src.name.lower(), None)
+print("GATHERED_CREDITS_STATS_OK")
+
+
+async def _pickup_reward(kind):
+    """Step reward for one harvested or looted iron pickup."""
+    env = TextMMOEnv(f"RewardPickup{kind}", reward_mode="econ", step_delay=0)
+    env._state["room_id"] = "smithy"
+    env._state["item_names"] = [_iron_name]
+    env._state["gatherables"] = [{"item": _iron_name}] if kind == "gather" else []
+
+    async def fake_send(cmd, **kwargs):
+        assert cmd == kind, (cmd, kind)
+        credits = {"iron_ore": 1} if kind == "gather" else {}
+        env._apply_event(
+            {"type": "stats", "inv": [_iron_name], "gathered_units": credits}
+        )
+
+    env._send = fake_send
+    _, reward, _, info = await env.step(ACTIONS.index(kind))
+    assert info["action"] == kind
+    return reward, info["inv_delta"]
+
+
+_gather_reward, _gather_delta = asyncio.run(_pickup_reward("gather"))
+_loot_reward, _loot_delta = asyncio.run(_pickup_reward("take"))
+assert _gather_delta == _iron_harvest, _gather_delta
+assert _loot_delta == _iron_full, _loot_delta
+assert _gather_reward == ECON_INV_LAMBDA * _iron_harvest, _gather_reward
+assert _loot_reward == ECON_INV_LAMBDA * _iron_full, _loot_reward
+print("GATHERED_ECON_STEP_REWARD_OK")
 
 # --- xp mode: pure XP, ignores score/gold/inv/social ---
 env_xp = TextMMOEnv("ModeXP", reward_mode="xp")

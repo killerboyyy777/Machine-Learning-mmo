@@ -5118,6 +5118,7 @@ def _player_status_view(player):
 
 def stats_view(player):
     entry = get_score_entry(player.name) if player.name else None
+    credits = entry.get("gathered_units") if entry else None
     party = None
     if player.party_id and player.party_id in parties:
         party = parties[player.party_id]
@@ -5140,6 +5141,7 @@ def stats_view(player):
         "xp_to_next": entry["xp_to_next"] if entry else xp_to_next(1),
         "party_size": len(party.member_ids) if party else 1,
         "inv": [ITEM_DEFS.get(i, {}).get("name", i) for i in player.inventory][:20],
+        "gathered_units": dict(credits) if isinstance(credits, dict) else {},
         "market_orders": len(market_orders),
         "market_slots": (
             entry.get("market_slots", MARKET_ORDER_SLOTS_BASE)
