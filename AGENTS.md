@@ -21,6 +21,7 @@ This file is for humans and agents working in this repo.
 - Audit the repo when needed and keep it fully functional, configured, and free of open issues. File verified findings as issues and track them to resolution.
 - Clean up unneeded local branches and temp scripts as soon as possible, but never delete without a reason; keep artifacts that live work still needs.
 - Keep the issue tracker current: update, close, delete, or split issues as work changes. Prefer subagents for research and audits, and keep going without check-in questions.
+- Every new pull request needs a subagent review before it is merged, in addition to the main-account review and green CI. Address any requested changes first.
 - Never add Co-Authored-By or any other commit trailer unless asked. Dependabot PRs need a rebase request before merge.
 
 ## Wiki
