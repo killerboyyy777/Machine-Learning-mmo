@@ -764,6 +764,10 @@
     "arrow": {"name": "Arrow", "type": "junk", "value": 1},
     "iron_arrow": {"name": "Iron Arrow", "type": "junk", "value": 2},
     "steel_arrow": {"name": "Steel Arrow", "type": "junk", "value": 5},
+    "fire_arrow": {"name": "Fire Arrow", "type": "junk", "value": 9,
+      "ammo_effect": {"kind": "burn", "amount": 2, "ticks": 2}},
+    "blood_arrow": {"name": "Blood Arrow", "type": "junk", "value": 12,
+      "ammo_effect": {"kind": "heal", "amount": 2}},
     "ancient_guardian_charm": {"name": "Ancient Guardian Charm", "type": "junk", "value": 0},
     "field_ration": {"name": "Field Ration", "type": "consumable", "heal_amount": 12, "value": 12},
     "bandage": {"name": "Field Bandage", "type": "consumable", "heal_amount": 15, "value": 15},
@@ -831,6 +835,20 @@
       "result": "steel_arrow",
       "output_qty": 1,
       "tier": 3,
+      "category": "ammo"
+    },
+    "fire_arrows": {
+      "inputs": {"iron_arrow": 3, "ectoplasm": 1},
+      "result": "fire_arrow",
+      "output_qty": 1,
+      "tier": 3,
+      "category": "ammo"
+    },
+    "blood_arrows": {
+      "inputs": {"steel_arrow": 1, "healing_herb": 2},
+      "result": "blood_arrow",
+      "output_qty": 1,
+      "tier": 4,
       "category": "ammo"
     },
     "field_ration": {

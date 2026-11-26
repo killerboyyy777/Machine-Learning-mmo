@@ -2845,7 +2845,33 @@ def _tick_player_buffs(player):
 
 
 # Arrow families: a bow declaring "arrow" accepts any member, best first.
-AMMO_BONUS = {"arrow": 0, "iron_arrow": 1, "steel_arrow": 2}
+AMMO_BONUS = {
+    "arrow": 0,
+    "iron_arrow": 1,
+    "steel_arrow": 2,
+    "fire_arrow": 3,
+    "blood_arrow": 4,
+}
+
+
+def _tick_npc_burn(npc):
+    """Apply one burn tick, capped below the kill threshold.
+
+    The cmd_attack kill block owns loot, gold and credit; a world-loop tick
+    cannot reuse it safely, so burn chips but never finishes a target.
+    """
+    burn = npc.get("burn")
+    if not burn or burn.get("remaining", 0) <= 0:
+        return 0
+    amount = max(0, int(burn.get("amount", 0)))
+    if amount <= 0:
+        burn["remaining"] = 0
+        return 0
+    dealt = min(amount, max(0, npc["hp"] - 1))
+    npc["hp"] -= dealt
+    burn["remaining"] -= 1
+    return dealt
+
 
 # Carry cap: pack load counts every inventory unit except worn gear and up
 # to AMMO_EXEMPT_COUNT arrows (quivers ride free). At the cap, take/gather/
@@ -4878,6 +4904,7 @@ def respawn_npc(npc):
     npc["hp"] = npc["max_hp"]
     npc["respawn_at"] = None
     npc["contributors"] = {}
+    npc.pop("burn", None)
     npc["state"] = "IDLE"
     npc["target"] = None
     npc["engaged_since"] = None
@@ -5498,6 +5525,7 @@ async def cmd_attack(player, msg):
         ITEM_DEFS.get(player.equipped, {}).get("ammo") if player.equipped else None
     )
     ammo_bonus = 0
+    effect = {}
     if ammo_id:
         family = (
             [iid for iid in AMMO_BONUS if iid in player.inventory]
@@ -5516,6 +5544,7 @@ async def cmd_attack(player, msg):
         best = max(family, key=lambda iid: AMMO_BONUS.get(iid, 0))
         player.inventory.remove(best)
         ammo_bonus = AMMO_BONUS.get(best, 0)
+        effect = ITEM_DEFS.get(best, {}).get("ammo_effect") or {}
     dmg = random.randint(1, player.attack) + ammo_bonus
     npc["hp"] -= dmg
     DAMAGE_STATS["player"] += dmg
@@ -5527,6 +5556,27 @@ async def cmd_attack(player, msg):
         {"type": "combat", "text": f"{player.name} hits {npc['name']} for {dmg}."},
         exclude=player,
     )
+    if effect.get("kind") == "burn":
+        ticks = int(effect.get("ticks", 0))
+        npc["burn"] = {"amount": int(effect.get("amount", 0)), "remaining": ticks}
+        await send(
+            player,
+            {
+                "type": "combat",
+                "text": f"Your {_iname(best)} sets {npc['name']} ablaze ({ticks} ticks).",
+            },
+        )
+    elif effect.get("kind") == "heal":
+        healed = min(int(effect.get("amount", 0)), max(0, player.max_hp - player.hp))
+        player.hp += healed
+        if healed > 0:
+            await send(
+                player,
+                {
+                    "type": "message",
+                    "text": f"Your {_iname(best)} restores {healed} HP.",
+                },
+            )
     if npc.get("hp", 0) > 1 and player.name.lower() in COMPANION_SUMMONED:
         rec = _companion_active(player.name)
         if rec is not None and not _companion_is_downed(rec):
@@ -15060,6 +15110,7 @@ async def npc_ai_loop():
                     )
                     await sync_room(npc["room"])
                 continue
+            _tick_npc_burn(npc)
             ctx = _npc_tick_context(npc)
             intent = npc_think(npc, ctx, now)
             await npc_apply(npc, intent, ctx, now)
