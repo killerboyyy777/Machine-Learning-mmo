@@ -6079,19 +6079,21 @@ async def main():
     unplayer(_tp)
     print("TRADE_GHOST_OK")
 
-    # #1025: an endless gather node must not pay full retail buyback. With
-    # yield 2 per 30s, the old 8g/unit printed 0.53 g/s; a quarter buyback
-    # caps it at 0.13 g/s. The loop below spends 8 respawns and checks both
-    # the payout and that an ordinary loot item still sells at full value.
+    # #1025: an endless gather node must not pay full retail buyback, but a
+    # looted copy of the SAME item id still pays full value. With yield 2 per
+    # 30s, the old 8g/unit printed up to 0.53 g/s; a quarter payout caps the
+    # harvested copies at 0.13 g/s. Credits follow units the player harvested,
+    # never the item id alone.
     ga_node = srv.gather_nodes["iron_ore_node"]
     ga_iid = ga_node["item"]
     ga_value = srv.ITEM_DEFS[ga_iid]["value"]
-    ga_payout = max(1, ga_value // srv.GATHER_BUYBACK_DIVISOR)
+    ga_payout = srv.merchant_sell_value(ga_iid, gathered=True)
     ga_worst_old = ga_node["max_yield"] * ga_value / ga_node["respawn_seconds"]
     ga_worst_new = ga_node["max_yield"] * ga_payout / ga_node["respawn_seconds"]
     assert ga_value == 8 and ga_node["respawn_seconds"] == 30
+    assert ga_payout == max(1, ga_value // srv.GATHER_BUYBACK_DIVISOR)
+    assert srv.merchant_sell_value(ga_iid) == ga_value
     assert ga_worst_new == ga_worst_old / srv.GATHER_BUYBACK_DIVISOR
-    assert ga_iid in srv.GATHERABLE_ITEMS
     ga_player = mkplayer("GatherSellLoop", 67010, room="smithy")
     ga_player.gold = 0
     ga_player.inventory = []
@@ -6128,17 +6130,69 @@ async def main():
             ga_node["min_yield"],
             ga_node["max_yield"],
         ) = ga_saved
+        srv.get_score_entry(ga_player.name).pop("gathered_units", None)
         unplayer(ga_player)
-    ga_loot = mkplayer("LootSellControl", 67011, room="market")
+
+    # An overlapping id acquired as loot settles at full value, even when a
+    # different player has harvest credits for that id in the same session.
+    ga_loot = mkplayer("LootIronControl", 67011, room="market")
     ga_loot.gold = 0
-    ga_loot.inventory = ["wolf_pelt", "reed_fiber"]
+    ga_loot.inventory = [ga_iid]
     try:
-        await srv.cmd_sell(ga_loot, {"item": "wolf_pelt"})
-        assert ga_loot.gold == srv.ITEM_DEFS["wolf_pelt"]["value"] == 4, ga_loot.gold
-        await srv.cmd_sell(ga_loot, {"item": "reed_fiber"})
-        assert ga_loot.gold == 5, ga_loot.gold  # cheap gather item floors at 1
+        await srv.cmd_sell(ga_loot, {"item": ga_iid})
+        assert ga_loot.gold == ga_value == 8, ga_loot.gold
     finally:
         unplayer(ga_loot)
+    print("LOOT_OVERLAP_FULL_VALUE_OK")
+
+    # Mixed sources in one pack: only the harvested unit is discounted.
+    ga_mixed = mkplayer("MixedSourceControl", 67012, room="smithy")
+    ga_mixed.gold = 0
+    ga_mixed.inventory = []
+    ga_node["min_yield"] = ga_node["max_yield"] = 1
+    ga_node["available"] = True
+    ga_node["respawn_at"] = None
+    try:
+        await srv.cmd_gather(ga_mixed, {"node": "iron_ore"})
+        srv._add_ground("smithy", ga_iid)
+        await srv.cmd_take(ga_mixed, {"item": ga_iid})
+        assert ga_mixed.inventory.count(ga_iid) == 2, ga_mixed.inventory
+        ga_mixed.room = "market"
+        await srv.cmd_sell(ga_mixed, {"item": ga_iid})
+        await srv.cmd_sell(ga_mixed, {"item": ga_iid})
+        assert ga_mixed.gold == ga_payout + ga_value, ga_mixed.gold
+    finally:
+        for _id in list(srv._ground_items("smithy")):
+            if _id == ga_iid:
+                srv._remove_ground("smithy", _id)
+        (
+            ga_node["min_yield"],
+            ga_node["max_yield"],
+            ga_node["available"],
+            ga_node["respawn_at"],
+        ) = (ga_saved[2], ga_saved[3], ga_saved[0], ga_saved[1])
+        srv.get_score_entry(ga_mixed.name).pop("gathered_units", None)
+        unplayer(ga_mixed)
+    print("MIXED_SOURCE_BUYBACK_OK")
+
+    # Cheap gather items keep a 1g floor instead of becoming unsellable.
+    ga_cheap_node = srv.gather_nodes["reed_fiber_node"]
+    ga_cheap = mkplayer("CheapGatherControl", 67013, room="reed_beds")
+    ga_cheap.gold = 0
+    ga_cheap.inventory = []
+    ga_cheap_saved = (ga_cheap_node["available"], ga_cheap_node["respawn_at"])
+    ga_cheap_node["available"] = True
+    ga_cheap_node["respawn_at"] = None
+    try:
+        await srv.cmd_gather(ga_cheap, {"node": "reed_fiber"})
+        assert ga_cheap.inventory.count("reed_fiber") >= 1, ga_cheap.inventory
+        ga_cheap.room = "market"
+        await srv.cmd_sell(ga_cheap, {"item": "reed_fiber"})
+        assert ga_cheap.gold == 1, ga_cheap.gold
+    finally:
+        ga_cheap_node["available"], ga_cheap_node["respawn_at"] = ga_cheap_saved
+        srv.get_score_entry(ga_cheap.name).pop("gathered_units", None)
+        unplayer(ga_cheap)
     print("GATHER_BUYBACK_CAP_OK")
 
     # gather-by-name matches the _iname() display name, never KeyError:

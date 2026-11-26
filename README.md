@@ -111,7 +111,7 @@ TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
 
-Gathered goods sell to merchants for a quarter of their static value (at least 1 gold); loot and crafted goods still sell for full value. Station freight settles on delivery or expiry only - even a player named after the station cannot cancel or claim it.
+Units you actually harvest at a gathering node sell to merchants for a quarter of their static value (at least 1 gold). The same item id looted from an NPC, picked up off the ground, bought or crafted still sells for full value. Station freight settles on delivery or expiry only - even a player named after the station cannot cancel or claim it.
 
 ## Ammo
 

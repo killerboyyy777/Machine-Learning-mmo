@@ -4524,6 +4524,7 @@ async def _dronelang_exec_action(owner, rec, action, now):
                 )
                 qty = min(qty, _inventory_cap(owner) - _inventory_units(owner))
                 owner.inventory.extend([node["item"]] * qty)
+                _credit_gathered(owner.name, node["item"], qty)
                 await send(
                     owner,
                     {
@@ -6231,6 +6232,7 @@ async def cmd_gather(player, msg):
     # remaining space (a full pack already refused above, so >= 1 fits).
     quantity = min(quantity, _inventory_room(player))
     player.inventory.extend([node["item"]] * quantity)
+    _credit_gathered(player.name, node["item"], quantity)
     item_name = _iname(node["item"])
     await send(
         player, {"type": "message", "text": f"You gather {quantity}x {item_name}."}
@@ -6420,11 +6422,34 @@ async def cmd_buy(player, msg):
     await send(player, stats_view(player))
 
 
-# Node output is free and respawns without limit, so retail buyback on it
-# printed gold on demand. Gathered goods pay a quarter of static value;
-# loot and crafted goods keep their full buyback.
+# Node output is free and respawns without limit, so retail buyback on a
+# gathered copy printed gold on demand. Only copies the player actually
+# harvested carry the discount; loot, ground stock and bought copies settle
+# at full static value even when they share an item id.
 GATHER_BUYBACK_DIVISOR = 4
-GATHERABLE_ITEMS = frozenset(node["item"] for node in gather_nodes.values())
+
+
+def merchant_sell_value(iid, gathered=False):
+    """Gold paid for one unit; a harvested unit pays a quarter, floor 1."""
+    value = ITEM_DEFS.get(iid, {}).get("value", 1)
+    if gathered:
+        value = max(1, (value or 1) // GATHER_BUYBACK_DIVISOR)
+    return value
+
+
+def _gather_credits(name):
+    """Unsold harvest units a player holds, keyed by item id."""
+    entry = get_score_entry(name)
+    credits = entry.setdefault("gathered_units", {})
+    if not isinstance(credits, dict):
+        entry["gathered_units"] = credits = {}
+    return credits
+
+
+def _credit_gathered(name, iid, qty):
+    credits = _gather_credits(name)
+    credits[iid] = int(credits.get(iid, 0) or 0) + qty
+    mark_scores_dirty()
 
 
 async def cmd_sell(player, msg):
@@ -6436,9 +6461,13 @@ async def cmd_sell(player, msg):
     if not merchant:
         await send(player, {"type": "error", "text": "No merchant here."})
         return
-    value = ITEM_DEFS.get(iid, {}).get("value", 1)
-    if iid in GATHERABLE_ITEMS:
-        value = max(1, value // GATHER_BUYBACK_DIVISOR)
+    credits = _gather_credits(player.name)
+    held = player.inventory.count(iid)
+    gathered = int(credits.get(iid, 0) or 0) > 0 and held > 0
+    if gathered:
+        credits[iid] = max(0, min(int(credits.get(iid, 0)), held) - 1)
+        mark_scores_dirty()
+    value = merchant_sell_value(iid, gathered)
     player.inventory.remove(iid)
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
