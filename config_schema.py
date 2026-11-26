@@ -71,6 +71,12 @@ def _list(count, minimum, maximum, help_text):
     }
 
 
+def _list_upto(count, minimum, maximum, help_text):
+    spec = _list(count, minimum, maximum, help_text)
+    spec["min_count"] = 1
+    return spec
+
+
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
@@ -112,6 +118,24 @@ SERVER_SCHEMA = {
         "TAX_MINIMUM": _i(0, 10000, "Flat minimum tax per sale, in gold."),
         "TREASURY_RESERVE": _f(
             0, 1000000, "Gold the treasury banks before sinking the rest."
+        ),
+        "BANK_INTEREST_SECONDS": _i(
+            1, 604800, "Seconds between interest ticks on banked gold."
+        ),
+        "BANK_INTEREST_TRANCHE_SIZE": _i(
+            1, 1000000000, "Gold in each interest tranche."
+        ),
+        "BANK_INTEREST_RATES": _list_upto(
+            8,
+            0,
+            100,
+            "Interest percent per tranche, highest first; gold past the last tranche earns none.",
+        ),
+        "BANK_INTEREST_CAP": _i(0, 1000000, "Maximum interest paid per tick, in gold."),
+        "BANK_INTEREST_SOURCE": _i(
+            0,
+            1,
+            "0 pays interest from available treasury only; 1 mints new gold.",
         ),
         "TRAINING_DAMAGE_FRACTION": _f(
             0,
@@ -396,7 +420,10 @@ def validate(file_id, section, key, raw):
         if text.startswith("[") and text.endswith("]"):
             text = text[1:-1]
         parts = [p.strip() for p in text.split(",") if p.strip()]
-        if len(parts) != spec["count"]:
+        if "min_count" in spec:
+            if not spec["min_count"] <= len(parts) <= spec["count"]:
+                return None, f"{key} needs {spec['min_count']}-{spec['count']} numbers"
+        elif len(parts) != spec["count"]:
             return None, f"{key} needs exactly {spec['count']} numbers"
         out = []
         for part in parts:

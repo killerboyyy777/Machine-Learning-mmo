@@ -49,8 +49,10 @@ def selected(policy, env):
     return ACTIONS[policy.select(env)]
 
 
-# --- the guild verbs are appended, so pre-#591 action indices never shift ---
-assert ACTIONS[-len(GUILD_ACTIONS) :] == GUILD_ACTIONS, ACTIONS[-len(GUILD_ACTIONS) :]
+# --- the guild verbs stay in place, so pre-#591 action indices never shift ---
+tail = ACTIONS[-(len(GUILD_ACTIONS) + 2) :]
+assert tail[: len(GUILD_ACTIONS)] == GUILD_ACTIONS, tail
+assert tail[-2:] == ["bank_deposit", "bank_withdraw"], tail
 print("APPENDED_OK", len(ACTIONS))
 
 # --- deposit banks the surplus and keeps the reserve ---
