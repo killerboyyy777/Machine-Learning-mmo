@@ -59,12 +59,17 @@ class CheckpointWatcher:
             return []
         current = self._snapshot()
         previous = self._baseline
-        self._baseline = current
-        self._last_scan = now
         if previous is None:
+            self._baseline = current
+            self._last_scan = now
             return []
-        return [
+        changed = [
             (path, _hash_file(path))
             for path, meta in current.items()
             if previous.get(path) != meta
         ]
+        # Hash before committing: a transient read error must leave the change
+        # visible to the next poll instead of silencing it forever.
+        self._baseline = current
+        self._last_scan = now
+        return changed

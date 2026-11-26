@@ -498,7 +498,10 @@ class Supervisor:
             if executor is not None:
                 executor.shutdown(wait=False)
         except TypeError:
-            pass
+            # An unhashable policy has no shared-worker entry, but its task
+            # still owns a lazy executor that must die with the task.
+            if at._own_executor is not None:
+                at._own_executor.shutdown(wait=False)
 
     def _record_policy_fault(self, policy_fn, reason):
         """Count a plugin-side failure; retire the policy at the limit (#176).
@@ -798,19 +801,18 @@ class Supervisor:
         if policy_factory is not None:
             try:
                 built = policy_factory(entry.checkpoint_path, hparams or {})
-            except Exception:
-                # Only a genuine rebuild failure keeps the stored closure and
-                # hooks; a bare-policy return is not a failure.
-                policy_fn = spec[1]
-                learn_hook = spec[5]
-                reward_hook = spec[6]
-            else:
                 if callable(built):
                     # Out-of-tree factories returning a bare policy keep the
                     # spec hooks, but the rebuilt policy must be used.
                     policy_fn = built
                 else:
                     policy_fn, learn_hook, reward_hook = built
+            except Exception:
+                # A rebuild failure or a malformed return keeps the stored
+                # closure and hooks; a bare-policy return is not a failure.
+                policy_fn = spec[1]
+                learn_hook = spec[5]
+                reward_hook = spec[6]
         started = await self.start_agent(
             agent_id,
             env_factory,

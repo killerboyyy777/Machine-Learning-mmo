@@ -146,6 +146,41 @@ def test_conductor_restarts_only_matching_agents():
     print("SEAM_OK")
 
 
+def test_watcher_retries_after_transient_hash_error():
+    import ml.conductor.reload as _reload
+
+    with tempfile.TemporaryDirectory() as d:
+        ckpt = os.path.join(d, "flaky.pt")
+        _write_checkpoint(ckpt, 0.0)
+        watcher = CheckpointWatcher(d, interval=0.0)
+        assert watcher.poll() == []
+        _write_checkpoint(ckpt, _HEAVY_MARKER)
+        saved_baseline = dict(watcher._baseline)
+        real_hash = _reload._hash_file
+        calls = []
+
+        def flaky_hash(path):
+            calls.append(path)
+            raise OSError("transient read failure")
+
+        _reload._hash_file = flaky_hash
+        try:
+            try:
+                watcher.poll()
+            except OSError:
+                pass
+            else:
+                raise AssertionError("the hash error should surface")
+        finally:
+            _reload._hash_file = real_hash
+        assert watcher._baseline == saved_baseline
+        changed = watcher.poll()
+        assert len(changed) == 1, changed
+        assert os.path.normpath(changed[0][0]) == os.path.normpath(ckpt)
+        assert len(calls) == 1, calls
+    print("WATCHER_RETRY_OK")
+
+
 def test_source_guard():
     with open(SOAK_SRC, encoding="utf-8") as fh:
         src = fh.read()
@@ -159,6 +194,7 @@ if __name__ == "__main__":
     test_watcher_baseline_and_change()
     test_watcher_nested_checkpoint()
     test_watcher_interval_gate()
+    test_watcher_retries_after_transient_hash_error()
     test_conductor_restarts_only_matching_agents()
     test_source_guard()
     print("ALL_CHECKPOINT_RELOAD_OK")

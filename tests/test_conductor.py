@@ -730,6 +730,48 @@ asyncio.run(_restart_bare_factory_fallback())
 print("RESTART_BARE_FACTORY_OK")
 
 
+async def _restart_malformed_factory_fallback():
+    # A factory returning a short tuple must not abort the restart: the stored
+    # policy and hooks are the fallback for a malformed rebuild (#940).
+    r = Registry(os.path.join(tmpdir, "rstmal"), max_agents=5)
+    r.register("m1", "linear")
+    sup = Supervisor(r, max_concurrent=1)
+
+    def old_learn(p, a, rw, n, d):
+        return None
+
+    def old_reward(signals):
+        return 0.0
+
+    def old_policy(o, a):
+        return 3
+
+    def factory(ckpt, hp):
+        return (lambda o, a: 9,)  # too short to unpack
+
+    assert (
+        await sup.start_agent(
+            "m1",
+            lambda aid: _FakeEnv(),
+            old_policy,
+            learn_hook=old_learn,
+            reward_hook=old_reward,
+            policy_factory=factory,
+        )
+        is True
+    )
+    assert await sup.restart_agent("m1") is True
+    task = sup._tasks["m1"]
+    assert task.policy_fn({"obs": 0}, "m1") == 3
+    assert task.learn_hook is old_learn
+    assert task.env.reward_fn is old_reward
+    await sup.stop_all()
+
+
+asyncio.run(_restart_malformed_factory_fallback())
+print("RESTART_MALFORMED_OK")
+
+
 async def _maybe_start_check():
     import tempfile as _tf
 
