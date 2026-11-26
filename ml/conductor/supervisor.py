@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import traceback
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 import websockets
@@ -200,12 +201,15 @@ class AgentTask:
                     # agent) and retry. A disconnect is not a death, so
                     # it never escapes to the crash path below.
                     self.reconnects += 1
+                    # hash() is salted per interpreter, so the same agent
+                    # could stagger differently after a fleet restart;
+                    # CRC32 keeps the delay stable across processes (#921).
                     delay = (
                         min(
                             _RECONNECT_MAX_S,
                             _RECONNECT_BASE_S * 2 ** min(self.reconnects, 6),
                         )
-                        + (hash(self.agent_id) % 1000) / 1000.0
+                        + (zlib.crc32(self.agent_id.encode("utf-8")) % 1000) / 1000.0
                     )
                     self.last_error = (
                         f"disconnected, reconnecting in {delay:.1f}s "
