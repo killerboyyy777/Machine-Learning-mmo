@@ -5,11 +5,21 @@
 
 A small, hackable text MMORPG engine. It needs Python 3.12 or newer; CI covers 3.12 and 3.14. Rooms, NPCs, items, loot, respawns, parties, a player market, instanced dungeons, and 1v1 and 2v2 arena matches all run over WebSocket with plain JSON messages. Because the protocol is just JSON, a human, a bot, and an LLM agent look identical to the server on the game port; GM control is a separate loopback-only surface.
 
-On top sits an ML stack: a Gym-style environment with (224 obs dims, 67 actions), linear and DQN agents with curiosity and PBT, scripted baselines, a 50-agent conductor, and deterministic evaluation.
+On top sits an ML stack: a Gym-style environment with (224 obs dims, 67 actions), linear and DQN agents with curiosity, scripted baselines, a 50-agent conductor, and deterministic evaluation. Population-based training (PBT) is a conductor library API only: the shipped `soak.py` CLI does not enroll agents or report fitness, so it produces no exploit/explore rounds.
 
 > A human designs and leads this project. AI coding assistants wrote much of the implementation.
 
 ## Setup
+
+Install the released package and run the console script:
+
+```bash
+pip install small-text-mmo-engine
+small-text-mmo              # world on ws://0.0.0.0:8765
+# open http://localhost:8766/ for the live dashboard
+```
+
+Or run from a checkout:
 
 ```bash
 pip install -r requirements.txt
@@ -17,7 +27,7 @@ python3 server.py          # world on ws://0.0.0.0:8765
 # open http://localhost:8766/ for the live dashboard
 ```
 
-Run `python start.py` on any OS to start the server with a banner. Add `--roles "gather:8,dungeon:4,market:3,commissioner:2"` to also start bots. Edit `world.json` for your own rooms, NPCs, and items. The [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) covers game systems, the ML guide, and the API.
+Both paths write mutable state to the directory you launch from; see [State files](#state-files). Run `python start.py` on any OS to start the server with a banner. Add `--roles "gather:8,dungeon:4,market:3,commissioner:2"` to also start bots. Edit `world.json` for your own rooms, NPCs, and items. The [wiki](https://github.com/killerboyyy777/Machine-Learning-mmo/wiki) covers game systems, the ML guide, and the API.
 
 ## Configuration
 
@@ -26,6 +36,7 @@ Environment variables are read at startup. A boolean option is enabled by `1`, `
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `TEXTMMO_GM_SEED` | `0` | World RNG seed and starting GM treasury. Set it for reproducible runs and the live tests. |
+| `TEXTMMO_DATA_DIR` | current directory | Directory for mutable state files and their backups (`scores.json`, `arena.json`, `guilds.json`, `freight.json`, `companions.json`, `intel.json`, `market.json`, `commissions.json`). Bundled inputs (`world.json`, `server_config.json`, `ml/ml_config.json`) stay with the installed package. |
 | `TEXTMMO_GM_HOST` | `127.0.0.1` | Bind address for the GM stream on port 8767. That stream has no auth, so `0.0.0.0` opts into Docker-network reachability only; keep the port unpublished (see [SECURITY.md](SECURITY.md)). |
 | `TEXTMMO_REQUIRE_TOKEN` | off | Security-sensitive: require a login token for every account. Unset leaves the server-wide gate off, but a name with existing progress still needs a token. |
 | `TEXTMMO_ALLOW_LEGACY_TOKEN_CLAIM` | off | Security-sensitive: let an account with no stored token hash claim a token at login. Off by default; only a server that never issued tokens should enable it. |
@@ -41,7 +52,7 @@ Environment variables are read at startup. A boolean option is enabled by `1`, `
 
 ## State files
 
-The server keeps durable state in JSON files beside `server.py`. Saves go through a temporary file, and most files rotate the previous copy to a `.1` name first, so a crash mid-write cannot leave a truncated file.
+The server keeps durable state in JSON files in `TEXTMMO_DATA_DIR`, which defaults to the directory you start the server from. A pip-installed server therefore writes state to a user-writable directory, never into `site-packages`. Set `TEXTMMO_DATA_DIR` to keep runs in separate directories. Saves go through a temporary file, and most files rotate the previous copy to a `.1` name first, so a crash mid-write cannot leave a truncated file.
 
 | File | Holds | If you delete it |
 | --- | --- | --- |

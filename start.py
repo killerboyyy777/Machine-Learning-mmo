@@ -167,7 +167,8 @@ def cmd_serve(args):
             "--gm-port",
             str(args.gm_port),
         ],
-        cwd=HERE,
+        # A wheel lives in site-packages; keep mutable state in the caller's cwd.
+        cwd=os.getcwd(),
     )
     farm = None
     try:

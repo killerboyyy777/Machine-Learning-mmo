@@ -286,7 +286,7 @@ assert "updateGMCosts" in rtb, "cost labels not refreshed"
 gmsec = re.search(r"gm: \[(.*?)\n  \],", html, re.DOTALL)
 assert gmsec and "renderTreasury" in gmsec.group(1), "gm tab has no treasury section"
 assert re.search(
-    r"gmws\.onmessage[\s\S]{0,400}?tick\(\)", html
+    r"onmessage[\s\S]{0,400}?tick\(\)", gm.group(1)
 ), "GM ack does not pull a fresh tick"
 print("TREASURY_LIVE_OK")
 

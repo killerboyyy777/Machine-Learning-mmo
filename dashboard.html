@@ -3411,31 +3411,41 @@ function gmlog(text, cls) {
 }
 
 function gmOpen() {
+  // A second click during a handshake would orphan the first socket and
+  // drain its queue through the newer, still-CONNECTING socket (#1020).
+  if (gmws && gmws.readyState !== WebSocket.CLOSED &&
+      gmws.readyState !== WebSocket.CLOSING) return;
   try {
     if (!lastState) return;
     const port = (lastState.server || {}).gm_port || 8767;
     // Follow the page origin like v1 (#236): hardcoded loopback breaks
     // any non-localhost host.
     const host = location.hostname || "127.0.0.1";
-    gmws = new WebSocket(`ws://${host}:${port}`);
-    gmws.onopen = () => {
+    const ws = new WebSocket(`ws://${host}:${port}`);
+    gmws = ws;
+    ws.onopen = ev => {
+      const sock = (ev && ev.target) || ws;
+      if (sock !== gmws || sock.readyState !== WebSocket.OPEN) return;
       $("g-status").textContent = `ws: connected to ${host}:${port}`;
       $("g-status").style.color = "var(--good)";
-      for (const m of gmBuf.splice(0)) gmws.send(JSON.stringify(m));
+      for (const m of gmBuf.splice(0)) sock.send(JSON.stringify(m));
     };
-    gmws.onmessage = ev => {
+    ws.onmessage = ev => {
       try { gmlog(JSON.parse(ev.data).text || ev.data); }
       catch { gmlog(ev.data); }
       // A GM ack may have spent treasury: pull a fresh snapshot now so the
       // readout and cost labels correct within a round trip, not next poll.
       if (typeof tick === "function") tick();
     };
-    gmws.onclose = () => {
+    ws.onclose = ev => {
       $("g-status").textContent = "ws: disconnected — click a button to reconnect";
       $("g-status").style.color = "var(--bad)";
-      gmws = null;
+      if (!ev || ev.target === gmws) gmws = null;
     };
-    gmws.onerror = () => gmws && gmws.close();
+    ws.onerror = ev => {
+      const sock = (ev && ev.target) || gmws;
+      if (sock && sock === gmws) sock.close();
+    };
   } catch (e) {
     gmlog("WS error: " + e.message);
   }
@@ -3648,7 +3658,7 @@ $("themeToggle").addEventListener("click", () => {
 // Throttled poll loop (PERF): 2s visible, 10s hidden. The 1s cadence
 // re-fetched and re-rendered the world every second; nothing on this
 // dashboard goes stale meaningfully in 2s, and a background tab needs
-// almost nothing. visibilitychange reschedules immediately so returning
+// almost nothing. visibilitychange refetches immediately so returning
 // to the tab refreshes at once instead of after a stale tail.
 let pollTimer = 0;
 function schedulePoll() {
@@ -3658,7 +3668,7 @@ function schedulePoll() {
 }
 if (typeof document.addEventListener === "function") {
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && lastState) renderAll(lastState);
+    if (!document.hidden) tick();
     schedulePoll();
   });
 }
