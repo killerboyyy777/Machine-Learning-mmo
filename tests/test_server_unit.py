@@ -4199,6 +4199,33 @@ async def main():
     unplayer(prefarm)
     print("CHARM_PREFARM_OK")
 
+    # charm prefarmed into craft_pending before acceptance (#938)
+    pending_prefarm = mkplayer("PendingPreFarmer", 50030, room="town_square")
+    ppentry = srv.get_score_entry("PendingPreFarmer")
+    ppentry["craft_pending"] = [
+        {
+            "id": 9902,
+            "recipe": "guard_charm",
+            "result": srv.QUEST_CHARM_RESULT,
+            "qty": 1,
+            "notified": True,
+            "kind": "output",
+        }
+    ]
+    assert srv.QUEST_CHARM_RESULT not in pending_prefarm.inventory
+    await srv.cmd_quest(pending_prefarm, {"action": "accept", "quest": "guard_charm"})
+    assert ppentry.get("quest_guard_active")
+    await srv.cmd_craft(pending_prefarm, {"action": "collect"})
+    assert srv.QUEST_CHARM_RESULT in pending_prefarm.inventory
+    assert ppentry.get("guard_charm_crafted") is True
+    assert ppentry["craft_pending"] == []
+    inbox.clear()
+    await srv.cmd_quest(pending_prefarm, {"action": "turn_in", "quest": "guard_charm"})
+    assert not ppentry.get("quest_guard_active"), inbox[-1]
+    assert srv.QUEST_CHARM_RESULT not in pending_prefarm.inventory
+    unplayer(pending_prefarm)
+    print("CHARM_PENDING_PREFARM_OK")
+
     # bool coercion: string "false" must not enable boolean gates (#192.3)
     import json as _json
     import os as _os
