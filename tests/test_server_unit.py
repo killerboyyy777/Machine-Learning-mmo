@@ -5729,6 +5729,38 @@ async def main():
     unplayer(_oh)
     print("OVERLAP_PROGRESS_SYNC_OK")
 
+    # disjoint target fragments against one NPC shed the consumed kills (#963)
+    _dp = mkplayer("FragPoster", 65121, room="guild_hall")
+    _dp.gold = 100000
+    await srv.cmd_commission_post(
+        _dp, {"target": "rat", "required_kills": 2, "reward_gold": 10, "reward_xp": 0}
+    )
+    _rat = max(srv._commissions)
+    await srv.cmd_commission_post(
+        _dp, {"target": "giant", "required_kills": 3, "reward_gold": 10, "reward_xp": 0}
+    )
+    _giant = max(srv._commissions)
+    _dh = mkplayer("FragHunt", 65122, room="guild_hall")
+    for _ in range(3):
+        srv.record_npc_kill("FragHunt", "Giant Rat")
+    _shown = {c["id"]: c["progress"]["kills"] for c in srv._commission_snapshot()}
+    assert _shown[_rat] == 3 and _shown[_giant] == 3, _shown
+    await srv.cmd_commission_fill(_dh, {"commission_id": _rat})
+    assert srv._commissions[_rat]["status"] == "completed"
+    _verified = srv.verified_npc_kills(
+        "FragHunt", "giant", srv._commissions[_giant]["created_ts"]
+    )
+    _shown = {c["id"]: c["progress"]["kills"] for c in srv._commission_snapshot()}
+    assert _shown[_giant] == _verified == 1, (_shown, _verified)
+    inbox.clear()
+    await srv.cmd_commission_fill(_dh, {"commission_id": _giant})
+    assert inbox[-1]["type"] == "error" and "verified" in inbox[-1]["text"], inbox[-1]
+    assert srv._commissions[_giant]["status"] == "open"
+    await srv.cmd_commission_cancel(_dp, {"commission_id": _giant})
+    unplayer(_dp)
+    unplayer(_dh)
+    print("DISJOINT_FRAGMENT_PROGRESS_SYNC_OK")
+
     # guild standing integrity: poster name reserved, player cancels
     # refused, list reads mint nothing
     _gl = srv.Player(ws=FakeWS(), id=66001, name="", logged_in=False)
