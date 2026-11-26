@@ -288,10 +288,12 @@ def cmd_torch_farm(args):
     )
 
 
-def _spawn_dqn_child(name, steps, url):
+def _spawn_dqn_child(name, steps, url, pid_file=None):
     """The DQN trainer is a direct child of the worker so its exit code is
     known and its lifetime can be bounded by the worker's finally block."""
-    return subprocess.Popen(
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    child = subprocess.Popen(
         [
             PYTHON,
             os.path.join(HERE, "torch_agents", "dqn_agent.py"),
@@ -303,15 +305,24 @@ def _spawn_dqn_child(name, steps, url):
             url,
         ],
         cwd=HERE,
+        env=env,
     )
+    if pid_file:
+        try:
+            with open(pid_file, "w") as f:
+                f.write(str(child.pid))
+        except OSError:
+            pass
+    return child
 
 
 def cmd_torch_batch_worker(args):
     """One batch worker: own the DQN child, always write its exit code."""
     code = 1
     child = None
+    pid_file = args.done_file + ".pid"
     try:
-        child = _spawn_dqn_child(args.name, args.steps, args.url)
+        child = _spawn_dqn_child(args.name, args.steps, args.url, pid_file)
         code = child.wait()
     except KeyboardInterrupt:
         print()
@@ -322,6 +333,11 @@ def cmd_torch_batch_worker(args):
                 stop(child)
             except OSError:
                 pass
+        # A live child pid on disk means this worker died without reaping it.
+        try:
+            os.remove(pid_file)
+        except OSError:
+            pass
     try:
         with open(args.done_file, "w") as f:
             f.write(str(code))
@@ -357,36 +373,78 @@ def _spawn_torch_batch_worker(name, steps, done, url, log):
         )
 
 
-def _kill_process_tree(proc):
-    """Stop a worker wrapper together with the DQN child it owns."""
-    if proc is None or proc.poll() is not None:
+def _torch_group_alive(pid):
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _kill_child_by_pid(pid_file):
+    """On Windows the worker's DQN child cannot be reached through a dead
+    wrapper's process group, so the worker records its pid for this path."""
+    if not pid_file:
+        return
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        pass
+
+
+def _kill_process_tree(proc, child_pid_file=None):
+    """Stop a worker and its DQN child, even after the wrapper has exited.
+
+    A SIGKILLed wrapper leaves its child alive: POSIX keeps the isolated
+    process group, while Windows needs the child pid the worker recorded.
+    """
+    if proc is None:
         return
     pid = getattr(proc, "pid", None)
     if pid is not None:
         if os.name == "nt":
-            try:
-                subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            except OSError:
-                pass
+            if proc.poll() is None:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/T", "/F", "/PID", str(pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                except OSError:
+                    pass
+            _kill_child_by_pid(child_pid_file)
         else:
+            # Never gate killpg on proc.poll(): the group outlives its leader.
             try:
                 os.killpg(pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
             else:
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
+                deadline = time.monotonic() + 1.0
+                while _torch_group_alive(pid) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if _torch_group_alive(pid):
                     try:
                         os.killpg(pid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         pass
                     proc.wait()
+                    deadline = time.monotonic() + 1.0
+                    while _torch_group_alive(pid) and time.monotonic() < deadline:
+                        time.sleep(0.05)
     if proc.poll() is None:
         try:
             stop(proc)
@@ -485,7 +543,7 @@ def cmd_torch_batch_loop(args):
         return 0
     finally:
         for rec in procs:
-            _kill_process_tree(rec["proc"])
+            _kill_process_tree(rec["proc"], rec["done"] + ".pid")
 
 
 def parse_args(argv=None):

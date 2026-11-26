@@ -56,7 +56,7 @@ def _run_loop(rounds, on_sleep):
         created.append((name, proc, done, log))
         return proc
 
-    def fake_kill(proc):
+    def fake_kill(proc, child_pid_file=None):
         if proc.poll() is None:
             killed.append(proc)
 
@@ -106,22 +106,68 @@ def test_all_zero_markers_advance():
 
 
 def test_exited_worker_without_marker_fails_batch():
-    calls = []
+    """A wrapper killed before its marker must not strand a DQN child.
 
-    def on_sleep(created, seconds):
-        calls.append(1)
-        created[2][1].returncode = 9
-        if len(calls) > 3:
-            raise AssertionError("loop kept waiting on a dead worker")
+    A real wrapper spawns a sleeping grandchild, records its pid, then exits
+    with code 3 without writing a done marker. The loop uses the real tree
+    killer, so the descendant's death is observed, not assumed.
+    """
+    wrapper = """
+import os, subprocess, sys
+GRAND = "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)"
+subprocess.Popen([sys.executable, "-c", GRAND, sys.argv[1]])
+os._exit(3)
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        script = os.path.join(directory, "dead_wrapper.py")
+        with open(script, "w") as handle:
+            handle.write(wrapper)
+        state = {}
+        args = types.SimpleNamespace(url="ws://127.0.0.1:1", steps=1, rounds=1)
+        created = []
 
-    code, created, killed, out, err = _run_loop(1, on_sleep)
+        def fake_spawn(name, steps, done, url, log):
+            if name.endswith("_0"):
+                proc = subprocess.Popen(
+                    [sys.executable, script, done + ".pid"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **start._torch_worker_popen_kwargs(),
+                )
+                child_pid = _wait_for_pid(done + ".pid")
+                assert proc.wait(timeout=5) == 3, "wrapper should die abruptly"
+                assert _pid_alive(child_pid), "child must outlive the wrapper"
+                state.update(proc=proc, child_pid=child_pid, log=log)
+            else:
+                proc = FakePopen(900000 + len(created))
+            created.append((name, proc, done, log))
+            return proc
+
+        def fake_sleep(seconds=0.0):
+            return None
+
+        real_kill = start._kill_process_tree
+
+        def selective_kill(proc, child_pid_file=None):
+            if proc is state.get("proc"):
+                real_kill(proc, child_pid_file)
+
+        with (
+            patch.object(start, "_spawn_torch_batch_worker", fake_spawn),
+            patch.object(start, "_kill_process_tree", selective_kill),
+            patch.object(start.time, "sleep", fake_sleep),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            code = start.cmd_torch_batch_loop(args)
+
     assert code == 1, code
-    assert len(calls) == 1, calls  # surfaced on the first poll, not after a wait
-    assert len(created) == 4 and len(killed) == 3, (created, killed)
-    assert "TorchBatch0_2" in err and "exit code 9" in err, err
-    assert "without writing a done marker" in err, err
-    assert created[2][3] in err, err
-    assert "Batch 0 finished" not in out, out
+    assert len(created) == 4, created  # no second batch after the failure
+    message = err.getvalue()
+    assert "TorchBatch0_0" in message and "exit code 3" in message, message
+    assert "without writing a done marker" in message, message
+    assert state["log"] in message, message
+    assert _wait_dead(state["child_pid"]), "DQN descendant survived a dead wrapper"
     print("MISSING_MARKER_OK")
 
 
@@ -134,6 +180,29 @@ def test_ctrl_c_stops_live_workers():
     assert len(created) == 4 and len(killed) == 4, (created, killed)
     assert "Stopping loop and current agents" in out, out
     print("CTRL_C_OK")
+
+
+def test_spawn_dqn_child_records_pid_and_env():
+    with tempfile.TemporaryDirectory() as directory:
+        pid_file = os.path.join(directory, "child.pid")
+        captured = {}
+
+        class StubChild:
+            pid = 424242
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return StubChild()
+
+        with patch.object(start.subprocess, "Popen", fake_popen):
+            child = start._spawn_dqn_child("n", 4, "ws://x", pid_file)
+        assert child.pid == 424242
+        assert captured["kwargs"]["env"]["PYTHONUNBUFFERED"] == "1"
+        assert "4" in captured["args"]  # steps passed through
+        with open(pid_file) as marker:
+            assert marker.read().strip() == "424242"
+    print("DQN_CHILD_PID_OK")
 
 
 def test_worker_owns_dqn_child():
@@ -251,6 +320,7 @@ if __name__ == "__main__":
     test_all_zero_markers_advance()
     test_exited_worker_without_marker_fails_batch()
     test_ctrl_c_stops_live_workers()
+    test_spawn_dqn_child_records_pid_and_env()
     test_worker_owns_dqn_child()
     test_kill_process_tree_reaps_descendant()
     print("ALL_TORCH_BATCH_LOOP_OK")
