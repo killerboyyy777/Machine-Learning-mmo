@@ -727,13 +727,50 @@ function tabCase() {
   console.log("TAB_KEYS_OK");
 }
 
-configCase().then(geoCase).then(arenaFollowLifecycleCase).then(tabCase).then(() => {
+function activityStreamRestartCase() {
+  // A restart resets the server's activity_seq while the client still holds
+  // a high-water mark: the first post-restart frame has a lower seq and must
+  // reset the cursor, not be dropped as a duplicate (#932).
+  const sources = [];
+  sandbox.EventSource = function (url) {
+    this.url = url;
+    this.close = () => { this.closed = true; };
+    sources.push(this);
+  };
+  vm.runInContext("actMaxSeq = 9; actData = []; actSource = null; actStream()", sandbox);
+  const src = sources[sources.length - 1];
+  if (!src || src.url !== "/api/activity/stream?since=9") {
+    failed++; console.error("FAIL activity stream cursor url: " + (src && src.url));
+  }
+  const frame = seq => ({ data: JSON.stringify({
+    seq: seq, time: "t", name: "A", level: 2, cmd: "gather",
+  }) });
+  src.onmessage(frame(1));
+  if (vm.runInContext("actMaxSeq", sandbox) !== 1 ||
+      vm.runInContext("actData.length", sandbox) !== 1) {
+    failed++; console.error("FAIL activity restart frame dropped: seq=" +
+      vm.runInContext("actMaxSeq", sandbox) + " rows=" +
+      vm.runInContext("actData.length", sandbox));
+  }
+  src.onmessage(frame(2));
+  if (vm.runInContext("actMaxSeq", sandbox) !== 2 ||
+      vm.runInContext("actData.length", sandbox) !== 2) {
+    failed++; console.error("FAIL activity post-restart events dropped");
+  }
+  src.onmessage(frame(2));
+  if (vm.runInContext("actData.length", sandbox) !== 2) {
+    failed++; console.error("FAIL activity duplicate no longer deduped");
+  }
+  console.log("ACTIVITY_SSE_RESTART_OK");
+}
+
+configCase().then(geoCase).then(arenaFollowLifecycleCase).then(tabCase).then(activityStreamRestartCase).then(() => {
   if (failed) {
     console.error("PROVE_FAIL (" + failed + ")");
     process.exitCode = 1;
     return;
   }
-  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow+tabs)");
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow+tabs+activity-sse-restart)");
 }).catch(e => {
   console.error("SMOKE_THREW " + ((e && e.stack) || e));
   process.exit(1);
