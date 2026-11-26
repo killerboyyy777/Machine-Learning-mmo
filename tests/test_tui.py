@@ -1075,6 +1075,77 @@ def test_app_shell():
     print("APP_SHELL_OK")
 
 
+def test_key_reader_stop_restores_termios():
+    """#964: stop() must release the blocked read so _cbreak restores state."""
+    from tui import app as app_mod
+
+    # A socketpair fd blocks in select() on every platform, unlike a pipe fd
+    # on Windows, so the wakeup can be tested without a real terminal.
+    src, sink = socket.socketpair()
+    had_termios = app_mod.HAS_TERMIOS
+    saved_tty = getattr(app_mod, "tty", None)
+    saved_termios = getattr(app_mod, "termios", None)
+    events = []
+
+    class _FakeStream:
+        def fileno(self):
+            return src.fileno()
+
+        def isatty(self):
+            return True
+
+    class _FakeTTY:
+        @staticmethod
+        def setcbreak(fd):
+            events.append("cbreak")
+
+    class _FakeTermios:
+        TCSADRAIN = 2
+
+        @staticmethod
+        def tcsetattr(fd, when, attrs):
+            events.append("restore")
+
+    real_select = app_mod.select.select
+    waiting = threading.Event()
+
+    def traced_select(readers, writers, errors, timeout=None):
+        waiting.set()
+        return real_select(readers, writers, errors, timeout)
+
+    app_mod.HAS_TERMIOS = True
+    app_mod.tty = _FakeTTY
+    app_mod.termios = _FakeTermios
+    app_mod.select.select = traced_select
+    try:
+        reader = KeyReader(_FakeStream())
+        reader.start()
+        assert waiting.wait(2.0), "reader never reached the blocking read"
+        assert reader._thread.is_alive()
+        assert events == ["cbreak"], events
+
+        reader.stop()
+        assert (
+            not reader._thread.is_alive()
+        ), "stop() returned before the reader unwound"
+        assert events == ["cbreak", "restore"], events
+        assert reader.poll() == "quit"
+    finally:
+        app_mod.select.select = real_select
+        app_mod.HAS_TERMIOS = had_termios
+        if saved_tty is None:
+            del app_mod.tty
+        else:
+            app_mod.tty = saved_tty
+        if saved_termios is None:
+            del app_mod.termios
+        else:
+            app_mod.termios = saved_termios
+        sink.close()
+        src.close()
+    print("KEY_READER_STOP_OK")
+
+
 def test_app_extras():
     """Tabs with their own endpoint load it on entry and on refresh."""
     server, port = path_server(
@@ -1198,6 +1269,7 @@ def main():
         test_panels_plugins()
         test_all_tabs_have_panels()
         test_app_shell()
+        test_key_reader_stop_restores_termios()
         test_app_extras()
     else:
         print("PANELS_OK skipped (rich not installed)")
@@ -1216,6 +1288,7 @@ def main():
         print("PLUGINS_OK skipped (rich not installed)")
         print("TAB_PARITY_OK skipped (rich not installed)")
         print("APP_SHELL_OK skipped (rich not installed)")
+        print("KEY_READER_STOP_OK skipped (rich not installed)")
         print("APP_EXTRAS_OK skipped (rich not installed)")
     print("ALL_TUI_OK")
 
