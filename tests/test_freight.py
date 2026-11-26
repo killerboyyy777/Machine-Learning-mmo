@@ -87,13 +87,13 @@ print("POST_TAKES_GOODS_OK")
 _run(hauler, action="accept", id=rec["id"], contract_id=rec["id"])
 assert rec["state"] == "carried"
 assert hauler.gold == 50 - deposit, hauler.gold
-assert rec["hauler"] == "Hauler"
+assert rec["hauler"] == "hauler"
 print("ACCEPT_TAKES_DEPOSIT_OK", deposit)
 
 # A second hauler cannot take a contract that is already carried.
 thief = _player("Thief", ORIGIN, 50, [], pid=903)
 _run(thief, action="accept", id=rec["id"])
-assert rec["hauler"] == "Hauler", rec["hauler"]
+assert rec["hauler"] == "hauler", rec["hauler"]
 print("NO_DOUBLE_ACCEPT_OK")
 
 hauler.room = DEST

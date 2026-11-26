@@ -695,6 +695,42 @@ async function arenaFollowLifecycleCase() {
   }
 }
 
+async function arenaFollowRewatchCase() {
+  // Stop clears the DOM AND the change guard (#985). Rewatching the same
+  // still-live match fetches byte-identical HTML, which setHTML would skip.
+  const payload = {
+    match_id: "42", state: "live", round: 1,
+    scores: { team1: 1, team2: 2 },
+    teams: {
+      team1: [{ name: "A", hp: 10, rating: 5 }],
+      team2: [{ name: "B", hp: 9, rating: 6 }],
+    },
+    events: ["A hits B"],
+  };
+  sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => payload });
+  vm.runInContext('arenaFollowStart("42")', sandbox);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const panel = sandbox.document.getElementById("arenaFollow");
+  const first = panel.innerHTML;
+  if (!first.includes("A 10hp") || vm.runInContext("arenaFollowTimer", sandbox) === null) {
+    failed++; console.error("ARENA_FOLLOW_REWATCH_SETUP_FAIL");
+  }
+  for (const fn of docHandlers["click"] || []) {
+    fn({ target: { id: "arenaFollowStop", closest: () => null } });
+  }
+  if (panel.innerHTML !== "" || vm.runInContext("lastHTML.arenaFollow", sandbox) !== "") {
+    failed++; console.error("ARENA_FOLLOW_STOP_CACHE_FAIL: stop left a stale guard");
+  }
+  vm.runInContext('arenaFollowStart("42")', sandbox);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  if (panel.innerHTML !== first) {
+    failed++; console.error("ARENA_FOLLOW_REWATCH_FAIL: panel stayed empty");
+  } else {
+    console.log("ARENA_FOLLOW_REWATCH_OK");
+  }
+  vm.runInContext("arenaFollowStop()", sandbox);
+}
+
 function tabCase() {
   // Dispatch the keydown on a real tab stub: the handler walks the tabEls it
   // captured at load time, calls next.click() and next.focus(), and the click
@@ -775,13 +811,13 @@ function activityStreamRestartCase() {
   console.log("ACTIVITY_SSE_RESTART_OK");
 }
 
-configCase().then(geoCase).then(arenaFollowLifecycleCase).then(tabCase).then(activityStreamRestartCase).then(() => {
+configCase().then(geoCase).then(arenaFollowLifecycleCase).then(arenaFollowRewatchCase).then(tabCase).then(activityStreamRestartCase).then(() => {
   if (failed) {
     console.error("PROVE_FAIL (" + failed + ")");
     process.exitCode = 1;
     return;
   }
-  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow+tabs+activity-sse-restart)");
+  console.log("PROVE_OK (live+empty+idempotent+seq+sortflip+recipe+chain+readouts+steam+commissions+guilds+hover+theme+runs+config+arena-follow+arena-follow-rewatch+tabs+activity-sse-restart)");
 }).catch(e => {
   console.error("SMOKE_THREW " + ((e && e.stack) || e));
   process.exit(1);
