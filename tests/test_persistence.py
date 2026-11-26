@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
 import runlog  # noqa: E402
 import server as srv  # noqa: E402
+import torch  # noqa: E402
 from dqn_agent import TorchDQNAgent  # noqa: E402
 from ml_client import LinearQAgent  # noqa: E402
 from ml_env import N_ACTIONS, OBS_SIZE  # noqa: E402
@@ -102,6 +103,91 @@ def torch_check(folder):
     assert v and v["obs_size"] == OBS_SIZE and v["n_actions"] == N_ACTIONS, v
     assert v["git_sha"] and v["config_hash"] and v["saved_at"], v
     print("TORCH_PERSISTENCE_OK")
+
+
+def _same_torch_value(left, right):
+    if isinstance(left, dict):
+        return set(left) == set(right) and all(
+            _same_torch_value(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_torch_value(a, b) for a, b in zip(left, right)
+        )
+    if isinstance(left, torch.Tensor):
+        return torch.equal(left, right)
+    return left == right
+
+
+def _assert_torch_state_equal(agent, before):
+    """Every field the loader touches must match its pre-load value."""
+    after = agent._load_snapshot()
+    for key in ("q", "target", "optimizer", "rnd_pred", "rnd_opt"):
+        assert _same_torch_value(after[key], before[key]), key
+    for key in (
+        "rnd_mean",
+        "rnd_var",
+        "ckpt_version",
+        "t_step",
+        "learn_step",
+        "best_score",
+    ):
+        assert after[key] == before[key], key
+
+
+def torch_transactional_load_check(folder):
+    """A load that fails after the networks were applied must leave a fresh
+    agent byte-for-byte untouched (#990)."""
+    path = os.path.join(folder, "transactional.pt")
+    source = TorchDQNAgent()
+    source.q.q_head.bias.data.fill_(-4.5)
+    source.target.load_state_dict(source.q.state_dict())
+    source.save_weights(path)
+
+    agent = TorchDQNAgent()
+    # Populate optimizer and RND state so their restoration is observable.
+    for _ in range(16):
+        agent.store(
+            {
+                "state": [0.1] * OBS_SIZE,
+                "action": 0,
+                "reward": 0.0,
+                "next_state": [0.1] * OBS_SIZE,
+                "next_mask": [1] * N_ACTIONS,
+                "done": False,
+            }
+        )
+    agent.learn()
+    agent.update_rnd(torch.zeros(4, OBS_SIZE))
+    agent.q.q_head.bias.data.fill_(1.25)
+    agent.target.load_state_dict(agent.q.state_dict())
+    agent.t_step = 456
+    agent.learn_step = 17
+    agent.best_score = 89.5
+    agent._rnd_mean = 0.75
+    agent._rnd_var = 2.5
+    before = agent._load_snapshot()
+
+    # Positive control: a complete checkpoint still loads in full.
+    assert agent.load_weights(path)
+    assert torch.equal(agent.q.q_head.bias.detach(), source.q.q_head.bias.detach())
+    assert agent.t_step == 0
+    print("TORCH_TXN_SUCCESS_OK")
+
+    # Negative controls: restore the distinctive live state, then fail once
+    # the valid networks are already applied (bad optimizer, bad metadata).
+    agent._restore_load_snapshot(before)
+    good = torch.load(path, weights_only=True)
+    bad_opt = os.path.join(folder, "transactional-bad-opt.pt")
+    torch.save(dict(good, optimizer_state_dict={}), bad_opt)
+    assert not agent.load_weights(bad_opt)
+    _assert_torch_state_equal(agent, before)
+
+    bad_meta = os.path.join(folder, "transactional-bad-meta.pt")
+    torch.save(dict(good, training_steps="not-an-int"), bad_meta)
+    assert not agent.load_weights(bad_meta)
+    _assert_torch_state_equal(agent, before)
+    print("TORCH_TRANSACTIONAL_LOAD_OK")
 
 
 def runlog_check(folder):
@@ -725,6 +811,7 @@ with tempfile.TemporaryDirectory() as folder:
     linear_check(folder)
     linear_bad_checkpoint_check(folder)
     torch_check(folder)
+    torch_transactional_load_check(folder)
     runlog_check(folder)
     runlog_sendback_check(folder)
     runlog_pkg_import_check()

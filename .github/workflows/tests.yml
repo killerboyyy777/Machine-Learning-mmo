@@ -32,14 +32,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
+      - run: pip install build==1.6.1 setuptools==78.1.0
       - run: python tests/test_server_unit.py
       - run: python tests/test_quest_grind.py
       - run: python tests/test_snapshot_additions.py
       - run: python tests/test_conductor.py
+      - run: python tests/test_registry_corrupt.py
       - run: python tests/test_reward_modes.py
       - run: python tests/test_scripted_bots.py
       - run: python tests/test_pbt.py
       - run: python tests/test_curriculum.py
+      - run: python tests/test_ml_config_load.py
       - run: python tests/test_plugins.py
       - run: python tests/test_torch_plugin_slots.py
       - run: python tests/test_env_reset.py
@@ -52,8 +55,10 @@ jobs:
       - run: python tests/test_escrow_persistence.py
       - run: python tests/test_compose_packaging.py
       - run: python tests/test_training_loops.py
+      - run: python tests/test_torch_batch_loop.py
       - run: python tests/test_conductor_run.py
       - run: python tests/test_policy_exit.py
+      - run: python tests/test_policy_budget.py
       - run: python tests/test_soak_args.py
       - run: python tests/test_gm_unit.py
       - run: python tests/test_farm_resume.py
@@ -241,6 +246,7 @@ jobs:
           cat server.ci.log
           exit 1
       - run: node tests/dash2_smoke.cjs
+      - run: node tests/dashboard_regressions.cjs
       - run: python tests/dash_browser_smoke.py
       - uses: actions/upload-artifact@v7
         if: always()

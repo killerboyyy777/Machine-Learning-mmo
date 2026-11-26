@@ -171,4 +171,20 @@ assert pbt3._members["gx"]["fitness"] == 7.5
 pbt3.report("ghost", 9.0, episodes=1, vector=v)  # unknown id: safe no-op
 print("PBT_RAW_FITNESS_OK")
 
+# --- #984: docs must not advertise PBT through the shipped soak CLI ---
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_ROOT = Path(__file__).resolve().parent.parent
+_SOAK = (_ROOT / "ml" / "conductor" / "soak.py").read_text(encoding="utf-8")
+assert "--pbt" not in _SOAK
+assert not re.search(r"\bpbt\s*=", _SOAK), "soak passes pbt to Conductor"
+_README = (_ROOT / "README.md").read_text(encoding="utf-8")
+assert "with curiosity and PBT" not in _README
+assert any(
+    "PBT" in line and "soak.py" in line and "does not" in line
+    for line in _README.splitlines()
+), "README must say the soak CLI has no PBT rounds"
+print("PBT_DOC_CLAIM_OK")
+
 print("ALL_PBT_OK")
