@@ -102,6 +102,8 @@ pip install -r requirements-train.txt
 python3 torch_agents/dqn_agent.py --steps 5000   # or the PyTorch DQN
 ```
 
+Trainer CLIs reject out-of-range settings with an argparse error before opening a server connection or a run record: `--steps < 0`, `--save-every 0`, `--epsilon-decay-steps 0`, epsilon endpoints outside `[0, 1]`, `--reward-window < 1`, and `--eval-every <= 0`. Shared farms reserve a step before awaiting the environment step, so `--steps` caps total attempts across all bots; a step that loses its connection still spends its slot. The torch farm stops the remaining runners when one crashes and exits 1 for a failed run; a clean stop, Ctrl+C, and step-limit completion exit 0. Policies pass an integer action index to `TextMMOEnv.step()`; booleans are rejected.
+
 ```bash
 python3 tests/test_server_unit.py   # offline checks
 echo '{}' > scores.json
