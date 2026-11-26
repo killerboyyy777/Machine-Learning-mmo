@@ -2828,7 +2828,9 @@ document.addEventListener("click", e => {
   if (e.target.id === "arenaFollowStop") {
     arenaFollowStop();
     $("arenaFollowStatus").textContent = "";
-    $("arenaFollow").innerHTML = "";
+    // Clear the change guard too: rewatching the same match fetches the
+    // same HTML, which setHTML would otherwise skip (#985).
+    setHTML("arenaFollow", "");
   }
 });
 

@@ -75,6 +75,9 @@ def _list(count, minimum, maximum, help_text):
 # ---------------------------------------------------------------------------
 
 SERVER_SCHEMA = {
+    "limits": {
+        "MAX_PLAYERS_PER_ROOM": _i(1, 1000, "Characters allowed in one room."),
+    },
     "scoring": {
         "ACTION_WINDOW": _i(
             1, 500, "Actions scored per decision window; the agent's move horizon."
@@ -131,6 +134,15 @@ SERVER_SCHEMA = {
             0, 500, "Ammo stacks that never count against the inventory cap."
         ),
         "STARTING_GOLD": _i(0, 1000000, "Gold every new character begins with."),
+        "GROUND_ITEM_CAP": _i(
+            1, 10000, "Ground items kept per room; older drops become floor gold."
+        ),
+        "GROUND_ITEM_TTL_SECONDS": _i(
+            60, 31536000, "Seconds a ground drop stays before its value is banked."
+        ),
+        "GROUND_GOLD_CAP": _i(
+            1, 1000000000, "Gold kept in one floor pile; overflow goes to the GM bank."
+        ),
         "MOB_EXTRA_SPAWNS": _i(
             0, 20, "Extra hostile instances of each mob template (startup-only)."
         ),

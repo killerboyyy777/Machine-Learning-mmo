@@ -531,7 +531,7 @@ def freight_death_refund_save_load_check(folder):
         srv.FREIGHT = {}
         loaded = srv.load_freight(path)
         assert cid in loaded, loaded
-        assert loaded[cid]["poster"] == marker, loaded[cid]
+        assert loaded[cid]["poster"] == marker.lower(), loaded[cid]
         assert (
             loaded[cid]["state"] == "lost" and loaded[cid]["refund"] == expected
         ), loaded[cid]

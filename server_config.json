@@ -1,6 +1,10 @@
 {
   "_comment": "Server tuning overrides. Delete keys to use defaults. Restart server after changes.",
 
+  "limits": {
+    "MAX_PLAYERS_PER_ROOM": 12
+  },
+
   "scoring": {
     "ACTION_WINDOW": 20,
     "MIN_HISTORY_FOR_VARIETY": 5,
@@ -29,6 +33,9 @@
     "INVENTORY_CAP": 24,
     "AMMO_EXEMPT_COUNT": 5,
     "STARTING_GOLD": 10,
+    "GROUND_ITEM_CAP": 200,
+    "GROUND_ITEM_TTL_SECONDS": 21600,
+    "GROUND_GOLD_CAP": 100000,
     "MOB_EXTRA_SPAWNS": 1,
     "TRAINING_DAMAGE_FRACTION": 1.0
   },
