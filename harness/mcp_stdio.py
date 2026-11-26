@@ -274,6 +274,8 @@ class McpServer:
             return _error(None, -32600, "invalid request")
         request_id = request.get("id")
         has_id = "id" in request
+        if request.get("jsonrpc") != "2.0":
+            return _error(request_id, -32600, "invalid request") if has_id else None
         method = request.get("method")
         if not isinstance(method, str):
             return _error(request_id, -32600, "invalid request") if has_id else None
