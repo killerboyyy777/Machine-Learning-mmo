@@ -307,6 +307,32 @@ def test_restart_retires_unused_policy_executors():
     print("POLICY_BUDGET_RESTART_EXECUTORS_OK")
 
 
+def test_unhashable_policy_retires_its_own_executor():
+    """An unhashable closure has no shared-worker entry; its own must die."""
+
+    class Unhashable:
+        __hash__ = None
+
+        def __call__(self, obs, agent_id):
+            return 0
+
+    sup = Supervisor(FakeRegistry())
+    task = AgentTask("unhashable", FakeEnv(), Unhashable(), policy_timeout=1.0)
+    executor = task.policy_executor()
+    try:
+        executor.submit(lambda: None).result()
+    except RuntimeError:
+        raise AssertionError("executor should be alive before release")
+    sup._release_policy(task)
+    try:
+        executor.submit(lambda: None)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unhashable policy leaked its worker")
+    print("POLICY_BUDGET_UNHASHABLE_RELEASE_OK")
+
+
 def test_wedged_plugins_do_not_starve_healthy_ones():
     """More wedged calls than the loop's default pool holds leave a healthy
     agent untouched: each plugin closure owns its worker."""
@@ -454,6 +480,7 @@ test_arity_dispatch_survives_the_thread_hop()
 test_supervisor_carries_the_budget_and_its_specs()
 test_shared_policy_is_called_one_at_a_time()
 test_restart_retires_unused_policy_executors()
+test_unhashable_policy_retires_its_own_executor()
 test_wedged_plugins_do_not_starve_healthy_ones()
 test_policy_raising_timeout_is_not_a_budget_expiry()
 test_a_raising_policy_is_retired_after_the_fault_limit()
