@@ -3646,7 +3646,7 @@ def _companion_view(player):
         "defense": _companion_defense(rec),
         "passive": COMPANIONS.get(species, {}).get("passive"),
         "script_state": _companion_script_state(rec),
-        "summoned": str(player.name or "").lower() in COMPANION_SUMMONED,
+        "summoned": _summoned_companion(player.name) is not None,
     }
 
 
@@ -9764,7 +9764,7 @@ async def cmd_companion(player, msg):
                 player,
                 {
                     "type": "error",
-                    "text": "You already have a companion. Dismiss it before adopting a new one.",
+                    "text": "You already have a companion.",
                 },
             )
             return
@@ -9793,7 +9793,7 @@ async def cmd_companion(player, msg):
                 player,
                 {
                     "type": "error",
-                    "text": "You already have a companion. Dismiss it before adopting a new one.",
+                    "text": "You already have a companion.",
                 },
             )
             return
@@ -9894,6 +9894,7 @@ async def cmd_companion(player, msg):
                 "text": f"You pay {cost} gold to revive {rec['name']}{note}.",
             },
         )
+        await send(player, stats_view(player))
         return
     if action == "script":
         sub = str(msg.get("sub") or "").strip().lower()

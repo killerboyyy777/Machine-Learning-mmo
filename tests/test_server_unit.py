@@ -1726,6 +1726,15 @@ async def main():
     assert rec["downed_until"] >= down_at + srv.COMPANION_DOWNED_SECONDS - 1
     await srv.cmd_companion(comp_owner, {"action": "status"})
     assert inbox[-1]["downed"] is True
+    # #923: the downed pet still holds its summoned slot, but every report must
+    # agree that it is not currently at the owner's side.
+    assert inbox[-1]["summoned"] is False
+    assert "compowner" in srv.COMPANION_SUMMONED
+    downed_sheet = srv.stats_view(comp_owner)["companion"]
+    downed_row = next(
+        p for p in srv.world_snapshot()["players"] if p["name"] == "CompOwner"
+    )
+    assert downed_sheet["summoned"] is downed_row["companion"]["summoned"] is False
     downed_minutes = max(1, -(-srv.COMPANION_DOWNED_SECONDS // 60))
     assert (
         inbox[-1]["revive_cost"]
@@ -1738,12 +1747,19 @@ async def main():
     srv.tax_collected_lifetime = 0.0
     srv.tax_sunk_lifetime = 0.0
     srv._scores_dirty = False
+    inbox.clear()
     await srv.cmd_companion(comp_owner, {"action": "revive"})
     assert comp_owner.gold == 80, comp_owner.gold
     assert srv.tax_treasury == 20.0 and srv.tax_collected_lifetime == 20.0
     assert rec["hp"] == srv._companion_max_hp(rec) and rec["downed_until"] == 0
     assert "compowner" in srv.COMPANION_SUMMONED
     assert srv._scores_dirty is True, "revive paid gold without marking scores dirty"
+    # #924: paid revive refreshes the gold shown in stats, like summon/dismiss.
+    assert inbox[-1]["type"] == "stats" and inbox[-1]["gold"] == 80
+    inbox.clear()
+    await srv.cmd_companion(comp_owner, {"action": "revive"})
+    assert inbox[-1]["type"] == "error" and "not downed" in inbox[-1]["text"]
+    assert all(m.get("type") != "stats" for m in inbox), inbox
 
     await srv._damage_companion(comp_owner, rec, 999, "Test Brute", time.time())
     rec["downed_until"] = time.time() - 1
@@ -1833,6 +1849,14 @@ async def main():
         inbox[-1]["type"] == "error"
         and "Unknown companion species" in inbox[-1]["text"]
     )
+    # #922: dismiss only stables the pet; adoption must not promise a release
+    # that never happens, and the owned companion stays active.
+    await srv.cmd_companion(comp2, {"action": "dismiss"})
+    comp2.inventory.append("wolf_pup")
+    await srv.cmd_companion(comp2, {"action": "adopt", "species": "wolf"})
+    assert inbox[-1] == {"type": "error", "text": "You already have a companion."}
+    assert "wolf_pup" in comp2.inventory
+    assert srv._companion_active("CompAdopter") is not None
     drop_job_entry("CompAdopter", comp2)
     drop_job_entry("CompMuleOwner", comp3)
     drop_job_entry("CompSheepOwner", comp4)
