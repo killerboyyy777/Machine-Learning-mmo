@@ -1,4 +1,5 @@
 """Minimal-repro and red-team plugin tests (#624), no live server needed.
+Also covers the runlog index refusing a corrupt start time (#958).
 
 Run from the repo root:  python tests/test_repro.py
 """
@@ -7,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -20,6 +22,7 @@ from ml.repro import (  # noqa: E402
     write_repro,
 )
 from ml.plugins import REGISTRY  # noqa: E402
+from ml import runlog  # noqa: E402
 import redteam  # noqa: E402
 
 
@@ -266,7 +269,37 @@ def test_redteam_writes_retrievable_findings_to_out_dir():
     print("REDTEAM_OUT_DIR_OK")
 
 
+def test_runlog_list_runs_skips_invalid_started():
+    # A manifest with a non-numeric start used to raise inside list_runs and
+    # hide every other run from the dashboard; it must be dropped instead.
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, started in (
+            ("20260101-000000", "oops"),
+            ("20260102-000000", round(time.time() - 30, 3)),
+        ):
+            folder = os.path.join(tmp, name)
+            os.makedirs(folder)
+            with open(
+                os.path.join(folder, runlog.MANIFEST_NAME), "w", encoding="utf-8"
+            ) as fh:
+                json.dump(
+                    {
+                        "run_id": name,
+                        "kind": "dqn",
+                        "started": started,
+                        "ended": 0.0,
+                        "metrics": {},
+                    },
+                    fh,
+                )
+        runs = runlog.list_runs(tmp)
+        assert [r["run_id"] for r in runs] == ["20260102-000000"], runs
+        assert runs[0]["elapsed"] >= 0, runs
+    print("RUNLOG_BAD_STARTED_OK")
+
+
 def main():
+    test_runlog_list_runs_skips_invalid_started()
     test_compact_repro_filters_sorts_and_diffs()
     test_compact_repro_incarnation_and_max_steps()
     test_compact_repro_orders_episodes_before_steps()
