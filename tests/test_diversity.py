@@ -59,7 +59,7 @@ def test_entropy_and_collapse_fire():
 
     diverse = rows_from([0, 1, 2, 3, 4, 5, 6, 7])
     spread = summarize(diverse)
-    assert spread["top_action_share"] < spread["top_action_share"] + 1  # sanity
+    assert abs(spread["top_action_share"] - 1 / 8) < 1e-9
     assert spread["mode_collapse"] is False
     assert spread["entropy"] > summary["entropy"]
     assert abs(shannon_entropy(diverse) - 3.0) < 1e-9

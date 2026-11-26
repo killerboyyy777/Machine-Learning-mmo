@@ -116,7 +116,7 @@ async def main():
 
     # sealed below floor 1 until guards die -> fight first guard
     o, r, d, info = await e1.step(A2IDX["attack"])
-    assert "guards" not in o or True
+    assert o["is_dungeon"] == 1.0 and o["floor_norm"] == 1 / 20, o
     print("ATTACK_ENV_OK reward=", r)
 
     await e1.step(A2IDX["take"])
@@ -124,7 +124,7 @@ async def main():
     await asyncio.sleep(0.3)
     await e2.step(A2IDX["market_buy"])
     await asyncio.sleep(0.3)
-    assert e2._state.get("market_state") or True
+    assert e2._state.get("market_state"), e2._state
     await e2.step(A2IDX["market_list"])
     await asyncio.sleep(0.3)
     print(
