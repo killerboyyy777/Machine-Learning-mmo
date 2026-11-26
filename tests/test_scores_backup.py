@@ -35,25 +35,31 @@ with tempfile.TemporaryDirectory() as tmp:
         print("LOAD_EMPTY_OK")
 
         # two saves -> primary + one rotated generation with older content
-        srv.SCORES["a"] = 1
+        def payload(*names):
+            return {
+                "version": srv.SCORES_VERSION,
+                "scores": {n: srv.SCORES[n] for n in names},
+            }
+
+        srv.SCORES["a"] = {"level": 1}
         srv.save_scores()
-        assert _read(db) == {"a": 1}
+        assert _read(db) == payload("a")
         assert not os.path.exists(db + ".1")
-        srv.SCORES["b"] = 2
+        srv.SCORES["b"] = {"level": 2}
         srv.save_scores()
-        assert _read(db) == {"a": 1, "b": 2}
-        assert _read(db + ".1") == {"a": 1}
+        assert _read(db) == payload("a", "b")
+        assert _read(db + ".1") == payload("a")
         # third save rolls generations: .2 appears, .1 holds latest-old
-        srv.SCORES["c"] = 3
+        srv.SCORES["c"] = {"level": 3}
         srv.save_scores()
-        assert _read(db + ".1") == {"a": 1, "b": 2}
-        assert _read(db + ".2") == {"a": 1}
+        assert _read(db + ".1") == payload("a", "b")
+        assert _read(db + ".2") == payload("a")
         print("ROTATE_OK")
 
         # corrupt primary -> recovers from backup
         with open(db, "w") as f:
             f.write("{not json")
-        assert srv.load_scores() == {"a": 1, "b": 2}
+        assert srv.load_scores() == {"a": {"level": 1}, "b": {"level": 2}}
         print("RECOVER_OK")
 
         # A failed final replace must not leave the live path absent (#810):
