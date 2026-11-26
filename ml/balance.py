@@ -1539,13 +1539,20 @@ def _median_across(values, op):
     return statistics.median(values)
 
 
+def _guard_seed_rows(check, seed_rows):
+    """A seed with no deaths has no rate; count it as zero for the guards (#928)."""
+    for row in seed_rows:
+        if check[0] in WORST_SEED_GUARD_IDS and (
+            row["value"] is None or row["status"] == "skip"
+        ):
+            yield {**row, "value": 0.0}
+        elif row["status"] != "skip" and row["value"] is not None:
+            yield row
+
+
 def _median_row(check, seed_rows, thresholds, seeds):
     check_id, scenario, metric_name, op, _, blocking = check
-    values = [
-        row["value"]
-        for row in seed_rows
-        if row["status"] != "skip" and row["value"] is not None
-    ]
+    values = [row["value"] for row in _guard_seed_rows(check, seed_rows)]
     row = {
         "id": f"{check_id}.median",
         "scenario": scenario,
@@ -1574,9 +1581,7 @@ def _median_row(check, seed_rows, thresholds, seeds):
 
 def _worst_seed_row(check, seed_rows, seeds):
     check_id, scenario, metric_name, _, _, _ = check
-    observed = [
-        row for row in seed_rows if row["status"] != "skip" and row["value"] is not None
-    ]
+    observed = list(_guard_seed_rows(check, seed_rows))
     row = {
         "id": f"{check_id}.worst_seed",
         "scenario": scenario,
@@ -2414,6 +2419,17 @@ def cmd_evaluate(args):
     for field in REQUIRED_MEASUREMENT_FIELDS:
         if field not in measurements:
             print(f"[balance] measurement file missing {field!r}", file=sys.stderr)
+            return 2
+    for field, expected in (
+        ("meta", dict),
+        ("samples", list),
+        ("derived", dict),
+    ):
+        if not isinstance(measurements[field], expected):
+            print(
+                f"[balance] measurement field {field!r} must be {expected.__name__}",
+                file=sys.stderr,
+            )
             return 2
     profile = args.profile or (measurements.get("meta") or {}).get("profile") or "smoke"
     if profile not in PROFILES:
