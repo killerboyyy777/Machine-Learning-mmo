@@ -961,6 +961,8 @@
     "scrap_iron_node": {"room": "smithy", "item": "scrap_iron", "min_yield": 1, "max_yield": 2, "respawn_seconds": 35, "xp": 3, "score": 1},
     "salt_crystal_node": {"room": "tide_pools", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1},
     "glacier_frost_node": {"room": "glacier_crown", "item": "frost_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 60, "xp": 3, "score": 1},
-    "bluff_salt_node": {"room": "saltspray_bluff", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1}
+    "bluff_salt_node": {"room": "saltspray_bluff", "item": "salt_crystal", "min_yield": 1, "max_yield": 2, "respawn_seconds": 30, "xp": 2, "score": 1},
+    "guild_herb_node": {"room": "guild_hall", "item": "healing_herb", "min_yield": 1, "max_yield": 2, "respawn_seconds": 45, "xp": 2, "score": 1},
+    "artisan_berry_node": {"room": "artisan_row", "item": "mountain_berry", "min_yield": 1, "max_yield": 2, "respawn_seconds": 45, "xp": 2, "score": 1}
   }
 }
