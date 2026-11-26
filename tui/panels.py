@@ -1517,6 +1517,8 @@ def render_runs(snapshot, rows=ACTIVITY_ROWS, runs=None):
     """Render the runs tab: the run index with status, age, and latest metrics."""
     if not isinstance(runs, dict) or not runs:
         return Text("runs not loaded yet", style="dim italic")
+    if runs.get("error"):
+        return Text(str(runs["error"]), style="bold red")
     items = [r for r in (runs.get("runs") or []) if isinstance(r, dict)]
     return Group(
         Text("Runs", style="bold"),

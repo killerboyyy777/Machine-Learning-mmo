@@ -916,6 +916,19 @@ def test_panels_runs():
     print("RUNS_OK")
 
 
+def test_panels_runs_error():
+    """A failed /api/runs fetch shows its error, not an empty index."""
+    snap = snapshot_fixture()
+    failure = _plain(
+        render_panel("runs", snap, extras={"runs": {"error": "run log: HTTP 500"}})
+    )
+    assert "run log: HTTP 500" in failure, failure
+    assert "no runs indexed yet" not in failure, failure
+    empty = _plain(render_panel("runs", snap, extras={"runs": {"runs": []}}))
+    assert "no runs indexed yet" in empty, empty
+    print("RUNS_ERROR_OK")
+
+
 def test_panels_plugins():
     """Plugins panel (#177): admission list and refusals, never a launch."""
     snap = snapshot_fixture()
@@ -1252,6 +1265,7 @@ def main():
         test_panels_gm()
         test_panels_config()
         test_panels_runs()
+        test_panels_runs_error()
         test_panels_plugins()
         test_all_tabs_have_panels()
         test_app_shell()
@@ -1270,6 +1284,7 @@ def main():
         print("GM_OK skipped (rich not installed)")
         print("CONFIG_OK skipped (rich not installed)")
         print("RUNS_OK skipped (rich not installed)")
+        print("RUNS_ERROR_OK skipped (rich not installed)")
         print("PLUGINS_OK skipped (rich not installed)")
         print("TAB_PARITY_OK skipped (rich not installed)")
         print("APP_SHELL_OK skipped (rich not installed)")
