@@ -420,6 +420,17 @@ TAX_MINIMUM = 1
 # is the outflow the reserve exists to fund.
 TREASURY_RESERVE = 500.0
 
+# Bank vs purse (#153). The purse carries the death risk; the bank does not.
+# Funding 0 pays interest only from available treasury gold, so the feature
+# adds no faucet. Funding 1 mints, and stays opt-in for an operator who has
+# measured the sink and wants an inflationary payout.
+BANK_INTEREST_SECONDS = 21600
+BANK_INTEREST_TRANCHE_SIZE = 10000
+BANK_INTEREST_RATES = [2.0, 1.0, 0.5]
+BANK_INTEREST_CAP = 500
+BANK_INTEREST_SOURCE = 0
+BANK_ROOMS = frozenset({"town_square", "market"})
+
 # Player-market stall slots: each seller may hold this many open orders.
 # Extra slots are bought with `market_expand` for gold (fee -> treasury):
 # the n-th extra slot costs MARKET_SLOT_PRICE_BASE * 2**(n-1), so expanding
@@ -2732,7 +2743,11 @@ def get_score_entry(name):
     # Derived from the stored level: a value saved under an older XP curve
     # would otherwise keep the old threshold after XP_BASE/GROWTH change.
     entry["xp_to_next"] = xp_to_next(entry["level"])
-    entry.setdefault("gold_bank", 0)  # coin earned while offline
+    entry.setdefault("gold_bank", 0)  # safe bank balance, credited offline too
+    bank = entry["gold_bank"]
+    if not isinstance(bank, int) or isinstance(bank, bool) or bank < 0:
+        entry["gold_bank"] = 0
+        mark_scores_dirty()
     entry.setdefault("item_bank", [])  # items won while offline/pack-full
     entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
     entry.setdefault("craft_jobs", [])  # running tick-based craft jobs (#501)
@@ -3095,6 +3110,7 @@ def _command_ticks_buffs(cmd, msg):
     return (
         cmd not in NO_BUFF_TICK
         and not (cmd == "quest" and action == "list")
+        and not (cmd == "bank" and action in ("", "balance"))
         and not (cmd == "craft" and action == "status")
         and not (cmd == "guild" and action in ("", "info", "audit"))
         and not (cmd == "guild" and action == "vault" and not msg.get("op"))
@@ -3898,6 +3914,7 @@ WORLD_SEED = os.environ.get("TEXTMMO_GM_SEED", 0) or 0
 tax_treasury = float(WORLD_SEED)
 tax_collected_lifetime = 0.0
 tax_sunk_lifetime = 0.0  # gross inflow removed by the reserve sink (#403)
+_last_bank_interest_ts = time.time()
 
 # Standing-bid (buy order) fees (#158): broker fee on bid creation, relist
 # fee on bid modify, both as a percent of the (new) bid value, sunk to the
@@ -5158,6 +5175,7 @@ def stats_view(player):
         "max_hp": player.max_hp,
         "attack": player.attack,
         "gold": player.gold,
+        "bank": entry.get("gold_bank", 0) if entry else 0,
         "pack": _inventory_units(player),
         "pack_max": _inventory_cap(player),
         "equipped": _iname(player.equipped) if player.equipped else None,
@@ -5483,6 +5501,100 @@ def _treasury_credit(amount):
     if sunk:
         tax_sunk_lifetime = round(tax_sunk_lifetime + sunk, 2)
     return sunk
+
+
+def bank_interest_amount(balance):
+    """Interest due on one bank balance for a single tick, in whole gold.
+
+    Each tranche pays its rate on at most BANK_INTEREST_TRANCHE_SIZE gold.
+    Gold past the last rate earns nothing.
+    """
+    remaining = max(0, int(balance or 0))
+    gross = 0.0
+    tranche = 0
+    while remaining > 0 and tranche < len(BANK_INTEREST_RATES):
+        rate = float(BANK_INTEREST_RATES[tranche])
+        if rate <= 0:
+            break
+        part = min(remaining, BANK_INTEREST_TRANCHE_SIZE)
+        gross += part * rate / 100.0
+        remaining -= part
+        tranche += 1
+    return min(BANK_INTEREST_CAP, int(gross + 1e-9))
+
+
+def _bank_snapshot():
+    """Bank balances and interest settings for the dashboard and GM stream."""
+    balances = []
+    for p in players.values():
+        if p.logged_in and p.name:
+            balances.append(
+                {
+                    "name": p.name,
+                    "purse": p.gold,
+                    "bank": get_score_entry(p.name).get("gold_bank", 0),
+                }
+            )
+    balances.sort(key=lambda row: (-row["bank"], row["name"].lower()))
+    total = 0
+    for entry in SCORES.values():
+        value = entry.get("gold_bank", 0)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            total += value
+    return {
+        "total": total,
+        "players": balances,
+        "interest_seconds": BANK_INTEREST_SECONDS,
+        "interest_cap": BANK_INTEREST_CAP,
+        "tranche_size": BANK_INTEREST_TRANCHE_SIZE,
+        "rates": list(BANK_INTEREST_RATES),
+        "funding": "treasury" if BANK_INTEREST_SOURCE == 0 else "mint",
+        "last_tick": _last_bank_interest_ts,
+    }
+
+
+async def tick_bank_interest(now=None, force=False):
+    """Pay one interest tick from the configured source; return the payments."""
+    global _last_bank_interest_ts, tax_treasury
+    now = time.time() if now is None else now
+    if not force and now - _last_bank_interest_ts < BANK_INTEREST_SECONDS:
+        return []
+    _last_bank_interest_ts = now
+    payments = []
+    funding = "treasury" if BANK_INTEREST_SOURCE == 0 else "mint"
+    for key, entry in list(SCORES.items()):
+        balance = entry.get("gold_bank", 0)
+        if not isinstance(balance, int) or isinstance(balance, bool) or balance <= 0:
+            continue
+        due = bank_interest_amount(balance)
+        if due <= 0:
+            continue
+        paid = due
+        if BANK_INTEREST_SOURCE == 0:
+            paid = min(due, max(0, int(tax_treasury)))
+            if paid > 0:
+                tax_treasury = max(0.0, round(tax_treasury - paid, 2))
+        if paid <= 0:
+            continue
+        entry["gold_bank"] = balance + paid
+        payments.append(
+            {
+                "player": entry.get("display_name", key),
+                "amount": paid,
+                "balance": entry["gold_bank"],
+                "source": funding,
+            }
+        )
+    if payments:
+        mark_scores_dirty()
+        await broadcast_gm(
+            {
+                "type": "bank_interest",
+                "payments": payments,
+                "treasury": round(tax_treasury, 2),
+            }
+        )
+    return payments
 
 
 async def credit_gold(name, amount):
@@ -5864,10 +5976,6 @@ async def cmd_login(player, msg):
         # and hand the plaintext back so the client can persist it (#956).
         issued_token = secrets.token_urlsafe(24)
         entry["auth_token"] = hashlib.sha256(issued_token.encode("utf-8")).hexdigest()
-        mark_scores_dirty()
-    if entry.get("gold_bank", 0):
-        player.gold += entry["gold_bank"]
-        entry["gold_bank"] = 0
         mark_scores_dirty()
     banked = list(entry.get("item_bank") or [])
     if not entry.get("starting_purse_claimed"):
@@ -6593,6 +6701,108 @@ async def cmd_heal(player, msg):
             "type": "message",
             "text": f"Sister Maren lays hands on you. You feel fully healed ({HEAL_COST} gold).",
         },
+    )
+    await send(player, stats_view(player))
+
+
+async def cmd_bank(player, msg):
+    """One bank command with an action field, following the quest pattern."""
+    action = str(msg.get("action") or "balance").strip().lower()
+    entry = get_score_entry(player.name)
+    bank = entry.get("gold_bank", 0)
+    if action == "balance":
+        await send(
+            player,
+            {
+                "type": "bank",
+                "action": "balance",
+                "purse": player.gold,
+                "bank": bank,
+                "interest": bank_interest_amount(bank),
+            },
+        )
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": (
+                    f"Purse {player.gold}g, bank {bank}g. "
+                    f"Next interest up to {bank_interest_amount(bank)}g."
+                ),
+            },
+        )
+        return
+    if action not in ("deposit", "withdraw"):
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Unknown bank action. Use 'balance', 'deposit', or 'withdraw'.",
+            },
+        )
+        return
+    if player.room not in BANK_ROOMS:
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "The bank is only open in Town Square and the Market.",
+            },
+        )
+        return
+    amount = msg.get("gold")
+    if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+        await send(
+            player,
+            {"type": "error", "text": "Bank amount must be a positive whole number."},
+        )
+        return
+    if action == "deposit":
+        if amount > player.gold:
+            await send(
+                player, {"type": "error", "text": "Not enough gold in your purse."}
+            )
+            return
+        player.gold -= amount
+        entry["gold_bank"] = bank + amount
+    else:
+        if amount > bank:
+            await send(
+                player, {"type": "error", "text": "Not enough gold in your bank."}
+            )
+            return
+        entry["gold_bank"] = bank - amount
+        player.gold += amount
+    mark_scores_dirty()
+    await send(
+        player,
+        {
+            "type": "bank",
+            "action": action,
+            "amount": amount,
+            "purse": player.gold,
+            "bank": entry["gold_bank"],
+        },
+    )
+    await send(
+        player,
+        {
+            "type": "message",
+            "text": (
+                f"You {'deposited' if action == 'deposit' else 'withdrew'} {amount}g. "
+                f"Purse {player.gold}g, bank {entry['gold_bank']}g."
+            ),
+        },
+    )
+    await broadcast_gm(
+        {
+            "type": "bank_change",
+            "player": player.name,
+            "action": action,
+            "amount": amount,
+            "purse": player.gold,
+            "bank": entry["gold_bank"],
+        }
     )
     await send(player, stats_view(player))
 
@@ -10715,6 +10925,7 @@ async def cmd_help(player, msg):
             "type": "help",
             "text": (
                 "Commands: login look move attack take gather drop equip use rest heal buy sell "
+                "bank [balance|deposit|withdraw] "
                 "craft [start|status|collect|cancel] companion [summon|dismiss|status|revive|adopt|script] "
                 "commission_post commission_list commission_fill commission_cancel "
                 "guild [create|info|invite|join|leave|kick|promote|demote|disband|vault|audit|"
@@ -12310,6 +12521,14 @@ async def broadcast_all(payload):
             await send(p, payload)
 
 
+GM_STREAMS = set()
+
+
+async def broadcast_gm(payload):
+    for stream in list(GM_STREAMS):
+        await send(stream, payload)
+
+
 # --- GM stream (dedicated WebSocket port, loopback-only) ---------------
 
 
@@ -12350,6 +12569,7 @@ async def cmd_gm_tables(player, msg):
             "treasury": round(tax_treasury, 2),
             "treasury_lifetime": round(tax_collected_lifetime, 2),
             "players_online": len(players),
+            "bank": _bank_snapshot(),
             "guilds": guild_telemetry(),
             "acquisition": _acquisition_snapshot(),
             "npc_ai": _npc_ai_snapshot(),
@@ -12472,6 +12692,7 @@ async def handle_gm_connection(ws):
             pass
         return
     player = GMStream(ws)
+    GM_STREAMS.add(player)
     writer_task = asyncio.create_task(_outbound_writer(player))
     last_cmd_at = 0.0
     try:
@@ -12514,6 +12735,7 @@ async def handle_gm_connection(ws):
     except Exception:
         pass
     finally:
+        GM_STREAMS.discard(player)
         writer_task.cancel()
         try:
             await writer_task
@@ -12889,6 +13111,7 @@ ARENA_BLOCKED_COMMANDS = frozenset(
         "freight",
         "rest",
         "heal",
+        "bank",
         "use",
         "market_post",
         "market_cancel",
@@ -13574,6 +13797,7 @@ HANDLERS = {
     "use": cmd_use,
     "rest": cmd_rest,
     "heal": cmd_heal,
+    "bank": cmd_bank,
     "companion": cmd_companion,
     "buy": cmd_buy,
     "sell": cmd_sell,
@@ -13616,6 +13840,7 @@ SCORE_ARG_EXTRACTORS = {
     "sell": lambda msg: str(msg.get("item", "")).lower(),
     "rest": lambda msg: "rest",
     "heal": lambda msg: "heal",
+    "bank": lambda msg: str(msg.get("action", "")).lower(),
     "market_post": lambda msg: str(msg.get("item", "")).lower(),
     "market_buy": lambda msg: str(msg.get("id", "")).lower(),
     "market_buy_order": lambda msg: str(msg.get("item", "")).lower(),
@@ -13933,6 +14158,7 @@ def world_snapshot():
                 "wild_deaths": e.get("wild_deaths", 0),
                 "civ_deaths": e.get("civ_deaths", 0),
                 "gold": p.gold,
+                "bank": e.get("gold_bank", 0),
                 "hp": p.hp,
                 "max_hp": p.max_hp,
                 "defense": _player_defense(p),
@@ -14027,6 +14253,7 @@ def world_snapshot():
             "lost": FREIGHT_STATS["lost"],
             "deposits_forfeited": FREIGHT_STATS["deposits_forfeited"],
         },
+        "bank": _bank_snapshot(),
         "market": {
             "treasury": round(tax_treasury, 2),
             "collected_lifetime": round(tax_collected_lifetime, 2),
@@ -15733,6 +15960,7 @@ async def npc_ai_loop():
         await prune_market_orders(now)
         prune_invites(now)
         prune_ground_items(now)
+        await tick_bank_interest(now)
         await tick_craft_jobs(now)
         await tick_companions(now)
         for player in list(players.values()):
@@ -15955,10 +16183,9 @@ async def handle_connection(ws):
                 COMPANION_SUMMONED.discard(player.name.lower())
                 COMPANION_TARGETS.pop(player.name.lower(), None)
                 await _leave_party_on_disconnect(player)
-                # Carried gold is otherwise session-scoped (never written to a
-                # score entry), so a disconnect would vaporize it. Park it in
-                # gold_bank -- the same offline-holding slot the offline-seller
-                # path (credit_gold) uses -- so the next login pays it out.
+                # Carried gold is session-scoped, so a disconnect would
+                # otherwise destroy it. Park it in the bank, where offline
+                # refunds and GM grants already land, instead of the purse.
                 if player.gold > 0:
                     entry = get_score_entry(player.name)
                     entry["gold_bank"] = entry.get("gold_bank", 0) + player.gold

@@ -44,7 +44,7 @@ and delver quests, and Sister Maren's remedy and tonic quests:
     guards are spawned dynamically and aren't part of the startup vocab)
   - inventory presence over the known item catalog + unknown-inv flag
   - scalars: hp/gold/score/variety, allies, party size, level + XP progress,
-    market order count + presence, equipped-flag
+    market order count + presence, equipped-flag, banked gold
   - market-tax terms: the server's tax rate, the minimum-tax floor, and the
     exact after-tax net value of our own standing sell orders.
   - quest terms: active/ready state and giver presence for all four chains,
@@ -94,6 +94,7 @@ Actions exposed to policies (the integer indices are defined by `ACTIONS` below)
   - companion_adopt / companion_summon / companion_dismiss / companion_status
   - guild_create / guild_invite / guild_join / guild_deposit /
     guild_withdraw / guild_disband / guild_leave / guild_info
+  - bank_deposit / bank_withdraw (safe storage at the bank rooms)
 
 Two ways to use this:
   - Fresh name every reset() -> standard episodic RL (clean score=0 start
@@ -892,6 +893,11 @@ GUILD_INVITE_TTL_SECONDS = 300
 # Rank ladder: inviting and withdrawing need officer or better (server rule).
 GUILD_OUTRANK = ("leader", "officer")
 GUILD_WITHDRAW_STEP = 40
+# Bank role (#153). A reserve stays in the purse for rest, heal and shop fees,
+# and the role moves only one step per decision so a masked action cannot
+# strip the whole purse before a death.
+BANK_KEEP_PURSE = 20
+BANK_MOVE_STEP = 40
 
 ACTIONS = [f"move_{d}" for d in DIRECTIONS] + [
     "attack",
@@ -973,6 +979,9 @@ ACTIONS = [f"move_{d}" for d in DIRECTIONS] + [
     # Refresh: the server pushes guild state only when asked, so the role
     # needs one action that asks. Appended after the verbs above.
     "guild_info",
+    # Bank vs purse (#153). Appended last so earlier action indices survive.
+    "bank_deposit",
+    "bank_withdraw",
 ]
 N_ACTIONS = len(ACTIONS)
 
@@ -997,6 +1006,8 @@ STAGE3_UNLOCK = {
     "commission_fill",
     "commission_cancel",
     "market_buy_order",
+    "bank_deposit",
+    "bank_withdraw",
 }
 
 # Recipe ids the generic "craft" action may emit (kept in check so it never
@@ -1075,6 +1086,8 @@ def flatten_obs(obs):
         # Terrain flags (#424) appended last, same never-shift rule; .get so a
         # hand-built obs dict (tests) predating the flag still flattens.
         + [obs.get("wild_flag", 0.0), obs.get("indoor_flag", 0.0)]
+        # Bank balance (#153) appended last, same never-shift rule.
+        + [obs.get("bank_norm", 0.0)]
     )
 
 
@@ -1099,6 +1112,7 @@ OBS_SIZE = (
     + 2  # gear block (best ammo bonus, worn defense)
     + 1  # adaptive descent-readiness hint (#335)
     + 2  # terrain flags (#424): wild, indoor
+    + 1  # bank_norm (#153), appended last
 )
 
 
@@ -1192,6 +1206,7 @@ class TextMMOEnv:
             "hp": 0,
             "max_hp": 1,
             "gold": 0,
+            "bank": 0,
             "score": 0.0,
             "variety": 1.0,
             "level": 1,
@@ -1320,6 +1335,7 @@ class TextMMOEnv:
             self._state["hp"] = event.get("hp", self._state["hp"])
             self._state["max_hp"] = event.get("max_hp", self._state["max_hp"]) or 1
             self._state["gold"] = event.get("gold", self._state["gold"])
+            self._state["bank"] = int(event.get("bank", self._state["bank"]) or 0)
             self._state["score"] = event.get("score", self._state["score"])
             self._state["variety"] = event.get("variety", 1.0) or 1.0
             self._state["level"] = event.get("level", self._state["level"])
@@ -2866,6 +2882,25 @@ class TextMMOEnv:
             return None
         if action == "market_list":
             return {"cmd": "market_list"}
+        if action in ("bank_deposit", "bank_withdraw"):
+            if s.get("room_id") not in getattr(
+                srv, "BANK_ROOMS", ("town_square", "market")
+            ):
+                return None
+            purse = int(s.get("gold", 0) or 0)
+            bank = int(s.get("bank", 0) or 0)
+            if action == "bank_deposit":
+                amount = min(purse - BANK_KEEP_PURSE, BANK_MOVE_STEP)
+                if amount <= 0:
+                    return None
+                return {"cmd": "bank", "action": "deposit", "gold": amount}
+            if bank <= 0 or purse >= BANK_KEEP_PURSE:
+                return None
+            return {
+                "cmd": "bank",
+                "action": "withdraw",
+                "gold": min(bank, BANK_MOVE_STEP),
+            }
         if action == "market_expand":
             # Buy +1 stall slot, but only when the stall is actually full
             # and the next slot is affordable (mirrors the server's doubling
@@ -3210,11 +3245,13 @@ class TextMMOEnv:
             # Wild/indoor terrain flags (#424), orthogonal axes.
             "wild_flag": 1.0 if s.get("wild") else 0.0,
             "indoor_flag": 1.0 if s.get("shelter") else 0.0,
+            "bank_norm": min(int(s.get("bank", 0) or 0) / 200.0, 1.0),
             # Not part of flatten_obs() -- handy for debugging/logging only:
             "room_id": s["room_id"],
             "score_raw": s["score"],
             "level": s["level"],
             "gold_raw": s["gold"],
+            "bank_raw": s.get("bank", 0),
             "inv_names": list(s["inv_names"] or []),
             "quest_stage": quest_stage(
                 {

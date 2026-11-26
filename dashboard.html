@@ -350,6 +350,16 @@
     </div>
   </div>
   <div class="panel">
+    <h2>Bank</h2>
+    <div class="statrow">
+      <div class="stat"><div class="v" id="bank-total">-</div><div class="l">banked gold</div></div>
+      <div class="stat"><div class="v" id="bank-interval">-</div><div class="l">interest interval</div></div>
+      <div class="stat"><div class="v" id="bank-funding">-</div><div class="l">interest source</div></div>
+    </div>
+    <table><thead><tr><th>player</th><th>purse</th><th>bank</th></tr></thead>
+           <tbody id="bankRows"></tbody></table>
+  </div>
+  <div class="panel">
     <h2>Open sell orders (anywhere in the world)</h2>
     <div class="tscroll"><table data-sort="orders">
       <thead><tr><th>#</th><th>id</th><th>item</th><th>price</th><th>seller</th><th>posted</th></tr></thead>
@@ -1633,6 +1643,15 @@ function renderMarket(m) {
   setTrendVal("m-priceHist", prices.length ? prices[prices.length - 1] : null);
 }
 
+function renderBank(b) {
+  $("bank-total").textContent = b.total ?? 0;
+  $("bank-interval").textContent = b.interest_seconds ?? "-";
+  $("bank-funding").textContent = b.funding ?? "-";
+  setHTML("bankRows", (b.players || []).map(p => `
+    <tr><td>${esc(p.name)}</td><td>${esc(p.purse)}</td><td>${esc(p.bank)}</td></tr>`).join("") ||
+    `<tr><td colspan="3"><span class="empty">No online players.</span></td></tr>`);
+}
+
 function median(xs) {
   if (!xs.length) return null;
   const s = xs.slice().sort((a, b) => a - b);
@@ -2719,6 +2738,7 @@ const TAB_SECTIONS = {
   ],
   market: [
     ["market", s => renderMarket(s.market || {orders: [], history: []})],
+    ["bank", s => renderBank(s.bank || {})],
     ["steam", s => renderSteam(s.market || {orders: [], history: []})],
   ],
   dungeon: [

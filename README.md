@@ -5,7 +5,7 @@
 
 A small, hackable text MMORPG engine. It needs Python 3.12 or newer; CI covers 3.12 and 3.14. Rooms, NPCs, items, loot, respawns, parties, a player market, instanced dungeons, and 1v1 and 2v2 arena matches all run over WebSocket with plain JSON messages. Because the protocol is just JSON, a human, a bot, and an LLM agent look identical to the server on the game port; GM control is a separate loopback-only surface.
 
-On top sits an ML stack: a Gym-style environment with (224 obs dims, 67 actions), linear and DQN agents with curiosity, scripted baselines, a 50-agent conductor, and deterministic evaluation. Population-based training (PBT) is a conductor library API only: the shipped `soak.py` CLI does not enroll agents or report fitness, so it produces no exploit/explore rounds.
+On top sits an ML stack: a Gym-style environment with (225 obs dims, 69 actions), linear and DQN agents with curiosity, scripted baselines, a 50-agent conductor, and deterministic evaluation. Population-based training (PBT) is a conductor library API only: the shipped `soak.py` CLI does not enroll agents or report fitness, so it produces no exploit/explore rounds.
 
 > A human designs and leads this project. AI coding assistants wrote much of the implementation.
 
@@ -133,6 +133,16 @@ Common inputs come from gathering nodes in rooms without the wild flag. An herb 
 Fighter materials come only from NPC loot tables. Rat tails, wolf pelts, treant bark, troll hides, ectoplasm, serpent scales, warden trophies, glacier cores and abyssal hearts never appear on a gather node. World validation rejects a node that yields one of them.
 
 Crafting records total crafts, a count per recipe and per tier, the recipes a character discovered and the running net material value of each result. Score and XP scale with recipe tier, and the first craft of a recipe pays a one-time bonus. These counters live in scores.json with the rest of the score entry. The command, stats event and dashboard snapshot shapes are unchanged.
+
+## Bank
+
+Gold stays in the purse until a character deposits it in Town Square or the Market. `bank balance` reports both balances anywhere. `bank deposit` and `bank withdraw` take a positive whole `gold` amount and work only in those two rooms. Each command returns a `bank` event with `action`, `amount`, `purse` and `bank`, and `stats` adds a `bank` field.
+
+Death hits only the purse, which drops 40 percent as a floor pile and sinks 10 percent. Banked gold is untouched, though it still raises the score penalty for a death. Rest, heal and shop fees come from the purse, so a character with an empty purse must withdraw before buying. Gold that arrives while a character is offline, including bid refunds, commission refunds and GM grants, lands in the bank. Older scores.json entries without a bank field start at zero.
+
+Interest pays on a world tick. Each tranche pays its rate on up to `BANK_INTEREST_TRANCHE_SIZE` gold, rates come from `BANK_INTEREST_RATES`, and `BANK_INTEREST_CAP` limits the payout. Gold past the last rate earns nothing. `BANK_INTEREST_SOURCE` defaults to 0, which pays only from available treasury gold and leaves the treasury at or above zero. Set it to 1 to mint the payout. That option stays off by default because it creates new gold. The dashboard Market tab shows bank totals and the GM stream carries `bank_interest` and `bank_change` events.
+
+The ML environment reads banked gold from `stats` into the `bank_norm` observation and exposes `bank_deposit` and `bank_withdraw`. The mask checks the bank rooms, a purse reserve for fees and the bank balance.
 
 ## Ammo
 
