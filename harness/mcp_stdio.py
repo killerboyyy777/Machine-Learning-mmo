@@ -231,6 +231,9 @@ TOOLS = [
     },
 ]
 
+TOOL_BY_NAME = {tool["name"]: tool for tool in TOOLS}
+
+
 RESOURCES = [
     {
         "uri": "game://room",
@@ -283,7 +286,7 @@ class McpServer:
             return None
 
         try:
-            params = request.get("params") or {}
+            params = request.get("params", {})
             if not isinstance(params, dict):
                 raise RpcError(-32602, "params must be an object")
             if method == "initialize":
@@ -332,17 +335,26 @@ class McpServer:
 
     async def _tools_call(self, params):
         name = params.get("name")
-        arguments = params.get("arguments") or {}
-        if not isinstance(arguments, dict):
-            raise RpcError(-32602, "arguments must be an object")
+        tool = TOOL_BY_NAME.get(name) if isinstance(name, str) else None
+        if tool is None:
+            raise RpcError(-32602, f"unknown tool: {name}")
+        if "arguments" in params:
+            arguments = params["arguments"]
+            if not isinstance(arguments, dict):
+                raise RpcError(-32602, "arguments must be an object")
+        else:
+            arguments = {}
+        allowed = set(tool["inputSchema"].get("properties", {}))
+        extra = set(arguments) - allowed
+        if extra:
+            raise RpcError(
+                -32602, f"{name} has unknown arguments: {', '.join(sorted(extra))}"
+            )
         if name == "game_look":
-            if arguments:
-                raise RpcError(-32602, "game_look takes no arguments")
             envelope = await self._call("look", expect=("room",))
         elif name == "game_move":
-            extra = set(arguments) - {"dir"}
             direction = arguments.get("dir")
-            if extra or not isinstance(direction, str) or not direction.strip():
+            if not isinstance(direction, str) or not direction.strip():
                 raise RpcError(-32602, "game_move takes one non-empty 'dir'")
             envelope = await self._call(
                 "move", {"dir": direction}, expect=("room", "stats", "death")
