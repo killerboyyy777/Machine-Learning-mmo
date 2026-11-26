@@ -14,10 +14,11 @@ Config, run index/metrics for Runs, treasury/catalog for GM, and the
 admission list for Plugins (read-only, #177).
 
 Snapshot-backed panels read /api/state. Config, Runs and Plugins need
-their own one-shot payloads (/api/config, /api/runs, /api/plugins), passed
-as `extras` because the dashboard also loads them on tab entry rather than
-polling. Every panel takes `(snapshot)` and returns a rich renderable, so
-panels compose into one frame and stay testable without a terminal.
+their own payloads (/api/config, /api/runs, /api/plugins), passed as
+`extras` because the dashboard loads them outside the snapshot poll; Runs
+is refreshed on a cadence while its tab is active. Every panel takes
+`(snapshot)` and returns a rich renderable, so panels compose into one
+frame and stay testable without a terminal.
 """
 
 import time
