@@ -140,6 +140,7 @@ import time
 # world data for the observation vocab. Make the repo root importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import config_schema
 import websockets
 
 import server as srv
@@ -421,20 +422,38 @@ def _apply_ml_config():
             cfg = json.load(f)
     except (json.JSONDecodeError, OSError):
         return
+    if not isinstance(cfg, dict):
+        return
     g = globals()
-    for section in cfg.values():
+    for section_name, section in cfg.items():
         if not isinstance(section, dict):
             continue
         for key, val in section.items():
-            if key not in g:
+            spec = config_schema.field_spec("ml", section_name, key)
+            if spec is None:
                 continue
-            try:
-                g[key] = type(g[key])(val)
-            except (TypeError, ValueError) as e:
-                print(
-                    f"Warning: ml_config.json: skipping {key}={val!r} "
-                    f"({e}); keeping default {g[key]!r}"
+            if spec["type"] == "list" and not isinstance(val, (list, tuple)):
+                # A form submits bracketed strings, but a JSON list key must
+                # be a JSON list: list("[0, 10, 30, 60]") is characters.
+                error = "expected a JSON list"
+                value = None
+            else:
+                value, error = config_schema.validate(
+                    "ml",
+                    section_name,
+                    key,
+                    list(val) if isinstance(val, tuple) else val,
                 )
+            if error is not None:
+                print(
+                    f"Warning: ml_config.json: skipping "
+                    f"{section_name}.{key}={val!r} ({error}); "
+                    f"keeping default {g[key]!r}"
+                )
+                continue
+            if spec["type"] == "list" and isinstance(g[key], tuple):
+                value = tuple(value)
+            g[key] = value
 
 
 _apply_ml_config()

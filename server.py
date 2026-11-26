@@ -28,24 +28,29 @@ from os.path import abspath, dirname, join
 
 import websockets
 
+import config_schema
 from ml.modes import BaseMode, ModeContext, isolate
 
+# Mutable state must not land in site-packages for a wheel install. Bundled
+# inputs (world.json, server_config.json, ml config) stay with the package.
+DATA_DIR = abspath(os.environ.get("TEXTMMO_DATA_DIR") or os.getcwd())
+
 WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
-SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
-COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
+SCORES_FILE = join(DATA_DIR, "scores.json")
+COMPANIONS_FILE = join(DATA_DIR, "companions.json")
 # Guilds keep their own file: scores.json is a 5s flush of ephemeral entries
-# with no version gate, while a guild and its vault must survive a rollback.
-GUILDS_FILE = join(dirname(abspath(__file__)), "guilds.json")
+# with a short TTL, while a guild and its vault must survive a rollback.
+GUILDS_FILE = join(DATA_DIR, "guilds.json")
 # Intel keeps one too: bot-cadence appends must never rewrite the vault file.
-INTEL_FILE = join(dirname(abspath(__file__)), "intel.json")
-FREIGHT_FILE = join(dirname(abspath(__file__)), "freight.json")
+INTEL_FILE = join(DATA_DIR, "intel.json")
+FREIGHT_FILE = join(DATA_DIR, "freight.json")
 # Arena ratings keep one too: a ladder is durable, while scores.json evicts
 # entries on a TTL and a rating must outlive the session that earned it.
-ARENA_FILE = join(dirname(abspath(__file__)), "arena.json")
+ARENA_FILE = join(DATA_DIR, "arena.json")
 # Escrowed listings, bids and bounties outlive a score flush, so they get
 # versioned files like the vault does.
-MARKET_FILE = join(dirname(abspath(__file__)), "market.json")
-COMMISSIONS_FILE = join(dirname(abspath(__file__)), "commissions.json")
+MARKET_FILE = join(DATA_DIR, "market.json")
+COMMISSIONS_FILE = join(DATA_DIR, "commissions.json")
 MARKET_VERSION = 1
 COMMISSIONS_VERSION = 1
 
@@ -560,10 +565,13 @@ LEVEL_ATK_PER_LEVEL = 1
 # constants.  Delete a key (or the whole file) to fall back to the default.
 # ---------------------------------------------------------------------------
 CONFIG_FILE = join(dirname(abspath(__file__)), "server_config.json")
+# Legacy boolean gates predate the editor and carry no numeric bounds. They
+# are the only overrides accepted outside config_schema (#981).
+CONFIG_BOOL_KEYS = frozenset({"AUTH_TOKEN_REQUIRED"})
 
 
 def _apply_config():
-    """Load server_config.json and override matching global constants."""
+    """Load server_config.json and override schema-backed global constants."""
     if not os.path.isfile(CONFIG_FILE):
         return
     try:
@@ -578,11 +586,28 @@ def _apply_config():
         )
         return
     g = globals()
+    schema = {}
+    for section, keys in config_schema.sections("server"):
+        for key in keys:
+            schema[key] = (section, config_schema.field_spec("server", section, key))
     for section in cfg.values():
         if not isinstance(section, dict):
             continue
         for key, val in section.items():
-            if key not in g:
+            if key in CONFIG_BOOL_KEYS:
+                # bool("false") is True: parse bools explicitly so a string
+                # "false" for e.g. AUTH_TOKEN_REQUIRED doesn't enable the gate.
+                if isinstance(val, str):
+                    g[key] = val.strip().lower() in ("1", "true", "yes", "on")
+                elif isinstance(val, bool):
+                    g[key] = val
+                else:
+                    print(
+                        f"Warning: {os.path.basename(CONFIG_FILE)}: "
+                        f"skipping {key}={val!r}; keeping default {g[key]!r}"
+                    )
+                continue
+            if key not in schema or key not in g:
                 # Typo'd/wrong-nesting keys used to vanish silently (#241):
                 # warn like bad values do so operators notice.
                 print(
@@ -590,18 +615,19 @@ def _apply_config():
                     f"unknown key {key!r} ignored (check spelling/nesting)"
                 )
                 continue
-            try:
-                # bool("false") is True: parse bools explicitly so a string
-                # "false" for e.g. AUTH_TOKEN_REQUIRED doesn't enable the gate.
-                if isinstance(g[key], bool) and isinstance(val, str):
-                    g[key] = val.strip().lower() in ("1", "true", "yes", "on")
-                else:
-                    g[key] = type(g[key])(val)  # coerce to original type
-            except (TypeError, ValueError) as e:
+            # The editor's bounds are the loader's bounds too: an arbitrary
+            # global used to accept any coercible value, so a hand-edited
+            # zero room cap could lock out every login (#981).
+            value, error = config_schema.validate("server", schema[key][0], key, val)
+            if error is not None:
                 print(
                     f"Warning: {os.path.basename(CONFIG_FILE)}: "
-                    f"skipping {key}={val!r} ({e}); keeping default {g[key]!r}"
+                    f"skipping {key}={val!r} ({error}); keeping default {g[key]!r}"
                 )
+                continue
+            # The schema validates a percentage as float even when the
+            # global is an int (DEATH_ITEM_DROP_PCT); keep the global's type.
+            g[key] = type(g[key])(value)
     print(f"Config loaded from {os.path.basename(CONFIG_FILE)}")
 
 
@@ -727,8 +753,20 @@ ROOMS[DUNGEON_ENTRANCE_ROOM].setdefault("exits", {}).setdefault(
     DUNGEON_ENTRANCE_DIR, "dungeon_entrance"
 )
 
+# Ground piles grow without bound on a long-lived server (#975). Persistent
+# rooms keep only the newest GROUND_ITEM_CAP drops; tracked drops older than
+# GROUND_ITEM_TTL_SECONDS lose their slot, with their item value left on the
+# floor as gold. Dungeon floors die with their instance and need no sweep.
+GROUND_ITEM_CAP = 200
+GROUND_ITEM_TTL_SECONDS = 6 * 3600
+# A floor gold pile is one integer, but its amount still has no ceiling:
+# overflow goes to the GM bank rather than growing the broadcast forever.
+GROUND_GOLD_CAP = 100000
+
 # room_id -> list of item ids currently lying on the ground (static rooms)
 room_items = {rid: list(WORLD.get("room_items", {}).get(rid, [])) for rid in ROOMS}
+# room_id -> {item id: drop time}, for drops swept by prune_ground_items.
+ground_added_at = {rid: {} for rid in ROOMS}
 
 # Loose gold lying on the ground (death drops), room_id -> amount. Dungeon
 # rooms default to 0 via .get and vanish with their instance if destroyed.
@@ -1324,18 +1362,62 @@ def _ground_items(room_id):
     return room_items[room_id]
 
 
+def _add_floor_gold(room_id, amount):
+    """Cap a floor pile; any overflow still lives in the GM bank (#975)."""
+    global tax_treasury
+    if amount <= 0:
+        return
+    pile = room_gold.get(room_id, 0) + amount
+    room_gold[room_id] = min(pile, GROUND_GOLD_CAP)
+    if pile > GROUND_GOLD_CAP:
+        tax_treasury += pile - GROUND_GOLD_CAP
+
+
+def _ground_value_to_floor(room_id, iid):
+    """Leave an evicted item's value in the room's gold pile, never delete it."""
+    try:
+        value = max(0, int(ITEM_DEFS.get(iid, {}).get("value", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        value = 0
+    if value:
+        _add_floor_gold(room_id, value)
+
+
 def _add_ground(room_id, iid):
     d = dungeon_for_room(room_id)
-    if d:
-        d.floor(floor_from_room(room_id)).items.append(iid)
-    else:
-        room_items[room_id].append(iid)
+    ground = d.floor(floor_from_room(room_id)).items if d else room_items[room_id]
+    if len(ground) >= GROUND_ITEM_CAP:
+        evicted = ground.pop(0)
+        _ground_value_to_floor(room_id, evicted)
+        if d is None:
+            ground_added_at.get(room_id, {}).pop(evicted, None)
+    ground.append(iid)
+    if d is None:
+        ground_added_at.setdefault(room_id, {})[iid] = time.time()
 
 
 def _remove_ground(room_id, iid):
     ground = _ground_items(room_id)
     if iid in ground:
         ground.remove(iid)
+        ground_added_at.get(room_id, {}).pop(iid, None)
+
+
+def prune_ground_items(now=None):
+    """Expire tracked drops in persistent rooms, preserving their value (#975)."""
+    now = time.time() if now is None else now
+    expired = 0
+    for room_id, stamps in list(ground_added_at.items()):
+        for iid, dropped_at in list(stamps.items()):
+            if now - dropped_at < GROUND_ITEM_TTL_SECONDS:
+                continue
+            del stamps[iid]
+            ground = room_items.get(room_id, ())
+            if iid in ground:
+                _remove_ground(room_id, iid)
+                _ground_value_to_floor(room_id, iid)
+                expired += 1
+    return expired
 
 
 def gather_nodes_in_room(room_id):
@@ -1362,6 +1444,8 @@ def _room_is_risk(room_id):
 # Scoring system
 # ---------------------------------------------------------------------------
 
+SCORES_VERSION = 1
+SCORES_FILE_BLOCKED = False
 SCORES_BACKUP_GENERATIONS = 2  # rotated copies kept: scores.json.1 (+ .2)
 
 
@@ -1395,6 +1479,7 @@ def _atomic_json_write(path, payload, generations=1):
 
 
 def load_scores():
+    global SCORES_FILE_BLOCKED
     # Prefer the primary file; fall back to rotated backups so one torn
     # write or corrupt save never loses the whole world (#166).
     candidates = [SCORES_FILE] + [
@@ -1404,22 +1489,56 @@ def load_scores():
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, dict):
-                    if path != SCORES_FILE:
-                        print(
-                            f"Warning: {os.path.basename(SCORES_FILE)} missing/corrupt, "
-                            f"recovered from {os.path.basename(path)}"
-                        )
-                    return data
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             continue
+        # An unversioned file is the pre-v1 flat layout; "{}" is how a fresh
+        # server is seeded. A foreign version is left untouched (#980).
+        if (
+            not isinstance(data, dict)
+            or data.get("version", SCORES_VERSION) != SCORES_VERSION
+        ):
+            if path == SCORES_FILE:
+                SCORES_FILE_BLOCKED = True
+            print(
+                f"Warning: {os.path.basename(path)} version is not "
+                f"{SCORES_VERSION}; not loaded"
+            )
+            return {}
+        entries = data.get("scores")
+        if entries is None:
+            entries = {k: v for k, v in data.items() if k != "version"}
+        if not isinstance(entries, dict):
+            print(f"Warning: {os.path.basename(path)} entries are not an object")
+            return {}
+        loaded = {}
+        for key, entry in entries.items():
+            if not isinstance(key, str) or not key or not isinstance(entry, dict):
+                print(
+                    f"Warning: {os.path.basename(path)} skipped invalid entry {key!r}"
+                )
+                continue
+            loaded[key.lower()] = entry
+        if path != SCORES_FILE:
+            print(
+                f"Warning: {os.path.basename(SCORES_FILE)} missing/corrupt, "
+                f"recovered from {os.path.basename(path)}"
+            )
+        SCORES_FILE_BLOCKED = False
+        return loaded
     return {}
 
 
 def save_scores():
+    global SCORES_FILE_BLOCKED
+    if SCORES_FILE_BLOCKED:
+        return False
     # Serialization failures report False like I/O errors; callers must not
     # clear-dirty on failure (#373).
-    return _atomic_json_write(SCORES_FILE, SCORES, SCORES_BACKUP_GENERATIONS)
+    return _atomic_json_write(
+        SCORES_FILE,
+        {"version": SCORES_VERSION, "scores": SCORES},
+        SCORES_BACKUP_GENERATIONS,
+    )
 
 
 SCORES = load_scores()
@@ -1495,34 +1614,40 @@ def _normalize_companion_record(rec):
     if not isinstance(spec, dict):
         return None
     try:
-        level = max(1, int(rec.get("level", 1) or 1))
-    except (TypeError, ValueError):
+        level = int(rec.get("level", 1) or 1)
+    except (TypeError, ValueError, OverflowError):
         level = 1
+    # A hand-edited row used to keep a level the XP loop could never reduce.
+    level = max(1, min(COMPANION_LEVEL_CAP, level))
     max_hp = int(spec.get("base_hp", 20)) + (level - 1) * int(
         spec.get("hp_per_level", 0)
     )
     max_hp = max(1, max_hp)
     try:
-        hp = int(rec.get("hp", max_hp))
-    except (TypeError, ValueError):
-        hp = max_hp
-    hp = max(0, min(max_hp, hp))
+        hp = float(rec.get("hp", max_hp))
+    except (TypeError, ValueError, OverflowError):
+        hp = float(max_hp)
+    if not math.isfinite(hp):
+        return None
+    hp = max(0, min(max_hp, int(hp)))
     try:
         xp = float(rec.get("xp", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         xp = 0.0
     try:
         downed_until = float(rec.get("downed_until", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         downed_until = 0.0
+    try:
+        acquired_at = float(rec.get("acquired_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        acquired_at = 0.0
+    if not all(math.isfinite(v) for v in (xp, downed_until, acquired_at)):
+        return None
     if hp > 0:
         downed_until = 0.0
     elif downed_until <= 0:
         downed_until = time.time() + COMPANION_DOWNED_SECONDS
-    try:
-        acquired_at = float(rec.get("acquired_at", 0) or 0)
-    except (TypeError, ValueError):
-        acquired_at = 0.0
     name = str(rec.get("name") or spec.get("name") or species).strip()[:40]
     script = str(rec.get("script") or "")[:2000]
     return {
@@ -1817,10 +1942,20 @@ FREIGHT_FIELDS = (
 )
 
 
+def _freight_identity(name):
+    """Login, guild and market keys are lower; freight must match (#977)."""
+    return str(name or "").strip().lower()
+
+
 def _normalize_freight_record(row):
     if not isinstance(row, dict):
         return None
     rec = {key: row.get(key) for key in FREIGHT_FIELDS}
+    # Migrate rows saved before identities were normalized: mixed-case keys
+    # used to lock a relogged poster out of their own contract.
+    rec["poster"] = _freight_identity(rec.get("poster"))
+    if rec.get("hauler") is not None:
+        rec["hauler"] = _freight_identity(rec["hauler"])
     # Station consignments have no player wallet behind them, so the kind has
     # to survive a save/load or a restart would refund them to nobody.
     rec["poster_kind"] = "station" if row.get("poster_kind") == "station" else "player"
@@ -1864,10 +1999,12 @@ def load_freight(path=None):
     global FREIGHT_FILE_BLOCKED, _freight_counter
     path = path or FREIGHT_FILE
     data = None
+    loaded_from = None
     for candidate in (path, path + ".1"):
         try:
             with open(candidate, encoding="utf-8") as f:
                 data = json.load(f)
+            loaded_from = candidate
             break
         except FileNotFoundError:
             continue
@@ -1877,9 +2014,13 @@ def load_freight(path=None):
     if data is None:
         return {}
     if not isinstance(data, dict) or data.get("version") != FREIGHT_VERSION:
-        FREIGHT_FILE_BLOCKED = True
+        # Only a bad primary may veto writes; a stale backup must never stop
+        # a healthy primary from persisting (#978).
+        if loaded_from == path:
+            FREIGHT_FILE_BLOCKED = True
         print(
-            f"Warning: {os.path.basename(path)} version is not {FREIGHT_VERSION}; not loaded"
+            f"Warning: {os.path.basename(loaded_from)} version is not "
+            f"{FREIGHT_VERSION}; not loaded"
         )
         return {}
     FREIGHT_STATS.update(data.get("stats") or {})
@@ -4743,6 +4884,13 @@ async def _outbound_writer(player):
                 try:
                     await player.ws.send(msg)
                 except Exception:
+                    # Closing the socket ends handle_connection's receive
+                    # loop, so its finally releases the room and connection
+                    # slot. Returning alone left a logged-in zombie (#979).
+                    try:
+                        await player.ws.close()
+                    except Exception:
+                        pass
                     return
         except asyncio.CancelledError:
             raise
@@ -5140,7 +5288,7 @@ async def respawn_player(player):
     # between here and the old credit site vaporized `dropped` (neither on
     # the player nor on the floor).
     if dropped > 0:
-        room_gold[death_room] = room_gold.get(death_room, 0) + dropped
+        _add_floor_gold(death_room, dropped)
 
     # Item drops are zone-gated (#334): safe lands keep the gold-only rule;
     # #157 risk zones additionally scatter the unequipped pack as floor
@@ -9569,7 +9717,7 @@ def _freight_flush_refunds(player):
         if (
             rec["state"] in ("delivered", "lost", "expired")
             and rec.get("poster_kind") != "station"
-            and rec.get("poster") == player.name
+            and _freight_identity(rec.get("poster")) == _freight_identity(player.name)
         ):
             owed += int(rec.get("refund") or 0)
             rec["refund"] = 0
@@ -9640,7 +9788,7 @@ def tick_station_freight(now):
     cid = next(_freight_counter)
     FREIGHT[cid] = {
         "id": cid,
-        "poster": ROOMS.get(origin, {}).get("name", origin),
+        "poster": _freight_identity(ROOMS.get(origin, {}).get("name", origin)),
         "poster_kind": "station",
         "hauler": None,
         "origin": origin,
@@ -9784,7 +9932,8 @@ async def cmd_freight(player, msg):
     if action == "status":
         rec = _freight_find(msg.get("id", msg.get("contract_id")))
         if rec is None or (
-            rec["poster"] != player.name and rec.get("hauler") != player.name
+            _freight_identity(rec["poster"]) != _freight_identity(player.name)
+            and _freight_identity(rec.get("hauler")) != _freight_identity(player.name)
         ):
             await send(
                 player, {"type": "error", "text": "No freight contract by that id."}
@@ -9820,7 +9969,8 @@ async def cmd_freight(player, msg):
     mine = [
         rec
         for rec in FREIGHT.values()
-        if rec["poster"] == player.name or rec.get("hauler") == player.name
+        if _freight_identity(rec["poster"]) == _freight_identity(player.name)
+        or _freight_identity(rec.get("hauler")) == _freight_identity(player.name)
     ]
     lines = [f"Open freight contracts: {len(open_rows)}."]
     for rec in sorted(open_rows, key=lambda r: r["id"])[:20]:
@@ -9871,7 +10021,8 @@ async def _freight_post(player, msg):
     open_by_me = sum(
         1
         for rec in FREIGHT.values()
-        if rec["poster"] == player.name and rec["state"] in ("open", "carried")
+        if _freight_identity(rec["poster"]) == _freight_identity(player.name)
+        and rec["state"] in ("open", "carried")
     )
     if open_by_me >= FREIGHT_MAX_OPEN_PER_POSTER:
         await send(
@@ -9937,7 +10088,7 @@ async def _freight_post(player, msg):
     now = time.time()
     rec = {
         "id": cid,
-        "poster": player.name,
+        "poster": _freight_identity(player.name),
         "poster_kind": "player",
         "hauler": None,
         "origin": player.room,
@@ -9982,7 +10133,7 @@ async def _freight_accept(player, msg):
     if rec is None or rec["state"] != "open" or time.time() >= rec["expires_at"]:
         await send(player, {"type": "error", "text": "No open contract by that id."})
         return
-    if rec["poster"] == player.name:
+    if _freight_identity(rec["poster"]) == _freight_identity(player.name):
         await send(
             player, {"type": "error", "text": "You cannot haul your own freight."}
         )
@@ -10004,7 +10155,7 @@ async def _freight_accept(player, msg):
         )
         return
     player.gold -= deposit
-    rec["hauler"] = player.name
+    rec["hauler"] = _freight_identity(player.name)
     rec["state"] = "carried"
     FREIGHT_STATS["accepted"] += 1
     mark_freight_dirty()
@@ -10028,7 +10179,7 @@ async def _freight_deliver(player, msg):
     if (
         rec is None
         or rec["state"] != "carried"
-        or rec.get("hauler") != player.name
+        or _freight_identity(rec.get("hauler")) != _freight_identity(player.name)
         or time.time() >= rec["expires_at"]
     ):
         await send(player, {"type": "error", "text": "You are not hauling that."})
@@ -10089,7 +10240,9 @@ async def _freight_claim(player, msg):
             },
         )
         return
-    if rec is None or rec["poster"] != player.name:
+    if rec is None or _freight_identity(rec["poster"]) != _freight_identity(
+        player.name
+    ):
         await send(player, {"type": "error", "text": "That contract is not yours."})
         return
     if rec["state"] not in ("delivered", "expired", "lost"):
@@ -10125,7 +10278,9 @@ async def _freight_cancel(player, msg):
             },
         )
         return
-    if rec is None or rec["poster"] != player.name:
+    if rec is None or _freight_identity(rec["poster"]) != _freight_identity(
+        player.name
+    ):
         await send(player, {"type": "error", "text": "That contract is not yours."})
         return
     if rec["state"] != "open":
@@ -10160,7 +10315,9 @@ async def _freight_cancel(player, msg):
 def _freight_release_on_death(player, death_room):
     """A hauler dies holding someone else's goods: the package hits the floor."""
     for rec in list(FREIGHT.values()):
-        if rec["state"] != "carried" or rec.get("hauler") != player.name:
+        if rec["state"] != "carried" or _freight_identity(
+            rec.get("hauler")
+        ) != _freight_identity(player.name):
             continue
         items = rec.pop("items", [])
         rec["items"] = []
@@ -15472,6 +15629,7 @@ async def npc_ai_loop():
         tick_standing_bounties(now)
         await prune_market_orders(now)
         prune_invites(now)
+        prune_ground_items(now)
         await tick_craft_jobs(now)
         await tick_companions(now)
         for player in list(players.values()):
@@ -15729,6 +15887,8 @@ async def _run_resilient(task_name, coro_factory):
 async def main():
     # Reproducible world RNG for the balance gate (#754).
     random.seed(int(float(WORLD_SEED)))
+    # Atomic writes do not create parents, and an override dir may be new.
+    os.makedirs(DATA_DIR, exist_ok=True)
     log_file = os.environ.get("TEXTMMO_LOG_FILE")
     if log_file:
         _logf = open(log_file, "a", buffering=1)

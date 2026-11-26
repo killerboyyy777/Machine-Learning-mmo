@@ -4953,7 +4953,7 @@ async def main():
         _loaded = srv.load_freight(srv.FREIGHT_FILE)
         assert set(_loaded) == {_kept["id"], _lost["id"]}, _loaded
         assert _loaded[_kept["id"]]["state"] == "carried"
-        assert _loaded[_kept["id"]]["hauler"] == "HaulerA"
+        assert _loaded[_kept["id"]]["hauler"] == "haulera"
         assert _loaded[_kept["id"]]["items"] == [_items[0]]
         assert _loaded[_lost["id"]]["state"] == "lost"
         assert _loaded[_lost["id"]]["refund"] == _lost["refund"]
