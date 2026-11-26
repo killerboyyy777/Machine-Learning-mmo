@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import os
 import queue
+import socket
 import sys
 import threading
 import time
@@ -93,6 +94,13 @@ class KeyReader:
         self.queue = queue.Queue()
         self._stop = False
         self._thread = None
+        self._wake_r = None
+        self._wake_w = None
+        if self.fd is not None:
+            try:
+                self._wake_r, self._wake_w = socket.socketpair()
+            except OSError:  # pragma: no cover - platform without socketpair
+                pass
 
     @staticmethod
     def _fileno(stream):
@@ -109,6 +117,16 @@ class KeyReader:
 
     def stop(self):
         self._stop = True
+        if self._wake_w is not None:
+            try:
+                self._wake_w.send(b"\0")
+            except OSError:
+                pass
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # Bounded in case select cannot wait on this platform's stdin;
+            # where it can, the wake byte releases the read right away.
+            thread.join(timeout=2.0)
 
     def poll(self):
         """Next key name, or None when nothing is pending."""
@@ -136,6 +154,18 @@ class KeyReader:
     def _read(self, size):
         if self.fd is None:
             return self.stream.read(size)
+        if self._wake_r is not None:
+            try:
+                ready, _, _ = select.select([self.fd, self._wake_r], [], [])
+            except (OSError, ValueError):
+                pass
+            else:
+                if self._wake_r in ready:
+                    try:
+                        self._wake_r.recv(4096)
+                    except OSError:
+                        pass
+                    return ""
         try:
             return os.read(self.fd, size).decode("utf-8", "replace")
         except OSError:
