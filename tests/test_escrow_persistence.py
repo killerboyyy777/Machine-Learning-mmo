@@ -93,6 +93,7 @@ def market_invalid_row_refunds():
         path = os.path.join(d, "market.json")
         saved_scores = dict(srv.SCORES)
         saved_dirty = srv._scores_dirty
+        saved_market_dirty = srv._market_dirty
         try:
             item = _item()
             good = {
@@ -130,11 +131,15 @@ def market_invalid_row_refunds():
             assert item in srv.get_score_entry("RefundSeller")["item_bank"]
             assert srv.get_score_entry("RefundBuyer")["gold_bank"] >= 9
             assert srv._scores_dirty is True
+            assert srv._market_dirty is True
+            cleaned = _read(path)
+            assert cleaned["orders"] == [good] and cleaned["bids"] == []
             print("MARKET_INVALID_REFUND_OK")
         finally:
             srv.SCORES.clear()
             srv.SCORES.update(saved_scores)
             srv._scores_dirty = saved_dirty
+            srv._market_dirty = saved_market_dirty
 
 
 def market_version_and_backup():
@@ -211,6 +216,7 @@ def commission_invalid_and_version():
         path = os.path.join(d, "commissions.json")
         saved_scores = dict(srv.SCORES)
         saved_dirty = srv._scores_dirty
+        saved_commissions_dirty = srv._commissions_dirty
         saved_commissions = srv._commissions
         saved_counter = srv._commission_counter
         try:
@@ -233,6 +239,8 @@ def commission_invalid_and_version():
             loaded = srv.load_commissions(path)
             assert loaded == {12: row}, loaded
             assert srv.get_score_entry("EscrowPoster")["gold_bank"] >= 20
+            assert srv._commissions_dirty is True
+            assert _read(path)["commissions"] == [row]
 
             _write(path, {"version": 999, "commissions": [row]})
             assert srv.load_commissions(path) == {}
@@ -243,6 +251,7 @@ def commission_invalid_and_version():
             srv.SCORES.clear()
             srv.SCORES.update(saved_scores)
             srv._scores_dirty = saved_dirty
+            srv._commissions_dirty = saved_commissions_dirty
             srv._commissions = saved_commissions
             srv._commission_counter = saved_counter
 
@@ -318,6 +327,84 @@ def guild_transfer_round_trip():
             ) = saved
 
 
+def no_double_refund_after_crash():
+    """A score flush before a crash must not pay invalid-row escrow twice."""
+    with tempfile.TemporaryDirectory() as d:
+        market_path = os.path.join(d, "market.json")
+        commission_path = os.path.join(d, "commissions.json")
+        saved_scores = dict(srv.SCORES)
+        saved_dirty = srv._scores_dirty
+        saved_market_dirty = srv._market_dirty
+        saved_commission_dirty = srv._commissions_dirty
+        item = _item()
+        bad_ask = {
+            "id": 2,
+            "seller": "CrashSeller",
+            "item": item,
+            "price": 0,
+            "ts": 1.0,
+        }
+        bad_bid = {
+            "id": 3,
+            "buyer": "CrashBuyer",
+            "item": item,
+            "price": 9,
+            "ts": "bad timestamp",
+        }
+        bad_commission = {
+            "id": 4,
+            "poster": "CrashPoster",
+            "target": "rat",
+            "required_kills": 1,
+            "reward_gold": 11,
+            "reward_xp": 0,
+            "escrow": 11,
+            "status": "bogus",
+            "created_ts": 1.0,
+        }
+        _write(
+            market_path,
+            {"version": srv.MARKET_VERSION, "orders": [bad_ask], "bids": [bad_bid]},
+        )
+        _write(
+            commission_path,
+            {"version": srv.COMMISSIONS_VERSION, "commissions": [bad_commission]},
+        )
+        try:
+            # First start: the source rows are cleaned on disk before the
+            # refunds reach SCORES.
+            assert srv.load_market(market_path) == ([], [])
+            assert srv.load_commissions(commission_path) == {}
+            assert srv._scores_dirty is True
+            seller = srv.get_score_entry("CrashSeller")["item_bank"]
+            buyer = srv.get_score_entry("CrashBuyer")["gold_bank"]
+            poster = srv.get_score_entry("CrashPoster")["gold_bank"]
+            assert seller.count(item) == 1, seller
+            assert buyer == 9, buyer
+            assert poster == 11, poster
+            assert _read(market_path)["orders"] == []
+            assert _read(market_path)["bids"] == []
+            assert _read(commission_path)["commissions"] == []
+
+            # Crash after the 5s score flush, before any other save.
+            srv._scores_dirty = False
+
+            # Next start: no source rows remain, so no second refund.
+            assert srv.load_market(market_path) == ([], [])
+            assert srv.load_commissions(commission_path) == {}
+            assert srv._scores_dirty is False
+            assert srv.get_score_entry("CrashSeller")["item_bank"].count(item) == 1
+            assert srv.get_score_entry("CrashBuyer")["gold_bank"] == 9
+            assert srv.get_score_entry("CrashPoster")["gold_bank"] == 11
+            print("NO_DOUBLE_REFUND_AFTER_CRASH_OK")
+        finally:
+            srv.SCORES.clear()
+            srv.SCORES.update(saved_scores)
+            srv._scores_dirty = saved_dirty
+            srv._market_dirty = saved_market_dirty
+            srv._commissions_dirty = saved_commission_dirty
+
+
 def save_loops_flush():
     async def run():
         with tempfile.TemporaryDirectory() as d:
@@ -389,5 +476,6 @@ if __name__ == "__main__":
     commission_round_trip()
     commission_invalid_and_version()
     guild_transfer_round_trip()
+    no_double_refund_after_crash()
     save_loops_flush()
     print("ALL_ESCROW_PERSISTENCE_OK")

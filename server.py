@@ -3547,6 +3547,13 @@ def _refund_market_row(row, owner_key):
             mark_scores_dirty()
 
 
+def _save_market_rows(path, orders, bids):
+    return _atomic_json_write(
+        path,
+        {"version": MARKET_VERSION, "orders": orders, "bids": bids},
+    )
+
+
 def load_market(path=None):
     global _id_counter
     path = path or MARKET_FILE
@@ -3555,6 +3562,7 @@ def load_market(path=None):
     if data is None:
         return orders, bids
     seen = set()
+    invalid = []
     for key, owner_key, target in (
         ("orders", "seller", orders),
         ("bids", "buyer", bids),
@@ -3564,10 +3572,22 @@ def load_market(path=None):
             continue
         for row in rows:
             if not _valid_market_row(row, owner_key, seen):
-                _refund_market_row(row, owner_key)
+                invalid.append((row, owner_key))
                 continue
             seen.add(row["id"])
             target.append(row)
+    if invalid:
+        # Drop the bad rows on disk before banking their escrow: a crash
+        # after a score flush must not pay the same refund twice.
+        if _save_market_rows(path, orders, bids):
+            for row, owner_key in invalid:
+                _refund_market_row(row, owner_key)
+            mark_market_dirty()
+        else:
+            print(
+                f"Warning: could not clean {os.path.basename(path)}; "
+                "escrow left in place, not refunded"
+            )
     if seen:
         current = next(_id_counter)
         _id_counter = itertools.count(max(current, max(seen)) + 1)
@@ -3576,10 +3596,7 @@ def load_market(path=None):
 
 def save_market(path=None):
     path = path or MARKET_FILE
-    return _atomic_json_write(
-        path,
-        {"version": MARKET_VERSION, "orders": market_orders, "bids": market_bids},
-    )
+    return _save_market_rows(path, market_orders, market_bids)
 
 
 def _valid_commission_row(row, cid):
@@ -3616,6 +3633,12 @@ def _refund_commission_row(row):
     mark_scores_dirty()
 
 
+def _save_commission_rows(path, rows):
+    return _atomic_json_write(
+        path, {"version": COMMISSIONS_VERSION, "commissions": rows}
+    )
+
+
 def load_commissions(path=None):
     global _commission_counter
     path = path or COMMISSIONS_FILE
@@ -3627,6 +3650,7 @@ def load_commissions(path=None):
     if not isinstance(rows, list):
         return {}
     loaded = {}
+    invalid = []
     for row in rows:
         cid = row.get("id") if isinstance(row, dict) else None
         if (
@@ -3635,19 +3659,27 @@ def load_commissions(path=None):
             or cid in loaded
             or not _valid_commission_row(row, cid)
         ):
-            _refund_commission_row(row)
+            invalid.append(row)
             continue
         loaded[cid] = row
+    if invalid:
+        clean = list(loaded.values())
+        if _save_commission_rows(path, clean):
+            for row in invalid:
+                _refund_commission_row(row)
+            mark_commissions_dirty()
+        else:
+            print(
+                f"Warning: could not clean {os.path.basename(path)}; "
+                "escrow left in place, not refunded"
+            )
     _commission_counter = itertools.count(max(loaded, default=0) + 1)
     return loaded
 
 
 def save_commissions(path=None):
     path = path or COMMISSIONS_FILE
-    return _atomic_json_write(
-        path,
-        {"version": COMMISSIONS_VERSION, "commissions": list(_commissions.values())},
-    )
+    return _save_commission_rows(path, list(_commissions.values()))
 
 
 _market_dirty = False
