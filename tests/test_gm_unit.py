@@ -113,6 +113,22 @@ async def main():
         assert inbox[-1]["type"] == "error", inbox[-1]
         print("GM_GOLD_NO_TARGET_OK")
 
+        # --- bad gold target: reject before debit; valid gold debits once ----
+        before = srv.tax_treasury
+        rich_gold = rich.gold
+        for bad in (4242, ""):
+            await srv.cmd_gm_reward(gm, {"gold": 50, "player": bad})
+            assert srv.tax_treasury == before, (bad, before, srv.tax_treasury)
+            assert inbox[-1]["type"] == "error", (bad, inbox[-1])
+            assert "player" in inbox[-1].get("text", "").lower(), (bad, inbox[-1])
+        assert rich.gold == rich_gold, rich.gold
+        assert "4242" not in srv.SCORES, srv.SCORES.get("4242")
+        await srv.cmd_gm_reward(gm, {"gold": 7, "player": "OnceTarget"})
+        assert srv.tax_treasury == round(before - 7, 2), (before, srv.tax_treasury)
+        assert srv.get_score_entry("OnceTarget")["gold_bank"] == 7
+        srv.SCORES.pop("oncetarget", None)
+        print("GM_GOLD_BAD_TARGET_OK")
+
         # --- unknown item: failure debits nothing ---
         before = srv.tax_treasury
         await srv.cmd_gm_reward(gm, {"item": "no_such_thing_xyz", "player": "Paid1"})

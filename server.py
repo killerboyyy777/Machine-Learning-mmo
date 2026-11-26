@@ -11244,11 +11244,14 @@ async def cmd_gm_reward(player, msg):
             )
             return
         target = msg.get("player", "")
-        if not target:
-            # No one to pay: fail before spending, not after.
+        if not isinstance(target, str) or not target.strip():
+            # Non-string names crash find_player_anywhere after the debit.
             await send(
                 player,
-                {"type": "error", "text": "gm_reward needs a 'player' for gold."},
+                {
+                    "type": "error",
+                    "text": "gm_reward needs a non-empty string 'player' for gold.",
+                },
             )
             return
         if not await _spend_tax(player, gold, f"reward {gold}g"):
