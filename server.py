@@ -1288,6 +1288,8 @@ async def prune_market_orders(now=None):
             continue
         market_orders.remove(o)
         in_pack = _deliver_item_or_bank(seller, o["item"])
+        if o.get("gathered"):
+            _credit_gathered(seller.name, o["item"], 1)
         mark_scores_dirty()
         pruned += 1
         name = ITEM_DEFS.get(o["item"], {}).get("name", o["item"])
@@ -1979,6 +1981,7 @@ FREIGHT_FIELDS = (
     "refund",
     "delivered_at",
     "lost_at",
+    "gathered_items",
 )
 
 
@@ -2018,6 +2021,12 @@ def _normalize_freight_record(row):
     if not isinstance(items, list):
         return None
     rec["items"] = [str(iid) for iid in items if isinstance(iid, str)]
+    gathered = rec.get("gathered_items")
+    rec["gathered_items"] = (
+        [iid for iid in gathered if isinstance(iid, str) and iid in rec["items"]]
+        if isinstance(gathered, list)
+        else []
+    )
     # Empty items belong to a terminal row with a refund owed to an offline
     # poster, or to a station delivery whose goods landed on arrival.
     if not rec["items"] and not (
@@ -10112,6 +10121,7 @@ def tick_station_freight(now):
         "refund": 0,
         "delivered_at": 0.0,
         "lost_at": 0.0,
+        "gathered_items": [],
     }
     FREIGHT_STATS["station_posted"] = FREIGHT_STATS.get("station_posted", 0) + 1
     mark_freight_dirty()
@@ -10391,7 +10401,10 @@ async def _freight_post(player, msg):
             },
         )
         return
+    gathered_items = []
     for iid in package:
+        if int(_gather_credits(player.name).get(iid, 0) or 0) > 0:
+            gathered_items.append(iid)
         player.inventory.remove(iid)
         _spend_gathered(player, iid)
     player.gold -= up_front
@@ -10415,6 +10428,7 @@ async def _freight_post(player, msg):
         "refund": 0,
         "delivered_at": 0.0,
         "lost_at": 0.0,
+        "gathered_items": gathered_items,
     }
     FREIGHT[cid] = rec
     FREIGHT_STATS["posted"] += 1
@@ -10603,8 +10617,12 @@ async def _freight_cancel(player, msg):
             },
         )
         return
+    gathered_items = list(rec.get("gathered_items") or [])
     for iid in rec["items"]:
         _deliver_item_or_bank(player, iid)
+        if iid in gathered_items:
+            gathered_items.remove(iid)
+            _credit_gathered(player.name, iid, 1)
     player.gold += rec["fee"] + int(rec.get("bonus") or 0)
     del FREIGHT[rec["id"]]
     FREIGHT_STATS["cancelled"] += 1
@@ -11723,6 +11741,7 @@ async def cmd_market_post(player, msg):
             },
         )
         return
+    gathered = int(_gather_credits(player.name).get(iid, 0) or 0) > 0
     player.inventory.remove(iid)
     _spend_gathered(player, iid)
     if player.equipped == iid and iid not in player.inventory:
@@ -11738,6 +11757,7 @@ async def cmd_market_post(player, msg):
         "item": iid,
         "price": price,
         "ts": time.time(),
+        "gathered": gathered,
     }
     market_orders.append(ask)
     mark_scores_dirty()
@@ -11795,6 +11815,8 @@ async def cmd_market_cancel(player, msg):
         if o["id"] == oid and o["seller"].lower() == player.name.lower():
             market_orders.remove(o)
             in_pack = _deliver_item_or_bank(player, o["item"])
+            if o.get("gathered"):
+                _credit_gathered(o["seller"], o["item"], 1)
             mark_scores_dirty()
             mark_market_dirty()
             if in_pack:
