@@ -128,7 +128,7 @@ Units you actually harvest at a gathering node sell to merchants for a quarter o
 
 ## Crafting economy
 
-Common inputs come from gathering nodes in rooms without the wild flag. An herb node in the Adventurers Guild hall and a berry patch on Artisan Row give characters that never fight a renewable supply for bandages, field rations and tonics. Each node yields at most two units and respawns on a 45 second timer. Harvested units settle at the quarter buyback, so the nodes add no gold at the merchant.
+Common inputs come from gathering nodes in rooms without the wild flag. An herb node in the Adventurers Guild hall and a berry patch on Artisan Row yield healing herbs and mountain berries for characters that avoid combat. These feed recipes such as blood arrows, field rations and fortitude tonics, though some recipes still need combat inputs such as rat tails. Each node yields one or two units and respawns on a 45 second timer, and a mule companion adds one more unit. Harvested units settle at the quarter buyback, so the nodes add no gold at the merchant.
 
 Fighter materials come only from NPC loot tables. Rat tails, wolf pelts, treant bark, troll hides, ectoplasm, serpent scales, warden trophies, glacier cores and abyssal hearts never appear on a gather node. World validation rejects a node that yields one of them.
 
