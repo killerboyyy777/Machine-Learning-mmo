@@ -6231,6 +6231,9 @@ async def _deliver_craft_pending(player, entry=None):
             qty = 1
         taken = min(qty, room)
         player.inventory.extend([item["result"]] * taken)
+        # A charm crafted before acceptance reaches the pack only here, so the
+        # hint must run on delivery or turn-in stays soft-locked (#938).
+        await _craft_quest_hint(entry, item["result"], player)
         output_text = _craft_output_text(item["result"], taken)
         job_id = item.get("id")
         if item.get("kind") == "refund":
