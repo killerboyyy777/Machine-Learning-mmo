@@ -5674,6 +5674,32 @@ async def main():
     unplayer(_sh)
     print("PROGRESS_SYNC_OK")
 
+    # overlapping target fragments shed the same consumed kills (#945)
+    _op = mkplayer("OverlapPoster", 65111, room="guild_hall")
+    _op.gold = 100000
+    await srv.cmd_commission_post(
+        _op,
+        {"target": "giant rat", "required_kills": 3, "reward_gold": 10, "reward_xp": 0},
+    )
+    _long = max(srv._commissions)
+    await srv.cmd_commission_post(
+        _op, {"target": "rat", "required_kills": 3, "reward_gold": 10, "reward_xp": 0}
+    )
+    _short = max(srv._commissions)
+    _oh = mkplayer("OverlapHunt", 65112, room="guild_hall")
+    for _ in range(3):
+        srv.record_npc_kill("OverlapHunt", "Giant Rat")
+    _shown = {c["id"]: c["progress"]["kills"] for c in srv._commission_snapshot()}
+    assert _shown[_long] == 3 and _shown[_short] == 3, _shown
+    await srv.cmd_commission_fill(_oh, {"commission_id": _long})
+    assert srv._commissions[_long]["status"] == "completed"
+    _shown = {c["id"]: c["progress"]["kills"] for c in srv._commission_snapshot()}
+    assert _shown[_long] == 0 and _shown[_short] == 0, _shown
+    await srv.cmd_commission_cancel(_op, {"commission_id": _short})
+    unplayer(_op)
+    unplayer(_oh)
+    print("OVERLAP_PROGRESS_SYNC_OK")
+
     # guild standing integrity: poster name reserved, player cancels
     # refused, list reads mint nothing
     _gl = srv.Player(ws=FakeWS(), id=66001, name="", logged_in=False)
