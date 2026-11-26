@@ -414,7 +414,7 @@ class Supervisor:
         # closure and hooks.
         self._specs = (
             {}
-        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook, policy_timeout)
+        )  # agent_id -> (env_factory, policy_fn, max_steps, step_timeout, policy_factory, learn_hook, reward_hook, policy_timeout, telemetry)
         self._lock = asyncio.Lock()
 
     def _drop_specs(self, agent_ids):
@@ -661,6 +661,7 @@ class Supervisor:
                 learn_hook,
                 reward_hook,
                 policy_timeout,
+                telemetry,
             )
             at.task = asyncio.ensure_future(self._run_with_recovery(at))
             return True
@@ -797,6 +798,7 @@ class Supervisor:
             learn_hook,
             reward_hook,
             policy_timeout,
+            telemetry,
         ) = spec
         if policy_factory is not None:
             try:
@@ -826,6 +828,7 @@ class Supervisor:
             episode_offset=episode_offset,
             transcript_incarnation=incarnation,
             transcript_started=transcript_started,
+            telemetry=telemetry,
         )
         if started and self._mixer is not None:
             try:
