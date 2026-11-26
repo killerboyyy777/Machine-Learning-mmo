@@ -155,6 +155,40 @@ async def main():
         )
         print("GM_ITEM_ONLINE_OK")
 
+        # --- exact-name reward: an earlier fragment match must not win -------
+        alice2 = mkplayer("Alice2", 40005)  # connected first
+        alice = mkplayer("Alice", 40006)
+        try:
+            before = srv.tax_treasury
+            await srv.cmd_gm_reward(gm, {"gold": 50, "player": "Alice"})
+            assert alice.gold == 50, alice.gold
+            assert alice2.gold == 0, alice2.gold
+            assert srv.tax_treasury == round(before - 50, 2), (
+                before,
+                srv.tax_treasury,
+            )
+            print("GM_GOLD_EXACT_NAME_OK")
+        finally:
+            unplayer(alice2)
+            unplayer(alice)
+
+        # --- offline exact target banks despite an online fragment match ----
+        alice2 = mkplayer("Alice2", 40005)
+        try:
+            srv.SCORES.pop("alice", None)
+            before = srv.tax_treasury
+            await srv.cmd_gm_reward(gm, {"gold": 50, "player": "Alice"})
+            assert srv.get_score_entry("Alice")["gold_bank"] == 50
+            assert alice2.gold == 0, alice2.gold
+            assert srv.tax_treasury == round(before - 50, 2), (
+                before,
+                srv.tax_treasury,
+            )
+            print("GM_GOLD_OFFLINE_EXACT_OK")
+        finally:
+            unplayer(alice2)
+            srv.SCORES.pop("alice", None)
+
         # --- insufficient treasury: error, no debit ---
         srv.tax_treasury = 5.0
         await srv.cmd_gm_reward(gm, {"gold": 50, "player": "Paid1"})
