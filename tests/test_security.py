@@ -241,14 +241,11 @@ async def main():
         # #647: progress but no stored hash means an offered token has nothing
         # to match, so accepting it would make the caller the owner. The login
         # must fail closed and must not bind the token it was handed.
-        legacy = srv.Player(ws=FakeWS(), id=92200, name="", logged_in=False)
-        await srv.cmd_login(legacy, {"name": "LegacyOwner"})
-        assert legacy.logged_in, "fresh tokenless login must still work"
+        # A fresh tokenless login now binds a generated token (#956), so seed
+        # the pre-token account shape directly instead of logging in.
         legacy_entry = srv.get_score_entry("LegacyOwner")
-        assert legacy_entry.get("starting_purse_claimed") is True
+        legacy_entry["starting_purse_claimed"] = True
         assert not legacy_entry.get("auth_token")
-        unplayer(legacy)
-        srv.name_owners.pop("legacyowner", None)
 
         claimer = srv.Player(ws=FakeWS(), id=92201, name="", logged_in=False)
         INBOX.clear()

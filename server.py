@@ -14,6 +14,7 @@ import math
 import os
 import queue
 import random
+import secrets
 import shutil
 import signal
 import subprocess
@@ -2463,7 +2464,9 @@ def get_score_entry(name):
     entry.setdefault("deaths", 0)
     entry.setdefault("level", 1)
     entry.setdefault("xp", 0.0)
-    entry.setdefault("xp_to_next", xp_to_next(1))
+    # Derived from the stored level: a value saved under an older XP curve
+    # would otherwise keep the old threshold after XP_BASE/GROWTH change.
+    entry["xp_to_next"] = xp_to_next(entry["level"])
     entry.setdefault("gold_bank", 0)  # coin earned while offline
     entry.setdefault("item_bank", [])  # items won while offline/pack-full
     entry.setdefault("trades_completed", 0)  # player-market trades (buy+sell)
@@ -2619,7 +2622,10 @@ def compute_variety(entry):
 
 
 def compute_diminish(entry):
-    return DIFFICULTY_K / (DIFFICULTY_K + entry["score"])
+    # A hand-edited config can bypass the schema floor; keep the denominator
+    # positive so an award to a score-0 account cannot divide by zero.
+    k = max(DIFFICULTY_K, 1e-9)
+    return k / (k + entry["score"])
 
 
 async def award_points_to_name(name, base_points, reason):
@@ -5266,9 +5272,17 @@ async def cmd_login(player, msg):
     # Authentication has succeeded. Only now create/update the persistent
     # account record and claim a first-time token.
     entry = get_score_entry(name)
+    issued_token = None
     if not stored and token:
         token_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
         entry["auth_token"] = token_hash
+        mark_scores_dirty()
+    elif not stored and not has_progress:
+        # A fresh tokenless login still claims the purse but used to bind no
+        # token, locking the character out of every later login. Issue one
+        # and hand the plaintext back so the client can persist it (#956).
+        issued_token = secrets.token_urlsafe(24)
+        entry["auth_token"] = hashlib.sha256(issued_token.encode("utf-8")).hexdigest()
         mark_scores_dirty()
     if entry.get("gold_bank", 0):
         player.gold += entry["gold_bank"]
@@ -5332,6 +5346,8 @@ async def cmd_login(player, msg):
         "protocol_version": PROTOCOL_VERSION,
         "client_version": client_version,
     }
+    if issued_token:
+        welcome["auth_token"] = issued_token
     if client_version is not None and client_version != PROTOCOL_VERSION:
         # Promised warn-on-mismatch (#72, #243): additive field, old
         # version-less clients unaffected.
@@ -12982,7 +12998,11 @@ def log_command(name, cmd, msg):
     else:
         detail = ""
     detail = str(detail)[:80]
-    entry = get_score_entry(name) if name and name != "<new>" else None
+    # log_command runs before the login handler authenticates the name, so a
+    # lookup here would mint or refresh SCORES for a rejected login.
+    entry = (
+        get_score_entry(name) if name and name != "<new>" and cmd != "login" else None
+    )
     lvl = entry["level"] if entry else 1
     global activity_seq
     activity_seq += 1

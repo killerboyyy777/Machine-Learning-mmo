@@ -84,7 +84,7 @@ SERVER_SCHEMA = {
         ),
         "MIN_VARIETY": _ratio("Minimum action diversity for the variety bonus."),
         "DIFFICULTY_K": _f(
-            0.0, 1000.0, "Difficulty scaling constant for spawned mobs."
+            0.0001, 1000.0, "Difficulty scaling constant for spawned mobs."
         ),
         "DISCOVERY_POINTS": _i(0, 1000, "Score points for finding a new area."),
         "DISCOVERY_XP": _i(0, 1000, "XP for finding a new area."),

@@ -6194,6 +6194,131 @@ async def main():
         srv.SCORES.pop(qd_name.lower(), None)
     print("QUEST_DENIAL_TYPE_ERROR_OK")
 
+    # #956: a first tokenless login claims the purse but used to bind no
+    # token, so the character could never log in again. The welcome must
+    # carry the generated token for the client to persist.
+    _token_name = "TokenlessFirst"
+    inbox.clear()
+    _first = srv.Player(ws=FakeWS(), id=78001, name="", logged_in=False)
+    srv.players[_first.id] = _first
+    await srv.cmd_login(_first, {"name": _token_name})
+    _welcome = next(m for m in inbox if m.get("type") == "welcome")
+    _issued = _welcome.get("auth_token")
+    assert _issued, _welcome
+    _tentry = srv.get_score_entry(_token_name)
+    assert (
+        _tentry.get("auth_token")
+        == srv.hashlib.sha256(_issued.encode("utf-8")).hexdigest()
+    )
+    assert _tentry.get("starting_purse_claimed") is True
+    unplayer(_first)
+    srv.name_owners.pop(_token_name.lower(), None)
+
+    # the claimed name still needs a token, and the issued one restores it
+    _anon = srv.Player(ws=FakeWS(), id=78002, name="", logged_in=False)
+    srv.players[_anon.id] = _anon
+    inbox.clear()
+    await srv.cmd_login(_anon, {"name": _token_name})
+    assert not _anon.logged_in, _anon.logged_in
+    assert any("protected by a token" in m.get("text", "") for m in inbox), inbox
+    unplayer(_anon)
+
+    _relog = srv.Player(ws=FakeWS(), id=78003, name="", logged_in=False)
+    srv.players[_relog.id] = _relog
+    inbox.clear()
+    await srv.cmd_login(_relog, {"name": _token_name, "token": _issued})
+    assert _relog.logged_in, "issued token must allow relogin"
+    assert _relog.gold == 0, _relog.gold
+    unplayer(_relog)
+    srv.name_owners.pop(_token_name.lower(), None)
+    srv.SCORES.pop(_token_name.lower(), None)
+
+    # the server-wide gate still rejects a tokenless first login outright
+    _old_required = srv.AUTH_TOKEN_REQUIRED
+    try:
+        srv.AUTH_TOKEN_REQUIRED = True
+        _gated = srv.Player(ws=FakeWS(), id=78004, name="", logged_in=False)
+        srv.players[_gated.id] = _gated
+        inbox.clear()
+        await srv.cmd_login(_gated, {"name": "TokenGateProbe"})
+        assert not _gated.logged_in, _gated.logged_in
+        assert any("requires a login token" in m.get("text", "") for m in inbox), inbox
+        assert "tokengateprobe" not in srv.SCORES, sorted(srv.SCORES)
+        unplayer(_gated)
+    finally:
+        srv.AUTH_TOKEN_REQUIRED = _old_required
+    print("TOKENLESS_LOGIN_BIND_OK")
+
+    # #957: log_command runs before the login handler. Rejected logins must
+    # neither mint a fresh score entry nor refresh an existing one, while the
+    # activity-log row is still recorded.
+    _seen = srv.get_score_entry("LoginSeenProbe")
+    _seen["auth_token"] = srv.hashlib.sha256(b"probe").hexdigest()
+    _seen["starting_purse_claimed"] = True
+    _seen["last_seen"] = 1.0
+    srv.name_owners["occupiedloginprobe"] = 78010
+    _log_len = len(srv.command_log)
+    srv.send = orig_send
+    srv.AUTH_TOKEN_REQUIRED = True
+    try:
+        _login_ws = ScriptWS(
+            [
+                json.dumps({"cmd": "login", "name": "RejectedFreshProbe"}),
+                json.dumps(
+                    {"cmd": "login", "name": "LoginSeenProbe", "token": "wrong"}
+                ),
+                json.dumps(
+                    {"cmd": "login", "name": "OccupiedLoginProbe", "token": "any"}
+                ),
+            ]
+        )
+        await srv.handle_connection(_login_ws)
+    finally:
+        srv.send = _patched_send
+        srv.AUTH_TOKEN_REQUIRED = _old_required
+    assert all(m.get("type") == "error" for m in _login_ws.sent), _login_ws.sent
+    assert "rejectedfreshprobe" not in srv.SCORES, sorted(srv.SCORES)
+    assert "occupiedloginprobe" not in srv.SCORES, sorted(srv.SCORES)
+    assert srv.SCORES["loginseenprobe"]["last_seen"] == 1.0
+    assert len(srv.command_log) >= _log_len + 3, len(srv.command_log)
+    srv.name_owners.pop("occupiedloginprobe", None)
+    srv.SCORES.pop("loginseenprobe", None)
+    print("LOGIN_NO_SCORE_MINT_OK")
+
+    # #959: the config floor rejects a zero difficulty constant and the award
+    # path guards a hand-edited config that bypasses the editor.
+    import config_schema as _cfg_schema
+
+    assert _cfg_schema.SERVER_SCHEMA["scoring"]["DIFFICULTY_K"]["min"] > 0
+    _old_k = srv.DIFFICULTY_K
+    try:
+        srv.DIFFICULTY_K = 0.0
+        srv.SCORES.pop("zerokplayer", None)
+        _zk = srv.get_score_entry("ZeroKPlayer")
+        _zk["score"] = 0.0
+        await srv.award_points_to_name("ZeroKPlayer", 10, "unit")
+        assert _zk["score"] > 0, _zk["score"]
+    finally:
+        srv.DIFFICULTY_K = _old_k
+        srv.SCORES.pop("zerokplayer", None)
+    print("DIFFICULTY_K_FLOOR_OK")
+
+    # xp_to_next is derived state: a stored threshold from an older curve
+    # must be rebuilt on load after XP_BASE/GROWTH change.
+    _old_base, _old_growth = srv.XP_BASE, srv.XP_GROWTH
+    try:
+        srv.XP_BASE, srv.XP_GROWTH = 200, 2.0
+        srv.SCORES.pop("curvereload", None)
+        srv.SCORES["curvereload"] = {"level": 3, "xp_to_next": 100}
+        _cr = srv.get_score_entry("CurveReload")
+        assert _cr["xp_to_next"] == 800, _cr["xp_to_next"]
+        _cr["xp_to_next"] = 100
+        assert srv.get_score_entry("CurveReload")["xp_to_next"] == 800
+    finally:
+        srv.XP_BASE, srv.XP_GROWTH = _old_base, _old_growth
+        srv.SCORES.pop("curvereload", None)
+    print("XP_CURVE_RELOAD_OK")
+
 
 # ---------------------------------------------------------------------------
 # Companion DroneLang (#534) unit tests
