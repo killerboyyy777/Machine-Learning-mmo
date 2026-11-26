@@ -361,24 +361,47 @@ class Registry:
         path = path or str(self.base_dir / "registry.json")
         if not os.path.exists(path):
             return
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            print(
+                f"Warning: {os.path.basename(path)} is unreadable ({e}); "
+                "starting with an empty registry"
+            )
+            return
+        agents = data.get("agents", []) if isinstance(data, dict) else None
+        if not isinstance(agents, list):
+            print(
+                f"Warning: {os.path.basename(path)} has an unexpected shape; "
+                "starting with an empty registry"
+            )
+            return
         with self._lock:
-            for a in data.get("agents", []):
-                entry = AgentEntry(
-                    a["agent_id"],
-                    a["agent_type"],
-                    a.get("branch", "experimental"),
-                    a.get("checkpoint", ""),
-                    goal=a.get("goal"),
-                    character=a.get("character"),
-                    parent_id=a.get("parent_id"),
-                )
-                entry.episodes = a.get("episodes", 0)
-                if "total_reward" in a:
-                    entry.total_reward = a["total_reward"]
-                else:
-                    # Pre-#46 snapshots only stored the rounded mean.
-                    entry.total_reward = a.get("mean_reward", 0) * entry.episodes
-                entry.alive = a.get("alive", True)
+            for a in agents:
+                try:
+                    entry = AgentEntry(
+                        a["agent_id"],
+                        a["agent_type"],
+                        a.get("branch", "experimental"),
+                        a.get("checkpoint", ""),
+                        goal=a.get("goal"),
+                        character=a.get("character"),
+                        parent_id=a.get("parent_id"),
+                    )
+                    entry.episodes = a.get("episodes", 0)
+                    if "total_reward" in a:
+                        entry.total_reward = a["total_reward"]
+                    else:
+                        # Pre-#46 snapshots only stored the rounded mean.
+                        entry.total_reward = a.get("mean_reward", 0) * entry.episodes
+                    entry.alive = a.get("alive", True)
+                except (AttributeError, KeyError, TypeError, ValueError) as e:
+                    # One torn row must not keep the rest of the population
+                    # (or the whole run) from starting.
+                    print(
+                        f"Warning: {os.path.basename(path)}: skipping malformed "
+                        f"agent entry ({e})"
+                    )
+                    continue
                 self._agents[entry.agent_id] = entry

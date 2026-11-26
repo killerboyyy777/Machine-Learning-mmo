@@ -321,6 +321,7 @@ class Runner:
                     await self.reset()
                     continue
                 next_features = flatten_obs(next_obs)
+                next_mask = self.env.valid_action_mask()
                 (
                     gold_delta,
                     loot_delta,
@@ -336,6 +337,7 @@ class Runner:
                         "action": action_index,
                         "reward": reward,
                         "next_state": next_features,
+                        "next_mask": next_mask,
                         "done": done,
                         "gold_delta": gold_delta,
                         "loot_delta": loot_delta,

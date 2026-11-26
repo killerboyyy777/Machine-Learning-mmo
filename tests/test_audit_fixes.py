@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "ml"))
+sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
 
 from ml.conductor.conductor import Conductor  # noqa: E402
 from ml.conductor.mixer import Mixer  # noqa: E402
@@ -107,8 +109,6 @@ def test_checkpoint_sidecar_step():
         def save_weights(self, path):
             self.saved_at = farm.steps
 
-    sys.path.insert(0, os.path.join(ROOT, "torch_agents"))
-    sys.path.insert(0, os.path.join(ROOT, "ml"))
     with patch.dict(sys.modules, {"dqn_agent": fake_module}):
         import torch_farm
 
@@ -221,10 +221,38 @@ def test_learn_hooks_receive_next_mask():
         plugin.learn(features, 0, 0.0, features, False, mask)
         plugin.learn(features, 0, 0.0, features, False)
         assert plugin._agent.stored[0]["next_mask"] == mask
-        assert plugin._agent.stored[1]["next_mask"] is None
+        assert "next_mask" not in plugin._agent.stored[1]
+        assert (
+            plugin._agent.stored[1].get("next_mask", [1] * n_actions) == [1] * n_actions
+        )
     assert "next_mask" in inspect.signature(linear_mod.LinearPlugin.learn).parameters
     assert "next_mask" in inspect.signature(torch_plugin.TorchPlugin.learn).parameters
     print("LEARN_MASKS_OK")
+
+
+def test_torch_mask_batch_compat():
+    try:
+        from dqn_agent import TorchDQNAgent
+        from ml_env import N_ACTIONS, OBS_SIZE
+    except ImportError as exc:
+        print(f"TORCH_MASK_BATCH_SKIP ({exc})")
+        return
+    agent = TorchDQNAgent(batch_size=2, hidden=8, rnd_dim=4)
+    features = [0.0] * OBS_SIZE
+    mask = [1] * N_ACTIONS
+    mask[-1] = 0
+    common = {
+        "state": features,
+        "action": 0,
+        "reward": 1.0,
+        "next_state": features,
+        "done": False,
+    }
+    agent.store(dict(common, next_mask=mask))
+    agent.store(dict(common))
+    result = agent.learn()
+    assert result["td"] is not None, result
+    print("TORCH_MASK_BATCH_OK")
 
 
 def test_rebalance_moves_are_applied():
@@ -232,6 +260,7 @@ def test_rebalance_moves_are_applied():
 
     def make_env(aid):
         env = _StepEnv()
+        env.login = aid
         envs.append(env)
         return env
 
@@ -245,8 +274,9 @@ def test_rebalance_moves_are_applied():
 
     async def scenario():
         for aid in ("m1", "m2", "m3", "m4"):
-            cond.registry.register(aid, "linear")
+            cond.registry.register(aid, "linear", character=f"Stable_{aid}")
             assert await cond._maybe_start(aid)
+        assert envs[0].login == "Stable_m1"
         cond.mixer._floor_agents["f2"] = ["m1", "m2"]
         cond.mixer._floor_agents["f1"] = ["m3", "m4"]
         cond.mixer.record_reward("f1", "x", 100.0)
@@ -260,8 +290,8 @@ def test_rebalance_moves_are_applied():
         assert applied == moves, (applied, moves)
         assert cond.mixer.snapshot()["f1"]["agents"] == 3
         assert cond.mixer.snapshot()["f2"]["agents"] == 1
-        assert envs[-1].floor_target == "f1"
         assert envs[-1].spawn_room == "f1"
+        assert envs[-1].login == f"Stable_{moves[0][0]}"
         before = len(envs)
         assert await cond._apply_moves([]) == []
         assert len(envs) == before
@@ -271,10 +301,52 @@ def test_rebalance_moves_are_applied():
     print("REBALANCE_APPLIED_OK")
 
 
+def test_failed_move_rolls_back():
+    envs = []
+
+    def make_env(aid):
+        env = _StepEnv()
+        envs.append(env)
+        return env
+
+    cond = Conductor(
+        _tmp("rollback"),
+        max_agents=4,
+        resume=False,
+        floors=["f1", "f2"],
+        runners=[{"env_factory": make_env, "policy_fn": lambda o, a: 0}],
+    )
+
+    async def scenario():
+        for aid in ("n1", "n2", "n3", "n4"):
+            cond.registry.register(aid, "linear")
+            assert await cond._maybe_start(aid)
+        cond.mixer._floor_agents["f2"] = ["n1", "n2"]
+        cond.mixer._floor_agents["f1"] = ["n3", "n4"]
+        cond.mixer.record_reward("f1", "x", 100.0)
+        cond.mixer.record_reward("f1", "y", 100.0)
+        cond.mixer.record_reward("f2", "z", 0.0)
+        cond.mixer.record_reward("f2", "w", 0.0)
+        before = {f: list(agents) for f, agents in cond.mixer._floor_agents.items()}
+        moves = cond.mixer.rebalance()
+        assert len(moves) == 1, moves
+        assert cond.mixer._floor_agents != before
+        cond.registry.mark_dead(moves[0][0])
+        assert await cond._apply_moves(moves) == []
+        assert cond.mixer._floor_agents == before
+        assert len(envs) == 4
+        await cond.supervisor.stop_all()
+
+    asyncio.run(scenario())
+    print("FAILED_MOVE_ROLLBACK_OK")
+
+
 if __name__ == "__main__":
     test_floor_keys_match_supervisor()
     test_rebalance_sign_and_mixed_control()
     test_checkpoint_sidecar_step()
     test_learn_hooks_receive_next_mask()
+    test_torch_mask_batch_compat()
     test_rebalance_moves_are_applied()
+    test_failed_move_rolls_back()
     print("ALL_AUDIT_FIXES_OK")

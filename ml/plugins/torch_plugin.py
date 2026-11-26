@@ -54,16 +54,18 @@ class TorchPlugin(AgentPlugin):
 
     def learn(self, prev_obs, action, reward, next_obs, done, next_mask=None):
         """Store every transition; learn every K shared slot steps."""
-        self._agent.store(
-            {
-                "state": flatten_obs(prev_obs),
-                "action": action,
-                "reward": reward,
-                "next_state": flatten_obs(next_obs),
-                "done": done,
-                "next_mask": next_mask,
-            }
-        )
+        transition = {
+            "state": flatten_obs(prev_obs),
+            "action": action,
+            "reward": reward,
+            "next_state": flatten_obs(next_obs),
+            "done": done,
+        }
+        # Omit, not None: replay defaults a missing mask to all-valid, but a
+        # None value cannot become a tensor in the DQN batch conversion.
+        if next_mask is not None:
+            transition["next_mask"] = next_mask
+        self._agent.store(transition)
         self._shared_learn_steps += 1
         if self._shared_learn_steps % max(1, self.learn_every) == 0:
             self._agent.learn()

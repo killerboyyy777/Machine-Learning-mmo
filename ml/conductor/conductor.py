@@ -172,7 +172,7 @@ class Conductor:
         self._slots = [_materialize_slot(s, url) for s in raw_slots]
         self._cycle = [i for i, s in enumerate(self._slots) for _ in range(s["weight"])]
         self._cursor = 0
-        self._agent_slots = {}  # agent_id -> slot that spawned it (floor moves)
+        self._agent_slots = {}  # agent_id -> login-wrapped env factory
         # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
         # enable exploit/explore rounds, or None to run without a population.
         self.pbt = (
@@ -248,7 +248,7 @@ class Conductor:
             if not started:
                 self.registry.mark_dead(agent_id)
                 return False
-            self._agent_slots[agent_id] = slot
+            self._agent_slots[agent_id] = env_factory
             return started
         except Exception as e:
             try:
@@ -258,21 +258,21 @@ class Conductor:
             self.registry.mark_dead(agent_id)
             return False
 
-    def _floor_env_factory(self, slot, floor):
-        """Build the slot's env with a floor target for a reallocated agent."""
-        base = slot["env_factory"]
+    def _floor_env_factory(self, base, floor):
+        """Wrap a per-agent factory with the spawn target for a floor move."""
         if floor.startswith("d") and floor[1:].isdigit():
             try:
                 from server import DUNGEON_ENTRANCE_ROOM
             except ImportError:
                 DUNGEON_ENTRANCE_ROOM = "graveyard"
+            # Dungeon floors have no spawn room; the entrance is the closest
+            # reachable target for the agent's next episode.
             spawn_room = DUNGEON_ENTRANCE_ROOM
         else:
             spawn_room = floor
 
         def factory(agent_id):
             env = base(agent_id)
-            env.floor_target = floor
             env.spawn_room = spawn_room
             return env
 
@@ -282,12 +282,14 @@ class Conductor:
         """Restart moved agents on their new floors; return applied moves."""
         applied = []
         for aid, old, new in moves:
-            slot = self._agent_slots.get(aid)
-            if slot is None:
+            base = self._agent_slots.get(aid)
+            if base is None:
                 continue
-            factory = self._floor_env_factory(slot, new)
+            factory = self._floor_env_factory(base, new)
             if not await self.supervisor.restart_agent(aid, env_factory=factory):
                 self._agent_slots.pop(aid, None)
+                self.mixer.remove_agent(aid)
+                self.mixer.assign_one(aid, floor=old)
                 continue
             self.mixer.remove_agent(aid)
             self.mixer.assign_one(aid, floor=new)
