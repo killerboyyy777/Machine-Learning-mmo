@@ -1042,6 +1042,29 @@ def test_worst_seed_guard_fails_profile():
     print("WORST_SEED_GUARD_OK")
 
 
+def test_death_free_seed_can_veto_gate():
+    # #928: a seed with zero deaths reports no rate, but must still veto.
+    report = bal.evaluate_profile(
+        [
+            _gate_entry(700, 1.0, 1.0),
+            _gate_entry(701, None, 1.0),
+            _gate_entry(702, 1.0, 1.0),
+        ],
+        bal.load_thresholds(profile="gate"),
+        "gate",
+    )
+    rows = {row["id"]: row for row in report["checks"]}
+    guard = rows["combat.wild_deaths_per_hour.worst_seed"]
+    assert guard["status"] == "fail", guard
+    assert guard["value"] == 0.0
+    assert guard["seed"] == 701
+    assert "worst seed 701" in guard["detail"]
+    assert guard["id"] in report["summary"]["failing"]
+    assert report["summary"]["verdict"] == "FAIL"
+    assert rows["combat.wild_deaths_per_hour.median"]["value"] == 1.0
+    print("DEATH_FREE_SEED_GUARD_OK")
+
+
 # --- repeat measurement files ---------------------------------------------
 
 
@@ -1162,6 +1185,23 @@ def test_evaluate_input_errors():
             assert "[balance]" in diag, (argv, diag)
             assert "Traceback" not in diag, (argv, diag)
     print("EVALUATE_INPUT_ERRORS_OK")
+
+
+def test_evaluate_rejects_wrong_field_types():
+    # #929: key presence alone lets a corrupt field crash the scorer.
+    with tempfile.TemporaryDirectory() as tmp:
+        for field, bad in (("meta", []), ("samples", {}), ("derived", "oops")):
+            measurements = make_measurements()
+            measurements[field] = bad
+            path = _write_measurements(tmp, measurements)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = bal.main(["evaluate", "--measurements", path])
+            assert code == 2, (field, code)
+            diag = err.getvalue()
+            assert "[balance]" in diag, (field, diag)
+            assert "Traceback" not in diag, (field, diag)
+    print("EVALUATE_FIELD_TYPES_OK")
 
 
 def test_baseline_comparison():
@@ -1285,9 +1325,11 @@ def main():
     test_determinism_repeats()
     test_median_seed_decides_profile()
     test_worst_seed_guard_fails_profile()
+    test_death_free_seed_can_veto_gate()
     test_run_repeats_write_distinct_measurement_files()
     test_cli_exit_codes()
     test_evaluate_input_errors()
+    test_evaluate_rejects_wrong_field_types()
     test_baseline_comparison()
     test_matrix_catalog()
     test_committed_baseline_is_readable()
