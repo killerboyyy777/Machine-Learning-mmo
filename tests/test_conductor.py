@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ml.conductor as cond
@@ -1221,6 +1222,48 @@ async def _reconnect_check():
 
 
 assert asyncio.run(_reconnect_check())
+
+
+# --- #921: the per-agent stagger must not follow the interpreter hash seed ---
+# A salted hash() gave the same agent a different delay after a restart;
+# pinning the CRC32 value keeps a fleet-wide reconnect spread reproducible.
+class _OneDropEnv(_FakeEnv):
+    def __init__(self):
+        self.resets = 0
+
+    async def reset(self):
+        self.resets += 1
+        if self.resets == 1:
+            raise ConnectionError("server restarting")
+        return await super().reset()
+
+
+async def _stagger_check():
+    delays = []
+
+    async def _no_sleep(delay):
+        if delay:  # the fake env's zero sleeps are not reconnects
+            delays.append(delay)
+
+    at = AgentTask("stagger-921", _OneDropEnv(), lambda o, a: 0)
+    gen = at.run()
+    with _mock.patch.object(_sup.asyncio, "sleep", _no_sleep):
+        event = await gen.__anext__()
+        at.cancel()
+        await gen.aclose()
+    assert event["episode"] == 1
+    expected = (
+        min(_sup._RECONNECT_MAX_S, _sup._RECONNECT_BASE_S * 2)
+        + (zlib.crc32(b"stagger-921") % 1000) / 1000.0
+    )
+    assert delays == [expected], delays
+    assert delays[0] == 2.147, delays
+    return True
+
+
+assert asyncio.run(_stagger_check())
+print("RECONNECT_STAGGER_STABLE_OK")
+
 # ...while a genuine crash still kills exactly once, with the error --
 # covered above by DEATH_CRASH_OK (re-running _crash_check here would
 # double-count its append-mode jsonl).
