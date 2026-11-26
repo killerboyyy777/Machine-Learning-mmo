@@ -1055,9 +1055,24 @@ async def main():
         assert healer_p.attack == before_attack + 3
         assert "test_heal_elixir" not in healer_p.inventory
         assert healer_p.hp == healer_p.max_hp
+
+        healer_p.inventory = ["test_heal_elixir"]
+        healer_p.hp = healer_p.max_hp - 6
+        before_hp = healer_p.hp
+        before = len(inbox)
+        await srv.cmd_use(healer_p, {"item": "test heal elixir"})
+        assert healer_p.hp == min(healer_p.max_hp, before_hp + 10)
+        assert healer_p.hp > before_hp
+        assert srv._player_buff_amount(healer_p, "attack") == 3
+        assert "test_heal_elixir" not in healer_p.inventory
+        assert any(
+            m.get("type") == "message" and "recover" in m.get("text", "")
+            for m in inbox[before:]
+        ), inbox[before:]
     finally:
         srv.ITEM_DEFS.pop("test_heal_elixir", None)
     print("FULL_HP_BUFF_HEAL_APPLIES_OK")
+    print("WOUNDED_BUFF_HEAL_APPLIES_OK")
 
     # --- Equipment slots: weapon / armor / offhand coexist, defense stacks ---
     knight = srv.Player(ws=FakeWS(), id=10002, name="SlotTester", logged_in=True)
@@ -1206,6 +1221,20 @@ async def main():
     assert "attack" not in juicer.active_buffs
     assert srv._player_buff_amount(juicer, "attack") == 0
     print("BUFF_STACK_OK")
+
+    # Plain name resolves to the exact item even when the variant comes first (#951).
+    ranked = ["greater_sharpening_oil", "sharpening_oil"]
+    assert srv.find_item_by_name(ranked, "sharpening oil") == "sharpening_oil"
+    assert srv.find_item_by_name(ranked, "sharpening_oil") == "sharpening_oil"
+    oiler = srv.Player(ws=FakeWS(), id=10008, name="OilTester", logged_in=True)
+    srv.add_member(oiler)
+    oiler.inventory = list(ranked)
+    await srv.cmd_use(oiler, {"item": "sharpening oil"})
+    assert "sharpening_oil" not in oiler.inventory
+    assert "greater_sharpening_oil" in oiler.inventory
+    assert oiler.active_buffs["attack"]["amount"] == 2
+    srv.remove_member(oiler)
+    print("EXACT_ITEM_NAME_OK")
 
     # read-only commands never consume action buffs (#237)
     for cmd in (
