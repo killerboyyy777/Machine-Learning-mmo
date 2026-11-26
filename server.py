@@ -14396,6 +14396,9 @@ def start_dashboard():
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
             finally:
+                # The bounded response has no Content-Length or chunked
+                # framing, so EventSource needs a closed socket to reconnect.
+                self.close_connection = True
                 with _activity_subscribers_lock:
                     try:
                         activity_subscribers.remove(sub)

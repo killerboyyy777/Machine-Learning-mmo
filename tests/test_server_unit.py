@@ -94,6 +94,68 @@ def dashboard_post_json_check():
     print("DASHBOARD_POST_JSON_OK")
 
 
+def activity_stream_close_check():
+    """#933: a bounded SSE response must close so EventSource reconnects."""
+    import ast
+    import io
+    import threading
+
+    src = os.path.join(ROOT, "server.py")
+    with open(src, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    start = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "start_dashboard"
+    )
+    handler = next(
+        n for n in start.body if isinstance(n, ast.ClassDef) and n.name == "Handler"
+    )
+    method = next(
+        n
+        for n in handler.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_serve_activity_stream"
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
+    ns = dict(srv.__dict__)
+    ns["ACTIVITY_STREAM_MAX_SECONDS"] = 0.01
+    ns["ACTIVITY_STREAM_SIZE"] = 8
+    ns["ACTIVITY_STREAM_MAX_SUBSCRIBERS"] = 2
+    ns["activity_subscribers"] = []
+    ns["_activity_subscribers_lock"] = threading.Lock()
+    ns["command_log"] = [{"seq": 1, "name": "A", "cmd": "gather", "time": "t"}]
+    ns["activity_seq"] = 1
+    exec(compile(module, src, "exec"), ns)
+
+    class Stub:
+        path = "/api/activity/stream?since=0"
+        close_connection = False
+
+        def __init__(self):
+            self.headers = {}
+            self.wfile = io.BytesIO()
+
+        def send_response(self, code):
+            self.status = code
+
+        def send_header(self, key, value):
+            pass
+
+        def end_headers(self):
+            pass
+
+        def send_error(self, code, *args, **kwargs):
+            raise AssertionError(f"unexpected send_error({code})")
+
+    stub = Stub()
+    ns["_serve_activity_stream"](stub)
+    assert stub.close_connection is True, "bounded SSE left keep-alive open"
+    assert stub.status == 200, stub.status
+    assert b"data:" in stub.wfile.getvalue(), stub.wfile.getvalue()
+    assert ns["activity_subscribers"] == [], ns["activity_subscribers"]
+    print("ACTIVITY_STREAM_CLOSE_OK")
+
+
 def companion_surface_bodies():
     """Dashboard/TUI companion renderers for the #535 parity check."""
     with open(os.path.join(ROOT, "dashboard.html"), encoding="utf-8") as fh:
@@ -748,6 +810,7 @@ async def main():
     print("DEAD_CODE_ABSENT_OK")
 
     dashboard_post_json_check()
+    activity_stream_close_check()
 
     # --- Leveling curve ---
     assert srv.xp_to_next(1) == 100

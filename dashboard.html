@@ -1569,8 +1569,13 @@ function actStream() {
     actSource.onmessage = ev => {
       let a;
       try { a = JSON.parse(ev.data); } catch (e) { return; }
-      if (!a || (a.seq ?? 0) <= actMaxSeq) return;
-      actMaxSeq = a.seq;
+      if (!a) return;
+      const seq = a.seq ?? 0;
+      // A lower seq means the server restarted and reset activity_seq; the
+      // stale high-water mark would otherwise drop every new frame (#932).
+      if (seq < actMaxSeq) actMaxSeq = 0;
+      else if (seq <= actMaxSeq) return;
+      actMaxSeq = seq;
       actData.push(a);
       while (actData.length > 80) actData.shift();
       renderActivityView();
