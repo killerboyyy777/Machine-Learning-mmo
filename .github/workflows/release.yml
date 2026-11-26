@@ -75,6 +75,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Check tag matches pyproject version
+        run: python scripts/check_release_version.py --tag "$GITHUB_REF_NAME"
       - name: Build and verify distributions
         run: |
           python -m pip install build twine

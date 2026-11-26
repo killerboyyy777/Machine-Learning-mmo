@@ -241,6 +241,7 @@ jobs:
           cat server.ci.log
           exit 1
       - run: node tests/dash2_smoke.cjs
+      - run: node tests/dashboard_regressions.cjs
       - run: python tests/dash_browser_smoke.py
       - uses: actions/upload-artifact@v7
         if: always()
