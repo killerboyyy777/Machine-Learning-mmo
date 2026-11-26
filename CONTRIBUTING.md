@@ -58,7 +58,7 @@ That script issues the exact ruleset defined in `scripts/enable-protection.sh`. 
 
 ## Release process
 
-Releases are tag-driven. `git tag vX.Y && git push origin vX.Y` runs `.github/workflows/release.yml`, which smoke-tests and publishes the GitHub release with notes generated from the merged pull requests. The same tag runs `.github/workflows/docker-publish.yml` to build the versioned container images.
+Releases are tag-driven. `git tag vX.Y && git push origin vX.Y` runs `.github/workflows/release.yml`, which smoke-tests and publishes the GitHub release with notes generated from the merged pull requests. The same tag runs `.github/workflows/docker-publish.yml` to build the versioned container images. Bump `version` in `pyproject.toml` in a merged PR before tagging; the publish job compares the tag with that version and fails before building when they differ.
 
 ## Labels and milestones
 
