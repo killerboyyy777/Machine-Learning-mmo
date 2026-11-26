@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -193,6 +194,40 @@ async def _conductor_resume_restarts_tasks(tmpdir):
     await third.run(duration_seconds=1, wave_size=10, wave_delay=0.01)
     grown = _live_ids(base)
     assert len(grown) == 5 and set(saved) <= set(grown), grown
+
+    # Negative control: a persisted dead entry gets no task; only the gap
+    # is refilled by a fresh spawn, and the alive count stays at the cap.
+    reg_path = os.path.join(base, "registry", "registry.json")
+    with open(reg_path) as fh:
+        data = json.load(fh)
+    dead = next(a["agent_id"] for a in data["agents"] if a["alive"])
+    for row in data["agents"]:
+        if row["agent_id"] == dead:
+            row["alive"] = False
+    with open(reg_path, "w") as fh:
+        json.dump(data, fh)
+    fourth = Conductor(
+        base,
+        max_agents=5,
+        arrivals_per_minute=0,
+        mean_lifetime_episodes=1000000,
+        runners=[runner()],
+        url="ws://localhost:9",
+    )
+    observed_dead = []
+
+    async def poll_dead():
+        for _ in range(100):
+            observed_dead.append(fourth.supervisor.status()["running"])
+            await asyncio.sleep(0.02)
+
+    await asyncio.gather(
+        fourth.run(duration_seconds=2, wave_size=10, wave_delay=0.01), poll_dead()
+    )
+    final = _live_ids(base)
+    assert len(final) == 5 and dead not in final, final
+    assert (set(grown) - {dead}) <= set(final), final
+    assert max(observed_dead) >= 4, observed_dead
     print("CONDUCTOR_RESUME_TASKS_OK")
 
 
@@ -201,7 +236,10 @@ async def main():
     await _supervisor_flow(tmpdir)
     await _conductor_run(tmpdir)
     await _conductor_resume(tmpdir)
-    await _conductor_resume_restarts_tasks(tmpdir)
+    # A geometric draw can be tiny even with a huge mean; pin it so the
+    # population in this regression cannot expire mid-run on CI.
+    with mock.patch("ml.conductor.churn.geometric_lifetime", return_value=10**9):
+        await _conductor_resume_restarts_tasks(tmpdir)
 
 
 asyncio.run(main())
