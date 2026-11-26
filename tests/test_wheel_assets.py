@@ -4,11 +4,13 @@ Run from the repo root:  python tests/test_wheel_assets.py
 
 The static checks need only the standard library. When the optional `build`
 package is importable, a wheel is built in a temporary copy of the checkout and
-its archive is inspected; CI does not install `build`, so that part is skipped.
+its archive is inspected. The offline CI job installs `build` so the archive
+assertion runs on every pull request; local runs without it skip that part.
 """
 
 import fnmatch
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -72,6 +74,8 @@ def _ignore_parts(directory, names):
 
 def test_wheel_archive():
     if importlib.util.find_spec("build") is None:
+        if os.environ.get("CI"):
+            raise AssertionError("build is missing in CI; WHEEL_ARCHIVE_OK cannot run")
         print("WHEEL_BUILD_SKIPPED")
         return
     with tempfile.TemporaryDirectory() as tmp:

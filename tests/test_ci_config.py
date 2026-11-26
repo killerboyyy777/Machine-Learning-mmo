@@ -6,6 +6,8 @@ Uses only the standard library. PyYAML is not a declared dependency, so these
 are text and regex assertions rather than a YAML parse. The checks cover the
 remainder of #748: job timeouts, test/** push triggers, Dependabot ecosystems,
 the area:ci label rule, and the absence of mutable default-branch action refs.
+#982 adds a check that the offline job runs the policy budget suite and builds
+a wheel, so neither can silently drop out of CI.
 """
 
 import re
@@ -77,10 +79,19 @@ def test_no_mutable_branch_refs():
     print("NO_MUTABLE_REFS_OK")
 
 
+def test_offline_covers_policy_budget_and_wheel():
+    offline = _workflow("tests.yml").split("  live:", 1)[0]
+    assert "python tests/test_policy_budget.py" in offline
+    assert "python tests/test_wheel_assets.py" in offline
+    assert re.search(r"pip install[^\n]*build==", offline), "build not installed"
+    print("OFFLINE_COVERAGE_OK")
+
+
 if __name__ == "__main__":
     test_every_job_has_timeout()
     test_test_branch_triggers()
     test_dependabot_ecosystems()
     test_labeler_area_ci()
     test_no_mutable_branch_refs()
+    test_offline_covers_policy_budget_and_wheel()
     print("CI_CONFIG_OK")

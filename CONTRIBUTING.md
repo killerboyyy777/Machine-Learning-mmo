@@ -30,6 +30,7 @@ No code required.
 - **New agent or reward mode?** Reuse the harness. `TextMMOEnv` in `ml/` fixes the observation and action space, `ml/ml_botfarm.py --scripted` holds the baselines, and `python -m torch_agents.eval --checkpoint X --seeds 10` runs evaluation. Report the mean and standard deviation over seeds, never a single run.
 - **Checkpoints carry provenance.** The git SHA, config hash, canonical `world.json` hash, and observation and action dimensions are embedded on save (see `checkpoint_version()`). The world hash is separate so checkpoints saved before it existed keep their old config hash and are treated as world-compatible. Mention the hashes when you compare runs.
 - **Conductor runs** need a live server: `python ml/conductor/soak.py --agents N --duration S`. Keep the `--min-agents` gates honest; a failed gate is a failure. The tool resumes prior state by default. Select wipes with `--reset none|lineage|cell|all` and `--resume/--no-resume`.
+- **PBT is library-only.** `Conductor(pbt={})` enables `PBTManager`, but the shipped soak CLI does not enroll agents or feed fitness, so a soak emits no exploit/explore rounds; wire those hooks yourself for a PBT experiment.
 - **Mind the perf budget.** The server is single-process asyncio. If your PR adds per-command or per-tick work, note its cost. Watch the nightly soak and the 30-agent farm for regressions.
 
 ## Observability
