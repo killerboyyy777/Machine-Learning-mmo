@@ -1,17 +1,27 @@
 """Offline MCP harness test: fake game server + real stdio subprocess."""
 
 import asyncio
+import collections
 import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import websockets
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from harness.bridge import GameBridge  # noqa: E402
+import harness.bridge as bridge_module  # noqa: E402
+from harness.bridge import (  # noqa: E402
+    DRAIN_FRAME_LIMIT,
+    RECONNECT_ATTEMPTS,
+    BacklogError,
+    BridgeError,
+    GameBridge,
+    LoginError,
+)
 
 DEEP_NESTING = 200000
 
@@ -74,8 +84,184 @@ async def test_bridge_recursion_frame():
     print("HARNESS_BRIDGE_RECURSION_OK")
 
 
+class FakeQueueWS:
+    """Socket whose recv blocks only while the frame queue is empty."""
+
+    def __init__(self, frames=()):
+        self.frames = collections.deque(frames)
+        self.sent = []
+        self._wake = asyncio.Event()
+
+    def push(self, frame):
+        self.frames.append(json.dumps(frame).encode())
+        self._wake.set()
+
+    async def recv(self):
+        while not self.frames:
+            self._wake.clear()
+            await self._wake.wait()
+        return self.frames.popleft()
+
+    async def send(self, raw):
+        msg = json.loads(raw)
+        self.sent.append(msg)
+        if msg.get("cmd") == "move":
+            self.push({"type": "room", "id": "fresh"})
+            self.push(stats_view())
+
+
+async def test_bridge_backlog():
+    stale = json.dumps({"type": "room", "id": "stale"}).encode()
+    for count in (1, 100, 150):
+        ws = FakeQueueWS([stale] * count)
+        bridge = GameBridge("ws://127.0.0.1:1", "BacklogTest", command_timeout=2.0)
+        bridge._ws = ws
+        result = await asyncio.wait_for(
+            bridge.command("move", {"dir": "west"}, expect=("room",)), 5
+        )
+        assert result["ok"] is True, result
+        assert result["state"]["room"] == "fresh", result
+        assert ws.sent == [{"cmd": "move", "dir": "west"}], ws.sent
+
+    ws = FakeQueueWS([stale] * (DRAIN_FRAME_LIMIT + 1))
+    bridge = GameBridge("ws://127.0.0.1:1", "BacklogTest", command_timeout=2.0)
+    bridge._ws = ws
+    result = await asyncio.wait_for(
+        bridge.command("move", {"dir": "west"}, expect=("room",)), 5
+    )
+    assert result["ok"] is False, result
+    assert "backlog" in result["error"].lower(), result
+    assert ws.sent == [], ws.sent
+
+    ws = FakeQueueWS([stale] * (DRAIN_FRAME_LIMIT + 1))
+    bridge = GameBridge("ws://127.0.0.1:1", "BacklogTest")
+    bridge._ws = ws
+    try:
+        await asyncio.wait_for(bridge._drain(), 5)
+    except BacklogError as exc:
+        assert "backlog" in str(exc).lower(), exc
+    else:
+        raise AssertionError("expected BacklogError from _drain")
+    print("HARNESS_BRIDGE_BACKLOG_OK")
+
+
+async def test_bridge_reconnect():
+    generations = []
+    logins = []
+    commands = []
+
+    async def handler(ws):
+        generation = len(generations)
+        generations.append(generation)
+        async for raw in ws:
+            msg = json.loads(raw)
+            cmd = msg.get("cmd")
+            if cmd == "login":
+                logins.append((generation, msg))
+                await ws.send(json.dumps({"type": "welcome", "protocol_version": 2}))
+                await ws.send(json.dumps(room_view(f"room_{generation}")))
+                await ws.send(json.dumps(stats_view()))
+            elif cmd == "buy":
+                commands.append((generation, cmd))
+                await ws.close()
+                return
+            elif cmd == "move":
+                commands.append((generation, cmd))
+                await ws.send(json.dumps(room_view(f"moved_{generation}")))
+                await ws.send(json.dumps(stats_view()))
+            else:
+                await ws.send(json.dumps({"type": "error", "text": "unknown command"}))
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    bridge = GameBridge(
+        f"ws://127.0.0.1:{port}",
+        "HarnessTest",
+        token="owner-token",
+        connect_timeout=1.0,
+        command_timeout=1.0,
+        move_timeout=1.0,
+    )
+    try:
+        await asyncio.wait_for(bridge.connect(), 5)
+        assert bridge.cache["room"]["id"] == "room_0", bridge.cache
+
+        lost = await asyncio.wait_for(
+            bridge.command("buy", {"item": "potion"}, expect=("room",)), 5
+        )
+        assert lost["ok"] is False, lost
+        assert "indeterminate" in lost["error"], lost
+        assert bridge._ws is None
+        assert commands == [(0, "buy")], commands
+
+        moved = await asyncio.wait_for(
+            bridge.command("move", {"dir": "west"}, expect=("room",)), 5
+        )
+        assert moved["ok"] is True, moved
+        assert moved["state"]["room"] == "moved_1", moved
+        assert generations == [0, 1], generations
+        assert [msg.get("token") for _, msg in logins] == ["owner-token"] * 2, logins
+        assert commands == [(0, "buy"), (1, "move")], commands
+    finally:
+        await bridge.close()
+        server.close()
+        await server.wait_closed()
+    print("HARNESS_BRIDGE_RECONNECT_OK")
+
+
+async def test_bridge_login_rejected():
+    async def handler(ws):
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("cmd") == "login":
+                await ws.send(json.dumps({"type": "error", "text": "bad token"}))
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    bridge = GameBridge(
+        f"ws://127.0.0.1:{port}", "HarnessTest", token="bad", connect_timeout=1.0
+    )
+    try:
+        try:
+            await asyncio.wait_for(bridge._reconnect(), 5)
+        except LoginError as exc:
+            assert "login rejected" in str(exc), exc
+            assert "bad token" in str(exc), exc
+        else:
+            raise AssertionError("expected LoginError")
+        assert bridge._ws is None
+    finally:
+        await bridge.close()
+        server.close()
+        await server.wait_closed()
+    print("HARNESS_BRIDGE_LOGIN_REJECTED_OK")
+
+
+async def test_bridge_reconnect_bounded():
+    attempts = []
+
+    async def fake_connect(*args, **kwargs):
+        attempts.append(1)
+        raise OSError("server down")
+
+    bridge = GameBridge("ws://127.0.0.1:1", "HarnessTest", connect_timeout=0.01)
+    with patch.object(bridge_module.websockets, "connect", fake_connect):
+        try:
+            await asyncio.wait_for(bridge._reconnect(), 5)
+        except BridgeError as exc:
+            assert "reconnect failed" in str(exc), exc
+        else:
+            raise AssertionError("expected reconnect failure")
+    assert len(attempts) == RECONNECT_ATTEMPTS, attempts
+    print("HARNESS_BRIDGE_RECONNECT_BOUNDED_OK")
+
+
 async def main():
     await test_bridge_recursion_frame()
+    await test_bridge_backlog()
+    await test_bridge_reconnect()
+    await test_bridge_login_rejected()
+    await test_bridge_reconnect_bounded()
     seen = []
     current = {"room": "town_square"}
 
@@ -239,6 +425,57 @@ async def main():
         }
         assert names == expected, names
         print("HARNESS_TOOLS_OK")
+
+        extra_cases = [
+            ("game_look", {"extra": 1}),
+            ("game_move", {"dir": "west", "extra": 1}),
+            ("game_attack", {"target": "rat", "extra": 1}),
+            ("game_take", {"item": "herb", "extra": 1}),
+            ("game_buy", {"item": "potion", "extra": 1}),
+            ("game_craft", {"recipe": "oil", "extra": 1}),
+            ("companion_script_set", {"script": "x", "extra": 1}),
+        ]
+        for index, (tool_name, args) in enumerate(extra_cases):
+            before = len(seen)
+            reply = await rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 100 + index,
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": args},
+                }
+            )
+            assert reply["error"]["code"] == -32602, reply
+            assert len(seen) == before, reply
+        print("HARNESS_TOOL_EXTRA_ARGS_OK")
+
+        for index, value in enumerate(([], "", 0, None, False)):
+            reply = await rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 200 + index,
+                    "method": "tools/call",
+                    "params": {"name": "game_look", "arguments": value},
+                }
+            )
+            assert reply["error"]["code"] == -32602, reply
+        bad_params = await rpc(
+            {"jsonrpc": "2.0", "id": 299, "method": "tools/list", "params": []}
+        )
+        assert bad_params["error"]["code"] == -32602, bad_params
+        print("HARNESS_TOOL_ARG_TYPES_OK")
+
+        no_arguments = await rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 300,
+                "method": "tools/call",
+                "params": {"name": "game_look"},
+            }
+        )
+        assert no_arguments["result"]["isError"] is False, no_arguments
+        assert {"cmd": "look"} in seen, seen
+        print("HARNESS_TOOL_MISSING_ARGS_OK")
 
         looked = await rpc(
             {
