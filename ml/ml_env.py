@@ -202,7 +202,10 @@ def market_slot_price(slots):
 
 def merchant_value(iid):
     """Gold the merchant pays for an item (mirrors cmd_sell)."""
-    return srv.ITEM_DEFS.get(iid, {}).get("value", 1) or 1
+    value = srv.ITEM_DEFS.get(iid, {}).get("value", 1) or 1
+    if iid in getattr(srv, "GATHERABLE_ITEMS", ()):
+        value = max(1, value // getattr(srv, "GATHER_BUYBACK_DIVISOR", 4))
+    return value
 
 
 def best_market_ask(orders, iid, exclude_seller=None):

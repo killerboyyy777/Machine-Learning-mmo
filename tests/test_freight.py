@@ -375,6 +375,55 @@ for iid in list(srv._ground_items("deep_forest")):
 srv.players.pop("StationHauler", None)
 print("STATION_DEATH_NO_REFUND_OK")
 
+# --- #1024: a station's namesake cannot cancel or claim its freight -----------
+
+_reset()
+for rid in srv.FREIGHT_STATION_ROOMS:
+    for iid in list(srv._ground_items(rid)):
+        srv._remove_ground(rid, iid)
+srv._add_ground(ORIGIN, ITEM)
+srv._add_ground(ORIGIN, OTHER)
+srv.tick_station_freight(time.time())
+station = _only_contract()
+assert station["poster_kind"] == "station", station
+namesake = _player(station["poster"], ORIGIN, 500, [], pid=912)
+goods = list(station["items"])
+gold0 = namesake.gold
+SENT.clear()
+_run(namesake, action="cancel", id=station["id"])
+assert station["id"] in srv.FREIGHT, srv.FREIGHT
+assert station["state"] == "open", station["state"]
+assert station["items"] == goods, station["items"]
+assert namesake.gold == gold0 and not namesake.inventory, namesake.gold
+assert any(
+    m.get("type") == "error" and "station freight" in m.get("text", "").lower()
+    for m in SENT
+), SENT
+print("STATION_NAMESAKE_CANCEL_REFUSED_OK")
+
+station["state"] = "expired"  # without the kind guard, claim would pay out here
+SENT.clear()
+_run(namesake, action="claim", id=station["id"])
+assert station["id"] in srv.FREIGHT, srv.FREIGHT
+assert namesake.gold == gold0 and not namesake.inventory, namesake.gold
+assert any(
+    m.get("type") == "error" and "station freight" in m.get("text", "").lower()
+    for m in SENT
+), SENT
+print("STATION_NAMESAKE_CLAIM_REFUSED_OK")
+
+# Positive control: the same name on a player contract can still be cancelled.
+_reset()
+real = _player(station["poster"], ORIGIN, 100, [ITEM], pid=913)
+_run(real, action="post", destination=DEST, fee=15, items=[ITEM])
+rec = _only_contract()
+assert rec["poster_kind"] == "player", rec
+_run(real, action="cancel", id=rec["id"])
+assert rec["id"] not in srv.FREIGHT, srv.FREIGHT
+assert ITEM in real.inventory, real.inventory
+assert real.gold == 100, real.gold
+print("PLAYER_NAMESAKE_CANCEL_OK")
+
 # --- expired contracts are refused until the prune settles them ---------------
 # #906: accept and deliver checked only state, so a contract past its expiry
 # could still be acted on during the prune window.

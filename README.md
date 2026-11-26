@@ -111,6 +111,8 @@ TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
 
+Gathered goods sell to merchants for a quarter of their static value (at least 1 gold); loot and crafted goods still sell for full value. Station freight settles on delivery or expiry only - even a player named after the station cannot cancel or claim it.
+
 ## Ammo
 
 A bow fires the best arrow in the ammo family you carry: Arrow (+0), Iron Arrow (+1), Steel Arrow (+2), Fire Arrow (+3) or Blood Arrow (+4). One arrow is consumed per shot, and the best variant in the family wins regardless of the order you hold them.

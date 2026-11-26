@@ -6420,6 +6420,13 @@ async def cmd_buy(player, msg):
     await send(player, stats_view(player))
 
 
+# Node output is free and respawns without limit, so retail buyback on it
+# printed gold on demand. Gathered goods pay a quarter of static value;
+# loot and crafted goods keep their full buyback.
+GATHER_BUYBACK_DIVISOR = 4
+GATHERABLE_ITEMS = frozenset(node["item"] for node in gather_nodes.values())
+
+
 async def cmd_sell(player, msg):
     iid = find_item_by_name(player.inventory, msg.get("item", ""))
     if not iid:
@@ -6430,6 +6437,8 @@ async def cmd_sell(player, msg):
         await send(player, {"type": "error", "text": "No merchant here."})
         return
     value = ITEM_DEFS.get(iid, {}).get("value", 1)
+    if iid in GATHERABLE_ITEMS:
+        value = max(1, value // GATHER_BUYBACK_DIVISOR)
     player.inventory.remove(iid)
     if player.equipped == iid and iid not in player.inventory:
         player.equipped = None
@@ -10078,6 +10087,15 @@ async def _freight_claim(player, msg):
 
 async def _freight_cancel(player, msg):
     rec = _freight_find(msg.get("id", msg.get("contract_id")))
+    if rec is not None and rec.get("poster_kind") == "station":
+        await send(
+            player,
+            {
+                "type": "error",
+                "text": "Station freight settles on delivery; there is nothing to cancel.",
+            },
+        )
+        return
     if rec is None or rec["poster"] != player.name:
         await send(player, {"type": "error", "text": "That contract is not yours."})
         return
@@ -11129,7 +11147,16 @@ async def _sweep_crossed_orders(iid):
         if best_bid is None or best_ask is None:
             return
         if best_bid["buyer"].lower() == best_ask["seller"].lower():
-            return
+            # A wash pair cannot fill, but it must not block other traders.
+            # Look past it with the same own-deal guards the entry paths use.
+            alt_bid = _best_bid_for_ask(iid, best_ask["seller"], best_ask["price"])
+            if alt_bid is not None:
+                best_bid = alt_bid
+            else:
+                alt_ask = _best_ask_for_bid(iid, best_bid["buyer"], best_bid["price"])
+                if alt_ask is None:
+                    return
+                best_ask = alt_ask
         if best_bid["price"] < best_ask["price"]:
             return
         if best_bid["ts"] <= best_ask["ts"]:
