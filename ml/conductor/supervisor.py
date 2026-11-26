@@ -153,11 +153,19 @@ class AgentTask:
         self.policy_fn = policy_fn
         self.max_steps = max_steps
         # Per-step learning hook (#292, slice 5/6): called as
-        # hook(prev_obs, action, reward, next_obs, done) after every env
-        # step; wires the transition into LinearQAgent.update /
-        # TorchDQNAgent.store+learn (dead code from the conductor until
-        # now). Never raises (guarded per call); None disables.
+        # hook(prev_obs, action, reward, next_obs, done, next_mask) for
+        # hooks that accept the next-state mask; older five-arg hooks keep
+        # the original call. Never raises (guarded per call); None disables.
         self.learn_hook = learn_hook
+        self._learn_takes_mask = False
+        if learn_hook is not None:
+            try:
+                params = inspect.signature(learn_hook).parameters.values()
+                self._learn_takes_mask = len(params) >= 6 or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+                )
+            except (TypeError, ValueError):
+                pass
         # Plugin reward hook (#68). Lives on the env, not here: the reward
         # is computed inside env.step(), before the supervisor sees it, so
         # this is a carrier handed over in start_agent and attached to the
@@ -353,8 +361,19 @@ class AgentTask:
                         )
                     self.steps += 1
                     if self.learn_hook is not None:
+                        next_mask = None
+                        if self._learn_takes_mask:
+                            try:
+                                next_mask = self.env.valid_action_mask()
+                            except Exception:
+                                pass
                         try:
-                            self.learn_hook(prev_obs, action, reward, obs, done)
+                            if self._learn_takes_mask:
+                                self.learn_hook(
+                                    prev_obs, action, reward, obs, done, next_mask
+                                )
+                            else:
+                                self.learn_hook(prev_obs, action, reward, obs, done)
                         except Exception:
                             pass
                     if self.transcript_writer is not None:
@@ -797,8 +816,12 @@ class Supervisor:
             self._drop_specs((agent_id,))
         await self._shutdown(at)
 
-    async def restart_agent(self, agent_id, hparams=None):
+    async def restart_agent(self, agent_id, hparams=None, env_factory=None):
         """Stop + relaunch with the stored specs (PBT exploit, #228).
+
+        An explicit env_factory replaces the stored one for this launch and
+        every later restart, so the conductor can re-target an agent's env
+        without rebuilding the slot (#1019).
 
         The stored policy closure is NOT reused: it closes over the
         plugin instance that loaded the pre-exploit weights, so relaunching
@@ -838,7 +861,7 @@ class Supervisor:
             transcript_started = at.transcript_writer.started
         await self._shutdown(at)
         (
-            env_factory,
+            stored_env_factory,
             policy_fn,
             max_steps,
             step_timeout,
@@ -848,6 +871,8 @@ class Supervisor:
             policy_timeout,
             telemetry,
         ) = spec
+        if env_factory is None:
+            env_factory = stored_env_factory
         if policy_factory is not None:
             try:
                 built = policy_factory(entry.checkpoint_path, hparams or {})

@@ -36,6 +36,7 @@ jobs:
       - run: python tests/test_quest_grind.py
       - run: python tests/test_snapshot_additions.py
       - run: python tests/test_conductor.py
+      - run: python tests/test_audit_fixes.py
       - run: python tests/test_reward_modes.py
       - run: python tests/test_scripted_bots.py
       - run: python tests/test_pbt.py

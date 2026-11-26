@@ -117,12 +117,12 @@ class AgentPlugin:
     goal_dim = None  # goal-vector width this policy consumes (None =
     # ignores-goals; slice 6/6 wires goal-conditioned policies in).
 
-    def learn(self, prev_obs, action, reward, next_obs, done):
+    def learn(self, prev_obs, action, reward, next_obs, done, next_mask=None):
         """Per-step learning hook (#292, slice 5/6). Called by the
         supervisor after every env step as
-        ``hook(prev_obs, action, reward, next_obs, done)``; returns a
-        loss-ish float or None. Base default: no learning (scripted
-        policies). Exceptions never propagate (supervisor guards)."""
+        ``hook(prev_obs, action, reward, next_obs, done, next_mask)``;
+        returns a loss-ish float or None. Base default: no learning
+        (scripted policies). Exceptions never propagate (supervisor guards)."""
         return None  # noqa: RET501 - documented as "returns None or a float"
 
     def save(self, path):

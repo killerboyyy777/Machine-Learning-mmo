@@ -18,11 +18,12 @@ class Mixer:
         self._floor_agents = {f: [] for f in floor_ids}  # agent_ids per floor
         self._cursor = 0  # round-robin cursor shared by assign calls
 
-    def assign_one(self, agent_id):
+    def assign_one(self, agent_id, floor=None):
         """Assign one agent, continuing round-robin across calls (so single
         arrivals spread over floors instead of piling on floor zero)."""
-        floor = self.floor_ids[self._cursor % len(self.floor_ids)]
-        self._cursor += 1
+        if floor is None:
+            floor = self.floor_ids[self._cursor % len(self.floor_ids)]
+            self._cursor += 1
         self._floor_agents[floor].append(agent_id)
         return floor
 
@@ -69,10 +70,15 @@ class Mixer:
         if total_agents == 0:
             return moves
 
-        total_mean = sum(floor_means.values()) or 1
+        # Anchor at zero only when at least one mean is negative: an affine
+        # shift preserves which floor is better, while leaving the
+        # positive-only allocation unchanged.
+        baseline = min(0.0, min(floor_means.values(), default=0.0))
+        adjusted = {f: floor_means[f] - baseline for f in self.floor_ids}
+        total_mean = sum(adjusted.values()) or 1
         target = {}
         for f in self.floor_ids:
-            prop = floor_means[f] / total_mean
+            prop = adjusted[f] / total_mean
             target[f] = max(
                 self.min_per_floor, min(self.max_per_floor, int(prop * total_agents))
             )

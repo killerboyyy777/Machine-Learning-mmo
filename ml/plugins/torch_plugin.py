@@ -52,7 +52,7 @@ class TorchPlugin(AgentPlugin):
     def act(self, obs, agent_id, mask=None):
         return self._agent.act(flatten_obs(obs), self.epsilon, mask)
 
-    def learn(self, prev_obs, action, reward, next_obs, done):
+    def learn(self, prev_obs, action, reward, next_obs, done, next_mask=None):
         """Store every transition; learn every K shared slot steps."""
         self._agent.store(
             {
@@ -61,6 +61,7 @@ class TorchPlugin(AgentPlugin):
                 "reward": reward,
                 "next_state": flatten_obs(next_obs),
                 "done": done,
+                "next_mask": next_mask,
             }
         )
         self._shared_learn_steps += 1

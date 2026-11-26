@@ -149,9 +149,7 @@ class Conductor:
             # startup wave so they do not silently count against the cap
             # (#995).
             self._pending_resume = [a.agent_id for a in self.registry.alive_agents()]
-        self.mixer = Mixer(
-            self.registry, floors or ["town_square", "graveyard", "d_10_f1"]
-        )
+        self.mixer = Mixer(self.registry, floors or ["town_square", "graveyard", "d1"])
         self.metrics = MetricsLogger(str(self.base_dir / "metrics.jsonl"))
         self.churn = ChurnManager(
             self.registry, arrivals_per_minute, mean_lifetime_episodes
@@ -174,6 +172,7 @@ class Conductor:
         self._slots = [_materialize_slot(s, url) for s in raw_slots]
         self._cycle = [i for i, s in enumerate(self._slots) for _ in range(s["weight"])]
         self._cursor = 0
+        self._agent_slots = {}  # agent_id -> slot that spawned it (floor moves)
         # PBT is opt-in: pass a dict of PBTManager kwargs (e.g. {}) to
         # enable exploit/explore rounds, or None to run without a population.
         self.pbt = (
@@ -248,6 +247,8 @@ class Conductor:
             )
             if not started:
                 self.registry.mark_dead(agent_id)
+                return False
+            self._agent_slots[agent_id] = slot
             return started
         except Exception as e:
             try:
@@ -256,6 +257,42 @@ class Conductor:
                 pass
             self.registry.mark_dead(agent_id)
             return False
+
+    def _floor_env_factory(self, slot, floor):
+        """Build the slot's env with a floor target for a reallocated agent."""
+        base = slot["env_factory"]
+        if floor.startswith("d") and floor[1:].isdigit():
+            try:
+                from server import DUNGEON_ENTRANCE_ROOM
+            except ImportError:
+                DUNGEON_ENTRANCE_ROOM = "graveyard"
+            spawn_room = DUNGEON_ENTRANCE_ROOM
+        else:
+            spawn_room = floor
+
+        def factory(agent_id):
+            env = base(agent_id)
+            env.floor_target = floor
+            env.spawn_room = spawn_room
+            return env
+
+        return factory
+
+    async def _apply_moves(self, moves):
+        """Restart moved agents on their new floors; return applied moves."""
+        applied = []
+        for aid, old, new in moves:
+            slot = self._agent_slots.get(aid)
+            if slot is None:
+                continue
+            factory = self._floor_env_factory(slot, new)
+            if not await self.supervisor.restart_agent(aid, env_factory=factory):
+                self._agent_slots.pop(aid, None)
+                continue
+            self.mixer.remove_agent(aid)
+            self.mixer.assign_one(aid, floor=new)
+            applied.append((aid, old, new))
+        return applied
 
     async def _resume_live_entries(self):
         """Restart tasks for entries restored by registry.load() (#995).
@@ -410,9 +447,19 @@ class Conductor:
             if now - last_rebalance >= rebalance_interval:
                 moves = self.mixer.rebalance()
                 if moves:
+                    applied = await self._apply_moves(moves)
                     self.metrics.log_rebalance(moves)
+                    if applied:
+                        self.metrics.log(
+                            "rebalance_applied",
+                            moves=[
+                                {"agent": a, "from": f, "to": t} for a, f, t in applied
+                            ],
+                        )
                     if self.structured_log is not None:
-                        self.structured_log.log("rebalance", moves=moves)
+                        self.structured_log.log(
+                            "rebalance", moves=moves, applied=applied
+                        )
                 last_rebalance = now
 
             # Periodic PBT exploit/explore (no-op when disabled)

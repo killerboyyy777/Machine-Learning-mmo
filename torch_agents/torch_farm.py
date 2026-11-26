@@ -143,34 +143,36 @@ class TorchFarm:
             return
         if not force and self.steps - self.last_save_step < self.args.save_every:
             return
+        saved_steps = self.steps
         self.agent.save_weights(self.args.weights)
-        self.last_save_step = self.steps
-        # Sidecar write leaves the event loop: blocking open() in async
-        # context trips ASYNC230 and stalls runners on slow disks.
+        self.last_save_step = saved_steps
 
+        # Sidecar write leaves the event loop: blocking open() in async
+        # context trips ASYNC230 and stalls runners on slow disks. The step
+        # is captured before the await: runners keep advancing self.steps
+        # while this thread runs, but the file describes saved weights.
         def _write_state():
             try:
                 with open(self._farm_state_path, "w") as f:
-                    json.dump(
-                        {"steps": self.steps, "last_save_step": self.last_save_step}, f
-                    )
+                    json.dump({"steps": saved_steps, "last_save_step": saved_steps}, f)
             except OSError:
                 pass
-            self._sample_run()
+            self._sample_run(saved_steps)
 
         await asyncio.to_thread(_write_state)
 
-    def _sample_run(self):
+    def _sample_run(self, steps=None):
         """One run-log sample per checkpoint (#65).  Score is the run's best so
         far: a mean over runners would move with fleet churn and read as noise
         next to the checkpoint the manifest points at.  -inf before the first
         improvement is stored as null rather than as -Infinity (not JSON)."""
         if self.run is None:
             return
+        saved = self.steps if steps is None else steps
         best = self.last_best_score
         self.run.record(
-            steps=self.steps - self.base_steps,
-            total_steps=self.steps,
+            steps=saved - self.base_steps,
+            total_steps=saved,
             score=None if best == float("-inf") else best,
         )
 
