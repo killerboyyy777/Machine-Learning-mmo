@@ -5,7 +5,7 @@
 
 A small, hackable text MMORPG engine. It needs Python 3.12 or newer; CI covers 3.12 and 3.14. Rooms, NPCs, items, loot, respawns, parties, a player market, instanced dungeons, and 1v1 and 2v2 arena matches all run over WebSocket with plain JSON messages. Because the protocol is just JSON, a human, a bot, and an LLM agent look identical to the server on the game port; GM control is a separate loopback-only surface.
 
-On top sits an ML stack: a Gym-style environment with (220 obs dims, 67 actions), linear and DQN agents with curiosity and PBT, scripted baselines, a 50-agent conductor, and deterministic evaluation.
+On top sits an ML stack: a Gym-style environment with (224 obs dims, 67 actions), linear and DQN agents with curiosity and PBT, scripted baselines, a 50-agent conductor, and deterministic evaluation.
 
 > A human designs and leads this project. AI coding assistants wrote much of the implementation.
 
@@ -104,6 +104,14 @@ echo '{}' > scores.json
 TEXTMMO_GM_SEED=700 python3 server.py   # terminal 1 (fresh world)
 python3 tests/test_live.py              # terminal 2 (protocol E2E)
 ```
+
+## Ammo
+
+A bow fires the best arrow in the ammo family you carry: Arrow (+0), Iron Arrow (+1), Steel Arrow (+2), Fire Arrow (+3) or Blood Arrow (+4). One arrow is consumed per shot, and the best variant in the family wins regardless of the order you hold them.
+
+Fire Arrows set the target ablaze for two world ticks, chipping 2 HP per tick. The burn cannot land the killing blow, so loot, gold and credit stay with direct shots. Blood Arrows restore 2 HP to the shooter on each hit, capped at maximum HP. Both effects ride on top of the flat bonus and are crafted with the `fire_arrows` and `blood_arrows` recipes.
+
+`stats` lists the count of every ammo variant, including zero counts, and the dashboard Players table and character tracker show the same view. The ML observation's `ammo_best_norm` scales the best loaded bonus by the family maximum (4), so it stays in [0, 1] as variants are added.
 
 ## Drop-in agents
 

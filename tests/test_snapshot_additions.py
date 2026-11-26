@@ -126,11 +126,12 @@ def test_recent_turnins():
 
 
 def test_recipes_snapshot():
-    # 3. Recipes key: 20 precomputed views present with resolved item names
-    # (17 base + 2 wild-only craftables, #424; + 1 companion craftable, #532).
+    # 3. Recipes key: 22 precomputed views present with resolved item names
+    # (17 base + 2 wild-only craftables, #424; + 1 companion craftable, #532;
+    # + 2 effect-ammo recipes).
     snap = srv.world_snapshot()
     recipes = snap.get("recipes", [])
-    assert len(recipes) == 20, f"Expected 20 recipe views, got {len(recipes)}"
+    assert len(recipes) == 22, f"Expected 22 recipe views, got {len(recipes)}"
 
     for r in recipes:
         assert "id" in r and isinstance(r["id"], str)
