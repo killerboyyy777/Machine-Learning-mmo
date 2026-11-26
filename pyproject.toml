@@ -15,6 +15,10 @@ dependencies = ["websockets==17.4", "rich==15.0.0"]
 [project.scripts]
 small-text-mmo = "start:main"
 
+[project.urls]
+Homepage = "https://github.com/killerboyyy777/Machine-Learning-mmo"
+Repository = "https://github.com/killerboyyy777/Machine-Learning-mmo"
+
 [tool.setuptools]
 py-modules = ["server", "start", "config_schema", "config_write"]
 packages = ["ml", "ml.conductor", "ml.modes", "ml.plugins", "torch_agents", "tui", "harness"]

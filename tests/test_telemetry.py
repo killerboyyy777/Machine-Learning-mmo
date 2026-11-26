@@ -16,7 +16,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from ml.conductor import AgentTask, Conductor  # noqa: E402
+from ml.conductor import AgentTask, Conductor, Supervisor  # noqa: E402
 from ml.conductor.soak import _truthy_env  # noqa: E402
 from ml.ml_env import TextMMOEnv  # noqa: E402
 from ml.telemetry import (  # noqa: E402
@@ -271,6 +271,93 @@ def test_source_guard():
     print("SOURCE_GUARD_OK")
 
 
+class _RestartEnv:
+    """One step per episode; suspends so the task loop can advance."""
+
+    async def reset(self):
+        await asyncio.sleep(0)
+        return {"obs": 0}
+
+    async def step(self, action):
+        await asyncio.sleep(0)
+        return {"obs": 1}, 1.0, True, {}
+
+
+class _RestartRegistry:
+    def __init__(self):
+        self.entry = type(
+            "Entry", (), {"alive": True, "goal": None, "checkpoint_path": ""}
+        )()
+
+    def get(self, agent_id):
+        return self.entry
+
+    def record_episode(self, agent_id, reward):
+        pass
+
+
+def test_survives_restart():
+    async def run():
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "telemetry.jsonl")
+            collector = Telemetry(True, path)
+            sup = Supervisor(_RestartRegistry())
+            started = await sup.start_agent(
+                "restart-1",
+                lambda aid: _RestartEnv(),
+                lambda obs, aid: 0,
+                max_steps=1,
+                telemetry=collector,
+            )
+            assert started is True
+            assert sup._tasks["restart-1"].telemetry is collector
+            await asyncio.sleep(0.05)
+            before = [
+                row for row in collector.samples if row.get("agent_id") == "restart-1"
+            ]
+            assert before, collector.samples
+            assert {row["event"] for row in before} >= {
+                "env_reset_ms",
+                "agent_step_ms",
+            }
+
+            assert await sup.restart_agent("restart-1") is True
+            assert sup._tasks["restart-1"].telemetry is collector
+            assert sup._specs["restart-1"][8] is collector
+            await asyncio.sleep(0.05)
+            after = [
+                row for row in collector.samples if row.get("agent_id") == "restart-1"
+            ]
+            assert len(after) > len(before), (len(before), len(after))
+            assert {row["event"] for row in after[len(before) :]} >= {
+                "env_reset_ms",
+                "agent_step_ms",
+            }
+            with open(path, encoding="utf-8") as fh:
+                rows = [json.loads(line) for line in fh if line.strip()]
+            assert rows == after
+
+            # No telemetry arg means no telemetry, before and after restart.
+            plain = Supervisor(_RestartRegistry())
+            assert (
+                await plain.start_agent(
+                    "off-1",
+                    lambda aid: _RestartEnv(),
+                    lambda obs, aid: 0,
+                    max_steps=1,
+                )
+                is True
+            )
+            assert plain._specs["off-1"][8] is None
+            assert await plain.restart_agent("off-1") is True
+            assert plain._tasks["off-1"].telemetry is None
+            await plain.stop_all()
+            await sup.stop_all()
+
+    asyncio.run(run())
+    print("TELEMETRY_RESTART_OK")
+
+
 if __name__ == "__main__":
     test_default_off()
     test_on_records_json_safe()
@@ -278,4 +365,5 @@ if __name__ == "__main__":
     test_nonfinite_samples_skipped()
     test_rtt_stub()
     test_source_guard()
+    test_survives_restart()
     print("ALL_TELEMETRY_OK")
