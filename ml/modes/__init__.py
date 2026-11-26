@@ -110,6 +110,11 @@ class BaseMode:
             # None). Otherwise it is just another wrong type: passing
             # kill_points=None must fail here, not as a TypeError inside
             # score_kill three events later.
+            if value is None and default is not None:
+                raise ValueError(
+                    f"bad config {key}=None for mode {self.name!r}: "
+                    f"None not allowed when default is {default!r}"
+                )
             if (
                 coerce is not None
                 and not isinstance(value, coerce)

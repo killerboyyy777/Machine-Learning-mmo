@@ -380,6 +380,13 @@ def read_samples(root, run_id):
     return out
 
 
+def _num(value):
+    """Float for a real number, None for bool and everything else."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def list_runs(root=None):
     """Every run in the index, newest first.  A directory without a readable
     manifest, or a run.json from an older shape, is skipped rather than
@@ -396,11 +403,14 @@ def list_runs(root=None):
         m = read_run(root, name)
         if not isinstance(m, dict):
             continue
+        started = _num(m.get("started"))
+        if started is None:
+            continue  # a bad start cannot age or sort; skip the whole run
         m.setdefault("run_id", name)
         m.setdefault("metrics", {})
         # A run that was never closed (killed trainer) still has to age.
         if not m.get("ended"):
-            m["elapsed"] = round(time.time() - (m.get("started") or time.time()), 3)
+            m["elapsed"] = round(time.time() - (started or time.time()), 3)
         runs.append(m)
     runs.sort(
         key=lambda r: (r.get("started") or 0, r.get("run_id") or ""), reverse=True

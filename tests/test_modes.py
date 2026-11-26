@@ -204,6 +204,14 @@ for bad_value in ("bad", None, [1], {"k": 1}, object()):
     )
 assert instantiate("arena", kill_points=25).kill_points == 25.0
 assert instantiate("arena", kill_points="12").kill_points == 12.0
+# str(None) is the literal "None", so a string knob with a real default
+# would silently keep a value it can never use unless None is refused here.
+rejects(
+    ValueError,
+    lambda: instantiate("arena", staging_room=None),
+    "None accepted for a string knob with a non-None default",
+)
+assert instantiate("arena", staging_room="arena_foyer").staging_room == "arena_foyer"
 print("CONFIG_TYPES_OK")
 
 # --- arena config: kill value is tunable, ledger follows it ---
