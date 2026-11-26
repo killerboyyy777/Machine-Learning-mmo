@@ -37,10 +37,15 @@ class LinearPlugin(AgentPlugin):
     def act(self, obs, agent_id, mask=None):
         return self._agent.act(flatten_obs(obs), self.epsilon, mask)
 
-    def learn(self, prev_obs, action, reward, next_obs, done):
+    def learn(self, prev_obs, action, reward, next_obs, done, next_mask=None):
         """One Q-learning step on this transition (#292)."""
         return self._agent.update(
-            flatten_obs(prev_obs), action, reward, flatten_obs(next_obs), done
+            flatten_obs(prev_obs),
+            action,
+            reward,
+            flatten_obs(next_obs),
+            done,
+            mask=next_mask,
         )
 
     def save(self, path):

@@ -791,7 +791,7 @@ async def _maybe_start_check():
     assert cond.mixer._floor_agents == {
         "town_square": [],
         "graveyard": [],
-        "d_10_f1": [],
+        "d1": [],
     }
     cond2 = Conductor(
         os.path.join(tmp2, "c2"),
