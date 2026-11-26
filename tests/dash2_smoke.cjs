@@ -7,10 +7,9 @@
 // sort-flip, seq-sort, and the north-up GEO + tile OVERLAP proofs against
 // real world.json exits. Any throw or failed assertion exits nonzero.
 //
-// Run manually from the repo root (requires node, no dependencies):
+// Run from the repo root (requires node, no dependencies):
 //     node tests/dash2_smoke.cjs
-// NOT wired into CI (python-only workflows); the python contract suite
-// tests/test_dashboard.py covers markup statically.
+// CI runs this in the node-harness job (.github/workflows/tests.yml).
 const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
@@ -222,16 +221,19 @@ if (PERF.htmlWrites || sandbox.uPlot.updated || PERF.sized || PERF.mapRepaints) 
 
 // seq sort: gather(seq5) before craft(seq3) despite equal times.
 const feedHtml = els["agentActivity"]._html;
-if (feedHtml.indexOf("gather") > feedHtml.indexOf("craft")) {
+if (!feedHtml.includes("gather") || !feedHtml.includes("craft") ||
+    feedHtml.indexOf("gather") > feedHtml.indexOf("craft")) {
   failed++; console.error("FAIL seq-sort not newest-first");
 }
 // Sort flip: orders default price-asc (9 before 12); flip col 3 desc.
 const oAsc = els["orders"]._html;
-if (oAsc.indexOf(">9<") > oAsc.indexOf(">12<")) { failed++; console.error("FAIL orders default not price-asc"); }
+if (!oAsc.includes(">9<") || !oAsc.includes(">12<") ||
+    oAsc.indexOf(">9<") > oAsc.indexOf(">12<")) { failed++; console.error("FAIL orders default not price-asc"); }
 vm.runInContext('sortState["orders"] = {col: 3, dir: -1}', sandbox);
 vm.runInContext("renderMarket", sandbox)(live.market);
 const oDesc = els["orders"]._html;
-if (oDesc.indexOf(">9<") < oDesc.indexOf(">12<")) { failed++; console.error("FAIL orders flip not price-desc"); }
+if (!oDesc.includes(">9<") || !oDesc.includes(">12<") ||
+    oDesc.indexOf(">9<") < oDesc.indexOf(">12<")) { failed++; console.error("FAIL orders flip not price-desc"); }
 // Recipe spec: ingredients column last + result-asc default. Scoped to
 // the recipe table: other tables (e.g. craft history) may reuse the
 // "result" header word without affecting the recipe spec.
@@ -241,7 +243,8 @@ if (thOrder.join(",") !== "result,tier,category,ingredients") {
   failed++; console.error("FAIL recipe column order: " + thOrder.join(","));
 }
 const rHtml = els["recipeRows"]._html;
-if (rHtml.indexOf("Herb Tea") > rHtml.indexOf("Iron Plate")) {
+if (!rHtml.includes("Herb Tea") || !rHtml.includes("Iron Plate") ||
+    rHtml.indexOf("Herb Tea") > rHtml.indexOf("Iron Plate")) {
   failed++; console.error("FAIL recipe default not result-asc");
 }
 // Quest chain text present.
@@ -258,7 +261,8 @@ if (els["st-lowask"]._text !== "9g") { failed++; console.error("FAIL steam lowas
 // Commissions board: newest-first default (#2 before #1), open tagged,
 // posted-age rendered from created_ts.
 const cHtml = els["commissions"]._html;
-if (cHtml.indexOf("#2") > cHtml.indexOf("#1")) { failed++; console.error("FAIL commissions not newest-first"); }
+if (!cHtml.includes("#2") || !cHtml.includes("#1") ||
+    cHtml.indexOf("#2") > cHtml.indexOf("#1")) { failed++; console.error("FAIL commissions not newest-first"); }
 if (!cHtml.includes(">open<") || !cHtml.includes("wolf")) { failed++; console.error("FAIL commissions content"); }
 if (!cHtml.includes(" ago</td>")) { failed++; console.error("FAIL commissions posted-age missing"); }
 // ---- Guilds tab (#588) -----------------------------------------------
@@ -287,7 +291,9 @@ vm.runInContext("renderGuilds", sandbox)({
 if (els["guild-count"]._text !== "1" || els["guild-vault-gold"]._text !== "120") {
   failed++; console.error("FAIL guild totals");
 }
-if (els["guildFeed"]._html.indexOf("#2") > els["guildFeed"]._html.indexOf("#1")) {
+const gHtml = els["guildFeed"]._html;
+if (!gHtml.includes("#2") || !gHtml.includes("#1") ||
+    gHtml.indexOf("#2") > gHtml.indexOf("#1")) {
   failed++; console.error("FAIL guild feed not newest-first");
 }
 if (els["noGuilds"].style.display !== "none" || els["noGuildFeed"].style.display !== "none") {
@@ -619,6 +625,11 @@ async function geoCase() {
   { id: "crypt_hall", exits: { up: "graveyard" } },
 ];
 const layout = vm.runInContext("mapLayout", sandbox)(geoRooms);
+const missing = geoRooms.filter(r => !layout.positions[r.id]).map(r => r.id);
+if (missing.length) {
+  console.error(`GEO_FAIL rooms not positioned: ${missing.join(",")}`);
+  process.exit(1);
+}
 let geoFail = 0;
 for (const r of geoRooms) {
   for (const [dir, target] of Object.entries(r.exits)) {

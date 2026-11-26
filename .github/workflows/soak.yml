@@ -29,7 +29,18 @@ jobs:
       - run: pip install websockets==17.4
       - run: echo '{}' > scores.json
       - run: TEXTMMO_GM_SEED=700 nohup python server.py --config ml/conductor/soak_server_config.json > server.soak.log 2>&1 &
-      - run: sleep 5
+      - name: Wait for server health
+        run: |
+          for i in $(seq 1 60); do
+            if curl --silent --fail http://127.0.0.1:8766/health > /dev/null; then
+              echo "SERVER_HEALTHY after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server did not answer /health within 60s"
+          cat server.soak.log
+          exit 1
       - run: python ml/conductor/soak.py --agents ${{ inputs.agents || 50 }} --duration ${{ inputs.duration || 3600 }} --min-agents 40 --server-log server.soak.log --slot linear --slot linear --slot gather --slot dungeon --slot market --slot commissioner
       - uses: actions/upload-artifact@v7
         if: always()
