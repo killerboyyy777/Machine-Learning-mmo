@@ -98,6 +98,7 @@ jobs:
       - run: python tests/test_source_policy.py
       - run: python tests/test_structured_log.py
       - run: python tests/test_wheel_assets.py
+      - run: python tests/test_data_dir.py
       - run: python tests/test_ci_config.py
       - run: python tests/test_arena_probe.py
       - run: python tests/test_diversity.py
