@@ -519,6 +519,23 @@ async def main():
     assert healed["result"]["isError"] is False, f"HEAL failed: {healed}"
     print("HEAL: OK - healed")
 
+    missing_version = await rpc({"id": 19, "method": "ping"})
+    assert (
+        missing_version["error"]["code"] == -32600
+    ), f"missing version: {missing_version}"
+    assert missing_version["id"] == 19, f"missing version id: {missing_version}"
+    print("JSONRPC_VERSION_MISSING: OK - rejected with -32600")
+
+    wrong_version = await rpc({"jsonrpc": "1.0", "id": 20, "method": "ping"})
+    assert wrong_version["error"]["code"] == -32600, f"wrong version: {wrong_version}"
+    assert wrong_version["id"] == 20, f"wrong version id: {wrong_version}"
+    print("JSONRPC_VERSION_WRONG: OK - rejected with -32600")
+
+    await rpc({"jsonrpc": "1.0", "method": "ping"})
+    valid_version = await rpc({"jsonrpc": "2.0", "id": 21, "method": "ping"})
+    assert valid_version.get("result") == {}, f"valid version: {valid_version}"
+    print("JSONRPC_VERSION_VALID: OK - accepted")
+
     proc.stdin.close()
     await proc.wait()
     server.close()
