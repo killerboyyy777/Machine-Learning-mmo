@@ -4404,6 +4404,10 @@ def find_item_by_name(item_ids, name_fragment):
         return None
     for iid in item_ids:
         name = ITEM_DEFS.get(iid, {}).get("name", iid)
+        if frag == name.lower() or frag == iid.lower():
+            return iid
+    for iid in item_ids:
+        name = ITEM_DEFS.get(iid, {}).get("name", iid)
         if frag in name.lower() or frag in iid.lower():
             return iid
     return None
@@ -5861,6 +5865,17 @@ async def cmd_use(player, msg):
         )
         return
     player.inventory.remove(iid)
+    if heal > 0:
+        recovered = heal * _companion_heal_mult(player)
+        before = player.hp
+        player.hp = min(player.max_hp, player.hp + recovered)
+        await send(
+            player,
+            {
+                "type": "message",
+                "text": f"You use {_iname(iid)} and recover {player.hp - before} HP.",
+            },
+        )
     if effect:
         category = effect["category"]
         player.active_buffs[category] = {
@@ -5876,18 +5891,6 @@ async def cmd_use(player, msg):
                 f"({player.active_buffs[category]['remaining']} actions).",
             },
         )
-        await send(player, stats_view(player))
-        return
-    heal = float(definition.get("heal_amount", 0)) * _companion_heal_mult(player)
-    before = player.hp
-    player.hp = min(player.max_hp, player.hp + heal)
-    await send(
-        player,
-        {
-            "type": "message",
-            "text": f"You use {_iname(iid)} and recover {player.hp - before} HP.",
-        },
-    )
     await send(player, stats_view(player))
 
 
