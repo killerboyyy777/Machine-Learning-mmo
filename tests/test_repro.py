@@ -81,6 +81,24 @@ def make_rows():
     ]
 
 
+def make_episode_rows():
+    """Two episodes of one incarnation, steps restarting at 0, unsorted."""
+
+    def row(episode, step):
+        return {
+            "agent_id": "a1",
+            "episode": episode,
+            "step": step,
+            "incarnation": 0,
+            "action": episode * 10 + step,
+            "reward": float(episode),
+            "prev_obs": {"hp": 10},
+            "obs": {"hp": 10 - step},
+        }
+
+    return [row(2, 1), row(1, 0), row(2, 0), row(1, 1)]
+
+
 def test_compact_repro_filters_sorts_and_diffs():
     rows = make_rows()
     repro = compact_repro(rows, agent_id="a1", episode=1, defect_class="gold_spike")
@@ -117,6 +135,28 @@ def test_compact_repro_incarnation_and_max_steps():
         (0, 1),
     ]
     print("REPRO_LIMIT_OK")
+
+
+def test_compact_repro_orders_episodes_before_steps():
+    rows = make_episode_rows()
+    repro = compact_repro(rows, agent_id="a1")
+    assert [(s["episode"], s["step"]) for s in repro["steps"]] == [
+        (1, 0),
+        (1, 1),
+        (2, 0),
+        (2, 1),
+    ]
+    assert "episode" in repro["steps"][0], "each step carries its episode"
+    limited = compact_repro(rows, agent_id="a1", max_steps=2)
+    assert [(s["episode"], s["step"]) for s in limited["steps"]] == [
+        (1, 0),
+        (1, 1),
+    ]
+    # The old (incarnation, step) sort spliced episodes together; it must hash
+    # differently from the timeline order so dedup cannot merge the two.
+    spliced = sorted(repro["steps"], key=lambda s: (s["incarnation"], s["step"]))
+    assert repro["fingerprint"] != repro_fingerprint(spliced)
+    print("REPRO_EPISODE_ORDER_OK")
 
 
 def test_compact_repro_empty_and_bad_rows():
@@ -229,6 +269,7 @@ def test_redteam_writes_retrievable_findings_to_out_dir():
 def main():
     test_compact_repro_filters_sorts_and_diffs()
     test_compact_repro_incarnation_and_max_steps()
+    test_compact_repro_orders_episodes_before_steps()
     test_compact_repro_empty_and_bad_rows()
     test_repro_round_trip_does_not_overwrite_source()
     test_redteam_plugin_contract()
