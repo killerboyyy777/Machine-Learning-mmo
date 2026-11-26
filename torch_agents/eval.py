@@ -284,7 +284,7 @@ def compare(champ_scores, base_scores, alpha=0.05, min_n=5, isolated=True):
         return out
     if sd == 0.0:
         out.update(
-            t=float("inf") if mean_d != 0.0 else 0.0,
+            t=math.copysign(float("inf"), mean_d) if mean_d != 0.0 else 0.0,
             p_value=0.0 if mean_d != 0.0 else 1.0,
             cohen_d=(
                 float("inf") if mean_d > 0 else (float("-inf") if mean_d < 0 else 0.0)

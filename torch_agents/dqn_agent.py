@@ -673,10 +673,11 @@ class TorchDQNAgent:
                     f"Checkpoint {path} used td_clip={float(saved_clip)}, this run "
                     f"uses {self.td_clip}."
                 )
-        except RuntimeError as e:
-            # Shape mismatch: e.g. checkpoints saved before the quest block
-            # grew OBS_SIZE/N_ACTIONS (or changed head count). Warn and keep
-            # the fresh network instead of crashing the run.
+        except Exception as e:
+            # Checkpoint bytes are untrusted: a shape mismatch, a truncated
+            # file, or plain garbage can surface as any number of exception
+            # types across torch versions. Keep the fresh network instead of
+            # crashing startup.
             print(
                 f"Weights at {path} don't match current obs/action size "
                 f"(OBS_SIZE={OBS_SIZE}, N_ACTIONS={N_ACTIONS}), starting fresh: {e}"
