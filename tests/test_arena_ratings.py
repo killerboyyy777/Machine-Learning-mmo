@@ -425,6 +425,38 @@ async def main():
         assert rating_of("DcTiedStay") > srv.ARENA_RATING_DEFAULT, row
         print("DISCONNECT_TIED_OK")
 
+        # --- A GM teleport forfeits the fighter, leaving no ghost in the pit -
+        # _arena_live counts by login, not room: a teleported fighter still in
+        # the roster dodges attacks and can win on the clock.
+        for name in ("TeleportQuit", "TeleportStay"):
+            srv.ARENA_RATINGS.pop(name.lower(), None)
+        tele_duel = mk_match(1, ["TeleportQuit", "TeleportStay"])
+        quitter = srv.players[63000]
+        stayer = srv.players[63001]
+        gm = mkplayer("TeleportGM", 63222)
+        before_stay = rating_of("TeleportStay")
+        saved_treasury = srv.tax_treasury
+        srv.tax_treasury = 100.0
+        try:
+            await srv.cmd_gm_teleport(gm, {"player": "TeleportQuit", "room": "market"})
+            assert quitter.arena_match == 0 and quitter.arena_team == 0
+            assert quitter.id not in tele_duel.players
+            assert tele_duel.id not in srv.ARENA_MATCHES
+            assert quitter.room == "market", "match finish must not undo the teleport"
+            assert stayer.room == "town_square", stayer.room
+            row = srv.ARENA_HISTORY[-1]
+            assert row["winner"] == 2 and row["match_id"] == tele_duel.id, row
+            assert "TeleportQuit" in row["teams"]["team1"], row
+            quit_row = srv.ARENA_RATINGS["teleportquit"]
+            assert (quit_row["wins"], quit_row["losses"]) == (0, 1), quit_row
+            assert rating_of("TeleportQuit") < srv.ARENA_RATING_DEFAULT
+            stay_gain = round(rating_of("TeleportStay") - before_stay, 2)
+            quit_delta = round(rating_of("TeleportQuit") - srv.ARENA_RATING_DEFAULT, 2)
+            assert stay_gain > 0 and round(stay_gain + quit_delta, 2) == 0.0
+        finally:
+            srv.tax_treasury = saved_treasury
+        print("GM_TELEPORT_FORFEIT_OK")
+
         # --- A first win cannot outrank an established record -------------
         srv.ARENA_RATINGS.clear()
         srv.ARENA_RATINGS["luckyshot"] = {

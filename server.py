@@ -11460,6 +11460,11 @@ async def cmd_gm_teleport(player, msg):
         return
     if not await _spend_tax(player, GM_TELEPORT_COST, f"teleport {target.name}"):
         return
+    match = match_for_player(target)
+    if match is not None:
+        # _arena_live counts by login, not room: without a forfeit the mover
+        # dodges attacks and wins on the clock. Forfeit before changing room.
+        await _arena_forfeit(match, target, "was teleported out")
     remove_member(target)
     target.room = room
     add_member(target)
