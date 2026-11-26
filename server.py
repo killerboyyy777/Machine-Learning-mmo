@@ -30,22 +30,26 @@ import websockets
 
 from ml.modes import BaseMode, ModeContext, isolate
 
+# Mutable state must not land in site-packages for a wheel install. Bundled
+# inputs (world.json, server_config.json, ml config) stay with the package.
+DATA_DIR = abspath(os.environ.get("TEXTMMO_DATA_DIR") or os.getcwd())
+
 WORLD_FILE = join(dirname(abspath(__file__)), "world.json")
-SCORES_FILE = join(dirname(abspath(__file__)), "scores.json")
-COMPANIONS_FILE = join(dirname(abspath(__file__)), "companions.json")
+SCORES_FILE = join(DATA_DIR, "scores.json")
+COMPANIONS_FILE = join(DATA_DIR, "companions.json")
 # Guilds keep their own file: scores.json is a 5s flush of ephemeral entries
 # with no version gate, while a guild and its vault must survive a rollback.
-GUILDS_FILE = join(dirname(abspath(__file__)), "guilds.json")
+GUILDS_FILE = join(DATA_DIR, "guilds.json")
 # Intel keeps one too: bot-cadence appends must never rewrite the vault file.
-INTEL_FILE = join(dirname(abspath(__file__)), "intel.json")
-FREIGHT_FILE = join(dirname(abspath(__file__)), "freight.json")
+INTEL_FILE = join(DATA_DIR, "intel.json")
+FREIGHT_FILE = join(DATA_DIR, "freight.json")
 # Arena ratings keep one too: a ladder is durable, while scores.json evicts
 # entries on a TTL and a rating must outlive the session that earned it.
-ARENA_FILE = join(dirname(abspath(__file__)), "arena.json")
+ARENA_FILE = join(DATA_DIR, "arena.json")
 # Escrowed listings, bids and bounties outlive a score flush, so they get
 # versioned files like the vault does.
-MARKET_FILE = join(dirname(abspath(__file__)), "market.json")
-COMMISSIONS_FILE = join(dirname(abspath(__file__)), "commissions.json")
+MARKET_FILE = join(DATA_DIR, "market.json")
+COMMISSIONS_FILE = join(DATA_DIR, "commissions.json")
 MARKET_VERSION = 1
 COMMISSIONS_VERSION = 1
 
@@ -15673,6 +15677,8 @@ async def _run_resilient(task_name, coro_factory):
 async def main():
     # Reproducible world RNG for the balance gate (#754).
     random.seed(int(float(WORLD_SEED)))
+    # Atomic writes do not create parents, and an override dir may be new.
+    os.makedirs(DATA_DIR, exist_ok=True)
     log_file = os.environ.get("TEXTMMO_LOG_FILE")
     if log_file:
         _logf = open(log_file, "a", buffering=1)
