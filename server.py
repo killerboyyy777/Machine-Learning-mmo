@@ -2569,7 +2569,9 @@ def verified_npc_kills(name, target, since_ts):
 def consume_npc_kills(name, target, since_ts, count):
     """Remove the oldest `count` verified kill timestamps (same matching
     as verified_npc_kills) so one kill can satisfy exactly one bounty
-    fill instead of unlimited repeat fills (#189)."""
+    fill instead of unlimited repeat fills (#189). Returns the NPC keys
+    of the consumed kills so sibling bounties can sync displayed
+    progress by the targets those kills actually fed (#963)."""
     entry = get_score_entry(name)
     log = entry.get("kills_by_npc", {})
     frag = (target or "").lower()
@@ -2591,7 +2593,7 @@ def consume_npc_kills(name, target, since_ts, count):
                 break
     if used:
         mark_scores_dirty()
-    return len(used)
+    return [key for _, key in used]
 
 
 def collusion_multiplier(poster_name, filler_name):
@@ -6821,28 +6823,32 @@ async def cmd_commission_fill(player, msg):
         return
     # Consume the kills this fill uses: without this, one kill's timestamps
     # satisfy unlimited repeat fills of matching bounties.
-    consumed = consume_npc_kills(
+    consumed_keys = consume_npc_kills(
         player.name,
         commission["target"],
         commission["created_ts"],
         commission["required_kills"],
     )
-    # Sibling display sync: the same timestamps fed every overlapping open
-    # bounty, so their shown progress just lost `consumed` verifiable
-    # kills. Substring overlap in either direction matches attribution;
-    # floor at zero, and fill-time verification stays authoritative.
-    if consumed:
-        _sib_frag = str(commission["target"] or "").lower()
+    # Sibling display sync: the consumed kills fed every open bounty whose
+    # target fragment matches their NPC keys, so their shown progress lost
+    # that many verifiable kills. Match on the consumed keys instead of
+    # textual overlap between targets: disjoint fragments like "rat" and
+    # "giant" both attribute a "giant rat" kill (#963). Floor at zero, and
+    # fill-time verification stays authoritative.
+    if consumed_keys:
         _filler = player.name.lower()
         for _sib in _commissions.values():
             if _sib is commission or _sib.get("status") != "open":
                 continue
             _other = str(_sib.get("target", "")).lower()
-            if _other not in _sib_frag and _sib_frag not in _other:
+            if not _other:
+                continue
+            _lost = sum(1 for key in consumed_keys if _other in key)
+            if not _lost:
                 continue
             _sp = _sib.setdefault("progress", {})
             if _filler in _sp:
-                _sp[_filler] = max(0, _sp[_filler] - consumed)
+                _sp[_filler] = max(0, _sp[_filler] - _lost)
     # Anti-collusion: repeated poster+filler pairs earn diminishing rewards.
     # Any escrow remainder (posted gold minus reduced payout) is sunk to the
     # treasury as an additional collusion deterrent.
