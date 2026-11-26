@@ -6798,16 +6798,18 @@ async def cmd_commission_fill(player, msg):
         commission["created_ts"],
         commission["required_kills"],
     )
-    # Sibling display sync: the same timestamps fed every same-target open
+    # Sibling display sync: the same timestamps fed every overlapping open
     # bounty, so their shown progress just lost `consumed` verifiable
-    # kills. Floor at zero; fill-time verification stays authoritative.
+    # kills. Substring overlap in either direction matches attribution;
+    # floor at zero, and fill-time verification stays authoritative.
     if consumed:
         _sib_frag = str(commission["target"] or "").lower()
         _filler = player.name.lower()
         for _sib in _commissions.values():
             if _sib is commission or _sib.get("status") != "open":
                 continue
-            if str(_sib.get("target", "")).lower() != _sib_frag:
+            _other = str(_sib.get("target", "")).lower()
+            if _other not in _sib_frag and _sib_frag not in _other:
                 continue
             _sp = _sib.setdefault("progress", {})
             if _filler in _sp:

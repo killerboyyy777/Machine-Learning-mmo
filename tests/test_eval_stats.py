@@ -5,9 +5,12 @@ Covers #69 (exact paired t-test, Cohen's d, CI, guards, JSON output)
 and #72 (version constants match, handshake status helper).
 """
 
+import io
 import json
 import os
 import sys
+import tempfile
+from contextlib import redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "ml"))
@@ -103,5 +106,28 @@ first = _eval_character_name(tag, "run-one", 7)
 second = _eval_character_name(tag, "run-two", 7)
 assert first != second and len(first) == len(second) == 24
 print("EVAL_TAG_OK")
+
+# --- #944: with zero paired variance the t sign must follow the mean ---
+c = compare([1] * 5, [2] * 5)
+assert c["mean_diff"] == -1.0, c
+assert c["t"] == float("-inf") and c["cohen_d"] == float("-inf"), c
+assert c["p_value"] == 0.0 and c["verdict"] == "SIGNIFICANT", c
+print("NEGATIVE_T_OK")
+
+# --- #944: a corrupt checkpoint warns and returns False, not a crash ---
+agent = TorchDQNAgent()
+for payload in (b"", bytes(64), b"this is not a torch checkpoint at all"):
+    fd, corrupt_path = tempfile.mkstemp(suffix=".pt")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            result = agent.load_weights(corrupt_path)
+        assert result is False, payload
+        assert "starting fresh" in buf.getvalue(), buf.getvalue()
+    finally:
+        os.unlink(corrupt_path)
+print("CORRUPT_CHECKPOINT_OK")
 
 print("ALL_EVAL_STATS_OK")
