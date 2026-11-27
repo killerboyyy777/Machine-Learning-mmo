@@ -778,6 +778,9 @@ GROUND_GOLD_CAP = 100000
 room_items = {rid: list(WORLD.get("room_items", {}).get(rid, [])) for rid in ROOMS}
 # room_id -> {item id: [drop times]}, one stamp per unit on the ground.
 ground_added_at = {rid: {} for rid in ROOMS}
+# room_id -> {item id: marked units}, so a lost freight unit keeps its buyback
+# credit on the floor without changing the item ids sent to clients.
+ground_gathered = {rid: {} for rid in ROOMS}
 
 # Loose gold lying on the ground (death drops), room_id -> amount. Dungeon
 # rooms default to 0 via .get and vanish with their instance if destroyed.
@@ -1433,12 +1436,28 @@ def _pop_ground_stamp(room_id, iid):
             del stamps[iid]
 
 
+def _mark_ground_gathered(room_id, iid):
+    marks = ground_gathered.setdefault(room_id, {})
+    marks[iid] = marks.get(iid, 0) + 1
+
+
+def _clear_ground_gathered(room_id, iid):
+    marks = ground_gathered.get(room_id)
+    if not marks or iid not in marks:
+        return
+    if marks[iid] > 1:
+        marks[iid] -= 1
+    else:
+        del marks[iid]
+
+
 def _add_ground(room_id, iid):
     d = dungeon_for_room(room_id)
     ground = d.floor(floor_from_room(room_id)).items if d else room_items[room_id]
     if len(ground) >= GROUND_ITEM_CAP:
         evicted = ground.pop(0)
         _ground_value_to_floor(room_id, evicted)
+        _clear_ground_gathered(room_id, evicted)
         if d is None:
             _pop_ground_stamp(room_id, evicted)
     ground.append(iid)
@@ -1451,6 +1470,7 @@ def _remove_ground(room_id, iid):
     if iid in ground:
         ground.remove(iid)
         _pop_ground_stamp(room_id, iid)
+        _clear_ground_gathered(room_id, iid)
 
 
 def prune_ground_items(now=None):
@@ -1466,6 +1486,7 @@ def prune_ground_items(now=None):
                 ground = room_items.get(room_id, ())
                 if iid in ground:
                     ground.remove(iid)
+                    _clear_ground_gathered(room_id, iid)
                     _ground_value_to_floor(room_id, iid)
                     expired += 1
             if not times:
@@ -2033,8 +2054,15 @@ def _normalize_freight_record(row):
         return None
     rec["items"] = [str(iid) for iid in items if isinstance(iid, str)]
     gathered = rec.get("gathered_items")
+    # A genuine loss drops the units before claim, so items is empty while the
+    # marker still describes units that left the poster's pack as harvests.
+    keep_empty = rec["state"] in ("lost", "expired")
     rec["gathered_items"] = (
-        [iid for iid in gathered if isinstance(iid, str) and iid in rec["items"]]
+        [
+            iid
+            for iid in gathered
+            if isinstance(iid, str) and (iid in rec["items"] or keep_empty)
+        ]
         if isinstance(gathered, list)
         else []
     )
@@ -6471,8 +6499,11 @@ async def cmd_take(player, msg):
     if _pack_full(player):
         await send(player, {"type": "error", "text": _pack_full_error()})
         return
+    gathered = ground_gathered.get(player.room, {}).get(iid, 0) > 0
     _remove_ground(player.room, iid)
     player.inventory.append(iid)
+    if gathered:
+        _credit_gathered(player.name, iid, 1)
     await send(player, {"type": "message", "text": f"You take {_iname(iid)}."})
     await send(player, stats_view(player))
     await sync_room(player.room)
@@ -10092,9 +10123,12 @@ def _freight_bank_refund(poster, amount):
     mark_scores_dirty()
 
 
-def _freight_drop_package(room_id, items):
+def _freight_drop_package(room_id, items, gathered_items=()):
+    gathered = set(gathered_items or ())
     for iid in items:
         _add_ground(room_id, iid)
+        if iid in gathered:
+            _mark_ground_gathered(room_id, iid)
 
 
 def _freight_station_busy():
@@ -10143,6 +10177,7 @@ def tick_station_freight(now):
         times = ground_added_at.get(origin, {}).get(iid, [])
         skip_stamp = ground.count(iid) > len(times)
         items.append(ground.pop(0))
+        _clear_ground_gathered(origin, iid)
         if not skip_stamp:
             _pop_ground_stamp(origin, iid)
     fee = max(FREIGHT_STATION_FEE_MIN, units * FREIGHT_STATION_FEE_PER_UNIT)
@@ -10185,7 +10220,7 @@ def prune_freight(now=None):
                 _freight_bank_refund(rec["poster"], refund)
             items = rec.pop("items", [])
             rec["items"] = []
-            _freight_drop_package(rec["destination"], items)
+            _freight_drop_package(rec["destination"], items, rec.get("gathered_items"))
             del FREIGHT[cid]
             changed = True
             continue
@@ -10199,7 +10234,7 @@ def prune_freight(now=None):
             if station:
                 items = rec.pop("items", [])
                 rec["items"] = []
-                _freight_drop_package(rec["origin"], items)
+                _freight_drop_package(rec["origin"], items, rec.get("gathered_items"))
                 rec["refund"] = 0
             else:
                 # The rush bonus was escrowed with the fee and was never
@@ -10211,7 +10246,7 @@ def prune_freight(now=None):
             room_id = hauler.room if hauler else rec["destination"]
             items = rec.pop("items", [])
             rec["items"] = []
-            _freight_drop_package(room_id, items)
+            _freight_drop_package(room_id, items, rec.get("gathered_items"))
             rec["state"] = "lost"
             rec["lost_at"] = now
             # A station forfeits nothing; a player gets the fee, deposit and
@@ -10567,7 +10602,7 @@ async def _freight_deliver(player, msg):
         # Keep the key: normalize drops rows with no items list after a reload.
         goods = rec.pop("items", [])
         rec["items"] = []
-        _freight_drop_package(rec["destination"], goods)
+        _freight_drop_package(rec["destination"], goods, rec.get("gathered_items"))
         FREIGHT_STATS["station_fee_paid"] = FREIGHT_STATS.get("station_fee_paid", 0) + 1
     bonus = int(rec.get("bonus") or 0)
     if bonus:
@@ -10696,7 +10731,7 @@ def _freight_release_on_death(player, death_room):
             continue
         items = rec.pop("items", [])
         rec["items"] = []
-        _freight_drop_package(death_room, items)
+        _freight_drop_package(death_room, items, rec.get("gathered_items"))
         rec["state"] = "lost"
         rec["lost_at"] = time.time()
         # Same terminal settlement as an expired carried contract: a station

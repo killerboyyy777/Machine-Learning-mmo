@@ -11,6 +11,7 @@ took out of their pack -- it is never duplicated and never vanishes.
 import asyncio
 import os
 import sys
+import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -470,5 +471,129 @@ for iid in list(srv._ground_items(hauler.room)):
     srv._remove_ground(hauler.room, iid)
 srv.players.pop("Hauler", None)
 print("EXPIRED_DELIVER_PRUNE_SETTLES_OK")
+
+# --- #1062: a genuine loss carries harvest credit to the floor pickup --------
+
+LOST_IID = "iron_ore"
+DISCOUNT = srv.merchant_sell_value(LOST_IID, gathered=True)
+RETAIL = srv.merchant_sell_value(LOST_IID)
+
+
+def _lost_credits(name):
+    entry = srv.get_score_entry(name)
+    return int(entry.get("gathered_units", {}).get(LOST_IID, 0) or 0)
+
+
+def _lose_on_death(rec, hauler):
+    srv._freight_release_on_death(hauler, "deep_forest")
+    return "deep_forest"
+
+
+def _lose_on_carried_expiry(rec, hauler):
+    now = rec["expires_at"] + 1
+    srv._freight_station_at = now
+    srv.prune_freight(now)
+    return hauler.room
+
+
+def _lost_freight_buyback(label, lose):
+    assert DISCOUNT < RETAIL, (DISCOUNT, RETAIL)
+    _reset()
+    node = srv.gather_nodes["iron_ore_node"]
+    node_saved = (
+        node["min_yield"],
+        node["max_yield"],
+        node["available"],
+        node["respawn_at"],
+    )
+    rooms = ("market", "deep_forest")
+    floors_saved = {rid: list(srv.room_items[rid]) for rid in rooms}
+    stamps_saved = {rid: dict(srv.ground_added_at[rid]) for rid in rooms}
+    poster = _player("LostPoster", "smithy", 20, [], pid=920)
+    hauler = _player("LostHauler", "market", 10, [], pid=921)
+    picker = _player("LostPicker", "market", 0, [], pid=922)
+    for p in (poster, hauler, picker):
+        srv.players[p.id] = p
+        srv.add_member(p)
+    try:
+        node["min_yield"] = node["max_yield"] = 1
+        node["available"] = True
+        node["respawn_at"] = None
+        asyncio.run(srv.cmd_gather(poster, {"node": LOST_IID}))
+        assert poster.inventory == [LOST_IID], poster.inventory
+        assert _lost_credits(poster.name) == 1, _lost_credits(poster.name)
+
+        poster.room = "market"
+        for rid in rooms:
+            srv.room_items[rid] = []
+            srv.ground_added_at[rid] = {}
+        asyncio.run(
+            srv.cmd_freight(
+                poster,
+                {
+                    "action": "post",
+                    "destination": "smithy",
+                    "fee": 10,
+                    "items": [LOST_IID],
+                },
+            )
+        )
+        rec = _only_contract()
+        assert rec["gathered_items"] == [LOST_IID], rec
+        assert _lost_credits(poster.name) == 0, _lost_credits(poster.name)
+        asyncio.run(srv.cmd_freight(hauler, {"action": "accept", "id": rec["id"]}))
+
+        drop_room = lose(rec, hauler)
+        assert rec["state"] == "lost", rec["state"]
+        assert rec["items"] == [], rec["items"]
+        assert rec["gathered_items"] == [LOST_IID], rec
+        assert srv._ground_items(drop_room).count(LOST_IID) == 1, srv._ground_items(
+            drop_room
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "freight.json")
+            assert srv.save_freight(path)
+            loaded = srv.load_freight(path)
+            loaded_gathered = loaded[rec["id"]]["gathered_items"]
+
+        asyncio.run(srv.cmd_freight(poster, {"action": "claim", "id": rec["id"]}))
+        assert poster.inventory == [], poster.inventory
+        assert _lost_credits(poster.name) == 0, _lost_credits(poster.name)
+
+        picker.room = drop_room
+        asyncio.run(srv.cmd_take(picker, {"item": LOST_IID}))
+        assert picker.inventory == [LOST_IID], picker.inventory
+
+        picker.room = "market"
+        gold_before = picker.gold
+        asyncio.run(srv.cmd_sell(picker, {"item": LOST_IID}))
+        assert picker.gold == gold_before + DISCOUNT, (
+            picker.gold,
+            gold_before,
+            DISCOUNT,
+        )
+        assert loaded_gathered == [LOST_IID], loaded_gathered
+        assert _lost_credits(picker.name) == 0, _lost_credits(picker.name)
+        print(f"LOST_FREIGHT_BUYBACK_{label.upper()}_OK")
+    finally:
+        for p in (poster, hauler, picker):
+            srv.remove_member(p)
+            srv.players.pop(p.id, None)
+            srv.SCORES.pop(p.name.lower(), None)
+            srv.name_owners.pop(p.name.lower(), None)
+        for rid in rooms:
+            srv.room_items[rid] = floors_saved[rid]
+            srv.ground_added_at[rid] = stamps_saved[rid]
+        (
+            node["min_yield"],
+            node["max_yield"],
+            node["available"],
+            node["respawn_at"],
+        ) = node_saved
+
+
+_lost_freight_buyback("death", _lose_on_death)
+_lost_freight_buyback("carried_expiry", _lose_on_carried_expiry)
 
 print("FREIGHT_CONSERVATION_OK")
