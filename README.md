@@ -5,7 +5,7 @@
 
 A small, hackable text MMORPG engine. It needs Python 3.12 or newer; CI covers 3.12 and 3.14. Rooms, NPCs, items, loot, respawns, parties, a player market, instanced dungeons, and 1v1 and 2v2 arena matches all run over WebSocket with plain JSON messages. Because the protocol is just JSON, a human, a bot, and an LLM agent look identical to the server on the game port; GM control is a separate loopback-only surface.
 
-On top sits an ML stack: a Gym-style environment with (225 obs dims, 69 actions), linear and DQN agents with curiosity, scripted baselines, a 50-agent conductor, and deterministic evaluation. Population-based training (PBT) is a conductor library API only: the shipped `soak.py` CLI does not enroll agents or report fitness, so it produces no exploit/explore rounds.
+On top sits an ML stack: a Gym-style environment with (228 obs dims, 69 actions), linear and DQN agents with curiosity, scripted baselines, a 50-agent conductor, and deterministic evaluation. Population-based training (PBT) is a conductor library API only: the shipped `soak.py` CLI does not enroll agents or report fitness, so it produces no exploit/explore rounds.
 
 > A human designs and leads this project. AI coding assistants wrote much of the implementation.
 
@@ -150,7 +150,11 @@ A bow fires the best arrow in the ammo family you carry: Arrow (+0), Iron Arrow 
 
 Fire Arrows set the target ablaze for two world ticks, chipping 2 HP per tick. The burn cannot land the killing blow, so loot, gold and credit stay with direct shots. Blood Arrows restore 2 HP to the shooter on each hit, capped at maximum HP. Both effects ride on top of the flat bonus and are crafted with the `fire_arrows` and `blood_arrows` recipes.
 
-`stats` lists every ammo variant, including variants with a zero count. The dashboard Players table and character tracker show only the variants a player carries. The ML observation's `ammo_best_norm` reports the best carried bonus in the worn weapon's ammo family, scaled by the family maximum (4), so it stays in [0, 1] as variants are added. With a sword equipped, or no weapon at all, the field is 0 even when arrows are carried, matching the server's damage gating.
+`stats` lists every ammo variant, including variants with a zero count. The dashboard Players table and character tracker show only the variants a player carries. The server picks the best arrow in the worn weapon's ammo family on each shot. There is no ammo-select action. This auto-select is a fixed design constraint.
+
+The ML observation's `ammo_best_norm` reports that arrow's bonus scaled by the family maximum (4), so it stays in [0, 1] as variants are added. The `ammo_effect_none`, `ammo_effect_burn` and `ammo_effect_heal` flags report the selected arrow's `ammo_effect` kind from world data. A burn load and a heal load with the same bonus produce different observations. With a sword equipped, or no weapon at all, the bonus is 0 and the none flag is 1 even when arrows are carried. That matches the server's damage gating.
+
+The effect flags add three dimensions, from 225 to 228. A checkpoint trained with 225 inputs cannot load into the 228-input environment, so agents must retrain.
 
 ## Drop-in agents
 

@@ -741,6 +741,18 @@ AMMO_IDS = frozenset(
         },
     )
 )
+# Server combat reads ITEM_DEFS[best]["ammo_effect"]["kind"]. The "none"
+# slot covers an uneffected arrow or no fired arrow at all. The other slots
+# follow the kinds present in world data, so a new effect grows OBS_SIZE.
+AMMO_EFFECT_KINDS = ("none",) + tuple(
+    sorted(
+        {
+            (srv.ITEM_DEFS.get(iid, {}).get("ammo_effect") or {}).get("kind")
+            for iid in AMMO_IDS
+        }
+        - {None}
+    )
+)
 
 
 def _is_ammo_name(name):
@@ -1089,6 +1101,9 @@ def flatten_obs(obs):
         + [obs.get("wild_flag", 0.0), obs.get("indoor_flag", 0.0)]
         # Bank balance (#153) appended last, same never-shift rule.
         + [obs.get("bank_norm", 0.0)]
+        # Loaded ammo effect (#986) appended last; .get lets older hand-built
+        # obs dicts still flatten.
+        + obs.get("ammo_effect_flags", [0.0] * len(AMMO_EFFECT_KINDS))
     )
 
 
@@ -1114,6 +1129,7 @@ OBS_SIZE = (
     + 1  # adaptive descent-readiness hint (#335)
     + 2  # terrain flags (#424): wild, indoor
     + 1  # bank_norm (#153), appended last
+    + len(AMMO_EFFECT_KINDS)  # loaded ammo effect flags (#986)
 )
 
 
@@ -3159,7 +3175,8 @@ class TextMMOEnv:
         # inv_presence flag. Counts the whole ammo family (any variant
         # fires). ammo_best follows the server's shot gating, so a worn
         # weapon must declare an ammo family and that family must be
-        # carried before any bonus is added.
+        # carried before any bonus is added. Effect flags use the same pick,
+        # since the server fires only that arrow's ammo_effect.
         ammo_bonus = getattr(
             srv,
             "AMMO_BONUS",
@@ -3191,6 +3208,11 @@ class TextMMOEnv:
         ammo_best_norm = (
             ammo_bonus.get(best, 0) / max(1, max(ammo_bonus.values())) if best else 0.0
         )
+        effect = (srv.ITEM_DEFS.get(best, {}).get("ammo_effect") or {}) if best else {}
+        effect_kind = effect.get("kind") or "none"
+        ammo_effect_flags = [
+            1.0 if kind == effect_kind else 0.0 for kind in AMMO_EFFECT_KINDS
+        ]
         defense_norm = min(float(s.get("defense", 0) or 0), 10.0) / 10.0
 
         # Adaptive descent-readiness hint (#335): own level + gear + healing
@@ -3253,6 +3275,7 @@ class TextMMOEnv:
             "buff_attack": 1.0 if s.get("buff_attack_amount", 0) > 0 else 0.0,
             "buff_dr": 1.0 if s.get("buff_damage_reduction_amount", 0) > 0 else 0.0,
             "ammo_best_norm": ammo_best_norm,
+            "ammo_effect_flags": ammo_effect_flags,
             "defense_norm": defense_norm,
             "adaptive_score": adaptive_norm,
             # Wild/indoor terrain flags (#424), orthogonal axes.
@@ -3295,6 +3318,8 @@ class TextMMOEnv:
                 "tonic",
             ),
         }
+        for kind, flag in zip(AMMO_EFFECT_KINDS, ammo_effect_flags):
+            obs["ammo_effect_" + kind] = flag
         # Refresh per-observation caches for the mask below (holdings table
         # is already fresh from the disposition features above).
         self._inv_type_cache = {}
