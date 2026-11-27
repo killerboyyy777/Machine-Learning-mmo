@@ -111,6 +111,51 @@ try:
     finally:
         srv.time.time = real_time
     print("GROUND_DUPLICATE_TTL_OK")
+
+    # Station freight lifts units without _remove_ground (#1061). Its stamp
+    # must leave with the unit or the fresh copy expires on the old stamp.
+    saved_freight = (
+        srv.FREIGHT_STATION_ROOMS,
+        dict(srv.FREIGHT),
+        srv._freight_station_at,
+    )
+    saved_smithy = (
+        list(srv.room_items["smithy"]),
+        dict(srv.ground_added_at["smithy"]),
+    )
+    srv.FREIGHT_STATION_ROOMS = (ROOM, "smithy")
+    srv.FREIGHT.clear()
+    srv._freight_station_at = 0.0
+    srv.room_items["smithy"] = []
+    srv.ground_added_at["smithy"] = {}
+    srv.room_items[ROOM] = []
+    srv.ground_added_at[ROOM] = {}
+    srv.room_gold[ROOM] = 0
+    base = real_time()
+    try:
+        srv.time.time = lambda: base
+        srv._add_ground(ROOM, ITEM)
+        srv.tick_station_freight(base + 1)
+        assert ITEM not in srv.room_items[ROOM], srv.room_items[ROOM]
+        assert not srv.ground_added_at[ROOM], srv.ground_added_at[ROOM]
+        srv.time.time = lambda: base + 10
+        srv._add_ground(ROOM, ITEM)
+        srv.time.time = lambda: base + srv.GROUND_ITEM_TTL_SECONDS + 1
+        assert srv.prune_ground_items() == 0
+        assert ITEM in srv.room_items[ROOM], srv.room_items[ROOM]
+        srv.time.time = lambda: base + 10 + srv.GROUND_ITEM_TTL_SECONDS
+        assert srv.prune_ground_items() == 1
+        assert not srv.room_items[ROOM], srv.room_items[ROOM]
+        assert srv.room_gold[ROOM] == VALUE, srv.room_gold[ROOM]
+    finally:
+        srv.time.time = real_time
+        srv.FREIGHT_STATION_ROOMS = saved_freight[0]
+        srv.FREIGHT.clear()
+        srv.FREIGHT.update(saved_freight[1])
+        srv._freight_station_at = saved_freight[2]
+        srv.room_items["smithy"] = saved_smithy[0]
+        srv.ground_added_at["smithy"] = saved_smithy[1]
+    print("GROUND_FREIGHT_STAMP_OK")
 finally:
     srv.room_items[ROOM] = saved[0]
     srv.ground_added_at[ROOM] = saved[1]

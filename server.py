@@ -10136,7 +10136,11 @@ def tick_station_freight(now):
     units = min(FREIGHT_STATION_MAX_UNITS, len(ground))
     if units <= 0:
         return
-    items = [ground.pop(0) for _ in range(units)]
+    items = []
+    for _ in range(units):
+        iid = ground.pop(0)
+        items.append(iid)
+        _pop_ground_stamp(origin, iid)
     fee = max(FREIGHT_STATION_FEE_MIN, units * FREIGHT_STATION_FEE_PER_UNIT)
     cid = next(_freight_counter)
     FREIGHT[cid] = {
