@@ -596,4 +596,81 @@ def _lost_freight_buyback(label, lose):
 _lost_freight_buyback("death", _lose_on_death)
 _lost_freight_buyback("carried_expiry", _lose_on_carried_expiry)
 
+# --- #1066: station freight carries a floor mark through to the receiver ----
+
+
+def _station_freight_mark(label, deliver):
+    assert DISCOUNT < RETAIL, (DISCOUNT, RETAIL)
+    _reset()
+    rooms = ("smithy", "market")
+    station_saved = srv.FREIGHT_STATION_ROOMS
+    rooms_saved = {rid: list(srv.room_items[rid]) for rid in rooms}
+    stamps_saved = {rid: dict(srv.ground_added_at[rid]) for rid in rooms}
+    marks_saved = {rid: srv.ground_gathered.get(rid) for rid in rooms}
+    mark_list = isinstance(srv.ground_gathered["market"], list)
+    origin_seed = list(srv.WORLD["room_items"].get(rooms[0], ()))
+    seed_count = origin_seed.count(LOST_IID)
+    assert seed_count >= 1, origin_seed
+    hauler = _player("StationHauler", rooms[0], 50, [], pid=923)
+    picker = _player("StationPicker", rooms[0], 0, [], pid=924)
+    for p in (hauler, picker):
+        srv.players[p.id] = p
+        srv.add_member(p)
+    try:
+        srv.FREIGHT_STATION_ROOMS = rooms
+        for rid in rooms:
+            srv.ground_added_at[rid] = {}
+        srv.room_items[rooms[0]] = list(origin_seed)
+        srv.ground_gathered[rooms[0]] = [] if mark_list else {}
+        srv.room_items[rooms[1]] = []
+        srv.ground_gathered[rooms[1]] = [] if mark_list else {}
+        srv._freight_drop_package(rooms[0], [LOST_IID], [LOST_IID])
+        assert srv._ground_items(rooms[0]).count(LOST_IID) == seed_count + 1
+        srv.tick_station_freight(time.time())
+        rec = _only_contract()
+        assert rec["gathered_items"] == [LOST_IID], rec
+        if deliver:
+            _run(hauler, action="accept", id=rec["id"])
+            assert rec["state"] == "carried", rec["state"]
+            hauler.room = rooms[1]
+            _run(hauler, action="deliver", id=rec["id"])
+            drop_room = rooms[1]
+        else:
+            now = rec["expires_at"] + 1
+            srv._freight_station_at = now
+            srv.prune_freight(now)
+            drop_room = rooms[0]
+        assert srv._ground_items(drop_room).count(LOST_IID) == seed_count + 1
+        picker.room = drop_room
+        asyncio.run(srv.cmd_take(picker, {"item": LOST_IID}))
+        assert picker.inventory == [LOST_IID], picker.inventory
+        picker.room = "market"
+        gold_before = picker.gold
+        asyncio.run(srv.cmd_sell(picker, {"item": LOST_IID}))
+        assert picker.gold == gold_before + DISCOUNT, (
+            picker.gold,
+            gold_before,
+            DISCOUNT,
+        )
+        print(f"STATION_FREIGHT_MARK_{label.upper()}_OK")
+    finally:
+        for p in (hauler, picker):
+            srv.remove_member(p)
+            srv.players.pop(p.id, None)
+            srv.SCORES.pop(p.name.lower(), None)
+            srv.name_owners.pop(p.name.lower(), None)
+        for rid in rooms:
+            srv.room_items[rid] = rooms_saved[rid]
+            srv.ground_added_at[rid] = stamps_saved[rid]
+            if marks_saved[rid] is None:
+                srv.ground_gathered.pop(rid, None)
+            else:
+                srv.ground_gathered[rid] = marks_saved[rid]
+        srv.FREIGHT_STATION_ROOMS = station_saved
+        _reset()
+
+
+_station_freight_mark("delivery", True)
+_station_freight_mark("expiry", False)
+
 print("FREIGHT_CONSERVATION_OK")

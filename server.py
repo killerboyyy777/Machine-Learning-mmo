@@ -778,9 +778,9 @@ GROUND_GOLD_CAP = 100000
 room_items = {rid: list(WORLD.get("room_items", {}).get(rid, [])) for rid in ROOMS}
 # room_id -> {item id: [drop times]}, one stamp per unit on the ground.
 ground_added_at = {rid: {} for rid in ROOMS}
-# room_id -> {item id: marked units}, so a lost freight unit keeps its buyback
-# credit on the floor without changing the item ids sent to clients.
-ground_gathered = {rid: {} for rid in ROOMS}
+# room_id -> [bool], one marker per ground unit at that index. Dungeon floors
+# share the index space with their instanced items list.
+ground_gathered = {rid: [] for rid in ROOMS}
 
 # Loose gold lying on the ground (death drops), room_id -> amount. Dungeon
 # rooms default to 0 via .get and vanish with their instance if destroyed.
@@ -1436,31 +1436,45 @@ def _pop_ground_stamp(room_id, iid):
             del stamps[iid]
 
 
+def _ground_marks(room_id, ground=None):
+    marks = ground_gathered.setdefault(room_id, [])
+    if ground is None:
+        ground = _ground_items(room_id)
+    # WORLD seeds hold a floor slot without a marker, so backfill unmarked
+    # entries before touching a marker by index.
+    if len(marks) < len(ground):
+        marks.extend([False] * (len(ground) - len(marks)))
+    return marks
+
+
+def _pop_ground_mark(room_id, index, ground=None):
+    marks = _ground_marks(room_id, ground)
+    if index < len(marks):
+        return marks.pop(index)
+    return False
+
+
 def _mark_ground_gathered(room_id, iid):
-    marks = ground_gathered.setdefault(room_id, {})
-    marks[iid] = marks.get(iid, 0) + 1
-
-
-def _clear_ground_gathered(room_id, iid):
-    marks = ground_gathered.get(room_id)
-    if not marks or iid not in marks:
-        return
-    if marks[iid] > 1:
-        marks[iid] -= 1
-    else:
-        del marks[iid]
+    ground = _ground_items(room_id)
+    marks = _ground_marks(room_id, ground)
+    for index in range(len(ground) - 1, -1, -1):
+        if ground[index] == iid:
+            marks[index] = True
+            return
 
 
 def _add_ground(room_id, iid):
     d = dungeon_for_room(room_id)
     ground = d.floor(floor_from_room(room_id)).items if d else room_items[room_id]
+    marks = _ground_marks(room_id, ground)
     if len(ground) >= GROUND_ITEM_CAP:
         evicted = ground.pop(0)
         _ground_value_to_floor(room_id, evicted)
-        _clear_ground_gathered(room_id, evicted)
+        marks.pop(0)
         if d is None:
             _pop_ground_stamp(room_id, evicted)
     ground.append(iid)
+    marks.append(False)
     if d is None:
         ground_added_at.setdefault(room_id, {}).setdefault(iid, []).append(time.time())
 
@@ -1468,9 +1482,11 @@ def _add_ground(room_id, iid):
 def _remove_ground(room_id, iid):
     ground = _ground_items(room_id)
     if iid in ground:
-        ground.remove(iid)
+        index = ground.index(iid)
+        ground.pop(index)
         _pop_ground_stamp(room_id, iid)
-        _clear_ground_gathered(room_id, iid)
+        return _pop_ground_mark(room_id, index, ground)
+    return False
 
 
 def prune_ground_items(now=None):
@@ -1485,8 +1501,9 @@ def prune_ground_items(now=None):
                 times.remove(dropped_at)
                 ground = room_items.get(room_id, ())
                 if iid in ground:
-                    ground.remove(iid)
-                    _clear_ground_gathered(room_id, iid)
+                    index = ground.index(iid)
+                    ground.pop(index)
+                    _pop_ground_mark(room_id, index, ground)
                     _ground_value_to_floor(room_id, iid)
                     expired += 1
             if not times:
@@ -6499,8 +6516,7 @@ async def cmd_take(player, msg):
     if _pack_full(player):
         await send(player, {"type": "error", "text": _pack_full_error()})
         return
-    gathered = ground_gathered.get(player.room, {}).get(iid, 0) > 0
-    _remove_ground(player.room, iid)
+    gathered = _remove_ground(player.room, iid)
     player.inventory.append(iid)
     if gathered:
         _credit_gathered(player.name, iid, 1)
@@ -10124,10 +10140,13 @@ def _freight_bank_refund(poster, amount):
 
 
 def _freight_drop_package(room_id, items, gathered_items=()):
-    gathered = set(gathered_items or ())
+    gathered = list(gathered_items or ())
     for iid in items:
+        marked = iid in gathered
+        if marked:
+            gathered.remove(iid)
         _add_ground(room_id, iid)
-        if iid in gathered:
+        if marked:
             _mark_ground_gathered(room_id, iid)
 
 
@@ -10171,13 +10190,17 @@ def tick_station_freight(now):
     if units <= 0:
         return
     items = []
+    gathered_items = []
     # WORLD seeds carry no stamp, so the oldest unit may be unstamped.
     for _ in range(units):
         iid = ground[0]
         times = ground_added_at.get(origin, {}).get(iid, [])
         skip_stamp = ground.count(iid) > len(times)
+        origin_marks = _ground_marks(origin, ground)
+        if origin_marks and origin_marks[0]:
+            gathered_items.append(iid)
         items.append(ground.pop(0))
-        _clear_ground_gathered(origin, iid)
+        _pop_ground_mark(origin, 0, ground)
         if not skip_stamp:
             _pop_ground_stamp(origin, iid)
     fee = max(FREIGHT_STATION_FEE_MIN, units * FREIGHT_STATION_FEE_PER_UNIT)
@@ -10198,7 +10221,7 @@ def tick_station_freight(now):
         "refund": 0,
         "delivered_at": 0.0,
         "lost_at": 0.0,
-        "gathered_items": [],
+        "gathered_items": gathered_items,
     }
     FREIGHT_STATS["station_posted"] = FREIGHT_STATS.get("station_posted", 0) + 1
     mark_freight_dirty()
