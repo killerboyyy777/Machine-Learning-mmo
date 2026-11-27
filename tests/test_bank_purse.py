@@ -168,6 +168,79 @@ def test_death_hits_purse_only():
         unplayer(pl)
 
 
+def test_floor_gold_overflow_sink_long_horizon():
+    """Repeated capped-floor inflows must not fund interest past the reserve."""
+    keys = (
+        "BANK_INTEREST_RATES",
+        "BANK_INTEREST_TRANCHE_SIZE",
+        "BANK_INTEREST_CAP",
+        "BANK_INTEREST_SOURCE",
+        "tax_treasury",
+        "tax_collected_lifetime",
+        "tax_sunk_lifetime",
+        "_last_bank_interest_ts",
+        "SCORES",
+    )
+    saved = {key: getattr(srv, key) for key in keys}
+    room = "town_square"
+    pile_before = srv.room_gold.get(room, 0)
+    item_id = "reserve_sink_probe"
+    item_before = srv.ITEM_DEFS.get(item_id)
+    death_log_len = len(srv.DEATH_LOG)
+    try:
+        srv.BANK_INTEREST_RATES = [2.0, 1.0, 0.5]
+        srv.BANK_INTEREST_TRANCHE_SIZE = 10000
+        srv.BANK_INTEREST_CAP = 500
+        srv.BANK_INTEREST_SOURCE = 0
+        srv.tax_treasury = srv.TREASURY_RESERVE
+        srv.tax_collected_lifetime = 0.0
+        srv.tax_sunk_lifetime = 0.0
+        srv.SCORES = {}
+        srv.ITEM_DEFS[item_id] = {"value": 100}
+        srv.room_gold[room] = srv.GROUND_GOLD_CAP
+        entry = srv.get_score_entry("ReserveSinkBank")
+        balance = 10000
+        entry["gold_bank"] = balance
+
+        cycles = 8
+        for cycle in range(cycles):
+            if cycle % 2 == 0:
+                dier = mkplayer(f"ReserveSinkDeath{cycle}", 97000 + cycle, room=room)
+                dier.gold = 250  # 40% drop lands on the full floor pile
+                try:
+                    asyncio.run(srv.respawn_player(dier))
+                finally:
+                    unplayer(dier)
+            else:
+                srv._ground_value_to_floor(room, item_id)
+            assert srv.room_gold[room] == srv.GROUND_GOLD_CAP
+            assert srv.tax_treasury <= srv.TREASURY_RESERVE, srv.tax_treasury
+
+        gross = cycles * 100
+        assert srv.tax_collected_lifetime == gross, srv.tax_collected_lifetime
+        assert srv.tax_sunk_lifetime == gross, srv.tax_sunk_lifetime
+        assert srv.tax_treasury == srv.TREASURY_RESERVE
+
+        paid = []
+        for tick in range(cycles):
+            paid.extend(
+                asyncio.run(srv.tick_bank_interest(now=float(20000 + tick), force=True))
+            )
+        total_paid = sum(p["amount"] for p in paid)
+        assert total_paid <= srv.TREASURY_RESERVE, total_paid
+        assert entry["gold_bank"] <= balance + srv.TREASURY_RESERVE, entry["gold_bank"]
+        print("FLOOR_GOLD_RESERVE_SINK_OK")
+    finally:
+        srv.room_gold[room] = pile_before
+        if item_before is None:
+            srv.ITEM_DEFS.pop(item_id, None)
+        else:
+            srv.ITEM_DEFS[item_id] = item_before
+        del srv.DEATH_LOG[death_log_len:]
+        for key, value in saved.items():
+            setattr(srv, key, value)
+
+
 def test_bank_persistence_old_and_current():
     saved_scores = srv.SCORES
     saved_file = srv.SCORES_FILE
@@ -297,6 +370,7 @@ if __name__ == "__main__":
     test_interest_tranches_and_treasury_floor()
     test_interest_mint_is_opt_in()
     test_death_hits_purse_only()
+    test_floor_gold_overflow_sink_long_horizon()
     test_bank_persistence_old_and_current()
     test_snapshot_and_gm_stream()
     test_ml_bank_state_mask_and_observation()

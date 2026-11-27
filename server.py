@@ -1405,14 +1405,13 @@ def _ground_items(room_id):
 
 
 def _add_floor_gold(room_id, amount):
-    """Cap a floor pile; any overflow still lives in the GM bank (#975)."""
-    global tax_treasury
+    """Cap a floor pile; overflow enters the treasury through the reserve sink (#975, #1054)."""
     if amount <= 0:
         return
     pile = room_gold.get(room_id, 0) + amount
     room_gold[room_id] = min(pile, GROUND_GOLD_CAP)
     if pile > GROUND_GOLD_CAP:
-        tax_treasury += pile - GROUND_GOLD_CAP
+        _treasury_credit(pile - GROUND_GOLD_CAP)
 
 
 def _ground_value_to_floor(room_id, iid):
