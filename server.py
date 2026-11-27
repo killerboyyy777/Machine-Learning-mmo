@@ -15521,11 +15521,10 @@ def _standing_post(family_key, target, kills, reward_gold, reward_xp, now):
 
 
 def _standing_expire(commission, now):
-    """Expire one standing bounty, refunding escrow to the treasury."""
-    global tax_treasury
+    """Expire one standing bounty, returning escrow through the reserve sink."""
     _ = now
     commission["status"] = "expired"
-    tax_treasury += commission.get("escrow", 0)
+    _treasury_credit(commission.get("escrow", 0))
     commission["escrow"] = 0
     mark_scores_dirty()
     mark_commissions_dirty()
