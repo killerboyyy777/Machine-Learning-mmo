@@ -626,6 +626,23 @@ def test_ammo_flags_use_full_stats_ammo():
             assert 0.0 <= obs["ammo_best_norm"] <= 1.0
             assert len(flatten_obs(obs)) == OBS_SIZE
 
+        # Multiple variants behind the cap: duplicates collapse and the
+        # highest bonus wins, as in cmd_attack.
+        p.inventory[:] = ["rat_tail"] * 20 + [
+            "fire_arrow",
+            "blood_arrow",
+            "fire_arrow",
+        ]
+        stats = srv.stats_view(p)
+        fire_count = next(a for a in stats["ammo"] if a["id"] == "fire_arrow")
+        assert fire_count["count"] == 2
+        env = TextMMOEnv(name)
+        env._apply_event(stats)
+        obs = env._build_obs()
+        assert obs["ammo_effect_heal"] == 1.0
+        assert obs["ammo_effect_burn"] == 0.0
+        assert obs["ammo_best_norm"] == 1.0
+
         # Snapshots without ammo counts keep the old name-list behavior.
         for weapon in ("Oak Longbow", "Rusty Sword", None):
             env = TextMMOEnv(name)
@@ -651,6 +668,82 @@ def test_ammo_flags_use_full_stats_ammo():
         srv.SCORES.pop(name.lower(), None)
         srv.name_owners.pop(name.lower(), None)
     print("AMMO_FULL_STATS_FLAGS_OK")
+
+
+def test_ammo_counts_reset_when_stats_omit_ammo():
+    # #1081 review: a stats event without ammo must drop earlier counts.
+    env = TextMMOEnv("AmmoStaleCounts")
+    env._apply_event(
+        {
+            "type": "stats",
+            "inv": ["Oak Longbow"],
+            "equipped": "Oak Longbow",
+            "ammo": [{"id": "fire_arrow", "count": 1}],
+        }
+    )
+    obs = env._build_obs()
+    assert obs["ammo_effect_burn"] == 1.0 and obs["ammo_best_norm"] == 0.75
+    env._apply_event({"type": "stats", "inv": [], "equipped": "Oak Longbow"})
+    obs = env._build_obs()
+    assert obs["ammo_effect_none"] == 1.0
+    assert obs["ammo_effect_burn"] == 0.0
+    assert obs["ammo_best_norm"] == 0.0
+    # The next snapshot has no counts either, so the name list decides.
+    env._apply_event(
+        {
+            "type": "stats",
+            "inv": ["Oak Longbow", "Blood Arrow"],
+            "equipped": "Oak Longbow",
+        }
+    )
+    obs = env._build_obs()
+    assert obs["ammo_effect_heal"] == 1.0
+    assert obs["ammo_effect_none"] == 0.0
+    assert obs["ammo_best_norm"] == 1.0
+    print("AMMO_COUNTS_RESET_OK")
+
+
+def test_ammo_counts_ignore_malformed_rows():
+    # #1081 review: only integer counts may select an arrow.
+    bad = (
+        [],
+        None,
+        "fire_arrow",
+        [{"id": "fire_arrow", "count": "one"}],
+        [{"id": "fire_arrow", "count": True}],
+        [{"id": "fire_arrow", "count": 1.5}],
+        [{"id": "fire_arrow", "count": 0}],
+        [{"id": "fire_arrow", "count": -1}],
+        [{"count": 1}],
+        ["fire_arrow"],
+    )
+    for rows in bad:
+        env = TextMMOEnv("AmmoBadCounts")
+        env._apply_event(
+            {
+                "type": "stats",
+                "inv": ["Oak Longbow", "Fire Arrow"],
+                "equipped": "Oak Longbow",
+                "ammo": rows,
+            }
+        )
+        obs = env._build_obs()
+        assert obs["ammo_effect_none"] == 1.0, rows
+        assert obs["ammo_effect_burn"] == 0.0, rows
+        assert obs["ammo_best_norm"] == 0.0, rows
+    env = TextMMOEnv("AmmoStringCount")
+    env._apply_event(
+        {
+            "type": "stats",
+            "inv": ["Oak Longbow"],
+            "equipped": "Oak Longbow",
+            "ammo": [{"id": "fire_arrow", "count": " 1 "}],
+        }
+    )
+    obs = env._build_obs()
+    assert obs["ammo_effect_burn"] == 1.0
+    assert obs["ammo_best_norm"] == 0.75
+    print("AMMO_MALFORMED_COUNTS_OK")
 
 
 def test_ammo_effect_contracts():
@@ -746,6 +839,8 @@ test_arrow_family_uses_server_ids()
 test_ammo_best_norm_requires_ranged_weapon()
 test_ammo_effect_flags_follow_auto_select()
 test_ammo_flags_use_full_stats_ammo()
+test_ammo_counts_reset_when_stats_omit_ammo()
+test_ammo_counts_ignore_malformed_rows()
 test_ammo_effect_contracts()
 test_priced_market_post()
 test_parameterized_bounty()

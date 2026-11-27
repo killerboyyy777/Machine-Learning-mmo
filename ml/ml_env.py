@@ -1367,11 +1367,29 @@ class TextMMOEnv:
                 "party_size", self._state["party_size"]
             )
             self._state["inv_names"] = event.get("inv", [])
-            if "ammo" in event:
+            if "ammo" not in event:
+                self._state["ammo_counts"] = None
+            else:
                 counts = {}
                 for row in event.get("ammo") or []:
-                    if isinstance(row, dict) and row.get("id"):
-                        counts[row["id"]] = int(row.get("count", 0) or 0)
+                    if not isinstance(row, dict):
+                        continue
+                    iid = row.get("id")
+                    if not isinstance(iid, str) or not iid:
+                        continue
+                    # bool is an int subclass, but True must not read as one
+                    # arrow and set a false effect flag.
+                    count = row.get("count", 0)
+                    if isinstance(count, bool):
+                        count = 0
+                    elif isinstance(count, str):
+                        try:
+                            count = int(count.strip())
+                        except ValueError:
+                            count = 0
+                    elif not isinstance(count, int):
+                        count = 0
+                    counts[iid] = count
                 self._state["ammo_counts"] = counts
             credits = event.get("gathered_units")
             if isinstance(credits, dict):
