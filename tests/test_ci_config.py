@@ -11,8 +11,8 @@ a wheel, so neither can silently drop out of CI.
 #1038 adds a check that every tests/test_*.py script has a step in tests.yml.
 #141 adds docs.yml and guards its three check names and pinned tool versions.
 #1079 checks that the docs jobs run their checks and that lychee fails on
-broken links. It normalizes YAML lines before checking keys and flags, then
-probes a mutated docs.yml copy as a subprocess.
+broken links. It normalizes YAML lines, treats quotes inside a plain value as
+text, then probes a mutated docs.yml copy as a subprocess.
 #841 adds a check that the release gate builds and smoke tests a bundle before
 its checksums reach the release. The tag/pyproject version guard from #1021 is
 exercised as a subprocess.
@@ -51,43 +51,35 @@ def _workflow(name):
 
 
 def _normalize(line):
-    chars = line.strip()
-    kept = []
-    quote = None
-    index = 0
-    while index < len(chars):
-        char = chars[index]
-        if quote:
-            if char == "\\" and quote == '"' and index + 1 < len(chars):
-                kept.append(chars[index : index + 2])
-                index += 2
-                continue
-            if char == quote:
-                if index + 1 < len(chars) and chars[index + 1] == quote:
-                    kept.append(char)
-                    index += 2
-                    continue
-                quote = None
-            kept.append(char)
-            index += 1
-            continue
-        if char in ("'", '"'):
-            quote = char
-            kept.append(char)
-            index += 1
-            continue
-        if char == "#" and (index == 0 or chars[index - 1].isspace()):
-            break
-        kept.append(char)
-        index += 1
-    cleaned = "".join(kept).strip()
+    cleaned = line.strip()
     if ":" not in cleaned:
         return cleaned
     key, _, value = cleaned.partition(":")
     key = key.strip()
     if len(key) >= 2 and key[0] == key[-1] and key[0] in ("'", '"'):
         key = key[1:-1]
-    value = " ".join(value.split())
+    value = value.strip()
+    quote = value[0] if value[:1] in ("'", '"') else None
+    kept = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < len(value):
+                kept.append(value[index : index + 2])
+                index += 2
+                continue
+            if char == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    kept.append(char)
+                    index += 2
+                    continue
+                quote = None
+        elif char == "#" and (index == 0 or value[index - 1].isspace()):
+            break
+        kept.append(char)
+        index += 1
+    value = " ".join("".join(kept).split())
     return key + ":" + (" " + value if value else "")
 
 
@@ -266,6 +258,53 @@ def test_docs_workflow_yaml():
     print("DOCS_YAML_OK")
 
 
+def test_docs_normalization_matches_yaml():
+    try:
+        import yaml
+    except ImportError:
+        print("DOCS_NORMALIZATION_SKIPPED")
+        return
+    text = _workflow("docs.yml")
+    jobs = _docs_jobs(text)
+    normalized = [
+        line
+        for entry in jobs.values()
+        for line in entry["body"] + [x for step in entry["steps"] for x in step]
+    ]
+    raw = [
+        line.strip()
+        for line in text.splitlines()
+        if line.startswith("    ")
+        and line.strip()
+        and not line.lstrip().startswith("#")
+    ]
+    assert len(normalized) == len(raw), (len(normalized), len(raw))
+    for original, line in zip(raw, normalized):
+        if original.startswith("- "):
+            original = original[2:]
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        parsed = yaml.safe_load(original)
+        if not isinstance(parsed, dict) or key not in parsed:
+            continue
+        expected = parsed[key]
+        if not isinstance(expected, (str, bool, int, float)) or expected == "":
+            continue
+        actual = value.strip()
+        if (
+            isinstance(expected, str)
+            and len(actual) >= 2
+            and actual[0] == actual[-1]
+            and actual[0] in ("'", '"')
+        ):
+            actual = actual[1:-1]
+        if isinstance(expected, bool):
+            expected = str(expected).lower()
+        assert actual == str(expected), (original, line, expected)
+    print("DOCS_NORMALIZATION_YAML_OK")
+
+
 def test_docs_guard_rejects_disabled_checks(root=None):
     base = Path(root) if root is not None else ROOT
     run_step = "      - run: codespell $(git ls-files '*.md')\n"
@@ -276,6 +315,14 @@ def test_docs_guard_rejects_disabled_checks(root=None):
     args_line = (
         "          args: --offline --no-progress --include-fragments=anchor-only"
         " '**/*.md'\n"
+    )
+    plain_offline = (
+        "          args: --no-progress --include-fragments=anchor-only"
+        " '**/*.md # --offline'\n"
+    )
+    plain_anchor = (
+        "          args: --offline --no-progress"
+        " '**/*.md # --include-fragments=anchor-only'\n"
     )
     mutations = (
         ("codespell run removed", run_step, ""),
@@ -376,6 +423,8 @@ def test_docs_guard_rejects_disabled_checks(root=None):
             fail_line,
             fail_line + '          "fail": false\n',
         ),
+        ("offline flag inside plain scalar", args_line, plain_offline),
+        ("anchor flag inside plain scalar", args_line, plain_anchor),
     )
     env = dict(os.environ, DOCS_GUARD_PROBE="1")
     with tempfile.TemporaryDirectory() as tmp:
@@ -473,6 +522,7 @@ if __name__ == "__main__":
     test_every_test_script_is_wired()
     test_docs_check_names_and_pins()
     test_docs_workflow_yaml()
+    test_docs_normalization_matches_yaml()
     if not os.environ.get("DOCS_GUARD_PROBE"):
         test_docs_guard_rejects_disabled_checks()
     test_release_version_guard()
