@@ -3185,11 +3185,15 @@ async def main():
 
     # --- Standing-bounty tick posts from the treasury ---
     _t_saved = srv.tax_treasury
+    _bx_coll_saved = srv.tax_collected_lifetime
+    _bx_sunk_saved = srv.tax_sunk_lifetime
     _th_saved = srv.BOUNTY_OVERPOP_THRESHOLD
     _tick_saved = srv._last_standing_tick
     _spike_saved = srv.BOUNTY_PRICESPIKE_ENABLED
     _und_saved = srv.BOUNTY_UNDELVED_ENABLED
     srv.tax_treasury = 940.0
+    srv.tax_collected_lifetime = 0.0
+    srv.tax_sunk_lifetime = 0.0
     srv.BOUNTY_OVERPOP_THRESHOLD = 0  # any hostile template triggers
     srv.BOUNTY_PRICESPIKE_ENABLED = False
     srv.BOUNTY_UNDELVED_ENABLED = False
@@ -3222,20 +3226,29 @@ async def main():
         <= set(c)
         for c in _s_new
     )
-    assert srv.tax_treasury == 940.0 - sum(c["escrow"] for c in _s_new)
+    _bx_refund = sum(c["escrow"] for c in _s_new)
+    assert srv.tax_treasury == 940.0 - _bx_refund
     for c in _s_new:
-        srv._standing_expire(c, time.time())  # refund, keep rows tidy
-    assert srv.tax_treasury == 940.0
+        srv._standing_expire(c, time.time())  # expire, keep rows tidy
+    assert srv.tax_treasury == srv.TREASURY_RESERVE  # refunds bank up to the reserve
+    assert srv.tax_collected_lifetime == _bx_refund
+    assert srv.tax_sunk_lifetime == 940.0 - srv.TREASURY_RESERVE
     srv.tax_treasury = _t_saved
+    srv.tax_collected_lifetime = _bx_coll_saved
+    srv.tax_sunk_lifetime = _bx_sunk_saved
     srv.BOUNTY_OVERPOP_THRESHOLD = _th_saved
     srv.BOUNTY_PRICESPIKE_ENABLED = _spike_saved
     srv.BOUNTY_UNDELVED_ENABLED = _und_saved
     srv._last_standing_tick = _tick_saved
     print("GUILD_TICK_OK")
 
-    # --- Standing-bounty post/expiry helpers conserve the treasury ---
+    # --- Standing-bounty post/expiry route refunds through the reserve sink ---
     _t2_saved = srv.tax_treasury
+    _bx2_coll_saved = srv.tax_collected_lifetime
+    _bx2_sunk_saved = srv.tax_sunk_lifetime
     srv.tax_treasury = 940.0
+    srv.tax_collected_lifetime = 0.0
+    srv.tax_sunk_lifetime = 0.0
     assert srv._standing_post("overpop", "rat", 3, 24, 30, time.time()) is True
     assert srv.tax_treasury == 916.0  # earmarked at post
     _scid = max(srv._commissions)
@@ -3245,9 +3258,37 @@ async def main():
     srv.tax_treasury = 916.0
     srv._standing_expire(srv._commissions[_scid], time.time())
     assert srv._commissions[_scid]["status"] == "expired"
-    assert srv.tax_treasury == 940.0  # refunded
+    assert srv.tax_treasury == 916.0  # above reserve: refund is sunk
+    assert srv.tax_collected_lifetime == 24.0
+    assert srv.tax_sunk_lifetime == 24.0
     srv.tax_treasury = _t2_saved
+    srv.tax_collected_lifetime = _bx2_coll_saved
+    srv.tax_sunk_lifetime = _bx2_sunk_saved
     print("GUILD_EXPIRE_OK")
+
+    # --- #1057: expiry refund sinks escrow when the reserve is full ---
+    _bx3_saved = (
+        srv.tax_treasury,
+        srv.tax_collected_lifetime,
+        srv.tax_sunk_lifetime,
+    )
+    try:
+        srv.tax_treasury = srv.TREASURY_RESERVE
+        srv.tax_collected_lifetime = 0.0
+        srv.tax_sunk_lifetime = 0.0
+        assert srv._standing_post("overpop", "rat", 3, 100, 30, time.time()) is True
+        _bx3_cid = max(srv._commissions)
+        assert srv.tax_treasury == srv.TREASURY_RESERVE - 100.0
+        assert srv._treasury_credit(100.0) == 0.0
+        assert srv.tax_treasury == srv.TREASURY_RESERVE
+        srv._standing_expire(srv._commissions[_bx3_cid], time.time())
+        assert srv._commissions[_bx3_cid]["status"] == "expired"
+        assert srv.tax_treasury <= srv.TREASURY_RESERVE, srv.tax_treasury
+        assert srv.tax_sunk_lifetime == 100.0, srv.tax_sunk_lifetime
+        assert srv.tax_collected_lifetime == 200.0, srv.tax_collected_lifetime
+        print("GUILD_EXPIRE_RESERVE_SINK_OK")
+    finally:
+        srv.tax_treasury, srv.tax_collected_lifetime, srv.tax_sunk_lifetime = _bx3_saved
 
     # --- Standing-bounty post-time name validation (regular-post parity) ---
     _t2b_saved = srv.tax_treasury
