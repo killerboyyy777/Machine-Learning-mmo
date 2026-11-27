@@ -1234,6 +1234,9 @@ class TextMMOEnv:
             "offhand": None,
             "defense": 0,
             "inv_names": [],
+            # Full ammo counts from stats.ammo. None until a stats event with
+            # that field lands, so older snapshots keep the inv-name path.
+            "ammo_counts": None,
             "gathered_units": {},
             "deaths": 0,
             # Server-authoritative pack load + cap from the stats event
@@ -1364,6 +1367,12 @@ class TextMMOEnv:
                 "party_size", self._state["party_size"]
             )
             self._state["inv_names"] = event.get("inv", [])
+            if "ammo" in event:
+                counts = {}
+                for row in event.get("ammo") or []:
+                    if isinstance(row, dict) and row.get("id"):
+                        counts[row["id"]] = int(row.get("count", 0) or 0)
+                self._state["ammo_counts"] = counts
             credits = event.get("gathered_units")
             if isinstance(credits, dict):
                 self._state["gathered_units"] = dict(credits)
@@ -3194,6 +3203,11 @@ class TextMMOEnv:
         ]
         held_bonus = [b for b in held_bonus if b >= 0]
         arrows_norm = min(len(held_bonus), 20) / 20.0
+        # cmd_attack picks from the whole pack; stats.inv stops at 20 names,
+        # so use the published counts when the snapshot has them (#1078).
+        carried_ids = inv_ids
+        if s.get("ammo_counts") is not None:
+            carried_ids = {iid for iid, count in s["ammo_counts"].items() if count > 0}
         equipped_id = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped"))
         ammo_id = (
             srv.ITEM_DEFS.get(equipped_id, {}).get("ammo") if equipped_id else None
@@ -3201,13 +3215,14 @@ class TextMMOEnv:
         if not ammo_id:
             family = []
         elif ammo_id in ammo_bonus:
-            family = [iid for iid in ammo_bonus if iid in inv_ids]
+            family = [iid for iid in ammo_bonus if iid in carried_ids]
         else:
-            family = [ammo_id] if ammo_id in inv_ids else []
+            family = [ammo_id] if ammo_id in carried_ids else []
         best = max(family, key=lambda iid: ammo_bonus.get(iid, 0)) if family else None
         ammo_best_norm = (
             ammo_bonus.get(best, 0) / max(1, max(ammo_bonus.values())) if best else 0.0
         )
+        ammo_best_norm = min(max(ammo_best_norm, 0.0), 1.0)
         effect = (srv.ITEM_DEFS.get(best, {}).get("ammo_effect") or {}) if best else {}
         effect_kind = effect.get("kind") or "none"
         ammo_effect_flags = [
