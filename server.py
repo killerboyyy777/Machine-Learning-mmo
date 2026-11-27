@@ -6959,16 +6959,23 @@ def _craft_missing_input(player, inputs):
 
 
 def _take_craft_inputs(player, inputs):
+    gathered = {}
     for iid, qty in inputs.items():
+        credits = _gather_credits(player.name)
+        before = int(credits.get(iid, 0) or 0)
         for _ in range(qty):
             player.inventory.remove(iid)
         _spend_gathered(player, iid, qty)
+        spent = min(before - int(credits.get(iid, 0) or 0), qty)
+        if spent > 0:
+            gathered[iid] = spent
         if player.equipped == iid and iid not in player.inventory:
             player.equipped = None
         if player.armor == iid and iid not in player.inventory:
             player.armor = None
         if player.offhand == iid and iid not in player.inventory:
             player.offhand = None
+    return gathered
 
 
 def _craft_deadline(job):
@@ -6987,7 +6994,9 @@ def _craft_output_text(result, output_qty):
     return f"{output_qty}x {result_name}" if output_qty > 1 else result_name
 
 
-def _queue_craft_pending(entry, job_id, recipe, result, qty, now, kind, notified):
+def _queue_craft_pending(
+    entry, job_id, recipe, result, qty, now, kind, notified, gathered=0
+):
     pending = entry.get("craft_pending")
     if not isinstance(pending, list):
         pending = []
@@ -7001,6 +7010,7 @@ def _queue_craft_pending(entry, job_id, recipe, result, qty, now, kind, notified
             "notified": notified,
             "completed_at": now,
             "kind": kind,
+            "gathered": int(gathered),
         }
     )
 
@@ -7158,6 +7168,10 @@ async def _deliver_craft_pending(player, entry=None):
             qty = 1
         taken = min(qty, room)
         player.inventory.extend([item["result"]] * taken)
+        gathered = int(item.get("gathered", 0) or 0)
+        credit = min(gathered, taken)
+        if credit:
+            _credit_gathered(player.name, item["result"], credit)
         # A charm crafted before acceptance reaches the pack only here, so the
         # hint must run on delivery or turn-in stays soft-locked (#938).
         await _craft_quest_hint(entry, item["result"], player)
@@ -7174,6 +7188,7 @@ async def _deliver_craft_pending(player, entry=None):
             leftover = dict(item)
             leftover["qty"] = qty - taken
             leftover["notified"] = True
+            leftover["gathered"] = gathered - credit
             remaining.append(leftover)
         delivered += 1
         changed = True
@@ -7235,7 +7250,7 @@ async def _cmd_craft_start(player, msg):
             {"type": "error", "text": f"You need {qty}x {_iname(iid)} to craft that."},
         )
         return
-    _take_craft_inputs(player, recipe["inputs"])
+    gathered_inputs = _take_craft_inputs(player, recipe["inputs"])
     seq = int(entry.get("craft_job_seq", 0) or 0)
     for job in jobs:
         try:
@@ -7253,6 +7268,7 @@ async def _cmd_craft_start(player, msg):
         "ticks_total": ticks_total,
         "started_at": time.time(),
         "inputs": dict(recipe["inputs"]),
+        "gathered_inputs": gathered_inputs,
         "tier": recipe.get("tier", 0),
     }
     jobs.append(job)
@@ -7359,6 +7375,7 @@ async def _cmd_craft_cancel(player, msg):
     ticks_left = _craft_ticks_left(job, now)
     refunds = []
     held = []
+    gathered_inputs = job.get("gathered_inputs") or {}
     for iid, qty in (job.get("inputs") or {}).items():
         try:
             qty = int(qty)
@@ -7367,10 +7384,15 @@ async def _cmd_craft_cancel(player, msg):
         refund = (qty * ticks_left) // total
         if not refund:
             continue
+        gathered = min(int(gathered_inputs.get(iid, 0) or 0), refund)
         room = _inventory_room(player)
         taken = min(refund, room)
         if taken:
             player.inventory.extend([iid] * taken)
+            credit = min(gathered, taken)
+            if credit:
+                _credit_gathered(player.name, iid, credit)
+            gathered -= credit
             refunds.append(f"{taken}x {_iname(iid)}")
         remainder = refund - taken
         if remainder:
@@ -7383,6 +7405,7 @@ async def _cmd_craft_cancel(player, msg):
                 now,
                 "refund",
                 True,
+                gathered,
             )
             held.append(f"{remainder}x {_iname(iid)}")
     jobs[:] = [j for j in jobs if j is not job]
@@ -10573,10 +10596,14 @@ async def _freight_claim(player, msg):
         await send(player, {"type": "error", "text": "That contract is still in play."})
         return
     items = list(rec.pop("items", []))
+    gathered_items = list(rec.get("gathered_items") or [])
     banked = 0
     for iid in items:
         if not _deliver_item_or_bank(player, iid):
             banked += 1
+        if iid in gathered_items:
+            gathered_items.remove(iid)
+            _credit_gathered(player.name, iid, 1)
     refund = int(rec.pop("refund", 0) or 0)
     player.gold += refund
     del FREIGHT[rec["id"]]
