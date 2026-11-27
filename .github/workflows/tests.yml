@@ -70,6 +70,7 @@ jobs:
       - run: python tests/test_training_health.py
       - run: python tests/test_ml_cli_guards.py
       - run: python tests/test_balance_harness.py
+      - run: python tests/test_balance_profile_scope.py
       - run: python tests/test_security.py
       - run: python tests/test_exploit_regressions.py
       - run: python tests/test_market_credit_restore.py

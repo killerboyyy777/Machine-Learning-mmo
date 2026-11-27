@@ -1530,6 +1530,23 @@ def _check_row(check, measurements, thresholds):
     return row
 
 
+def _out_of_profile_row(check, profile, thresholds, suffix=""):
+    check_id, scenario, metric_name, op, _, _ = check
+    return {
+        "id": f"{check_id}{suffix}",
+        "scenario": scenario,
+        "metric": metric_name,
+        "op": op,
+        "value": None,
+        "limit": _limit_for(check, thresholds),
+        "blocking": False,
+        "provisional": False,
+        "status": "skip",
+        "detail": f"scenario {scenario} is not in profile {profile} scenarios",
+        "out_of_profile": True,
+    }
+
+
 def _median_across(values, op):
     if op == "is":
         # Identity checks are boolean, so the median seed rule is a strict
@@ -1612,16 +1629,26 @@ def _worst_seed_row(check, seed_rows, seeds):
     return row
 
 
-def _aggregate_rows(runs, thresholds):
+def _aggregate_rows(runs, thresholds, profile):
     """One median-of-seeds row per thresholded metric, plus the guard rows."""
     seed_rows = {}
     for run in runs:
         for row in run["checks"]:
             seed_rows.setdefault(row["id"], []).append({**row, "seed": run["seed"]})
     seeds = ", ".join(dict.fromkeys(str(run["seed"]) for run in runs))
+    scenarios = PROFILES[profile]["scenarios"]
     rows = []
     for check in CHECKS:
         own = seed_rows.get(check[0], [])
+        # A median of unscoped checks would still block the profile verdict.
+        if check[1] not in scenarios:
+            rows.append(
+                {
+                    **_out_of_profile_row(check, profile, thresholds, ".median"),
+                    "seed": None,
+                }
+            )
+            continue
         rows.append(_median_row(check, own, thresholds, seeds))
         if check[0] in WORST_SEED_GUARD_IDS:
             rows.append(_worst_seed_row(check, own, seeds))
@@ -1681,7 +1708,13 @@ def _scenario_rows(profile, checks, derived):
 
 def evaluate_run(measurements, thresholds, profile="smoke", seed=None):
     """Score one run. Pure: no server, no clock beyond the report stamp."""
-    checks = [_check_row(check, measurements, thresholds) for check in CHECKS]
+    scenarios_for_profile = PROFILES[profile]["scenarios"]
+    checks = []
+    for check in CHECKS:
+        if check[1] in scenarios_for_profile:
+            checks.append(_check_row(check, measurements, thresholds))
+        else:
+            checks.append(_out_of_profile_row(check, profile, thresholds))
     derived = measurements.get("derived") or {}
     scenarios = _scenario_rows(profile, checks, derived)
     coverage = PROFILES[profile].get("coverage", ())
@@ -1903,7 +1936,7 @@ def evaluate_profile(measurements_by_run, thresholds, profile, baseline=None):
         run["verdict"] = "FAIL" if run["summary"]["blocking_fail"] else "PASS"
         for check in run["checks"]:
             all_checks.append({**check, "seed": run["seed"]})
-    all_checks.extend(_aggregate_rows(runs, thresholds))
+    all_checks.extend(_aggregate_rows(runs, thresholds, profile))
     summary = _summarize(all_checks)
     summary["verdict"] = "FAIL" if summary["blocking_fail"] else "PASS"
     first_derived = (
