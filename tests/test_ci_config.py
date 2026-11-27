@@ -10,12 +10,16 @@ the area:ci label rule, and the absence of mutable default-branch action refs.
 a wheel, so neither can silently drop out of CI.
 #1038 adds a check that every tests/test_*.py script has a step in tests.yml.
 #141 adds docs.yml and guards its three check names and pinned tool versions.
+#1079 checks that the docs jobs run their checks and that lychee fails on
+broken links. It also probes a mutated docs.yml copy as a subprocess.
 #841 adds a check that the release gate builds and smoke tests a bundle before
 its checksums reach the release. The tag/pyproject version guard from #1021 is
 exercised as a subprocess.
 """
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +47,30 @@ WORKFLOWS = (
 
 def _workflow(name):
     return (WF / name).read_text(encoding="utf-8")
+
+
+def _docs_steps(text):
+    steps = {}
+    job = None
+    collecting = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        header = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if header:
+            job = header.group(1)
+            steps[job] = []
+            collecting = False
+        elif line.startswith("    steps:"):
+            collecting = True
+        elif collecting and line.startswith("      "):
+            if line.startswith("      -"):
+                steps[job].append([line.strip()[2:]])
+            elif steps[job]:
+                steps[job][-1].append(line.strip())
+        elif collecting:
+            collecting = False
+    return steps
 
 
 def test_every_job_has_timeout():
@@ -116,12 +144,31 @@ def test_docs_check_names_and_pins():
         assert "name: " + name in text, name
     for job in ("links", "spell", "render"):
         assert re.search(r"^  " + job + r":$", text, re.MULTILINE), job
-    assert re.search(r"lycheeverse/lychee-action@v\d+\.\d+\.\d+", text)
-    assert "lycheeVersion: v" in text
-    assert "--offline" in text
-    assert re.search(r"pip install codespell==\d+\.\d+", text)
-    assert re.search(r"pip install markdown==\d+\.\d+", text)
-    assert '"*.md"' in text
+    assert '"**/*.md"' in text
+    assert "lycheeverse/lychee-action@v2.9.0" in text
+    assert "lycheeVersion: v0.24.2" in text
+    assert "pip install codespell==2.4.1" in text
+    assert "pip install markdown==3.8" in text
+
+    steps = _docs_steps(text)
+    links = [
+        step
+        for step in steps["links"]
+        if any(line == "uses: lycheeverse/lychee-action@v2.9.0" for line in step)
+    ]
+    assert len(links) == 1, "lychee step missing or duplicated"
+    args = [line for line in links[0] if line.startswith("args:")]
+    assert len(args) == 1, "lychee args missing"
+    assert "--offline" in args[0], "offline flag missing"
+    assert "--include-fragments=anchor-only" in args[0], "anchor flag missing"
+    assert "fail: true" in links[0], "lychee cannot fail on broken links"
+
+    spell = [
+        step
+        for step in steps["spell"]
+        if any(line == "run: codespell $(git ls-files '*.md')" for line in step)
+    ]
+    assert len(spell) == 1, "codespell run step missing or duplicated"
     print("DOCS_CHECK_NAMES_OK")
 
 
@@ -135,13 +182,39 @@ def test_docs_workflow_yaml():
     assert isinstance(data, dict)
     triggers = data.get("on", data.get(True))
     assert "push" in triggers and "pull_request" in triggers
-    assert "*.md" in triggers["pull_request"]["paths"]
+    assert "**/*.md" in triggers["pull_request"]["paths"]
     jobs = data["jobs"]
     assert set(jobs) == {"links", "spell", "render"}, set(jobs)
     for job in jobs.values():
         assert job["runs-on"] == "ubuntu-latest"
         assert job["timeout-minutes"] > 0
     print("DOCS_YAML_OK")
+
+
+def test_docs_guard_rejects_disabled_checks(root=None):
+    base = Path(root) if root is not None else ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        for sub in (".github", "tests", "scripts"):
+            shutil.copytree(base / sub, Path(tmp) / sub)
+        workflow = Path(tmp) / ".github" / "workflows" / "docs.yml"
+        text = workflow.read_text(encoding="utf-8")
+        run_step = "      - run: codespell $(git ls-files '*.md')\n"
+        assert run_step in text, "probe setup: codespell step absent"
+        text = text.replace(run_step, "")
+        fail_line = "          fail: true"
+        assert fail_line in text, "probe setup: lychee fail flag absent"
+        text = text.replace(fail_line, "          fail: false")
+        workflow.write_text(text, encoding="utf-8")
+        env = dict(os.environ, DOCS_GUARD_PROBE="1")
+        proc = subprocess.run(
+            [sys.executable, "tests/test_ci_config.py"],
+            cwd=tmp,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode != 0, "guard accepted disabled checks: " + proc.stdout
+    print("DOCS_GUARD_REJECTION_OK")
 
 
 def test_release_version_guard():
@@ -208,6 +281,8 @@ if __name__ == "__main__":
     test_every_test_script_is_wired()
     test_docs_check_names_and_pins()
     test_docs_workflow_yaml()
+    if not os.environ.get("DOCS_GUARD_PROBE"):
+        test_docs_guard_rejects_disabled_checks()
     test_release_version_guard()
     test_release_bundle_assets()
     print("CI_CONFIG_OK")
