@@ -9,6 +9,7 @@ the area:ci label rule, and the absence of mutable default-branch action refs.
 #982 adds a check that the offline job runs the policy budget suite and builds
 a wheel, so neither can silently drop out of CI.
 #1038 adds a check that every tests/test_*.py script has a step in tests.yml.
+#141 adds docs.yml and guards its three check names and pinned tool versions.
 The tag/pyproject version guard from #1021 is exercised as a subprocess.
 """
 
@@ -34,6 +35,7 @@ WORKFLOWS = (
     "soak.yml",
     "label.yml",
     "automerge.yml",
+    "docs.yml",
 )
 
 
@@ -105,6 +107,41 @@ def test_every_test_script_is_wired():
     print("TEST_SCRIPT_COVERAGE_OK")
 
 
+def test_docs_check_names_and_pins():
+    text = _workflow("docs.yml")
+    assert "name: Docs Check" in text
+    for name in ("Link check (offline)", "Spelling (codespell)", "README render"):
+        assert "name: " + name in text, name
+    for job in ("links", "spell", "render"):
+        assert re.search(r"^  " + job + r":$", text, re.MULTILINE), job
+    assert re.search(r"lycheeverse/lychee-action@v\d+\.\d+\.\d+", text)
+    assert "lycheeVersion: v" in text
+    assert "--offline" in text
+    assert re.search(r"pip install codespell==\d+\.\d+", text)
+    assert re.search(r"pip install markdown==\d+\.\d+", text)
+    assert '"*.md"' in text
+    print("DOCS_CHECK_NAMES_OK")
+
+
+def test_docs_workflow_yaml():
+    try:
+        import yaml
+    except ImportError:
+        print("DOCS_YAML_PARSE_SKIPPED")
+        return
+    data = yaml.safe_load(_workflow("docs.yml"))
+    assert isinstance(data, dict)
+    triggers = data.get("on", data.get(True))
+    assert "push" in triggers and "pull_request" in triggers
+    assert "*.md" in triggers["pull_request"]["paths"]
+    jobs = data["jobs"]
+    assert set(jobs) == {"links", "spell", "render"}, set(jobs)
+    for job in jobs.values():
+        assert job["runs-on"] == "ubuntu-latest"
+        assert job["timeout-minutes"] > 0
+    print("DOCS_YAML_OK")
+
+
 def test_release_version_guard():
     text = _workflow("release.yml")
     assert 'python scripts/check_release_version.py --tag "$GITHUB_REF_NAME"' in text
@@ -149,5 +186,7 @@ if __name__ == "__main__":
     test_no_mutable_branch_refs()
     test_offline_covers_policy_budget_and_wheel()
     test_every_test_script_is_wired()
+    test_docs_check_names_and_pins()
+    test_docs_workflow_yaml()
     test_release_version_guard()
     print("CI_CONFIG_OK")

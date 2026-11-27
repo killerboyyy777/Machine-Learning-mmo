@@ -1,0 +1,62 @@
+name: Docs Check
+
+on:
+  push:
+    branches: [master, "review/**", "agent/**", "fix/**", "test/**"]
+  pull_request:
+    branches: [master]
+    paths:
+      - "*.md"
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+      - "tests/test_ci_config.py"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: Link check (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # Offline mode checks file targets and heading anchors. Remote sites
+      # would make this job depend on services outside the repository.
+      - uses: lycheeverse/lychee-action@v2.9.0
+        with:
+          lycheeVersion: v0.24.2
+          args: --offline --no-progress --include-fragments=anchor-only '**/*.md'
+          fail: true
+
+  spell:
+    name: Spelling (codespell)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install codespell==2.4.1
+      - run: codespell $(git ls-files '*.md')
+
+  render:
+    name: README render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install markdown==3.8
+      - name: Render README to HTML
+        run: |
+          python -m markdown -x tables -x fenced_code -f /tmp/readme.html README.md
+          test -s /tmp/readme.html
+          grep -q '<h1' /tmp/readme.html
