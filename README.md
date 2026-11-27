@@ -150,7 +150,7 @@ A bow fires the best arrow in the ammo family you carry: Arrow (+0), Iron Arrow 
 
 Fire Arrows set the target ablaze for two world ticks, chipping 2 HP per tick. The burn cannot land the killing blow, so loot, gold and credit stay with direct shots. Blood Arrows restore 2 HP to the shooter on each hit, capped at maximum HP. Both effects ride on top of the flat bonus and are crafted with the `fire_arrows` and `blood_arrows` recipes.
 
-`stats` lists the count of every ammo variant, including zero counts, and the dashboard Players table and character tracker show the same view. The ML observation's `ammo_best_norm` scales the best loaded bonus by the family maximum (4), so it stays in [0, 1] as variants are added.
+`stats` lists the count of every ammo variant, including zero counts, and the dashboard Players table and character tracker show the same view. The ML observation's `ammo_best_norm` reports the best carried bonus in the worn weapon's ammo family, scaled by the family maximum (4), so it stays in [0, 1] as variants are added. With a sword equipped, or no weapon at all, the field is 0 even when arrows are carried, matching the server's damage gating.
 
 ## Drop-in agents
 

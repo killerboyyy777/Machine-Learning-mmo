@@ -527,6 +527,21 @@ def test_arrow_family_uses_server_ids():
     print("AMMO_IDS_OK")
 
 
+def test_ammo_best_norm_requires_ranged_weapon():
+    # Issue 1056. The server adds ammo damage only when the worn weapon
+    # declares an ammo family, so carrying a Blood Arrow with a sword must
+    # read as zero.
+    carried = ["Blood Arrow", "Oak Longbow", "Rusty Sword"]
+    for weapon, expected in (("Oak Longbow", 1.0), ("Rusty Sword", 0.0)):
+        e = TextMMOEnv("AmmoObs")
+        e._state["inv_names"] = list(carried)
+        e._state["equipped"] = weapon
+        obs = e._build_obs()
+        assert obs["ammo_best_norm"] == expected, (weapon, obs["ammo_best_norm"])
+        assert len(flatten_obs(obs)) == OBS_SIZE
+    print("AMMO_BEST_NEEDS_RANGED_OK")
+
+
 def test_readme_ml_dimensions_match_env():
     with open(
         os.path.join(
@@ -566,6 +581,7 @@ test_readme_ml_dimensions_match_env()
 test_discounted_commission_parses()
 test_pack_masks_from_server_count()
 test_arrow_family_uses_server_ids()
+test_ammo_best_norm_requires_ranged_weapon()
 test_priced_market_post()
 test_parameterized_bounty()
 test_gate_matrix()
