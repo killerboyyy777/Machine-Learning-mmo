@@ -11,7 +11,8 @@ a wheel, so neither can silently drop out of CI.
 #1038 adds a check that every tests/test_*.py script has a step in tests.yml.
 #141 adds docs.yml and guards its three check names and pinned tool versions.
 #1079 checks that the docs jobs run their checks and that lychee fails on
-broken links. It also probes a mutated docs.yml copy as a subprocess.
+broken links. It rejects suppression keys and probes a mutated docs.yml copy
+as a subprocess.
 #841 adds a check that the release gate builds and smoke tests a bundle before
 its checksums reach the release. The tag/pyproject version guard from #1021 is
 exercised as a subprocess.
@@ -49,28 +50,40 @@ def _workflow(name):
     return (WF / name).read_text(encoding="utf-8")
 
 
-def _docs_steps(text):
-    steps = {}
+def _docs_jobs(text):
+    jobs = {}
     job = None
-    collecting = False
     for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         header = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
         if header:
             job = header.group(1)
-            steps[job] = []
-            collecting = False
-        elif line.startswith("    steps:"):
-            collecting = True
-        elif collecting and line.startswith("      "):
+            jobs[job] = {"body": [], "steps": []}
+            continue
+        if job is None or not line.startswith("    "):
+            continue
+        stripped = line.strip()
+        if line.startswith("      "):
             if line.startswith("      -"):
-                steps[job].append([line.strip()[2:]])
-            elif steps[job]:
-                steps[job][-1].append(line.strip())
-        elif collecting:
-            collecting = False
-    return steps
+                jobs[job]["steps"].append([stripped[2:]])
+            elif jobs[job]["steps"]:
+                jobs[job]["steps"][-1].append(stripped)
+        else:
+            jobs[job]["body"].append(stripped)
+    return jobs
+
+
+def _lines(block, prefix):
+    return [line for line in block if line.startswith(prefix)]
+
+
+def _assert_no_suppression(jobs, name):
+    entry = jobs[name]
+    lines = entry["body"] + [line for step in entry["steps"] for line in step]
+    for line in lines:
+        assert not line.startswith("continue-on-error:"), (name, line)
+        assert not line.startswith("if:"), (name, line)
 
 
 def test_every_job_has_timeout():
@@ -145,30 +158,51 @@ def test_docs_check_names_and_pins():
     for job in ("links", "spell", "render"):
         assert re.search(r"^  " + job + r":$", text, re.MULTILINE), job
     assert '"**/*.md"' in text
-    assert "lycheeverse/lychee-action@v2.9.0" in text
-    assert "lycheeVersion: v0.24.2" in text
-    assert "pip install codespell==2.4.1" in text
-    assert "pip install markdown==3.8" in text
 
-    steps = _docs_steps(text)
+    jobs = _docs_jobs(text)
+    for name in ("links", "spell", "render"):
+        _assert_no_suppression(jobs, name)
+
     links = [
         step
-        for step in steps["links"]
+        for step in jobs["links"]["steps"]
         if any(line == "uses: lycheeverse/lychee-action@v2.9.0" for line in step)
     ]
     assert len(links) == 1, "lychee step missing or duplicated"
-    args = [line for line in links[0] if line.startswith("args:")]
+    block = links[0]
+    assert _lines(block, "uses: lycheeverse/lychee-action@") == [
+        "uses: lycheeverse/lychee-action@v2.9.0"
+    ], "lychee action pin"
+    assert _lines(block, "lycheeVersion:") == [
+        "lycheeVersion: v0.24.2"
+    ], "lychee version pin"
+    args = _lines(block, "args:")
     assert len(args) == 1, "lychee args missing"
     assert "--offline" in args[0], "offline flag missing"
     assert "--include-fragments=anchor-only" in args[0], "anchor flag missing"
-    assert "fail: true" in links[0], "lychee cannot fail on broken links"
+    assert _lines(block, "fail:") == ["fail: true"], "lychee fail must be true"
 
     spell = [
         step
-        for step in steps["spell"]
+        for step in jobs["spell"]["steps"]
         if any(line == "run: codespell $(git ls-files '*.md')" for line in step)
     ]
     assert len(spell) == 1, "codespell run step missing or duplicated"
+    codespell_pins = [
+        line
+        for step in jobs["spell"]["steps"]
+        for line in step
+        if line.startswith("run: pip install codespell==")
+    ]
+    assert codespell_pins == ["run: pip install codespell==2.4.1"], "codespell pin"
+
+    markdown_pins = [
+        line
+        for step in jobs["render"]["steps"]
+        for line in step
+        if line.startswith("run: pip install markdown==")
+    ]
+    assert markdown_pins == ["run: pip install markdown==3.8"], "markdown pin"
     print("DOCS_CHECK_NAMES_OK")
 
 
@@ -193,27 +227,71 @@ def test_docs_workflow_yaml():
 
 def test_docs_guard_rejects_disabled_checks(root=None):
     base = Path(root) if root is not None else ROOT
-    with tempfile.TemporaryDirectory() as tmp:
-        for sub in (".github", "tests", "scripts"):
-            shutil.copytree(base / sub, Path(tmp) / sub)
-        workflow = Path(tmp) / ".github" / "workflows" / "docs.yml"
-        text = workflow.read_text(encoding="utf-8")
-        run_step = "      - run: codespell $(git ls-files '*.md')\n"
-        assert run_step in text, "probe setup: codespell step absent"
-        text = text.replace(run_step, "")
-        fail_line = "          fail: true"
-        assert fail_line in text, "probe setup: lychee fail flag absent"
-        text = text.replace(fail_line, "          fail: false")
-        workflow.write_text(text, encoding="utf-8")
-        env = dict(os.environ, DOCS_GUARD_PROBE="1")
-        proc = subprocess.run(
-            [sys.executable, "tests/test_ci_config.py"],
-            cwd=tmp,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        assert proc.returncode != 0, "guard accepted disabled checks: " + proc.stdout
+    run_step = "      - run: codespell $(git ls-files '*.md')\n"
+    lychee_step = "      - uses: lycheeverse/lychee-action@v2.9.0\n"
+    install_step = "      - run: pip install codespell==2.4.1\n"
+    fail_line = "          fail: true\n"
+    mutations = (
+        ("codespell run removed", run_step, ""),
+        ("codespell run commented", run_step, "      #" + run_step.strip() + "\n"),
+        ("lychee fail false", fail_line, "          fail: false\n"),
+        ("lychee fail missing", fail_line, ""),
+        ("offline flag removed", "--offline ", ""),
+        ("anchor flag removed", "--include-fragments=anchor-only ", ""),
+        ("lychee action pin changed", "lychee-action@v2.9.0", "lychee-action@v2.8.0"),
+        ("lychee version changed", "lycheeVersion: v0.24.2", "lycheeVersion: v0.23.0"),
+        ("codespell pin changed", "codespell==2.4.1", "codespell==2.5.0"),
+        ("markdown pin changed", "markdown==3.8", "markdown==3.7"),
+        ("trigger path reverted", '      - "**/*.md"', '      - "*.md"'),
+        (
+            "codespell step continue on error",
+            run_step,
+            run_step + "        continue-on-error: true\n",
+        ),
+        (
+            "lychee step continue on error",
+            lychee_step,
+            lychee_step + "        continue-on-error: true\n",
+        ),
+        ("codespell step if false", run_step, run_step + "        if: false\n"),
+        ("lychee step if false", lychee_step, lychee_step + "        if: false\n"),
+        (
+            "links job continue on error",
+            "  links:\n",
+            "  links:\n    continue-on-error: true\n",
+        ),
+        (
+            "spell job continue on error",
+            "  spell:\n",
+            "  spell:\n    continue-on-error: true\n",
+        ),
+        ("render job if false", "  render:\n", "  render:\n    if: false\n"),
+        (
+            "codespell pin hidden in comment",
+            install_step,
+            "      # - run: pip install codespell==2.4.1\n"
+            "      - run: pip install codespell==2.5.0\n",
+        ),
+        ("duplicate fail false", fail_line, fail_line + "          fail: false\n"),
+    )
+    for label, old, new in mutations:
+        with tempfile.TemporaryDirectory() as tmp:
+            for sub in (".github", "tests", "scripts"):
+                shutil.copytree(base / sub, Path(tmp) / sub)
+            workflow = Path(tmp) / ".github" / "workflows" / "docs.yml"
+            text = workflow.read_text(encoding="utf-8")
+            changed = text.replace(old, new)
+            assert changed != text, "probe setup: " + label
+            workflow.write_text(changed, encoding="utf-8")
+            env = dict(os.environ, DOCS_GUARD_PROBE="1")
+            proc = subprocess.run(
+                [sys.executable, "tests/test_ci_config.py"],
+                cwd=tmp,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            assert proc.returncode != 0, label + ": " + proc.stdout
     print("DOCS_GUARD_REJECTION_OK")
 
 
