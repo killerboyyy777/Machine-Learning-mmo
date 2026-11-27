@@ -104,6 +104,29 @@ The publishing workflow builds images for `linux/amd64` and `linux/arm64` and pu
 
 Use `edge` for the current development image. Replace the tag with a version or commit tag to pin a build. Port 8767 stays unpublished, as above.
 
+## Standalone bundle
+
+Version tags attach one zip per platform to the [latest release](https://github.com/killerboyyy777/Machine-Learning-mmo/releases/latest). Each zip holds a single executable and needs no Python install. Download the zip, extract it anywhere, then run the executable:
+
+```bash
+./small-text-mmo          # Linux and macOS
+small-text-mmo.exe        # Windows
+```
+
+Open http://localhost:8766/ for the dashboard. Game clients connect to ws://localhost:8765. Stop the server with Ctrl+C.
+
+| Asset suffix | Supported platform |
+| --- | --- |
+| `linux-x86_64.zip` | Linux on x86_64 |
+| `windows-x86_64.zip` | Windows on x86_64 |
+| `macos-arm64.zip` | macOS on Apple silicon, built on `macos-latest` |
+
+Every zip has a `.sha256` file beside it in the release. On Linux and macOS, run `sha256sum -c small-text-mmo-<version>-<platform>.zip.sha256` from the download folder. On Windows, run `certutil -hashfile small-text-mmo-<version>-<platform>.zip SHA256` and compare the output with the hash in the `.sha256` file.
+
+The bundle contains the server, the dashboard files, `world.json`, `uplot.min.js`, and the config files. It excludes the torch farm and the training agents. Mutable state goes into a `data` folder beside the executable, so extracting a newer bundle over the same folder keeps progress. Set `TEXTMMO_DATA_DIR` before starting to put that state elsewhere. The GM port 8767 stays bound to loopback by default; see [SECURITY.md](SECURITY.md).
+
+The one-download idea started in [#323](https://github.com/killerboyyy777/Machine-Learning-mmo/issues/323), which is now a test-only in-process lab. This bundle is the distribution work tracked in [#841](https://github.com/killerboyyy777/Machine-Learning-mmo/issues/841).
+
 ## Quickstart
 
 ```bash

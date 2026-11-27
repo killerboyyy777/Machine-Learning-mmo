@@ -10,7 +10,9 @@ the area:ci label rule, and the absence of mutable default-branch action refs.
 a wheel, so neither can silently drop out of CI.
 #1038 adds a check that every tests/test_*.py script has a step in tests.yml.
 #141 adds docs.yml and guards its three check names and pinned tool versions.
-The tag/pyproject version guard from #1021 is exercised as a subprocess.
+#841 adds a check that the release gate builds and smoke tests a bundle before
+its checksums reach the release. The tag/pyproject version guard from #1021 is
+exercised as a subprocess.
 """
 
 import re
@@ -178,6 +180,24 @@ def test_release_version_guard():
     print("RELEASE_VERSION_GUARD_OK")
 
 
+def test_release_bundle_assets():
+    text = _workflow("release.yml")
+    assert re.search(r"^  bundle:\n", text, re.MULTILINE)
+    assert "needs: tests" in text
+    assert "scripts/build_bundle.py --target" in text
+    assert "scripts/smoke_bundle.py --bundle-dir" in text
+    assert "needs: [tests, bundle]" in text
+    assert "files: bundles/*" in text
+    assert "*.sha256" in text
+    for script in (
+        "scripts/build_bundle.py",
+        "scripts/smoke_bundle.py",
+        "scripts/bundle_runtime_hook.py",
+    ):
+        assert (ROOT / script).is_file(), script
+    print("RELEASE_BUNDLE_OK")
+
+
 if __name__ == "__main__":
     test_every_job_has_timeout()
     test_test_branch_triggers()
@@ -189,4 +209,5 @@ if __name__ == "__main__":
     test_docs_check_names_and_pins()
     test_docs_workflow_yaml()
     test_release_version_guard()
+    test_release_bundle_assets()
     print("CI_CONFIG_OK")

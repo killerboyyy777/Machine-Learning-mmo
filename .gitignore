@@ -29,6 +29,11 @@ runs/
 *.pt
 *.pth
 
+# Standalone bundle build output (#841)
+build/
+dist/bundle/
+*.spec
+
 # Logs, temp output and OS noise
 *.log
 *.tmp
