@@ -1,4 +1,4 @@
-"""Harvest credit survives escrow returns (#1045, #1052, #1053).
+"""Harvest credit survives escrow returns (#1045, #1052, #1053, #1070, #1071).
 
 Run from the repo root:  python tests/test_market_credit_restore.py
 
@@ -8,8 +8,10 @@ credit, posting and cancelling turns a free gather into a full price sale.
 """
 
 import asyncio
+import json
 import os
 import sys
+import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +30,9 @@ srv.broadcast_room = _noop
 IID = "iron_ore"
 DISCOUNT = srv.merchant_sell_value(IID, gathered=True)
 RETAIL = srv.merchant_sell_value(IID)
+PLATE = "iron_plate"
+PLATE_DISCOUNT = srv.merchant_sell_value(PLATE, gathered=True)
+PLATE_RETAIL = srv.merchant_sell_value(PLATE)
 NODE = srv.gather_nodes["iron_ore_node"]
 NODE_SAVED = (
     NODE["min_yield"],
@@ -69,6 +74,27 @@ def unplayer(p):
 def credits(p):
     entry = srv.get_score_entry(p.name)
     return int(entry.get("gathered_units", {}).get(IID, 0) or 0)
+
+
+def output_credits(p):
+    entry = srv.get_score_entry(p.name)
+    return int((entry.get("gathered_units") or {}).get(PLATE, 0) or 0)
+
+
+def craft_probe_player(name, pid):
+    p = mkplayer(name, pid)
+    entry = srv.get_score_entry(p.name)
+    entry["craft_jobs"] = []
+    entry["craft_pending"] = []
+    p.inventory.extend([IID] * 2 + ["wolf_pelt", "scrap_iron"])
+    srv._credit_gathered(p.name, IID, 2)
+    return p
+
+
+def assert_plate_sale(p):
+    p.room = "market"
+    asyncio.run(srv.cmd_sell(p, {"item": PLATE}))
+    assert p.gold == PLATE_DISCOUNT, (p.gold, PLATE_DISCOUNT)
 
 
 def harvest(p):
@@ -335,9 +361,99 @@ def freight_claim_bank_restores_credit():
         unplayer(p)
 
 
+def craft_timed_output_keeps_credit():
+    p = craft_probe_player("CraftOutputTimed", 88013)
+    try:
+        entry = srv.get_score_entry(p.name)
+        asyncio.run(srv.cmd_craft(p, {"action": "start", "recipe": PLATE}))
+        job = entry["craft_jobs"][0]
+        job["started_at"] = time.time() - 10000
+        asyncio.run(srv.tick_craft_jobs(time.time()))
+        assert p.inventory.count(PLATE) == 1, p.inventory
+        assert output_credits(p) == 2, output_credits(p)
+        assert_plate_sale(p)
+        print("CRAFT_TIMED_OUTPUT_CREDIT_OK")
+    finally:
+        unplayer(p)
+
+
+def craft_held_output_keeps_credit():
+    p = craft_probe_player("CraftOutputHeld", 88014)
+    try:
+        entry = srv.get_score_entry(p.name)
+        asyncio.run(srv.cmd_craft(p, {"action": "start", "recipe": PLATE}))
+        p.inventory.extend(["rat_tail"] * (srv.INVENTORY_CAP - len(p.inventory)))
+        job = entry["craft_jobs"][0]
+        job["started_at"] = time.time() - 10000
+        asyncio.run(srv.tick_craft_jobs(time.time()))
+        held = entry["craft_pending"][0]
+        assert held["kind"] == "output" and held["qty"] == 1, held
+        assert held.get("gathered") == 2, held
+        p.inventory[:] = []
+        asyncio.run(srv.cmd_craft(p, {"action": "collect"}))
+        assert p.inventory.count(PLATE) == 1, p.inventory
+        assert output_credits(p) == 2, output_credits(p)
+        assert_plate_sale(p)
+        print("CRAFT_HELD_OUTPUT_CREDIT_OK")
+    finally:
+        unplayer(p)
+
+
+def craft_instant_output_keeps_credit():
+    p = craft_probe_player("CraftOutputInstant", 88015)
+    try:
+        asyncio.run(srv.cmd_craft(p, {"recipe": PLATE}))
+        assert p.inventory.count(PLATE) == 1, p.inventory
+        assert output_credits(p) == 2, output_credits(p)
+        assert_plate_sale(p)
+        print("CRAFT_INSTANT_OUTPUT_CREDIT_OK")
+    finally:
+        unplayer(p)
+
+
+def market_load_refund_restores_credit():
+    name = "MarketLoadCreditProbe"
+    srv.SCORES.pop(name.lower(), None)
+    srv.name_owners.pop(name.lower(), None)
+    row = {
+        "id": 7001,
+        "seller": name,
+        "item": IID,
+        "price": 99,
+        "ts": 1000.0,
+        "gathered": True,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "market.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "version": srv.MARKET_VERSION,
+                    "orders": [row, dict(row)],
+                    "bids": [],
+                },
+                f,
+            )
+        orders, bids = srv.load_market(path)
+    entry = srv.get_score_entry(name)
+    banked = list(entry.get("item_bank") or [])
+    credit = int((entry.get("gathered_units") or {}).get(IID, 0) or 0)
+    assert len(orders) == 1 and not bids, (orders, bids)
+    assert orders[0].get("gathered") is True, orders
+    assert banked == [IID], banked
+    assert credit == 1, credit
+    srv.SCORES.pop(name.lower(), None)
+    srv.name_owners.pop(name.lower(), None)
+    print("MARKET_LOAD_REFUND_CREDIT_OK")
+
+
 def main():
     try:
         assert DISCOUNT == 2 and RETAIL == 8, (DISCOUNT, RETAIL)
+        assert PLATE_DISCOUNT == 6 and PLATE_RETAIL == 24, (
+            PLATE_DISCOUNT,
+            PLATE_RETAIL,
+        )
         market_cancel_restores_credit()
         market_expiry_restores_credit()
         freight_cancel_restores_credit()
@@ -348,6 +464,10 @@ def main():
         freight_claim_expired_restores_credit()
         freight_claim_lost_restores_credit()
         freight_claim_bank_restores_credit()
+        craft_timed_output_keeps_credit()
+        craft_held_output_keeps_credit()
+        craft_instant_output_keeps_credit()
+        market_load_refund_restores_credit()
         print("MARKET_CREDIT_RESTORE_OK")
     finally:
         srv.market_orders[:] = ORDERS_SAVED

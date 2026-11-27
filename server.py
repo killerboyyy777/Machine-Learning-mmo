@@ -3802,6 +3802,8 @@ def _refund_market_row(row, owner_key):
         iid = row.get("item")
         if isinstance(iid, str) and iid:
             entry.setdefault("item_bank", []).append(iid)
+            if row.get("gathered"):
+                _credit_gathered(owner, iid, 1)
             mark_scores_dirty()
     else:
         price = row.get("price")
@@ -7037,6 +7039,16 @@ def _take_craft_inputs(player, inputs):
     return gathered
 
 
+def _craft_gathered_output_credit(gathered_inputs):
+    total = 0
+    for value in (gathered_inputs or {}).values():
+        try:
+            total += max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def _craft_deadline(job):
     ticks = max(1, int(job.get("ticks_total", CRAFT_JOB_DEFAULT_TICKS)))
     return float(job.get("started_at", 0)) + ticks * NPC_TICK_SECONDS
@@ -7164,6 +7176,10 @@ async def _finish_craft_job(entry, job, now):
     held = output_qty - delivered
     if delivered:
         player.inventory.extend([result] * delivered)
+    gathered = _craft_gathered_output_credit(job.get("gathered_inputs"))
+    credit = gathered if delivered else 0
+    if credit:
+        _credit_gathered(name, result, credit)
     if held:
         _queue_craft_pending(
             entry,
@@ -7174,6 +7190,7 @@ async def _finish_craft_job(entry, job, now):
             now,
             "output",
             player is not None,
+            gathered - credit,
         )
     if player is not None:
         if not held:
@@ -7228,7 +7245,8 @@ async def _deliver_craft_pending(player, entry=None):
         taken = min(qty, room)
         player.inventory.extend([item["result"]] * taken)
         gathered = int(item.get("gathered", 0) or 0)
-        credit = min(gathered, taken)
+        # One crafted unit can carry credit from several harvested inputs.
+        credit = gathered if item.get("kind") == "output" else min(gathered, taken)
         if credit:
             _credit_gathered(player.name, item["result"], credit)
         # A charm crafted before acceptance reaches the pack only here, so the
@@ -7527,7 +7545,7 @@ async def cmd_craft(player, msg):
             {"type": "error", "text": f"You need {qty}x {_iname(iid)} to craft that."},
         )
         return
-    _take_craft_inputs(player, recipe["inputs"])
+    gathered_inputs = _take_craft_inputs(player, recipe["inputs"])
     result = recipe["result"]
     output_qty = _craft_output_qty(recipe)
     entry = get_score_entry(player.name)
@@ -7537,10 +7555,24 @@ async def cmd_craft(player, msg):
     if delivered:
         player.inventory.extend([result] * delivered)
     held = output_qty - delivered
+    gathered = _craft_gathered_output_credit(gathered_inputs)
+    credit = gathered if delivered else 0
+    if credit:
+        _credit_gathered(player.name, result, credit)
     if held:
         seq = int(entry.get("craft_job_seq", 0) or 0) + 1
         entry["craft_job_seq"] = seq
-        _queue_craft_pending(entry, seq, rid, result, held, time.time(), "output", True)
+        _queue_craft_pending(
+            entry,
+            seq,
+            rid,
+            result,
+            held,
+            time.time(),
+            "output",
+            True,
+            gathered - credit,
+        )
     output_text = _craft_output_text(result, output_qty)
     if not delivered:
         text = (
