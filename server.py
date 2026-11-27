@@ -10137,10 +10137,14 @@ def tick_station_freight(now):
     if units <= 0:
         return
     items = []
+    # WORLD seeds carry no stamp, so the oldest unit may be unstamped.
     for _ in range(units):
-        iid = ground.pop(0)
-        items.append(iid)
-        _pop_ground_stamp(origin, iid)
+        iid = ground[0]
+        times = ground_added_at.get(origin, {}).get(iid, [])
+        skip_stamp = ground.count(iid) > len(times)
+        items.append(ground.pop(0))
+        if not skip_stamp:
+            _pop_ground_stamp(origin, iid)
     fee = max(FREIGHT_STATION_FEE_MIN, units * FREIGHT_STATION_FEE_PER_UNIT)
     cid = next(_freight_counter)
     FREIGHT[cid] = {

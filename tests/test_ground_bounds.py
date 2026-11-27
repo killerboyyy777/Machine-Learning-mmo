@@ -156,6 +156,52 @@ try:
         srv.room_items["smithy"] = saved_smithy[0]
         srv.ground_added_at["smithy"] = saved_smithy[1]
     print("GROUND_FREIGHT_STAMP_OK")
+
+    # WORLD seeds have no stamp. Freight lifts the seed at index 0 and must
+    # leave the stamp of a fresh copy of the same id in place.
+    seed_room, seed_item = "smithy", "iron_ore"
+    assert srv.room_items[seed_room].count(seed_item) == 1
+    assert not srv.ground_added_at[seed_room]
+    saved_seed = (
+        srv.FREIGHT_STATION_ROOMS,
+        srv.FREIGHT_STATION_MAX_UNITS,
+        dict(srv.FREIGHT),
+        srv._freight_station_at,
+        list(srv.room_items[seed_room]),
+        dict(srv.ground_added_at[seed_room]),
+        srv.room_gold.get(seed_room, 0),
+    )
+    srv.FREIGHT_STATION_ROOMS = (seed_room, ROOM)
+    srv.FREIGHT_STATION_MAX_UNITS = 1
+    srv.FREIGHT.clear()
+    srv._freight_station_at = 0.0
+    srv.room_items[ROOM] = []
+    srv.ground_added_at[ROOM] = {}
+    srv.room_gold[seed_room] = 0
+    base = real_time()
+    try:
+        srv.time.time = lambda: base
+        srv._add_ground(seed_room, seed_item)
+        assert srv.room_items[seed_room].count(seed_item) == 2
+        srv.tick_station_freight(base + 1)
+        assert srv.room_items[seed_room].count(seed_item) == 1
+        assert len(srv.ground_added_at[seed_room][seed_item]) == 1
+        srv.time.time = lambda: base + srv.GROUND_ITEM_TTL_SECONDS
+        assert srv.prune_ground_items() == 1
+        assert not srv.room_items[seed_room], srv.room_items[seed_room]
+        assert not srv.ground_added_at[seed_room], srv.ground_added_at[seed_room]
+        assert srv.room_gold[seed_room] == srv.ITEM_DEFS[seed_item]["value"]
+    finally:
+        srv.time.time = real_time
+        srv.FREIGHT_STATION_ROOMS = saved_seed[0]
+        srv.FREIGHT_STATION_MAX_UNITS = saved_seed[1]
+        srv.FREIGHT.clear()
+        srv.FREIGHT.update(saved_seed[2])
+        srv._freight_station_at = saved_seed[3]
+        srv.room_items[seed_room] = saved_seed[4]
+        srv.ground_added_at[seed_room] = saved_seed[5]
+        srv.room_gold[seed_room] = saved_seed[6]
+    print("GROUND_SEED_FREIGHT_STAMP_OK")
 finally:
     srv.room_items[ROOM] = saved[0]
     srv.ground_added_at[ROOM] = saved[1]
