@@ -11,8 +11,8 @@ a wheel, so neither can silently drop out of CI.
 #1038 adds a check that every tests/test_*.py script has a step in tests.yml.
 #141 adds docs.yml and guards its three check names and pinned tool versions.
 #1079 checks that the docs jobs run their checks and that lychee fails on
-broken links. It rejects suppression keys and probes a mutated docs.yml copy
-as a subprocess.
+broken links. It normalizes YAML lines before checking keys and flags, then
+probes a mutated docs.yml copy as a subprocess.
 #841 adds a check that the release gate builds and smoke tests a bundle before
 its checksums reach the release. The tag/pyproject version guard from #1021 is
 exercised as a subprocess.
@@ -50,6 +50,47 @@ def _workflow(name):
     return (WF / name).read_text(encoding="utf-8")
 
 
+def _normalize(line):
+    chars = line.strip()
+    kept = []
+    quote = None
+    index = 0
+    while index < len(chars):
+        char = chars[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < len(chars):
+                kept.append(chars[index : index + 2])
+                index += 2
+                continue
+            if char == quote:
+                if index + 1 < len(chars) and chars[index + 1] == quote:
+                    kept.append(char)
+                    index += 2
+                    continue
+                quote = None
+            kept.append(char)
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            kept.append(char)
+            index += 1
+            continue
+        if char == "#" and (index == 0 or chars[index - 1].isspace()):
+            break
+        kept.append(char)
+        index += 1
+    cleaned = "".join(kept).strip()
+    if ":" not in cleaned:
+        return cleaned
+    key, _, value = cleaned.partition(":")
+    key = key.strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in ("'", '"'):
+        key = key[1:-1]
+    value = " ".join(value.split())
+    return key + ":" + (" " + value if value else "")
+
+
 def _docs_jobs(text):
     jobs = {}
     job = None
@@ -66,11 +107,11 @@ def _docs_jobs(text):
         stripped = line.strip()
         if line.startswith("      "):
             if line.startswith("      -"):
-                jobs[job]["steps"].append([stripped[2:]])
+                jobs[job]["steps"].append([_normalize(stripped[2:])])
             elif jobs[job]["steps"]:
-                jobs[job]["steps"][-1].append(stripped)
+                jobs[job]["steps"][-1].append(_normalize(stripped))
         else:
-            jobs[job]["body"].append(stripped)
+            jobs[job]["body"].append(_normalize(stripped))
     return jobs
 
 
@@ -230,7 +271,12 @@ def test_docs_guard_rejects_disabled_checks(root=None):
     run_step = "      - run: codespell $(git ls-files '*.md')\n"
     lychee_step = "      - uses: lycheeverse/lychee-action@v2.9.0\n"
     install_step = "      - run: pip install codespell==2.4.1\n"
+    render_step = "      - name: Render README to HTML\n"
     fail_line = "          fail: true\n"
+    args_line = (
+        "          args: --offline --no-progress --include-fragments=anchor-only"
+        " '**/*.md'\n"
+    )
     mutations = (
         ("codespell run removed", run_step, ""),
         ("codespell run commented", run_step, "      #" + run_step.strip() + "\n"),
@@ -273,7 +319,76 @@ def test_docs_guard_rejects_disabled_checks(root=None):
             "      - run: pip install codespell==2.5.0\n",
         ),
         ("duplicate fail false", fail_line, fail_line + "          fail: false\n"),
+        (
+            "lychee step quoted continue on error",
+            lychee_step,
+            lychee_step + '        "continue-on-error": true\n',
+        ),
+        (
+            "lychee step quoted if false",
+            lychee_step,
+            lychee_step + "        'if': false\n",
+        ),
+        (
+            "codespell step quoted if false",
+            run_step,
+            run_step + '        "if": false\n',
+        ),
+        (
+            "codespell step quoted continue on error",
+            run_step,
+            run_step + "        'continue-on-error': true\n",
+        ),
+        (
+            "links job quoted continue on error",
+            "  links:\n",
+            '  links:\n    "continue-on-error": true\n',
+        ),
+        (
+            "spell job quoted if false",
+            "  spell:\n",
+            "  spell:\n    'if': false\n",
+        ),
+        (
+            "render job quoted if false",
+            "  render:\n",
+            '  render:\n    "if": false\n',
+        ),
+        (
+            "render step quoted continue on error",
+            render_step,
+            render_step + '        "continue-on-error": true\n',
+        ),
+        (
+            "offline flag only in comment",
+            args_line,
+            "          args: --no-progress --include-fragments=anchor-only"
+            " '**/*.md' # --offline\n",
+        ),
+        (
+            "anchor flag only in comment",
+            args_line,
+            "          args: --offline --no-progress '**/*.md'"
+            " # --include-fragments=anchor-only\n",
+        ),
+        (
+            "quoted duplicate fail false",
+            fail_line,
+            fail_line + '          "fail": false\n',
+        ),
     )
+    env = dict(os.environ, DOCS_GUARD_PROBE="1")
+    with tempfile.TemporaryDirectory() as tmp:
+        for sub in (".github", "tests", "scripts"):
+            shutil.copytree(base / sub, Path(tmp) / sub)
+        proc = subprocess.run(
+            [sys.executable, "tests/test_ci_config.py"],
+            cwd=tmp,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, "pristine guard failed: " + proc.stdout
     for label, old, new in mutations:
         with tempfile.TemporaryDirectory() as tmp:
             for sub in (".github", "tests", "scripts"):
@@ -283,7 +398,6 @@ def test_docs_guard_rejects_disabled_checks(root=None):
             changed = text.replace(old, new)
             assert changed != text, "probe setup: " + label
             workflow.write_text(changed, encoding="utf-8")
-            env = dict(os.environ, DOCS_GUARD_PROBE="1")
             proc = subprocess.run(
                 [sys.executable, "tests/test_ci_config.py"],
                 cwd=tmp,
