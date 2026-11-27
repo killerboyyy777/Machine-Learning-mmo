@@ -844,4 +844,25 @@ assert (
 ), "narrow-screen form layout missing"
 print("A11Y_OK")
 
+# Issue 1072 requires the README ammo claim to match the dashboard render.
+readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_old_ammo_claim = (
+    "including zero counts, and the dashboard Players table and "
+    "character tracker show the same view"
+)
+assert (
+    _old_ammo_claim not in readme
+), "README still claims the dashboard shows zero-count ammo"
+assert (
+    "`stats` lists every ammo variant, including variants with a zero count." in readme
+), "README does not state that stats includes zero counts"
+assert (
+    "dashboard Players table and character tracker show only the variants a player carries"
+    in readme
+), "README does not state that the dashboard shows carried variants only"
+assert (
+    html.count(".filter(item => item.count > 0)") == 2
+), "expected two carried-only ammo filters in the dashboard"
+print("AMMO_DOCS_OK")
+
 print("ALL_DASHBOARD_OK")
