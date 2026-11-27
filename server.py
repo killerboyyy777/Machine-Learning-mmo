@@ -1436,22 +1436,27 @@ def _pop_ground_stamp(room_id, iid):
             del stamps[iid]
 
 
-def _ground_marks(room_id):
-    return ground_gathered.setdefault(room_id, [])
+def _ground_marks(room_id, ground=None):
+    marks = ground_gathered.setdefault(room_id, [])
+    if ground is None:
+        ground = _ground_items(room_id)
+    # WORLD seeds hold a floor slot without a marker, so backfill unmarked
+    # entries before touching a marker by index.
+    if len(marks) < len(ground):
+        marks.extend([False] * (len(ground) - len(marks)))
+    return marks
 
 
-def _pop_ground_mark(room_id, index):
-    marks = _ground_marks(room_id)
+def _pop_ground_mark(room_id, index, ground=None):
+    marks = _ground_marks(room_id, ground)
     if index < len(marks):
         return marks.pop(index)
     return False
 
 
 def _mark_ground_gathered(room_id, iid):
-    marks = _ground_marks(room_id)
     ground = _ground_items(room_id)
-    if len(marks) != len(ground):
-        return
+    marks = _ground_marks(room_id, ground)
     for index in range(len(ground) - 1, -1, -1):
         if ground[index] == iid:
             marks[index] = True
@@ -1461,14 +1466,15 @@ def _mark_ground_gathered(room_id, iid):
 def _add_ground(room_id, iid):
     d = dungeon_for_room(room_id)
     ground = d.floor(floor_from_room(room_id)).items if d else room_items[room_id]
+    marks = _ground_marks(room_id, ground)
     if len(ground) >= GROUND_ITEM_CAP:
         evicted = ground.pop(0)
         _ground_value_to_floor(room_id, evicted)
-        _pop_ground_mark(room_id, 0)
+        marks.pop(0)
         if d is None:
             _pop_ground_stamp(room_id, evicted)
     ground.append(iid)
-    _ground_marks(room_id).append(False)
+    marks.append(False)
     if d is None:
         ground_added_at.setdefault(room_id, {}).setdefault(iid, []).append(time.time())
 
@@ -1479,7 +1485,7 @@ def _remove_ground(room_id, iid):
         index = ground.index(iid)
         ground.pop(index)
         _pop_ground_stamp(room_id, iid)
-        return _pop_ground_mark(room_id, index)
+        return _pop_ground_mark(room_id, index, ground)
     return False
 
 
@@ -1497,7 +1503,7 @@ def prune_ground_items(now=None):
                 if iid in ground:
                     index = ground.index(iid)
                     ground.pop(index)
-                    _pop_ground_mark(room_id, index)
+                    _pop_ground_mark(room_id, index, ground)
                     _ground_value_to_floor(room_id, iid)
                     expired += 1
             if not times:
@@ -10190,11 +10196,11 @@ def tick_station_freight(now):
         iid = ground[0]
         times = ground_added_at.get(origin, {}).get(iid, [])
         skip_stamp = ground.count(iid) > len(times)
-        origin_marks = _ground_marks(origin)
+        origin_marks = _ground_marks(origin, ground)
         if origin_marks and origin_marks[0]:
             gathered_items.append(iid)
         items.append(ground.pop(0))
-        _pop_ground_mark(origin, 0)
+        _pop_ground_mark(origin, 0, ground)
         if not skip_stamp:
             _pop_ground_stamp(origin, iid)
     fee = max(FREIGHT_STATION_FEE_MIN, units * FREIGHT_STATION_FEE_PER_UNIT)

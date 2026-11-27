@@ -602,12 +602,15 @@ _lost_freight_buyback("carried_expiry", _lose_on_carried_expiry)
 def _station_freight_mark(label, deliver):
     assert DISCOUNT < RETAIL, (DISCOUNT, RETAIL)
     _reset()
-    rooms = ("market", "smithy")
+    rooms = ("smithy", "market")
     station_saved = srv.FREIGHT_STATION_ROOMS
     rooms_saved = {rid: list(srv.room_items[rid]) for rid in rooms}
     stamps_saved = {rid: dict(srv.ground_added_at[rid]) for rid in rooms}
     marks_saved = {rid: srv.ground_gathered.get(rid) for rid in rooms}
     mark_list = isinstance(srv.ground_gathered["market"], list)
+    origin_seed = list(srv.WORLD["room_items"].get(rooms[0], ()))
+    seed_count = origin_seed.count(LOST_IID)
+    assert seed_count >= 1, origin_seed
     hauler = _player("StationHauler", rooms[0], 50, [], pid=923)
     picker = _player("StationPicker", rooms[0], 0, [], pid=924)
     for p in (hauler, picker):
@@ -616,11 +619,13 @@ def _station_freight_mark(label, deliver):
     try:
         srv.FREIGHT_STATION_ROOMS = rooms
         for rid in rooms:
-            srv.room_items[rid] = []
             srv.ground_added_at[rid] = {}
-            srv.ground_gathered[rid] = [] if mark_list else {}
+        srv.room_items[rooms[0]] = list(origin_seed)
+        srv.ground_gathered[rooms[0]] = [] if mark_list else {}
+        srv.room_items[rooms[1]] = []
+        srv.ground_gathered[rooms[1]] = [] if mark_list else {}
         srv._freight_drop_package(rooms[0], [LOST_IID], [LOST_IID])
-        assert srv._ground_items(rooms[0]) == [LOST_IID]
+        assert srv._ground_items(rooms[0]).count(LOST_IID) == seed_count + 1
         srv.tick_station_freight(time.time())
         rec = _only_contract()
         assert rec["gathered_items"] == [LOST_IID], rec
@@ -635,7 +640,7 @@ def _station_freight_mark(label, deliver):
             srv._freight_station_at = now
             srv.prune_freight(now)
             drop_room = rooms[0]
-        assert srv._ground_items(drop_room).count(LOST_IID) == 1
+        assert srv._ground_items(drop_room).count(LOST_IID) == seed_count + 1
         picker.room = drop_room
         asyncio.run(srv.cmd_take(picker, {"item": LOST_IID}))
         assert picker.inventory == [LOST_IID], picker.inventory

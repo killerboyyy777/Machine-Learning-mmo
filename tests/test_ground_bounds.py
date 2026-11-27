@@ -281,9 +281,59 @@ try:
             else:
                 srv.ground_gathered[room] = marks_copy
 
+    def _seeded_floor_mark():
+        room = "smithy"
+        seeds = list(srv.room_items[room])
+        assert seeds.count(CHECK_ITEM) >= 1, seeds
+        stamps_saved = dict(srv.ground_added_at[room])
+        marks_saved = srv.ground_gathered.get(room)
+        marks_copy = None
+        if marks_saved is not None:
+            marks_copy = list(marks_saved) if MARK_LIST else dict(marks_saved)
+        picker = srv.Player(
+            id=9302,
+            name="SeededPicker",
+            logged_in=True,
+            room=room,
+            gold=0,
+        )
+        srv.players[picker.id] = picker
+        srv.add_member(picker)
+        try:
+            srv.ground_added_at[room] = {}
+            srv.ground_gathered[room] = [] if MARK_LIST else {}
+            srv._freight_drop_package(room, [CHECK_ITEM], [CHECK_ITEM])
+            assert (
+                srv._ground_items(room).count(CHECK_ITEM) == seeds.count(CHECK_ITEM) + 1
+            )
+            asyncio.run(srv.cmd_take(picker, {"item": CHECK_ITEM}))
+            asyncio.run(srv.cmd_take(picker, {"item": CHECK_ITEM}))
+            assert picker.inventory.count(CHECK_ITEM) == 2, picker.inventory
+            picker.room = "market"
+            gold_before = picker.gold
+            asyncio.run(srv.cmd_sell(picker, {"item": CHECK_ITEM}))
+            assert picker.gold == gold_before + DISCOUNT, (
+                picker.gold,
+                gold_before,
+                DISCOUNT,
+            )
+            print("SEEDED_FLOOR_MARK_OK")
+        finally:
+            srv.remove_member(picker)
+            srv.players.pop(picker.id, None)
+            srv.SCORES.pop(picker.name.lower(), None)
+            srv.name_owners.pop(picker.name.lower(), None)
+            srv.room_items[room] = seeds
+            srv.ground_added_at[room] = stamps_saved
+            if marks_saved is None:
+                srv.ground_gathered.pop(room, None)
+            else:
+                srv.ground_gathered[room] = marks_copy
+
     dungeon = srv.Dungeon(party_id=9901065)
     srv.dungeons[dungeon.id] = dungeon
     try:
+        _seeded_floor_mark()
         _floor_mark_survivor("market", "evict", "evict")
         _floor_mark_survivor("market", "expire", "expire")
         _floor_mark_survivor(dungeon.room_id(1), "evict", "dungeon_evict")
