@@ -4,13 +4,16 @@ Run from the repo root:  python tests/test_env_parsing.py
 Covers: commission_list parsing (plain + discounted-rate lines); pack
 masking from the server's authoritative pack count; priced market posts;
 parameterized bounties; merchant/affordability/party gates (#194);
-remedy/tonic quest mirror, stages, transitions, events, obs (#183); and
-dynamic-shard valuation through live ITEM_DEFS (#194).
+remedy/tonic quest mirror, stages, transitions, events, obs (#183);
+dynamic-shard valuation through live ITEM_DEFS (#194); and loaded ammo
+effect flags from the server's arrow pick (#986).
 """
 
 import asyncio
+import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ml")
@@ -542,6 +545,93 @@ def test_ammo_best_norm_requires_ranged_weapon():
     print("AMMO_BEST_NEEDS_RANGED_OK")
 
 
+def test_ammo_effect_flags_follow_auto_select():
+    # #986: the server fires the best arrow in the family and applies that
+    # arrow's ammo_effect. Give Fire and Blood the same bonus so the bonus
+    # cannot separate the two loads; only the effect flag can.
+    tied = dict(srv.AMMO_BONUS)
+    tied["fire_arrow"] = 4
+    tied["blood_arrow"] = 4
+    original = srv.AMMO_BONUS
+    srv.AMMO_BONUS = tied
+    try:
+        loads = {}
+        for arrow in ("Fire Arrow", "Blood Arrow"):
+            e = TextMMOEnv("AmmoEffect")
+            e._state["inv_names"] = ["Oak Longbow", arrow]
+            e._state["equipped"] = "Oak Longbow"
+            obs = e._build_obs()
+            assert obs["ammo_best_norm"] == 1.0, obs["ammo_best_norm"]
+            assert 0.0 <= obs["ammo_best_norm"] <= 1.0
+            assert len(flatten_obs(obs)) == OBS_SIZE
+            loads[arrow] = obs
+        fire, blood = loads["Fire Arrow"], loads["Blood Arrow"]
+        assert fire["ammo_effect_flags"] != blood["ammo_effect_flags"]
+        assert flatten_obs(fire) != flatten_obs(blood)
+        assert fire["ammo_effect_burn"] == 1.0 and fire["ammo_effect_heal"] == 0.0
+        assert blood["ammo_effect_burn"] == 0.0 and blood["ammo_effect_heal"] == 1.0
+        # On a tie the server picks the first id in AMMO_BONUS, so Fire wins.
+        both = TextMMOEnv("AmmoTie")
+        both._state["inv_names"] = ["Oak Longbow", "Fire Arrow", "Blood Arrow"]
+        both._state["equipped"] = "Oak Longbow"
+        tie = both._build_obs()
+        assert tie["ammo_effect_flags"] == fire["ammo_effect_flags"]
+        print("AMMO_EFFECT_FLAGS_OK")
+    finally:
+        srv.AMMO_BONUS = original
+
+
+def test_ammo_effect_contracts():
+    assert ml_env.AMMO_EFFECT_KINDS == ("none", "burn", "heal")
+    assert OBS_SIZE == 225 + len(ml_env.AMMO_EFFECT_KINDS)
+    e = TextMMOEnv("AmmoContract")
+    e._state["inv_names"] = ["Oak Longbow", "Fire Arrow"]
+    e._state["equipped"] = "Oak Longbow"
+    obs = e._build_obs()
+    assert len(flatten_obs(obs)) == OBS_SIZE
+    assert flatten_obs(obs)[-len(ml_env.AMMO_EFFECT_KINDS) :] == (
+        obs["ammo_effect_flags"]
+    )
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from ml.plugins.linear import LinearPlugin
+
+    plugin = LinearPlugin(epsilon=0.0)
+    assert plugin._agent.obs_size == OBS_SIZE
+    assert len(plugin._agent.weights[0]) == OBS_SIZE
+    assert 0 <= plugin.act(obs, "AmmoContract", None) < N_ACTIONS
+    from ml.ml_client import LinearQAgent
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.path.join(tmp, "old.json")
+        with open(old, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "weights": [[0.0] * 225 for _ in range(N_ACTIONS)],
+                    "bias": [0.0] * N_ACTIONS,
+                    "training_steps": 0,
+                    "obs_size": 225,
+                    "n_actions": N_ACTIONS,
+                },
+                fh,
+            )
+        # A 225-input checkpoint is refused with a warning, not reshaped.
+        assert LinearQAgent(OBS_SIZE, N_ACTIONS).load(old) is False
+    with open(os.path.join(root, "README.md"), encoding="utf-8") as readme:
+        docs = readme.read()
+    assert f"({OBS_SIZE} obs dims, {N_ACTIONS} actions)" in docs, docs[:200]
+    for token in (
+        "ammo_effect_none",
+        "ammo_effect_burn",
+        "ammo_effect_heal",
+        "ammo-select action",
+        "cannot load into the 228-input environment",
+    ):
+        assert token in docs, token
+    print("AMMO_EFFECT_CONTRACTS_OK")
+
+
 def test_readme_ml_dimensions_match_env():
     with open(
         os.path.join(
@@ -582,6 +672,8 @@ test_discounted_commission_parses()
 test_pack_masks_from_server_count()
 test_arrow_family_uses_server_ids()
 test_ammo_best_norm_requires_ranged_weapon()
+test_ammo_effect_flags_follow_auto_select()
+test_ammo_effect_contracts()
 test_priced_market_post()
 test_parameterized_bounty()
 test_gate_matrix()
