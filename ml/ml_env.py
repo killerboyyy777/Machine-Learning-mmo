@@ -52,8 +52,9 @@ and delver quests, and Sister Maren's remedy and tonic quests:
     and turn-in require the relevant quest giver in the room).
   - ammo terms: arrow count as a scalar (bows consume 1 arrow per shot, so
     unlike other items the count -- not just presence -- drives decisions),
-    plus the best loaded bonus scaled by the family maximum; effect variants
-    carry a higher bonus and are selected by the same best-in-family rule.
+    plus the best carried bonus in the worn weapon's ammo family, scaled by
+    the family maximum. A weapon with no ammo attribute reports zero. Effect
+    variants carry a higher bonus under the same best-in-family rule.
 
 Market tax (10% with a 1-gold minimum, see server.py TAX_RATE/TAX_MINIMUM)
 is first-class here, not an ignored detail:
@@ -3156,8 +3157,9 @@ class TextMMOEnv:
         # Arrow count matters (bows eat one per shot), unlike other items
         # where binary presence suffices -- hence a scalar, not just the
         # inv_presence flag. Counts the whole ammo family (any variant
-        # fires); ammo_best tracks the best loaded bonus, scaled by the
-        # family maximum so effect variants stay in [0, 1].
+        # fires). ammo_best follows the server's shot gating, so a worn
+        # weapon must declare an ammo family and that family must be
+        # carried before any bonus is added.
         ammo_bonus = getattr(
             srv,
             "AMMO_BONUS",
@@ -3175,8 +3177,19 @@ class TextMMOEnv:
         ]
         held_bonus = [b for b in held_bonus if b >= 0]
         arrows_norm = min(len(held_bonus), 20) / 20.0
+        equipped_id = srv.find_item_by_name(list(srv.ITEM_DEFS), s.get("equipped"))
+        ammo_id = (
+            srv.ITEM_DEFS.get(equipped_id, {}).get("ammo") if equipped_id else None
+        )
+        if not ammo_id:
+            family = []
+        elif ammo_id in ammo_bonus:
+            family = [iid for iid in ammo_bonus if iid in inv_ids]
+        else:
+            family = [ammo_id] if ammo_id in inv_ids else []
+        best = max(family, key=lambda iid: ammo_bonus.get(iid, 0)) if family else None
         ammo_best_norm = (
-            max(held_bonus) / max(1, max(ammo_bonus.values())) if held_bonus else 0.0
+            ammo_bonus.get(best, 0) / max(1, max(ammo_bonus.values())) if best else 0.0
         )
         defense_norm = min(float(s.get("defense", 0) or 0), 10.0) / 10.0
 
