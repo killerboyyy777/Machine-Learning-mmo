@@ -776,7 +776,7 @@ GROUND_GOLD_CAP = 100000
 
 # room_id -> list of item ids currently lying on the ground (static rooms)
 room_items = {rid: list(WORLD.get("room_items", {}).get(rid, [])) for rid in ROOMS}
-# room_id -> {item id: drop time}, for drops swept by prune_ground_items.
+# room_id -> {item id: [drop times]}, one stamp per unit on the ground.
 ground_added_at = {rid: {} for rid in ROOMS}
 
 # Loose gold lying on the ground (death drops), room_id -> amount. Dungeon
@@ -1424,6 +1424,15 @@ def _ground_value_to_floor(room_id, iid):
         _add_floor_gold(room_id, value)
 
 
+def _pop_ground_stamp(room_id, iid):
+    stamps = ground_added_at.get(room_id, {})
+    times = stamps.get(iid, [])
+    if times:
+        times.pop(0)
+        if not times:
+            del stamps[iid]
+
+
 def _add_ground(room_id, iid):
     d = dungeon_for_room(room_id)
     ground = d.floor(floor_from_room(room_id)).items if d else room_items[room_id]
@@ -1431,17 +1440,17 @@ def _add_ground(room_id, iid):
         evicted = ground.pop(0)
         _ground_value_to_floor(room_id, evicted)
         if d is None:
-            ground_added_at.get(room_id, {}).pop(evicted, None)
+            _pop_ground_stamp(room_id, evicted)
     ground.append(iid)
     if d is None:
-        ground_added_at.setdefault(room_id, {})[iid] = time.time()
+        ground_added_at.setdefault(room_id, {}).setdefault(iid, []).append(time.time())
 
 
 def _remove_ground(room_id, iid):
     ground = _ground_items(room_id)
     if iid in ground:
         ground.remove(iid)
-        ground_added_at.get(room_id, {}).pop(iid, None)
+        _pop_ground_stamp(room_id, iid)
 
 
 def prune_ground_items(now=None):
@@ -1449,15 +1458,18 @@ def prune_ground_items(now=None):
     now = time.time() if now is None else now
     expired = 0
     for room_id, stamps in list(ground_added_at.items()):
-        for iid, dropped_at in list(stamps.items()):
-            if now - dropped_at < GROUND_ITEM_TTL_SECONDS:
-                continue
-            del stamps[iid]
-            ground = room_items.get(room_id, ())
-            if iid in ground:
-                _remove_ground(room_id, iid)
-                _ground_value_to_floor(room_id, iid)
-                expired += 1
+        for iid, times in list(stamps.items()):
+            for dropped_at in list(times):
+                if now - dropped_at < GROUND_ITEM_TTL_SECONDS:
+                    continue
+                times.remove(dropped_at)
+                ground = room_items.get(room_id, ())
+                if iid in ground:
+                    ground.remove(iid)
+                    _ground_value_to_floor(room_id, iid)
+                    expired += 1
+            if not times:
+                del stamps[iid]
     return expired
 
 
