@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - "*.md"
+      - "**/*.md"
       - "docs/**"
       - ".github/workflows/docs.yml"
       - "tests/test_ci_config.py"
