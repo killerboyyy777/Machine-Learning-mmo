@@ -3,6 +3,7 @@
 Run from the repo root:  python tests/test_ground_bounds.py
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -202,6 +203,97 @@ try:
         srv.ground_added_at[seed_room] = saved_seed[5]
         srv.room_gold[seed_room] = saved_seed[6]
     print("GROUND_SEED_FREIGHT_STAMP_OK")
+
+    # #1065: one marked and one unmarked copy of the same id share a floor.
+    # Losing the unmarked copy by cap or TTL must not clear the survivor's mark.
+    async def _noop(*args, **kwargs):
+        return None
+
+    send_saved, sync_saved, broadcast_saved = (
+        srv.send,
+        srv.sync_room,
+        srv.broadcast_room,
+    )
+    srv.send = srv.sync_room = srv.broadcast_room = _noop
+    MARK_LIST = isinstance(srv.ground_gathered["market"], list)
+    CHECK_ITEM = "iron_ore"
+    DISCOUNT = srv.merchant_sell_value(CHECK_ITEM, gathered=True)
+    RETAIL = srv.merchant_sell_value(CHECK_ITEM)
+    assert DISCOUNT < RETAIL, (DISCOUNT, RETAIL)
+
+    def _floor_mark_survivor(room, lose, label):
+        d = srv.dungeon_for_room(room)
+        floor = d.floors.get(srv.floor_from_room(room)) if d else None
+        ground_saved = list(srv._ground_items(room))
+        stamps_saved = dict(srv.ground_added_at.get(room, {}))
+        marks_saved = srv.ground_gathered.get(room)
+        marks_copy = None
+        if marks_saved is not None:
+            marks_copy = list(marks_saved) if MARK_LIST else dict(marks_saved)
+        cap_saved = srv.GROUND_ITEM_CAP
+        try:
+            for iid in list(srv._ground_items(room)):
+                srv._remove_ground(room, iid)
+            srv.ground_added_at[room] = {}
+            srv.ground_gathered[room] = [] if MARK_LIST else {}
+            srv._add_ground(room, CHECK_ITEM)
+            srv._add_ground(room, CHECK_ITEM)
+            srv._mark_ground_gathered(room, CHECK_ITEM)
+            assert srv._ground_items(room).count(CHECK_ITEM) == 2
+            if lose == "evict":
+                srv.GROUND_ITEM_CAP = 2
+                srv._add_ground(room, CHECK_ITEM)
+            else:
+                srv.ground_added_at[room][CHECK_ITEM][0] = (
+                    srv.time.time() - srv.GROUND_ITEM_TTL_SECONDS - 1
+                )
+                assert srv.prune_ground_items() == 1
+            picker = srv.Player(
+                id=9301,
+                name="FloorPicker",
+                logged_in=True,
+                room=room,
+                gold=0,
+            )
+            srv.players[picker.id] = picker
+            srv.add_member(picker)
+            try:
+                asyncio.run(srv.cmd_take(picker, {"item": CHECK_ITEM}))
+                assert picker.inventory == [CHECK_ITEM], picker.inventory
+                picker.room = "market"
+                asyncio.run(srv.cmd_sell(picker, {"item": CHECK_ITEM}))
+                assert picker.gold == DISCOUNT, (picker.gold, DISCOUNT, RETAIL)
+                print(f"FLOOR_MARK_SURVIVES_{label.upper()}_OK")
+            finally:
+                srv.remove_member(picker)
+                srv.players.pop(picker.id, None)
+                srv.SCORES.pop(picker.name.lower(), None)
+                srv.name_owners.pop(picker.name.lower(), None)
+        finally:
+            srv.GROUND_ITEM_CAP = cap_saved
+            if floor is not None:
+                floor.items[:] = ground_saved
+            else:
+                srv.room_items[room] = ground_saved
+            srv.ground_added_at[room] = stamps_saved
+            if marks_saved is None:
+                srv.ground_gathered.pop(room, None)
+            else:
+                srv.ground_gathered[room] = marks_copy
+
+    dungeon = srv.Dungeon(party_id=9901065)
+    srv.dungeons[dungeon.id] = dungeon
+    try:
+        _floor_mark_survivor("market", "evict", "evict")
+        _floor_mark_survivor("market", "expire", "expire")
+        _floor_mark_survivor(dungeon.room_id(1), "evict", "dungeon_evict")
+    finally:
+        srv.dungeons.pop(dungeon.id, None)
+        srv.send, srv.sync_room, srv.broadcast_room = (
+            send_saved,
+            sync_saved,
+            broadcast_saved,
+        )
 finally:
     srv.room_items[ROOM] = saved[0]
     srv.ground_added_at[ROOM] = saved[1]
