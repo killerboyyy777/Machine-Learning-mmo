@@ -1,10 +1,11 @@
 name: Release
 
 # Cutting a release is one step: `git tag vX.Y && git push origin vX.Y`.
-# The tag calls the full test suite, then creates the release with generated
-# notes, then publishes the versioned image. Rewrite that body from the pull
-# requests since the previous tag, and set the title, which nothing here
-# does: the release step passes no `name:`, so the title defaults to the bare tag.
+# The tag runs the full test suite, builds and smoke tests one standalone
+# server bundle per platform, then creates the release with generated notes
+# and the bundles, and publishes the versioned image. Rewrite that body from
+# the pull requests since the previous tag, and set the title, which nothing
+# here does: the release step passes no `name:`, so the title defaults to the tag.
 #   gh release edit vX.Y --title "vX.Y - <theme>" --notes-file <body.md>
 on:
   push:
@@ -20,9 +21,44 @@ jobs:
     permissions:
       contents: read
 
+  bundle:
+    name: Standalone server bundle (${{ matrix.target }})
+    needs: tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: windows-latest
+            target: windows-x86_64
+          - os: macos-latest
+            target: macos-arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: python -m pip install pyinstaller==6.22.3 websockets==17.4
+      - name: Build bundle
+        run: python scripts/build_bundle.py --target ${{ matrix.target }}
+      - name: Smoke test built bundle
+        run: python scripts/smoke_bundle.py --bundle-dir dist/bundle
+      - name: Upload bundle and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundle-${{ matrix.target }}
+          path: |
+            dist/bundle/*.zip
+            dist/bundle/*.sha256
+          if-no-files-found: error
+
   release:
     name: Publish GitHub release for tag
-    needs: tests
+    needs: [tests, bundle]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -33,10 +69,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - name: Download bundles
+        uses: actions/download-artifact@v7
+        with:
+          pattern: bundle-*
+          path: bundles
+          merge-multiple: true
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          files: bundles/*
       - name: Refresh agent profile metrics
         # The profile repo rebuilds its metrics on a daily cron; a release is
         # when the gate numbers actually change, so nudge it now instead of
