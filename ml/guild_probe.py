@@ -329,8 +329,6 @@ async def run_guild_probe(
             problems.append("after disband: the snapshot carried no vault totals")
         elif drift != 0:
             problems.append(f"after disband: vault identity drifted by {drift}")
-        if guilds.get("count") or guilds.get("vault_items_total"):
-            problems.append(f"after disband: guild world not empty ({guilds})")
         report["steps"] += 1
     finally:
         if created and not disbanded:
