@@ -28,8 +28,9 @@ ROOMS = {
 class FakeServer:
     """Just enough of the guild surface for the probe's script."""
 
-    def __init__(self, leak=False):
+    def __init__(self, leak=False, other_charters=0):
         self.leak = leak
+        self.other_charters = other_charters
         self.gold = {}
         self.room = {}
         self.vault = 0
@@ -43,7 +44,7 @@ class FakeServer:
     def state(self, http_url=None):
         return {
             "guilds": {
-                "count": 1 if self.members else 0,
+                "count": (1 if self.members else 0) + self.other_charters,
                 "members_total": self.members,
                 "vault_gold_total": self.vault,
                 "vault_items_total": len(self.vault_items),
@@ -331,12 +332,26 @@ def test_probe_flags_a_purse_leak():
     print("PROBE_LEAK_OK")
 
 
+def test_probe_tolerates_other_charters_at_check_time():
+    # The 4-hour gate leaves other agents' charters active. A snapshot taken
+    # after the probe disbands can still report a nonzero guild count.
+    server = FakeServer(other_charters=1)
+    report = _run(server)
+    assert server.members == 0
+    assert server.vault == 0 and server.vault_items == []
+    assert server.in_total == server.out_total
+    assert report["gold_conserved"] is True
+    assert report["problems"] == [], report["problems"]
+    print("PROBE_OTHER_CHARTERS_OK")
+
+
 def main():
     test_probe_identities()
     test_conservation_helpers()
     test_router_gate()
     test_probe_script_exercises_the_vault()
     test_probe_flags_a_purse_leak()
+    test_probe_tolerates_other_charters_at_check_time()
     test_guild_verb_ships_so_the_skip_must_fail()
     print("GUILD_PROBE_OK")
 
